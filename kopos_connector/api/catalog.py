@@ -24,12 +24,18 @@ def build_catalog_payload(
     currency = (pos_profile or {}).get("currency") or (
         frappe.db.get_value("Company", company, "default_currency") if company else None
     )
+    items = get_items(
+        warehouse=warehouse, selling_price_list=selling_price_list, since=since
+    )
+    category_ids = {
+        cstr(item.get("category_id"))
+        for item in items
+        if cstr(item.get("category_id")).strip()
+    }
 
     payload = {
-        "categories": get_categories(since),
-        "items": get_items(
-            warehouse=warehouse, selling_price_list=selling_price_list, since=since
-        ),
+        "categories": get_categories(since, category_ids=category_ids),
+        "items": items,
         "modifier_groups": get_modifier_groups(since),
         "modifier_options": get_modifier_options(since),
         "timestamp": now_datetime().isoformat(),
@@ -38,6 +44,7 @@ def build_catalog_payload(
             "pos_profile": (pos_profile or {}).get("name"),
             "warehouse": warehouse,
             "currency": currency,
+            "tax_rate": get_tax_rate_value(device_id=device_id),
         },
     }
 
@@ -91,7 +98,9 @@ def get_default_pos_profile(company: str | None = None) -> ERPRecord | None:
     return None
 
 
-def get_categories(since: str | None = None) -> list[ERPRecord]:
+def get_categories(
+    since: str | None = None, category_ids: set[str] | None = None
+) -> list[ERPRecord]:
     """Return catalog categories from leaf Item Groups."""
     filters: dict[str, Any] = {"is_group": 0}
     if since:
@@ -104,6 +113,12 @@ def get_categories(since: str | None = None) -> list[ERPRecord]:
         order_by="lft asc, name asc",
     )
 
+    allowed_ids = {
+        cstr(category_id).strip()
+        for category_id in (category_ids or set())
+        if cstr(category_id).strip()
+    }
+
     return [
         {
             "id": row.get("id") or row.get("name"),
@@ -112,6 +127,8 @@ def get_categories(since: str | None = None) -> list[ERPRecord]:
             "is_active": 1,
         }
         for index, row in enumerate(rows, start=1)
+        if not allowed_ids
+        or cstr(row.get("id") or row.get("name")).strip() in allowed_ids
     ]
 
 
@@ -333,10 +350,10 @@ def get_tax_rate_value(
     profile_data = None
     if cstr(device_id).strip():
         device_doc = get_device_doc(device_id=device_id)
-        profile = frappe.get_cached_doc("POS Profile", device_doc.pos_profile)
+        profile = frappe.get_doc("POS Profile", device_doc.pos_profile)
         profile_data = profile.as_dict()
     elif pos_profile_name:
-        profile = frappe.get_cached_doc("POS Profile", pos_profile_name)
+        profile = frappe.get_doc("POS Profile", pos_profile_name)
         profile_data = profile.as_dict()
     else:
         profile_data = get_default_pos_profile()

@@ -139,7 +139,9 @@ def serialize_device_config(
     api_key: str | None = None,
     api_secret: str | None = None,
 ) -> dict[str, Any]:
-    profile_doc = frappe.get_cached_doc("POS Profile", device_doc.pos_profile)
+    from kopos_connector.api.catalog import get_tax_rate_value
+
+    profile_doc = frappe.get_doc("POS Profile", device_doc.pos_profile)
     company = cstr(getattr(profile_doc, "company", None)).strip() or None
     warehouse = cstr(getattr(profile_doc, "warehouse", None)).strip() or None
     currency = cstr(getattr(profile_doc, "currency", None)).strip() or None
@@ -161,6 +163,7 @@ def serialize_device_config(
         "company": company,
         "warehouse": warehouse,
         "currency": currency,
+        "tax_rate": get_tax_rate_value(device_id=cstr(device_doc.device_id).strip()),
         "allow_training_mode": bool(cint(device_doc.allow_training_mode)),
         "allow_manual_settings_override": bool(
             cint(device_doc.allow_manual_settings_override)

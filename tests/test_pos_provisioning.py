@@ -32,8 +32,15 @@ def _install_fake_frappe_modules():
         except (TypeError, ValueError):
             return 0
 
+    def flt(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
     setattr(utils_module, "cstr", cstr)
     setattr(utils_module, "cint", cint)
+    setattr(utils_module, "flt", flt)
     setattr(utils_module, "get_datetime", lambda value=None: value)
     setattr(utils_module, "now_datetime", lambda: datetime(2026, 3, 11, 12, 0, 0))
     setattr(utils_module, "get_url", lambda: "https://erp.example.com")
@@ -77,6 +84,17 @@ def _install_fake_frappe_modules():
     setattr(frappe_module, "generate_hash", lambda length=32: "token-123")
     setattr(frappe_module, "get_cached_doc", lambda *args, **kwargs: SimpleNamespace())
     setattr(frappe_module, "get_doc", lambda *args, **kwargs: SimpleNamespace())
+    setattr(frappe_module, "get_all", lambda *args, **kwargs: [])
+    setattr(
+        frappe_module,
+        "logger",
+        lambda *args, **kwargs: SimpleNamespace(info=lambda *a, **k: None),
+    )
+    setattr(
+        frappe_module,
+        "defaults",
+        SimpleNamespace(get_user_default=lambda *args, **kwargs: None),
+    )
     setattr(
         frappe_module,
         "get_roles",
@@ -95,6 +113,7 @@ def _install_fake_frappe_modules():
 
 
 _install_fake_frappe_modules()
+catalog = importlib.import_module("kopos_connector.api.catalog")
 devices = importlib.import_module("kopos_connector.api.devices")
 auth = importlib.import_module("kopos_connector.auth")
 provisioning = importlib.import_module("kopos_connector.api.provisioning")
@@ -117,6 +136,74 @@ class _FakeCache:
 
 
 class PosProvisioningTests(unittest.TestCase):
+    def test_build_catalog_payload_filters_categories_to_saleable_items(self):
+        with (
+            patch.object(
+                catalog,
+                "resolve_catalog_pos_profile",
+                return_value={
+                    "name": "Counter 1",
+                    "company": "JiJi",
+                    "warehouse": "Main Warehouse",
+                    "selling_price_list": "Standard",
+                    "currency": "MYR",
+                },
+            ),
+            patch.object(
+                catalog,
+                "get_items",
+                return_value=[
+                    {"id": "item-1", "category_id": "Drinks"},
+                    {"id": "item-2", "category_id": "Coffee"},
+                ],
+            ),
+            patch.object(
+                catalog,
+                "get_categories",
+                return_value=[
+                    {
+                        "id": "Drinks",
+                        "name": "Drinks",
+                        "display_order": 1,
+                        "is_active": 1,
+                    },
+                    {
+                        "id": "Coffee",
+                        "name": "Coffee",
+                        "display_order": 2,
+                        "is_active": 1,
+                    },
+                ],
+            ) as get_categories_mock,
+            patch.object(catalog, "get_modifier_groups", return_value=[]),
+            patch.object(catalog, "get_modifier_options", return_value=[]),
+            patch.object(catalog, "get_tax_rate_value", return_value=0.0),
+        ):
+            payload = catalog.build_catalog_payload(device_id="device-1")
+
+        get_categories_mock.assert_called_once_with(
+            None, category_ids={"Drinks", "Coffee"}
+        )
+        self.assertEqual(
+            [row["id"] for row in payload["categories"]], ["Drinks", "Coffee"]
+        )
+
+    def test_get_categories_excludes_unused_item_groups(self):
+        with patch.object(
+            catalog.frappe,
+            "get_all",
+            return_value=[
+                {"id": "Drinks", "name": "Drinks", "lft": 1},
+                {"id": "Sub Assemblies", "name": "Sub Assemblies", "lft": 2},
+            ],
+        ):
+            rows = catalog.get_categories(category_ids={"Drinks"})
+
+        self.assertEqual(
+            rows,
+            [{"id": "Drinks", "name": "Drinks", "display_order": 1, "is_active": 1}],
+        )
+
     def test_ensure_device_api_credentials_reuses_existing_user_credentials(self):
         device_doc = SimpleNamespace(
             name="KOPOS-DEVICE-001", api_user="device@example.com"
