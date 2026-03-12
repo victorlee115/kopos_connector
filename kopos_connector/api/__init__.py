@@ -9,7 +9,12 @@ from .catalog import (
     get_item_modifiers_payload,
     get_tax_rate_value,
 )
-from .devices import mark_device_seen, require_device_context, require_kopos_api_access
+from .devices import (
+    mark_device_seen,
+    require_device_context,
+    require_kopos_api_access,
+    require_system_manager,
+)
 from .promotions import get_promotion_snapshot_payload
 from .provisioning import (
     create_device_provisioning_qr as create_device_provisioning_qr_payload,
@@ -168,6 +173,7 @@ def publish_promotion_snapshot(
     """Publish an immutable KoPOS promotion snapshot for a POS profile."""
     from .promotions import publish_promotion_snapshot as publish
 
+    require_system_manager()
     _write_response(publish(pos_profile=pos_profile, device_id=device_id))
 
 
@@ -176,6 +182,7 @@ def get_promotion_review_queue(limit: int = 20) -> None:
     """Return POS invoices that need promotion reconciliation review."""
     from .promotions import get_promotion_review_queue as queue
 
+    require_system_manager()
     _write_response({"items": queue(limit=int(limit))})
 
 
@@ -185,6 +192,7 @@ def review_promotion_reconciliation(**kwargs: Any) -> None:
     from .promotions import review_promotion_reconciliation as review
 
     try:
+        require_system_manager()
         payload = _get_submit_payload(kwargs)
         _write_response(
             review(

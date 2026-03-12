@@ -9,7 +9,7 @@ from frappe import _
 from frappe.utils import cstr, get_datetime, now_datetime
 
 from kopos_connector.api.catalog import get_default_pos_profile
-from kopos_connector.api.devices import get_device_doc
+from kopos_connector.api.devices import get_device_doc, require_system_manager
 
 SNAPSHOT_STATUS_PUBLISHED = "Published"
 SNAPSHOT_STATUS_SUPERSEDED = "Superseded"
@@ -65,6 +65,7 @@ def publish_promotion_snapshot(
     pos_profile: str | None = None, device_id: str | None = None
 ) -> dict[str, Any]:
     """Publish a deterministic promotion snapshot for a POS profile."""
+    require_system_manager()
     profile_name = resolve_snapshot_pos_profile(pos_profile, device_id=device_id)
     payload = build_snapshot_payload(profile_name)
     latest = get_latest_published_snapshot(profile_name)
@@ -181,6 +182,7 @@ def reconcile_promotion_payload(
 
 
 def get_promotion_review_queue(limit: int = 20) -> list[dict[str, Any]]:
+    require_system_manager()
     filters: dict[str, Any] = {
         "custom_kopos_promotion_reconciliation_status": "review_required"
     }
@@ -262,6 +264,7 @@ def review_promotion_reconciliation(
     notes: str | None = None,
     reviewed_by: str | None = None,
 ) -> dict[str, Any]:
+    require_system_manager()
     decision_value = cstr(decision)
     if decision_value not in REVIEW_DECISIONS:
         frappe.throw(

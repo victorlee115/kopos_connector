@@ -7,7 +7,7 @@ import frappe
 from frappe import _
 
 
-DEFAULT_COST = 16384
+DEFAULT_COST = 256
 
 
 def assert_pin_format(pin: str) -> None:

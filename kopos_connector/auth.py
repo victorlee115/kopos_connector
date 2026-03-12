@@ -7,6 +7,9 @@ from frappe.utils import cstr
 from kopos_connector.api.devices import KOPOS_DEVICE_API_ROLE, get_session_roles
 
 
+ALLOWED_DEVICE_API_PREFIXES = ("/api/method/kopos_connector.api.",)
+
+
 def enforce_device_api_restrictions() -> None:
     user = cstr(getattr(frappe.session, "user", None)).strip()
     if not user or user == "Guest":
@@ -18,10 +21,10 @@ def enforce_device_api_restrictions() -> None:
 
     request = getattr(frappe.local, "request", None)
     path = cstr(getattr(request, "path", None)).strip()
-    if path.startswith("/api/"):
+    if any(path.startswith(prefix) for prefix in ALLOWED_DEVICE_API_PREFIXES):
         return
 
     frappe.throw(
-        _("KoPOS device API users may only access API endpoints"),
+        _("KoPOS device API users may only access KoPOS API endpoints"),
         frappe.ValidationError,
     )
