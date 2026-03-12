@@ -15,6 +15,12 @@ def install_fake_frappe_modules() -> None:
     utils_module = sys.modules.get("frappe.utils")
     password_module = sys.modules.get("frappe.utils.password")
     twofactor_module = sys.modules.get("frappe.twofactor")
+    frappe_custom_module = sys.modules.get("frappe.custom")
+    frappe_custom_doctype_module = sys.modules.get("frappe.custom.doctype")
+    frappe_custom_field_module = sys.modules.get("frappe.custom.doctype.custom_field")
+    frappe_custom_field_custom_field_module = sys.modules.get(
+        "frappe.custom.doctype.custom_field.custom_field"
+    )
 
     if frappe_module is None:
         frappe_module = ModuleType("frappe")
@@ -28,6 +34,22 @@ def install_fake_frappe_modules() -> None:
     if twofactor_module is None:
         twofactor_module = ModuleType("frappe.twofactor")
         sys.modules["frappe.twofactor"] = twofactor_module
+    if frappe_custom_module is None:
+        frappe_custom_module = ModuleType("frappe.custom")
+        sys.modules["frappe.custom"] = frappe_custom_module
+    if frappe_custom_doctype_module is None:
+        frappe_custom_doctype_module = ModuleType("frappe.custom.doctype")
+        sys.modules["frappe.custom.doctype"] = frappe_custom_doctype_module
+    if frappe_custom_field_module is None:
+        frappe_custom_field_module = ModuleType("frappe.custom.doctype.custom_field")
+        sys.modules["frappe.custom.doctype.custom_field"] = frappe_custom_field_module
+    if frappe_custom_field_custom_field_module is None:
+        frappe_custom_field_custom_field_module = ModuleType(
+            "frappe.custom.doctype.custom_field.custom_field"
+        )
+        sys.modules["frappe.custom.doctype.custom_field.custom_field"] = (
+            frappe_custom_field_custom_field_module
+        )
 
     class ValidationError(Exception):
         pass
@@ -59,6 +81,7 @@ def install_fake_frappe_modules() -> None:
     setattr(utils_module, "add_to_date", add_to_date)
     setattr(utils_module, "get_datetime", lambda value=None: value)
     setattr(utils_module, "now_datetime", lambda: datetime(2026, 3, 11, 12, 0, 0))
+    setattr(utils_module, "nowdate", lambda: "2026-03-11")
     setattr(utils_module, "get_url", lambda: "https://erp.example.com")
 
     setattr(frappe_module, "_", lambda value: value)
@@ -76,6 +99,7 @@ def install_fake_frappe_modules() -> None:
         "local",
         SimpleNamespace(request=SimpleNamespace(path="/api/method/ping")),
     )
+    setattr(frappe_module, "flags", SimpleNamespace())
     setattr(
         frappe_module,
         "db",
@@ -122,3 +146,8 @@ def install_fake_frappe_modules() -> None:
     setattr(twofactor_module, "get_qr_svg_code", lambda value: b"svg-data")
     setattr(password_module, "get_decrypted_password", lambda *args, **kwargs: None)
     setattr(password_module, "set_encrypted_password", lambda *args, **kwargs: None)
+    setattr(
+        frappe_custom_field_custom_field_module,
+        "create_custom_fields",
+        lambda *args, **kwargs: None,
+    )

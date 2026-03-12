@@ -269,6 +269,56 @@ def _get_submit_payload(kwargs: dict[str, Any]) -> dict[str, Any]:
 
 
 @frappe.whitelist(methods=["POST"])
+def open_shift(**kwargs: Any) -> None:
+    """Public KoPOS endpoint for opening a shift (creates POS Opening Entry)."""
+    from .shifts import open_shift_payload
+
+    try:
+        payload = _get_submit_payload(kwargs)
+        require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
+        result = open_shift_payload(payload)
+        _write_response(result)
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(frappe.get_traceback(), "KoPOS open_shift failed")
+        _write_response(
+            {
+                "status": "error",
+                "message": "Unexpected server error while opening shift",
+            },
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
+def close_shift(**kwargs: Any) -> None:
+    """Public KoPOS endpoint for closing a shift (creates POS Closing Entry)."""
+    from .shifts import close_shift_payload
+
+    try:
+        payload = _get_submit_payload(kwargs)
+        require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
+        result = close_shift_payload(payload)
+        _write_response(result)
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(frappe.get_traceback(), "KoPOS close_shift failed")
+        _write_response(
+            {
+                "status": "error",
+                "message": "Unexpected server error while closing shift",
+            },
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
 def process_refund(**kwargs: Any) -> None:
     """Public KoPOS endpoint for processing refunds via Credit Notes."""
     from .orders import process_refund_payload
@@ -294,6 +344,7 @@ def process_refund(**kwargs: Any) -> None:
 
 
 __all__ = [
+    "close_shift",
     "create_device_provisioning_qr",
     "create_pos_provisioning",
     "get_catalog",
@@ -303,6 +354,7 @@ __all__ = [
     "get_promotion_snapshot",
     "get_refund_reasons",
     "get_tax_rate",
+    "open_shift",
     "ping",
     "process_refund",
     "publish_promotion_snapshot",
