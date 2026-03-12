@@ -7,6 +7,100 @@ from frappe import _
 from frappe.utils import cint, cstr, now_datetime
 
 
+KOPOS_DEVICE_API_ROLE = "KoPOS Device API"
+
+
+def get_session_roles(user: str | None = None) -> set[str]:
+    resolved_user = (
+        cstr(user).strip() or cstr(getattr(frappe.session, "user", None)).strip()
+    )
+    if not resolved_user or resolved_user == "Guest":
+        return set()
+
+    get_roles = getattr(frappe, "get_roles", None)
+    if not callable(get_roles):
+        return set()
+
+    roles = get_roles(resolved_user) or []
+    if not isinstance(roles, (list, tuple, set)):
+        roles = []
+
+    return {cstr(role).strip() for role in roles if cstr(role).strip()}
+
+
+def require_system_manager(user: str | None = None) -> None:
+    if "System Manager" not in get_session_roles(user=user):
+        frappe.throw(
+            _("Only a System Manager can perform this action"),
+            frappe.ValidationError,
+        )
+
+
+def require_device_api_access(device_doc) -> None:
+    resolved_user = cstr(getattr(frappe.session, "user", None)).strip()
+    if not resolved_user or resolved_user == "Guest":
+        frappe.throw(_("Authentication required"), frappe.ValidationError)
+
+    roles = get_session_roles(resolved_user)
+    if "System Manager" in roles:
+        return
+
+    if KOPOS_DEVICE_API_ROLE not in roles:
+        frappe.throw(
+            _("User {0} is not allowed to access KoPOS device APIs").format(
+                resolved_user
+            ),
+            frappe.ValidationError,
+        )
+
+    api_user = cstr(getattr(device_doc, "api_user", None)).strip()
+    if not api_user or api_user != resolved_user:
+        frappe.throw(
+            _("User {0} is not authorized for KoPOS Device {1}").format(
+                resolved_user, cstr(getattr(device_doc, "device_id", None)).strip()
+            ),
+            frappe.ValidationError,
+        )
+
+
+def require_kopos_api_access() -> None:
+    roles = get_session_roles()
+    if "System Manager" in roles or KOPOS_DEVICE_API_ROLE in roles:
+        return
+
+    frappe.throw(
+        _("User {0} is not allowed to access KoPOS APIs").format(
+            cstr(getattr(frappe.session, "user", None)).strip() or _("Guest")
+        ),
+        frappe.ValidationError,
+    )
+
+
+def require_device_context(device_id: str | None = None, name: str | None = None):
+    roles = get_session_roles()
+    if "System Manager" in roles:
+        if cstr(device_id).strip() or cstr(name).strip():
+            return get_device_doc(device_id=device_id, name=name)
+        return None
+
+    if KOPOS_DEVICE_API_ROLE not in roles:
+        frappe.throw(
+            _("User {0} is not allowed to access KoPOS device APIs").format(
+                cstr(getattr(frappe.session, "user", None)).strip() or _("Guest")
+            ),
+            frappe.ValidationError,
+        )
+
+    if not cstr(device_id).strip() and not cstr(name).strip():
+        frappe.throw(
+            _("device_id is required for device API requests"), frappe.ValidationError
+        )
+
+    device_doc = get_device_doc(device_id=device_id, name=name)
+    require_device_api_access(device_doc)
+    return device_doc
+
+
 def get_device_doc(device_id: str | None = None, name: str | None = None):
     device_id_value = cstr(device_id).strip()
     name_value = cstr(name).strip()

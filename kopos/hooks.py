@@ -1,6 +1,0 @@
-app_name = "kopos"
-app_title = "KoPOS"
-app_publisher = "KoPOS"
-app_description = "Compatibility shim for KoPOS public API"
-app_email = "support@kopos.my"
-app_license = "GNU GPLv3"

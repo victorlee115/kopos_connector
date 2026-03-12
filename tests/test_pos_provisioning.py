@@ -34,6 +34,7 @@ def _install_fake_frappe_modules():
 
     setattr(utils_module, "cstr", cstr)
     setattr(utils_module, "cint", cint)
+    setattr(utils_module, "get_datetime", lambda value=None: value)
     setattr(utils_module, "now_datetime", lambda: datetime(2026, 3, 11, 12, 0, 0))
     setattr(utils_module, "get_url", lambda: "https://erp.example.com")
 
@@ -41,10 +42,20 @@ def _install_fake_frappe_modules():
     setattr(frappe_module, "ValidationError", ValidationError)
     setattr(
         frappe_module,
+        "whitelist",
+        lambda *args, **kwargs: (lambda fn: fn),
+    )
+    setattr(
+        frappe_module,
         "throw",
         lambda message, exc=None: _raise((exc or ValidationError)(message)),
     )
     setattr(frappe_module, "session", SimpleNamespace(user="Administrator"))
+    setattr(
+        frappe_module,
+        "local",
+        SimpleNamespace(request=SimpleNamespace(path="/api/method/ping")),
+    )
     setattr(
         frappe_module,
         "db",
@@ -66,6 +77,11 @@ def _install_fake_frappe_modules():
     setattr(frappe_module, "generate_hash", lambda length=32: "token-123")
     setattr(frappe_module, "get_cached_doc", lambda *args, **kwargs: SimpleNamespace())
     setattr(frappe_module, "get_doc", lambda *args, **kwargs: SimpleNamespace())
+    setattr(
+        frappe_module,
+        "get_roles",
+        lambda user=None: ["System Manager"] if user == "Administrator" else [],
+    )
     setattr(frappe_module, "utils", utils_module)
 
     setattr(twofactor_module, "get_qr_svg_code", lambda value: b"svg-data")
@@ -79,6 +95,8 @@ def _install_fake_frappe_modules():
 
 
 _install_fake_frappe_modules()
+devices = importlib.import_module("kopos_connector.api.devices")
+auth = importlib.import_module("kopos_connector.auth")
 provisioning = importlib.import_module("kopos_connector.api.provisioning")
 
 
@@ -99,13 +117,11 @@ class _FakeCache:
 
 
 class PosProvisioningTests(unittest.TestCase):
-    def test_resolve_provisioning_credentials_reuses_existing_user_credentials(self):
+    def test_ensure_device_api_credentials_reuses_existing_user_credentials(self):
+        device_doc = SimpleNamespace(
+            name="KOPOS-DEVICE-001", api_user="device@example.com"
+        )
         with (
-            patch.object(
-                provisioning.frappe,
-                "session",
-                SimpleNamespace(user="owner@example.com"),
-            ),
             patch.object(
                 provisioning.frappe.db,
                 "get_value",
@@ -113,17 +129,25 @@ class PosProvisioningTests(unittest.TestCase):
             ),
             patch.object(
                 provisioning,
+                "_ensure_device_api_user",
+                return_value="device@example.com",
+            ),
+            patch.object(
+                provisioning,
                 "get_decrypted_password",
                 return_value="existing-api-secret",
             ),
         ):
-            result = provisioning.resolve_provisioning_credentials()
+            result = provisioning.ensure_device_api_credentials(device_doc)
 
-        self.assertEqual(result["user"], "owner@example.com")
+        self.assertEqual(result["user"], "device@example.com")
         self.assertEqual(result["api_key"], "existing-api-key")
         self.assertEqual(result["api_secret"], "existing-api-secret")
 
-    def test_resolve_provisioning_credentials_generates_missing_credentials(self):
+    def test_ensure_device_api_credentials_generates_missing_credentials(self):
+        device_doc = SimpleNamespace(
+            name="KOPOS-DEVICE-001", api_user="device@example.com"
+        )
         generated = iter(["generated-api-key", "generated-api-secret"])
         set_value_calls = []
         encrypted_secret_calls = []
@@ -138,13 +162,13 @@ class PosProvisioningTests(unittest.TestCase):
             encrypted_secret_calls.append((args, kwargs))
 
         with (
-            patch.object(
-                provisioning.frappe,
-                "session",
-                SimpleNamespace(user="owner@example.com"),
-            ),
             patch.object(provisioning.frappe.db, "get_value", return_value=None),
             patch.object(provisioning, "get_decrypted_password", return_value=None),
+            patch.object(
+                provisioning,
+                "_ensure_device_api_user",
+                return_value="device@example.com",
+            ),
             patch.object(
                 provisioning.frappe, "generate_hash", side_effect=fake_generate_hash
             ),
@@ -157,18 +181,53 @@ class PosProvisioningTests(unittest.TestCase):
                 side_effect=fake_set_encrypted_password,
             ),
         ):
-            result = provisioning.resolve_provisioning_credentials()
+            result = provisioning.ensure_device_api_credentials(device_doc)
 
         self.assertEqual(result["api_key"], "generated-api-key")
         self.assertEqual(result["api_secret"], "generated-api-secret")
         self.assertEqual(
             set_value_calls[0][0][:4],
-            ("User", "owner@example.com", "api_key", "generated-api-key"),
+            ("User", "device@example.com", "api_key", "generated-api-key"),
         )
         self.assertEqual(
             encrypted_secret_calls[0][0],
-            ("User", "owner@example.com", "generated-api-secret", "api_secret"),
+            ("User", "device@example.com", "generated-api-secret", "api_secret"),
         )
+
+    def test_require_device_api_access_rejects_wrong_device_user(self):
+        device_doc = SimpleNamespace(
+            device_id="tab-a-001", api_user="device-a@kopos.local"
+        )
+
+        with (
+            patch.object(
+                devices.frappe, "session", SimpleNamespace(user="device-b@kopos.local")
+            ),
+            patch.object(
+                devices.frappe,
+                "get_roles",
+                return_value=[devices.KOPOS_DEVICE_API_ROLE],
+            ),
+        ):
+            with self.assertRaises(devices.frappe.ValidationError):
+                devices.require_device_api_access(device_doc)
+
+    def test_device_api_users_are_blocked_from_non_api_routes(self):
+        with (
+            patch.object(
+                auth.frappe, "session", SimpleNamespace(user="device-a@kopos.local")
+            ),
+            patch.object(
+                auth.frappe,
+                "local",
+                SimpleNamespace(request=SimpleNamespace(path="/app")),
+            ),
+            patch.object(
+                auth.frappe, "get_roles", return_value=[devices.KOPOS_DEVICE_API_ROLE]
+            ),
+        ):
+            with self.assertRaises(auth.frappe.ValidationError):
+                auth.enforce_device_api_restrictions()
 
     def test_create_pos_provisioning_returns_one_time_link(self):
         cache = _FakeCache()
@@ -292,9 +351,19 @@ class PosProvisioningTests(unittest.TestCase):
         with (
             patch.object(
                 provisioning,
-                "resolve_provisioning_credentials",
+                "require_system_manager",
+                return_value=None,
+            ),
+            patch.object(
+                provisioning,
+                "get_device_doc",
+                return_value=SimpleNamespace(name="KOPOS-DEVICE-001"),
+            ),
+            patch.object(
+                provisioning,
+                "ensure_device_api_credentials",
                 return_value={
-                    "user": "owner@example.com",
+                    "user": "device-001@kopos.local",
                     "api_key": "generated-api-key",
                     "api_secret": "generated-api-secret",
                 },
@@ -322,7 +391,7 @@ class PosProvisioningTests(unittest.TestCase):
             expires_in_seconds=None,
         )
         self.assertEqual(
-            result["setup_preview"]["provisioning_user"], "owner@example.com"
+            result["setup_preview"]["provisioning_user"], "device-001@kopos.local"
         )
 
 

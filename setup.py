@@ -7,16 +7,16 @@ with open("README.md") as f:
     long_description = f.read()
 
 setup(
-    name="kopos",
+    name="kopos_connector",
     version="1.0.0",
     description="ERPNext connector for KoPOS mobile POS system with modifier and availability management",
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="KoPOS",
     author_email="support@kopos.my",
-    url="https://github.com/kopos/kopos-connector",
+    url="https://github.com/victorlee115/kopos_connector",
     license="GNU GPLv3",
-    packages=["kopos"] + find_packages(),
+    packages=find_packages(include=["kopos_connector", "kopos_connector.*"]),
     zip_safe=False,
     include_package_data=True,
     install_requires=install_requires,

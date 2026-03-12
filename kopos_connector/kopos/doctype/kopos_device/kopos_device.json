@@ -14,6 +14,7 @@
   "device_prefix",
   "enabled",
   "pos_profile",
+  "api_user",
   "config_version",
   "allow_training_mode",
   "allow_manual_settings_override",
@@ -60,6 +61,14 @@
    "label": "POS Profile",
    "options": "POS Profile",
    "reqd": 1
+  },
+  {
+   "fieldname": "api_user",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "API User",
+   "options": "User",
+   "read_only": 1
   },
   {
    "default": "1",

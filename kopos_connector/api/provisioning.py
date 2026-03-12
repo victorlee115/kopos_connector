@@ -11,25 +11,27 @@ from frappe.twofactor import get_qr_svg_code
 from frappe.utils.password import get_decrypted_password, set_encrypted_password
 from frappe.utils import cint, cstr, now_datetime
 
-from kopos_connector.api.devices import get_device_doc, serialize_device_config
+from kopos_connector.api.devices import (
+    KOPOS_DEVICE_API_ROLE,
+    get_device_doc,
+    require_device_api_access,
+    require_system_manager,
+    serialize_device_config,
+)
 
 
 PROVISIONING_CACHE_PREFIX = "kopos:provisioning:"
 DEFAULT_TTL_SECONDS = 15 * 60
 MIN_TTL_SECONDS = 60
 MAX_TTL_SECONDS = 24 * 60 * 60
+DEVICE_USER_EMAIL_DOMAIN = "kopos.local"
 
 
-def resolve_provisioning_credentials(
-    user: str | None = None, rotate: bool | int | str = False
+def ensure_device_api_credentials(
+    device_doc, rotate: bool | int | str = False
 ) -> dict[str, str]:
-    resolved_user = (
-        cstr(user).strip() or cstr(getattr(frappe.session, "user", None)).strip()
-    )
-    if not resolved_user or resolved_user == "Guest":
-        frappe.throw(_("Authentication required to generate POS provisioning"))
-
     should_rotate = bool(cint(rotate))
+    resolved_user = _ensure_device_api_user(device_doc)
     api_key_value = cstr(frappe.db.get_value("User", resolved_user, "api_key")).strip()
     api_secret_value = cstr(
         get_decrypted_password(
@@ -44,7 +46,11 @@ def resolve_provisioning_credentials(
     if should_rotate or not api_key_value:
         api_key_value = frappe.generate_hash(length=15)
         frappe.db.set_value(
-            "User", resolved_user, "api_key", api_key_value, update_modified=False
+            "User",
+            resolved_user,
+            "api_key",
+            api_key_value,
+            update_modified=False,
         )
 
     if should_rotate or not api_secret_value:
@@ -62,12 +68,13 @@ def create_device_provisioning_qr(
     device: str | None = None,
     erpnext_url: str | None = None,
     expires_in_seconds: int | str | None = None,
-    user: str | None = None,
     rotate_credentials: bool | int | str = False,
 ) -> dict[str, Any]:
-    credentials = resolve_provisioning_credentials(user=user, rotate=rotate_credentials)
+    require_system_manager()
+    device_doc = get_device_doc(name=device)
+    credentials = ensure_device_api_credentials(device_doc, rotate=rotate_credentials)
     payload = create_pos_provisioning(
-        device=device,
+        device=device_doc.name,
         erpnext_url=erpnext_url,
         api_key=credentials["api_key"],
         api_secret=credentials["api_secret"],
@@ -90,8 +97,7 @@ def create_pos_provisioning(
     device_prefix: str | None = None,
     expires_in_seconds: int | str | None = None,
 ) -> dict[str, Any]:
-    if frappe.session.user == "Guest":
-        frappe.throw(_("Authentication required to generate POS provisioning"))
+    require_system_manager()
 
     api_key_value = cstr(api_key).strip()
     api_secret_value = cstr(api_secret).strip()
@@ -214,6 +220,7 @@ def redeem_pos_provisioning(token: str | None = None) -> dict[str, Any]:
 
 def get_device_config(device_id: str | None = None) -> dict[str, Any]:
     device_doc = get_device_doc(device_id=device_id)
+    require_device_api_access(device_doc)
     if not cint(device_doc.enabled):
         frappe.throw(
             _("KoPOS Device {0} is disabled").format(device_doc.device_id),
@@ -231,3 +238,74 @@ def get_device_config(device_id: str | None = None) -> dict[str, Any]:
 
 def _cache_key(token: str) -> str:
     return f"{PROVISIONING_CACHE_PREFIX}{token}"
+
+
+def _device_api_user_email(device_doc) -> str:
+    slug = _slugify_device_id(cstr(getattr(device_doc, "device_id", None)).strip())
+    return f"kopos.device.{slug}@{DEVICE_USER_EMAIL_DOMAIN}"
+
+
+def _slugify_device_id(value: str) -> str:
+    cleaned = [char.lower() if char.isalnum() else "." for char in value]
+    slug = "".join(cleaned).strip(".")
+    while ".." in slug:
+        slug = slug.replace("..", ".")
+    return slug or "unknown"
+
+
+def _ensure_kopos_device_api_role() -> None:
+    if frappe.db.exists("Role", KOPOS_DEVICE_API_ROLE):
+        return
+
+    frappe.get_doc({"doctype": "Role", "role_name": KOPOS_DEVICE_API_ROLE}).insert(
+        ignore_permissions=True
+    )
+
+
+def _ensure_device_api_user(device_doc) -> str:
+    _ensure_kopos_device_api_role()
+    user_email = cstr(
+        getattr(device_doc, "api_user", None)
+    ).strip() or _device_api_user_email(device_doc)
+    display_name = (
+        cstr(getattr(device_doc, "device_name", None)).strip()
+        or cstr(getattr(device_doc, "device_id", None)).strip()
+    )
+
+    if not frappe.db.exists("User", user_email):
+        user_doc = frappe.get_doc(
+            {
+                "doctype": "User",
+                "email": user_email,
+                "first_name": display_name,
+                "enabled": 1,
+                "user_type": "System User",
+                "send_welcome_email": 0,
+                "new_password": frappe.generate_hash(length=32),
+            }
+        )
+        user_doc.append("roles", {"role": KOPOS_DEVICE_API_ROLE})
+        user_doc.insert(ignore_permissions=True)
+    else:
+        user_doc = frappe.get_doc("User", user_email)
+        user_doc.enabled = 1
+        user_doc.first_name = display_name or user_doc.first_name
+        user_doc.user_type = "System User"
+        user_doc.send_welcome_email = 0
+        user_doc.set(
+            "roles",
+            [{"doctype": "Has Role", "role": KOPOS_DEVICE_API_ROLE}],
+        )
+        user_doc.save(ignore_permissions=True)
+
+    if cstr(getattr(device_doc, "api_user", None)).strip() != user_email:
+        frappe.db.set_value(
+            "KoPOS Device",
+            device_doc.name,
+            "api_user",
+            user_email,
+            update_modified=False,
+        )
+        setattr(device_doc, "api_user", user_email)
+
+    return user_email

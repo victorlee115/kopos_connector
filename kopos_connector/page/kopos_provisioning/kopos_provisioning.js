@@ -45,7 +45,7 @@ class KoPOSProvisioningPage {
 							<button class="btn btn-primary kopos-generate">${__("Generate QR")}</button>
 							<button class="btn btn-default kopos-copy-link" style="display:none">${__("Copy Link")}</button>
 						</div>
-						<p class="text-muted small kopos-status">${__("Generate a one-time QR using the current ERP user's API credentials.")}</p>
+						<p class="text-muted small kopos-status">${__("Generate a one-time QR using a dedicated per-device API identity.")}</p>
 					</div>
 					<div class="kopos-provisioning-card kopos-provisioning-preview">
 						<div class="kopos-preview-empty">
@@ -185,7 +185,7 @@ class KoPOSProvisioningPage {
 
 		try {
 			const response = await frappe.call({
-				method: "kopos.api.create_device_provisioning_qr",
+				method: "kopos_connector.api.create_device_provisioning_qr",
 				args: values,
 			});
 			const payload = response.message || response;

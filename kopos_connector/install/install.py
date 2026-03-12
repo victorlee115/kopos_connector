@@ -6,6 +6,9 @@ from frappe import _
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
 
+KOPOS_DEVICE_API_ROLE = "KoPOS Device API"
+
+
 def before_install():
     """
     Pre-installation checks
@@ -64,6 +67,7 @@ def ensure_kopos_custom_fields(skip_if_missing_doctypes: bool) -> None:
         frappe.throw(_(message))
 
     create_kopos_custom_fields()
+    ensure_kopos_roles()
     ensure_kopos_client_scripts()
     frappe.logger().info("KoPOS Connector: Custom fields created successfully")
 
@@ -340,6 +344,13 @@ def ensure_kopos_client_scripts() -> None:
     ensure_pos_profile_provisioning_script()
 
 
+def ensure_kopos_roles() -> None:
+    if not frappe.db.exists("Role", KOPOS_DEVICE_API_ROLE):
+        frappe.get_doc({"doctype": "Role", "role_name": KOPOS_DEVICE_API_ROLE}).insert(
+            ignore_permissions=True
+        )
+
+
 def ensure_kopos_device_provisioning_script() -> None:
     script_name = "KoPOS Device Provisioning Shortcut"
     script_body = """
@@ -397,7 +408,7 @@ frappe.ui.form.on("KoPOS Device", {
       frappe.dom.freeze(__("Generating KoPOS setup QR..."));
       try {
         const response = await frappe.call({
-          method: "kopos.api.create_device_provisioning_qr",
+          method: "kopos_connector.api.create_device_provisioning_qr",
           args: {
             device: frm.doc.name,
             erpnext_url: window.location.origin,

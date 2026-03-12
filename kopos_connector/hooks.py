@@ -141,7 +141,7 @@ before_uninstall = "kopos_connector.uninstall.before_uninstall"
 
 # Request Events
 # --------------
-# before_request = ["kopos_connector.utils.before_request"]
+before_request = ["kopos_connector.auth.enforce_device_api_restrictions"]
 # after_request = ["kopos_connector.utils.after_request"]
 
 # Job Events
