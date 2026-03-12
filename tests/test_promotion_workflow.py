@@ -3,6 +3,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from .fake_frappe import install_fake_frappe_modules
+
+
+install_fake_frappe_modules()
+
 from kopos_connector.api.orders import (
     build_refund_promotion_allocation,
     determine_reconciliation_status,

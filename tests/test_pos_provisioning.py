@@ -1,119 +1,14 @@
 import importlib
 import json
-import sys
 import unittest
 from datetime import datetime
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from unittest.mock import patch
 
-
-def _raise(error):
-    raise error
+from .fake_frappe import install_fake_frappe_modules
 
 
-def _install_fake_frappe_modules():
-    if "frappe" in sys.modules:
-        return
-
-    frappe_module = ModuleType("frappe")
-    utils_module = ModuleType("frappe.utils")
-    password_module = ModuleType("frappe.utils.password")
-    twofactor_module = ModuleType("frappe.twofactor")
-
-    class ValidationError(Exception):
-        pass
-
-    def cstr(value):
-        return "" if value is None else str(value)
-
-    def cint(value):
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
-
-    def flt(value):
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return 0.0
-
-    setattr(utils_module, "cstr", cstr)
-    setattr(utils_module, "cint", cint)
-    setattr(utils_module, "flt", flt)
-    setattr(utils_module, "get_datetime", lambda value=None: value)
-    setattr(utils_module, "now_datetime", lambda: datetime(2026, 3, 11, 12, 0, 0))
-    setattr(utils_module, "get_url", lambda: "https://erp.example.com")
-
-    setattr(frappe_module, "_", lambda value: value)
-    setattr(frappe_module, "ValidationError", ValidationError)
-    setattr(
-        frappe_module,
-        "whitelist",
-        lambda *args, **kwargs: (lambda fn: fn),
-    )
-    setattr(
-        frappe_module,
-        "throw",
-        lambda message, exc=None: _raise((exc or ValidationError)(message)),
-    )
-    setattr(frappe_module, "session", SimpleNamespace(user="Administrator"))
-    setattr(
-        frappe_module,
-        "local",
-        SimpleNamespace(request=SimpleNamespace(path="/api/method/ping")),
-    )
-    setattr(
-        frappe_module,
-        "db",
-        SimpleNamespace(
-            get_value=lambda *args, **kwargs: None,
-            exists=lambda *args, **kwargs: False,
-            set_value=lambda *args, **kwargs: None,
-            sql=lambda *args, **kwargs: [],
-        ),
-    )
-    setattr(
-        frappe_module,
-        "cache",
-        lambda: SimpleNamespace(
-            set_value=lambda *args, **kwargs: None,
-            get_value=lambda *args, **kwargs: None,
-            delete_value=lambda *args, **kwargs: None,
-        ),
-    )
-    setattr(frappe_module, "generate_hash", lambda length=32: "token-123")
-    setattr(frappe_module, "get_cached_doc", lambda *args, **kwargs: SimpleNamespace())
-    setattr(frappe_module, "get_doc", lambda *args, **kwargs: SimpleNamespace())
-    setattr(frappe_module, "get_all", lambda *args, **kwargs: [])
-    setattr(
-        frappe_module,
-        "logger",
-        lambda *args, **kwargs: SimpleNamespace(info=lambda *a, **k: None),
-    )
-    setattr(
-        frappe_module,
-        "defaults",
-        SimpleNamespace(get_user_default=lambda *args, **kwargs: None),
-    )
-    setattr(
-        frappe_module,
-        "get_roles",
-        lambda user=None: ["System Manager"] if user == "Administrator" else [],
-    )
-    setattr(frappe_module, "utils", utils_module)
-
-    setattr(twofactor_module, "get_qr_svg_code", lambda value: b"svg-data")
-    setattr(password_module, "get_decrypted_password", lambda *args, **kwargs: None)
-    setattr(password_module, "set_encrypted_password", lambda *args, **kwargs: None)
-
-    sys.modules["frappe"] = frappe_module
-    sys.modules["frappe.utils"] = utils_module
-    sys.modules["frappe.utils.password"] = password_module
-    sys.modules["frappe.twofactor"] = twofactor_module
-
-
-_install_fake_frappe_modules()
+install_fake_frappe_modules()
 catalog = importlib.import_module("kopos_connector.api.catalog")
 devices = importlib.import_module("kopos_connector.api.devices")
 auth = importlib.import_module("kopos_connector.auth")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any
 
 import frappe
@@ -99,6 +100,31 @@ def require_device_context(device_id: str | None = None, name: str | None = None
     device_doc = get_device_doc(device_id=device_id, name=name)
     require_device_api_access(device_doc)
     return device_doc
+
+
+@contextmanager
+def elevate_device_api_user():
+    """Temporarily elevate device API requests for server-side ERP document work."""
+    session_user = cstr(getattr(frappe.session, "user", None)).strip()
+    if not session_user or session_user == "Guest":
+        yield
+        return
+
+    roles = get_session_roles(session_user)
+    if "System Manager" in roles or KOPOS_DEVICE_API_ROLE not in roles:
+        yield
+        return
+
+    set_user = getattr(frappe, "set_user", None)
+    if not callable(set_user):
+        yield
+        return
+
+    try:
+        set_user("Administrator")
+        yield
+    finally:
+        set_user(session_user)
 
 
 def get_device_doc(device_id: str | None = None, name: str | None = None):

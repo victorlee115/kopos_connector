@@ -48,7 +48,7 @@ create_sample_modifiers()
 
 ```bash
 curl -X GET \
-  "https://your-site.com/api/method/kopos.api.get_catalog" \
+  "https://your-site.com/api/method/kopos_connector.api.get_catalog" \
   -H "Authorization: token your-api-key:your-api-secret"
 ```
 

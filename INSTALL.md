@@ -147,7 +147,7 @@ Use curl or Postman to test the catalog API:
 
 ```bash
 curl -X GET \
-  "https://your-site.com/api/method/kopos.api.get_catalog" \
+  "https://your-site.com/api/method/kopos_connector.api.get_catalog" \
   -H "Authorization: token your-api-key:your-api-secret"
 ```
 
@@ -173,7 +173,7 @@ You should receive a JSON response with:
 
 ```bash
 curl -X POST \
-  "https://your-site.com/api/method/kopos.api.submit_order" \
+  "https://your-site.com/api/method/kopos_connector.api.submit_order" \
   -H "Authorization: token your-api-key:your-api-secret" \
   -H "Content-Type: application/json" \
   -d '{
@@ -214,7 +214,7 @@ curl -X POST \
 
 ```bash
 curl -X POST \
-  "https://your-site.com/api/method/kopos.api.process_refund" \
+  "https://your-site.com/api/method/kopos_connector.api.process_refund" \
   -H "Authorization: token your-api-key:your-api-secret" \
   -H "Content-Type: application/json" \
   -d '{
@@ -248,7 +248,7 @@ curl -X POST \
 
 ```bash
 curl -X GET \
-  "https://your-site.com/api/method/kopos.api.get_refund_reasons" \
+  "https://your-site.com/api/method/kopos_connector.api.get_refund_reasons" \
   -H "Authorization: token your-api-key:your-api-secret"
 ```
 

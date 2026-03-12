@@ -8,7 +8,7 @@ from frappe import _
 from frappe.utils import add_to_date, cint, get_datetime, now_datetime
 
 from kopos_connector.api.catalog import get_default_pos_profile, get_tax_rate_value
-from kopos_connector.api.devices import get_device_doc
+from kopos_connector.api.devices import elevate_device_api_user, get_device_doc
 
 
 PAYMENT_METHOD_ALIASES = {
@@ -64,13 +64,13 @@ def submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "message": _("Order already processed"),
         }
 
-    pos_profile_doc = resolve_pos_profile(validated)
-    invoice = build_pos_invoice(validated, pos_profile_doc)
-
     try:
-        invoice.insert(ignore_permissions=True)
-        invoice.submit()
-        record_invoice_promotion_comment(invoice)
+        with elevate_device_api_user():
+            pos_profile_doc = resolve_pos_profile(validated)
+            invoice = build_pos_invoice(validated, pos_profile_doc)
+            invoice.insert(ignore_permissions=True)
+            invoice.submit()
+            record_invoice_promotion_comment(invoice)
     except Exception:
         frappe.db.rollback()
         existing_invoice = frappe.db.get_value(
@@ -830,36 +830,36 @@ def process_refund_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not pos_profile:
         frappe.throw(_("No active POS Profile found"), frappe.ValidationError)
 
-    credit_note = build_credit_note(validated, original_invoice, pos_profile)
-
-    # Set payment mode
-    payment_mode = resolve_refund_payment_mode(
-        validated.get("payment_mode"), original_invoice
-    )
-    payments = credit_note.get("payments") or []
-    for payment in payments:
-        payment.mode_of_payment = payment_mode
-        payment.amount = credit_note.grand_total / len(payments)
-
-    if not payments:
-        credit_note.append(
-            "payments",
-            {
-                "mode_of_payment": payment_mode,
-                "amount": credit_note.grand_total,
-            },
-        )
-
-    credit_note.paid_amount = sum(
-        flt(payment.amount) for payment in credit_note.get("payments") or []
-    )
-    credit_note.change_amount = 0
-    if hasattr(credit_note, "write_off_amount"):
-        credit_note.write_off_amount = 0
-
     try:
-        credit_note.insert(ignore_permissions=True)
-        credit_note.submit()
+        with elevate_device_api_user():
+            credit_note = build_credit_note(validated, original_invoice, pos_profile)
+
+            payment_mode = resolve_refund_payment_mode(
+                validated.get("payment_mode"), original_invoice
+            )
+            payments = credit_note.get("payments") or []
+            for payment in payments:
+                payment.mode_of_payment = payment_mode
+                payment.amount = credit_note.grand_total / len(payments)
+
+            if not payments:
+                credit_note.append(
+                    "payments",
+                    {
+                        "mode_of_payment": payment_mode,
+                        "amount": credit_note.grand_total,
+                    },
+                )
+
+            credit_note.paid_amount = sum(
+                flt(payment.amount) for payment in credit_note.get("payments") or []
+            )
+            credit_note.change_amount = 0
+            if hasattr(credit_note, "write_off_amount"):
+                credit_note.write_off_amount = 0
+
+            credit_note.insert(ignore_permissions=True)
+            credit_note.submit()
     except Exception:
         frappe.db.rollback()
         existing_refund = frappe.db.get_value(

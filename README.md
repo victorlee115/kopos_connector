@@ -88,7 +88,7 @@ In POS Profile form, under **KoPOS SST Configuration** section:
 Create and submit a POS Invoice using KoPOS' idempotent order contract.
 
 ```http
-POST /api/method/kopos.api.submit_order
+POST /api/method/kopos_connector.api.submit_order
 ```
 
 Response:
@@ -105,7 +105,7 @@ Response:
 Process a KoPOS refund as a return `POS Invoice` against the original POS sale.
 
 ```http
-POST /api/method/kopos.api.process_refund
+POST /api/method/kopos_connector.api.process_refund
 ```
 
 Request:
@@ -155,7 +155,7 @@ Duplicate-safe replay response:
 Return the preset refund reason choices supported by KoPOS clients.
 
 ```http
-GET /api/method/kopos.api.get_refund_reasons
+GET /api/method/kopos_connector.api.get_refund_reasons
 ```
 
 Response:
@@ -183,7 +183,7 @@ Response:
 Returns full catalog with categories, items, and modifiers.
 
 ```http
-GET /api/method/kopos.api.get_catalog
+GET /api/method/kopos_connector.api.get_catalog
 ```
 
 Response:
@@ -238,7 +238,7 @@ Response:
 Get modifiers for a specific item.
 
 ```http
-GET /api/method/kopos.api.get_item_modifiers?item_code=ICED-MATCHA
+GET /api/method/kopos_connector.api.get_item_modifiers?item_code=ICED-MATCHA
 ```
 
 ### Get Tax Rate
@@ -246,7 +246,7 @@ GET /api/method/kopos.api.get_item_modifiers?item_code=ICED-MATCHA
 Get SST rate for a POS profile.
 
 ```http
-GET /api/method/kopos.api.get_tax_rate?pos_profile=Main%20POS
+GET /api/method/kopos_connector.api.get_tax_rate?pos_profile=Main%20POS
 ```
 
 Response:
@@ -357,17 +357,17 @@ This will create:
 ```bash
 # Get catalog
 curl -X GET \
-  "https://your-site.com/api/method/kopos.api.get_catalog" \
+  "https://your-site.com/api/method/kopos_connector.api.get_catalog" \
   -H "Authorization: token your-api-key:your-api-secret"
 
 # Get item modifiers
 curl -X GET \
-  "https://your-site.com/api/method/kopos.api.get_item_modifiers?item_code=ICED-MATCHA" \
+  "https://your-site.com/api/method/kopos_connector.api.get_item_modifiers?item_code=ICED-MATCHA" \
   -H "Authorization: token your-api-key:your-api-secret"
 
 # Get tax rate
 curl -X GET \
-  "https://your-site.com/api/method/kopos.api.get_tax_rate?pos_profile=Main%20POS" \
+  "https://your-site.com/api/method/kopos_connector.api.get_tax_rate?pos_profile=Main%20POS" \
   -H "Authorization: token your-api-key:your-api-secret"
 ```
 

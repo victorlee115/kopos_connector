@@ -176,7 +176,7 @@ bench --site your-site.com console
 
 ```bash
 curl -X GET \
-  "https://your-site.com/api/method/kopos.api.get_catalog" \
+  "https://your-site.com/api/method/kopos_connector.api.get_catalog" \
   -H "Authorization: token api_key:api_secret"
 ```
 
@@ -188,7 +188,7 @@ curl -X GET \
 
 ## 🔍 API Endpoints
 
-### GET /api/method/kopos.api.get_catalog
+### GET /api/method/kopos_connector.api.get_catalog
 
 Returns full catalog with categories, items, modifiers, and options.
 
@@ -207,7 +207,7 @@ Returns full catalog with categories, items, modifiers, and options.
 }
 ```
 
-### GET /api/method/kopos.api.get_item_modifiers
+### GET /api/method/kopos_connector.api.get_item_modifiers
 
 Returns modifiers for a specific item.
 
@@ -227,7 +227,7 @@ Returns modifiers for a specific item.
 ]
 ```
 
-### GET /api/method/kopos.api.get_tax_rate
+### GET /api/method/kopos_connector.api.get_tax_rate
 
 Returns SST rate for a POS profile.
 
