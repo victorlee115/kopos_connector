@@ -70,6 +70,7 @@ def _install_fake_frappe_modules():
             get_value=lambda *args, **kwargs: None,
             exists=lambda *args, **kwargs: False,
             set_value=lambda *args, **kwargs: None,
+            sql=lambda *args, **kwargs: [],
         ),
     )
     setattr(
@@ -203,6 +204,29 @@ class PosProvisioningTests(unittest.TestCase):
             rows,
             [{"id": "Drinks", "name": "Drinks", "display_order": 1, "is_active": 1}],
         )
+
+    def test_get_allowed_item_groups_expands_selected_pos_profile_groups(self):
+        with (
+            patch.object(
+                catalog.frappe,
+                "get_all",
+                return_value=[{"name": "Drinks", "lft": 10, "rgt": 20}],
+            ),
+            patch.object(
+                catalog.frappe.db,
+                "sql",
+                return_value=[
+                    {"name": "Drinks"},
+                    {"name": "Coffee"},
+                    {"name": "Tea"},
+                ],
+            ),
+        ):
+            rows = catalog.get_allowed_item_groups(
+                {"item_groups": [{"item_group": "Drinks"}]}
+            )
+
+        self.assertEqual(rows, {"Drinks", "Coffee", "Tea"})
 
     def test_ensure_device_api_credentials_reuses_existing_user_credentials(self):
         device_doc = SimpleNamespace(

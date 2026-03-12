@@ -25,7 +25,10 @@ def build_catalog_payload(
         frappe.db.get_value("Company", company, "default_currency") if company else None
     )
     items = get_items(
-        warehouse=warehouse, selling_price_list=selling_price_list, since=since
+        warehouse=warehouse,
+        selling_price_list=selling_price_list,
+        since=since,
+        pos_profile=pos_profile,
     )
     category_ids = {
         cstr(item.get("category_id"))
@@ -136,9 +139,13 @@ def get_items(
     warehouse: str | None = None,
     selling_price_list: str | None = None,
     since: str | None = None,
+    pos_profile: ERPRecord | None = None,
 ) -> list[ERPRecord]:
     """Return saleable Item records for KoPOS."""
     filters: dict[str, Any] = {"is_sales_item": 1, "disabled": 0}
+    allowed_item_groups = get_allowed_item_groups(pos_profile)
+    if allowed_item_groups:
+        filters["item_group"] = ["in", sorted(allowed_item_groups)]
     if since:
         filters["modified"] = [">=", since]
 
@@ -184,6 +191,61 @@ def get_items(
         )
 
     return items
+
+
+def get_allowed_item_groups(pos_profile: ERPRecord | None) -> set[str]:
+    if not pos_profile:
+        return set()
+
+    child_rows = (
+        (pos_profile.get("item_groups") or [])
+        if isinstance(pos_profile, dict)
+        else (getattr(pos_profile, "item_groups", []) or [])
+    )
+    selected_groups = {
+        cstr(
+            row.get("item_group")
+            if isinstance(row, dict)
+            else getattr(row, "item_group", None)
+        ).strip()
+        for row in child_rows
+        if cstr(
+            row.get("item_group")
+            if isinstance(row, dict)
+            else getattr(row, "item_group", None)
+        ).strip()
+    }
+    if not selected_groups:
+        return set()
+
+    rows = frappe.get_all(
+        "Item Group",
+        filters={"name": ["in", sorted(selected_groups)]},
+        fields=["name", "lft", "rgt"],
+    )
+    if not rows:
+        return selected_groups
+
+    conditions = []
+    values: list[Any] = []
+    for row in rows:
+        conditions.append("(lft >= %s AND rgt <= %s)")
+        values.extend([row.get("lft"), row.get("rgt")])
+
+    descendants = frappe.db.sql(
+        f"""
+            SELECT name
+            FROM `tabItem Group`
+            WHERE {" OR ".join(conditions)}
+        """,
+        tuple(values),
+        as_dict=True,
+    )
+    return {
+        cstr(row.get("name")).strip()
+        for row in descendants
+        if cstr(row.get("name")).strip()
+    } or selected_groups
 
 
 def get_item_modifier_groups(item_code: str) -> list[str]:
