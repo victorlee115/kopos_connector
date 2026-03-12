@@ -1,0 +1,10 @@
+include requirements.txt
+include license.txt
+include README.md
+recursive-include kopos_connector *.json
+recursive-include kopos_connector *.py
+recursive-include kopos_connector *.html
+recursive-include kopos_connector *.js
+recursive-include kopos_connector *.css
+recursive-include kopos_connector *.txt
+recursive-include kopos_connector *.md

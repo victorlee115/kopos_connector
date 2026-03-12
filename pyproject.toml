@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kopos"
+description = "ERPNext v16 connector for KoPOS mobile POS"
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["version"]
+
+[tool.bench.frappe-dependencies]
+frappe = ">=16.0.0,<17.0.0"

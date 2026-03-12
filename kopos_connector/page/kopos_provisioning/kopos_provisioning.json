@@ -1,0 +1,21 @@
+{
+ "content": null,
+ "creation": "2026-03-11 03:05:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "modified": "2026-03-11 03:05:00.000000",
+ "modified_by": "Administrator",
+ "module": "KoPOS Connector",
+ "name": "kopos_provisioning",
+ "owner": "Administrator",
+ "page_name": "kopos_provisioning",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "title": "KoPOS Provisioning"
+}

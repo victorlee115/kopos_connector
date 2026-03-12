@@ -1,0 +1,150 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "field:device_id",
+ "creation": "2026-03-12 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "device_id",
+  "device_name",
+  "device_prefix",
+  "enabled",
+  "pos_profile",
+  "config_version",
+  "allow_training_mode",
+  "allow_manual_settings_override",
+  "app_min_version",
+  "last_seen_at",
+  "last_sync_at",
+  "section_break_printers",
+  "printers",
+  "section_break_users",
+  "device_users"
+ ],
+ "fields": [
+  {
+   "fieldname": "device_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Device ID",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "device_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Device Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "device_prefix",
+   "fieldtype": "Data",
+   "label": "Device Prefix"
+  },
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "pos_profile",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "POS Profile",
+   "options": "POS Profile",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "config_version",
+   "fieldtype": "Int",
+   "label": "Config Version",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "allow_training_mode",
+   "fieldtype": "Check",
+   "label": "Allow Training Mode"
+  },
+  {
+   "default": "0",
+   "fieldname": "allow_manual_settings_override",
+   "fieldtype": "Check",
+   "label": "Allow Manual Settings Override"
+  },
+  {
+   "fieldname": "app_min_version",
+   "fieldtype": "Data",
+   "label": "App Min Version"
+  },
+  {
+   "fieldname": "last_seen_at",
+   "fieldtype": "Datetime",
+   "label": "Last Seen At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_sync_at",
+   "fieldtype": "Datetime",
+   "label": "Last Sync At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_printers",
+   "fieldtype": "Section Break",
+   "label": "Printers"
+  },
+  {
+   "fieldname": "printers",
+   "fieldtype": "Table",
+   "label": "Printers",
+   "options": "KoPOS Device Printer"
+  },
+  {
+   "fieldname": "section_break_users",
+   "fieldtype": "Section Break",
+   "label": "Allowed Users"
+  },
+  {
+   "fieldname": "device_users",
+   "fieldtype": "Table",
+   "label": "Device Users",
+   "options": "KoPOS Device User"
+  }
+ ],
+ "links": [],
+ "modified": "2026-03-12 00:00:00.000000",
+ "module": "KoPOS",
+ "name": "KoPOS Device",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "POS User"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

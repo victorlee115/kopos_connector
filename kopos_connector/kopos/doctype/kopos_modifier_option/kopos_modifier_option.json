@@ -1,0 +1,70 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 1,
+ "autoname": "KOPOS-OPT-.#####",
+ "creation": "2026-03-08 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "option_name",
+  "price_adjustment",
+  "column_break_3",
+  "is_default",
+  "is_active",
+  "display_order"
+ ],
+ "fields": [
+  {
+   "fieldname": "option_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Option Name",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "price_adjustment",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Price Adjustment",
+   "precision": "2"
+  },
+  {
+   "fieldname": "column_break_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_default",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Default"
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Active"
+  },
+  {
+   "default": "0",
+   "fieldname": "display_order",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Display Order"
+  }
+ ],
+ "istable": 1,
+ "modified": "2026-03-08 00:00:00.000000",
+ "module": "KoPOS",
+ "name": "KoPOS Modifier Option",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

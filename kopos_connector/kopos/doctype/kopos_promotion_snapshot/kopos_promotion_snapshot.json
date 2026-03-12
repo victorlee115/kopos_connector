@@ -1,0 +1,112 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 0,
+ "allow_rename": 0,
+ "autoname": "field:snapshot_version",
+ "creation": "2026-03-10 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "snapshot_version",
+  "status",
+  "column_break_status",
+  "pos_profile",
+  "promotion_count",
+  "published_at",
+  "effective_from",
+  "snapshot_hash",
+  "snapshot_payload"
+ ],
+ "fields": [
+  {
+   "fieldname": "snapshot_version",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Snapshot Version",
+   "read_only": 1,
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "Published",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Published\nSuperseded",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "pos_profile",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "POS Profile",
+   "options": "POS Profile",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "promotion_count",
+   "fieldtype": "Int",
+   "label": "Promotion Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "published_at",
+   "fieldtype": "Datetime",
+   "label": "Published At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "effective_from",
+   "fieldtype": "Datetime",
+   "label": "Effective From",
+   "read_only": 1
+  },
+  {
+   "fieldname": "snapshot_hash",
+   "fieldtype": "Data",
+   "label": "Snapshot Hash",
+   "read_only": 1
+  },
+  {
+   "fieldname": "snapshot_payload",
+   "fieldtype": "Long Text",
+   "label": "Snapshot Payload",
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-03-10 00:00:00.000000",
+ "module": "KoPOS",
+ "name": "KoPOS Promotion Snapshot",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "POS User"
+  }
+ ],
+ "sort_field": "published_at",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

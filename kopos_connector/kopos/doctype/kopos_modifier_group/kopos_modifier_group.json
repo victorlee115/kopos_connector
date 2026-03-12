@@ -1,0 +1,132 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "field:group_name",
+ "creation": "2026-03-08 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "group_name",
+  "selection_type",
+  "column_break_3",
+  "is_required",
+  "min_selections",
+  "max_selections",
+  "display_order",
+  "is_active",
+  "options_section",
+  "options"
+ ],
+ "fields": [
+  {
+   "fieldname": "group_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Group Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "single",
+   "fieldname": "selection_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Selection Type",
+   "options": "single\nmultiple",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_3",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "Cashier must select at least one option from this group",
+   "fieldname": "is_required",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Required"
+  },
+  {
+   "depends_on": "eval:doc.selection_type === 'multiple'",
+   "description": "Minimum number of selections allowed (for multiple selection type)",
+   "fieldname": "min_selections",
+   "fieldtype": "Int",
+   "label": "Min Selections"
+  },
+  {
+   "depends_on": "eval:doc.selection_type === 'multiple'",
+   "description": "Maximum number of selections allowed (for multiple selection type)",
+   "fieldname": "max_selections",
+   "fieldtype": "Int",
+   "label": "Max Selections"
+  },
+  {
+   "default": "0",
+   "description": "Order in which this group appears in the modifier sheet",
+   "fieldname": "display_order",
+   "fieldtype": "Int",
+   "label": "Display Order"
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Active"
+  },
+  {
+   "fieldname": "options_section",
+   "fieldtype": "Section Break",
+   "label": "Options"
+  },
+  {
+   "fieldname": "options",
+   "fieldtype": "Table",
+   "label": "Options",
+   "options": "KoPOS Modifier Option",
+   "reqd": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-03-08 00:00:00.000000",
+ "module": "KoPOS",
+ "name": "KoPOS Modifier Group",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Item Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "POS User"
+  }
+ ],
+ "sort_field": "display_order",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}

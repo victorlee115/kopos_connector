@@ -1,0 +1,289 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "field:promotion_name",
+ "creation": "2026-03-10 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "promotion_name",
+  "promotion_type",
+  "column_break_identity",
+  "is_active",
+  "offline_allowed",
+  "activation_mode",
+  "display_label",
+  "customer_message",
+  "scope_section",
+  "priority",
+  "stacking_policy",
+  "column_break_scope",
+  "outlet_scope_mode",
+  "eligible_scope_mode",
+  "repeat_mode",
+  "valid_from",
+  "valid_upto",
+  "discount_section",
+  "buy_qty",
+  "discount_qty",
+  "discount_target",
+  "column_break_discount",
+  "discount_type",
+  "discount_value",
+  "comparison_basis",
+  "discount_basis",
+  "modifier_policy",
+  "eligible_items_section",
+  "min_qty",
+  "min_amount",
+  "eligible_items",
+  "eligible_item_groups",
+  "eligible_pos_profiles"
+ ],
+ "fields": [
+  {
+   "fieldname": "promotion_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Promotion Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "promotion_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Promotion Type",
+   "options": "item_discount\norder_discount\nhappy_hour\nbuy_x_get_y\nnth_item_discount",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_identity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Active"
+  },
+  {
+   "default": "1",
+   "fieldname": "offline_allowed",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Offline Allowed"
+  },
+  {
+   "default": "automatic",
+   "fieldname": "activation_mode",
+   "fieldtype": "Select",
+   "label": "Activation Mode",
+   "options": "automatic\nmanual_selectable"
+  },
+  {
+   "fieldname": "display_label",
+   "fieldtype": "Data",
+   "label": "Display Label"
+  },
+  {
+   "fieldname": "customer_message",
+   "fieldtype": "Small Text",
+   "label": "Customer Message"
+  },
+  {
+   "fieldname": "scope_section",
+   "fieldtype": "Section Break",
+   "label": "Scope and Priority"
+  },
+  {
+   "default": "100",
+   "fieldname": "priority",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Priority"
+  },
+  {
+   "default": "exclusive",
+   "fieldname": "stacking_policy",
+   "fieldtype": "Select",
+   "label": "Stacking Policy",
+   "options": "exclusive\nstackable\nbest_price"
+  },
+  {
+   "fieldname": "column_break_scope",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "all_pos_profiles",
+   "fieldname": "outlet_scope_mode",
+   "fieldtype": "Select",
+   "label": "Outlet Scope",
+   "options": "all_pos_profiles\nselected_pos_profiles"
+  },
+  {
+   "default": "eligible_pool",
+   "fieldname": "eligible_scope_mode",
+   "fieldtype": "Select",
+   "label": "Eligible Scope Mode",
+   "options": "same_item\neligible_pool"
+  },
+  {
+   "default": "once",
+   "fieldname": "repeat_mode",
+   "fieldtype": "Select",
+   "label": "Repeat Mode",
+   "options": "once\nrepeat"
+  },
+  {
+   "fieldname": "valid_from",
+   "fieldtype": "Datetime",
+   "label": "Valid From"
+  },
+  {
+   "fieldname": "valid_upto",
+   "fieldtype": "Datetime",
+   "label": "Valid Up To"
+  },
+  {
+   "fieldname": "discount_section",
+   "fieldtype": "Section Break",
+   "label": "Discount Rule"
+  },
+  {
+   "default": "1",
+   "fieldname": "buy_qty",
+   "fieldtype": "Int",
+   "label": "Buy Qty"
+  },
+  {
+   "default": "1",
+   "fieldname": "discount_qty",
+   "fieldtype": "Int",
+   "label": "Discount Qty"
+  },
+  {
+   "default": "cheaper_eligible",
+   "fieldname": "discount_target",
+   "fieldtype": "Select",
+   "label": "Discount Target",
+   "options": "cheaper_eligible"
+  },
+  {
+   "fieldname": "column_break_discount",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "percentage",
+   "fieldname": "discount_type",
+   "fieldtype": "Select",
+   "label": "Discount Type",
+   "options": "percentage\nfixed_amount\nfixed_price\nfree_item"
+  },
+  {
+   "default": "0",
+   "fieldname": "discount_value",
+   "fieldtype": "Float",
+   "label": "Discount Value"
+  },
+  {
+   "default": "base_item_only",
+   "fieldname": "comparison_basis",
+   "fieldtype": "Select",
+   "label": "Comparison Basis",
+   "options": "base_item_only"
+  },
+  {
+   "default": "base_item_only",
+   "fieldname": "discount_basis",
+   "fieldtype": "Select",
+   "label": "Discount Basis",
+   "options": "base_item_only"
+  },
+  {
+   "default": "excluded_by_default",
+   "fieldname": "modifier_policy",
+   "fieldtype": "Select",
+   "label": "Modifier Policy",
+   "options": "excluded_by_default\ninclude_paid_modifiers"
+  },
+  {
+   "fieldname": "eligible_items_section",
+   "fieldtype": "Section Break",
+   "label": "Eligibility"
+  },
+  {
+   "default": "0",
+   "fieldname": "min_qty",
+   "fieldtype": "Int",
+   "label": "Min Qty"
+  },
+  {
+   "default": "0",
+   "fieldname": "min_amount",
+   "fieldtype": "Currency",
+   "label": "Min Amount"
+  },
+  {
+   "fieldname": "eligible_items",
+   "fieldtype": "Table",
+   "label": "Eligible Items",
+   "options": "KoPOS Promotion Item"
+  },
+  {
+   "fieldname": "eligible_item_groups",
+   "fieldtype": "Table",
+   "label": "Eligible Item Groups",
+   "options": "KoPOS Promotion Item Group"
+  },
+  {
+   "fieldname": "eligible_pos_profiles",
+   "fieldtype": "Table",
+   "label": "Eligible POS Profiles",
+   "options": "KoPOS Promotion POS Profile"
+  }
+ ],
+ "links": [],
+ "modified": "2026-03-10 00:00:00.000000",
+ "module": "KoPOS",
+ "name": "KoPOS Promotion",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Item Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "POS User"
+  }
+ ],
+ "sort_field": "priority",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}

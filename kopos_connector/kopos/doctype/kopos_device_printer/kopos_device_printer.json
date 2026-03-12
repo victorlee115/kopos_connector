@@ -1,0 +1,85 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 1,
+ "autoname": "KOPOS-DEVICE-PRINTER-.#####",
+ "creation": "2026-03-12 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "role",
+  "enabled",
+  "protocol",
+  "host",
+  "port",
+  "label_width_mm",
+  "label_height_mm",
+  "copies"
+ ],
+ "fields": [
+  {
+   "fieldname": "role",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Role",
+   "options": "receipt\nsticker",
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "default": "escpos_tcp",
+   "fieldname": "protocol",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Protocol",
+   "options": "escpos_tcp\ntspl_tcp",
+   "reqd": 1
+  },
+  {
+   "fieldname": "host",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Host"
+  },
+  {
+   "default": "9100",
+   "fieldname": "port",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Port"
+  },
+  {
+   "fieldname": "label_width_mm",
+   "fieldtype": "Int",
+   "label": "Label Width (mm)"
+  },
+  {
+   "fieldname": "label_height_mm",
+   "fieldtype": "Int",
+   "label": "Label Height (mm)"
+  },
+  {
+   "default": "1",
+   "fieldname": "copies",
+   "fieldtype": "Int",
+   "label": "Copies"
+  }
+ ],
+ "istable": 1,
+ "modified": "2026-03-12 00:00:00.000000",
+ "module": "KoPOS",
+ "name": "KoPOS Device Printer",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "idx",
+ "sort_order": "ASC",
+ "states": []
+}

@@ -1,0 +1,54 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 1,
+ "autoname": "KOPOS-ITEM-GRP-.#####",
+ "creation": "2026-03-08 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "modifier_group",
+  "column_break_2",
+  "display_order",
+  "always_prompt"
+ ],
+ "fields": [
+  {
+   "fieldname": "modifier_group",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Modifier Group",
+   "options": "KoPOS Modifier Group",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "display_order",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Display Order"
+  },
+  {
+   "default": "0",
+   "description": "Always show modifier sheet even when defaults are available",
+   "fieldname": "always_prompt",
+   "fieldtype": "Check",
+   "label": "Always Prompt"
+  }
+ ],
+ "istable": 1,
+ "modified": "2026-03-08 00:00:00.000000",
+ "module": "KoPOS",
+ "name": "KoPOS Item Modifier Group",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

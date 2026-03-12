@@ -1,0 +1,105 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 1,
+ "autoname": "KOPOS-DEVICE-USER-.#####",
+ "creation": "2026-03-12 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "user",
+  "display_name",
+  "active",
+  "default_cashier",
+  "pin",
+  "pin_hash",
+  "can_manager_override",
+  "can_refund",
+  "can_void",
+  "can_open_shift",
+  "can_close_shift"
+ ],
+ "fields": [
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "User",
+   "options": "User",
+   "reqd": 1
+  },
+  {
+   "fieldname": "display_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Display Name"
+  },
+  {
+   "default": "1",
+   "fieldname": "active",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Active"
+  },
+  {
+   "default": "0",
+   "fieldname": "default_cashier",
+   "fieldtype": "Check",
+   "label": "Default Cashier"
+  },
+  {
+   "fieldname": "pin",
+   "fieldtype": "Password",
+   "label": "PIN",
+   "description": "Enter a 4-digit PIN to rotate the stored hash"
+  },
+  {
+   "fieldname": "pin_hash",
+   "fieldtype": "Small Text",
+   "hidden": 1,
+   "label": "PIN Hash",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "can_manager_override",
+   "fieldtype": "Check",
+   "label": "Can Manager Override"
+  },
+  {
+   "default": "0",
+   "fieldname": "can_refund",
+   "fieldtype": "Check",
+   "label": "Can Refund"
+  },
+  {
+   "default": "0",
+   "fieldname": "can_void",
+   "fieldtype": "Check",
+   "label": "Can Void"
+  },
+  {
+   "default": "1",
+   "fieldname": "can_open_shift",
+   "fieldtype": "Check",
+   "label": "Can Open Shift"
+  },
+  {
+   "default": "1",
+   "fieldname": "can_close_shift",
+   "fieldtype": "Check",
+   "label": "Can Close Shift"
+  }
+ ],
+ "istable": 1,
+ "modified": "2026-03-12 00:00:00.000000",
+ "module": "KoPOS",
+ "name": "KoPOS Device User",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "idx",
+ "sort_order": "ASC",
+ "states": []
+}
