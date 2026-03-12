@@ -11,6 +11,7 @@ from kopos_connector.api.catalog import (
 )
 from kopos_connector.api.devices import mark_device_seen
 from kopos_connector.api.provisioning import (
+    create_device_provisioning_qr as create_device_provisioning_qr_payload,
     create_pos_provisioning as create_pos_provisioning_payload,
     get_device_config as get_device_config_payload,
     redeem_pos_provisioning as redeem_pos_provisioning_payload,
@@ -85,6 +86,24 @@ def get_promotion_snapshot(
             device_id=device_id,
         )
     )
+
+
+@frappe.whitelist(methods=["POST"])
+def create_device_provisioning_qr(**kwargs: Any) -> None:
+    """Create a one-click KoPOS provisioning QR using the current user's API credentials."""
+    try:
+        payload = _get_submit_payload(kwargs)
+        _write_response(
+            create_device_provisioning_qr_payload(
+                device=frappe.utils.cstr(payload.get("device")),
+                erpnext_url=frappe.utils.cstr(payload.get("erpnext_url")),
+                expires_in_seconds=payload.get("expires_in_seconds"),
+                user=frappe.utils.cstr(payload.get("user")),
+                rotate_credentials=payload.get("rotate_credentials"),
+            )
+        )
+    except frappe.ValidationError as exc:
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
 
 
 @frappe.whitelist(methods=["POST"])

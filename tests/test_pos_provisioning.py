@@ -17,6 +17,7 @@ def _install_fake_frappe_modules():
 
     frappe_module = ModuleType("frappe")
     utils_module = ModuleType("frappe.utils")
+    password_module = ModuleType("frappe.utils.password")
     twofactor_module = ModuleType("frappe.twofactor")
 
     class ValidationError(Exception):
@@ -68,9 +69,12 @@ def _install_fake_frappe_modules():
     setattr(frappe_module, "utils", utils_module)
 
     setattr(twofactor_module, "get_qr_svg_code", lambda value: b"svg-data")
+    setattr(password_module, "get_decrypted_password", lambda *args, **kwargs: None)
+    setattr(password_module, "set_encrypted_password", lambda *args, **kwargs: None)
 
     sys.modules["frappe"] = frappe_module
     sys.modules["frappe.utils"] = utils_module
+    sys.modules["frappe.utils.password"] = password_module
     sys.modules["frappe.twofactor"] = twofactor_module
 
 
@@ -95,6 +99,77 @@ class _FakeCache:
 
 
 class PosProvisioningTests(unittest.TestCase):
+    def test_resolve_provisioning_credentials_reuses_existing_user_credentials(self):
+        with (
+            patch.object(
+                provisioning.frappe,
+                "session",
+                SimpleNamespace(user="owner@example.com"),
+            ),
+            patch.object(
+                provisioning.frappe.db,
+                "get_value",
+                return_value="existing-api-key",
+            ),
+            patch.object(
+                provisioning,
+                "get_decrypted_password",
+                return_value="existing-api-secret",
+            ),
+        ):
+            result = provisioning.resolve_provisioning_credentials()
+
+        self.assertEqual(result["user"], "owner@example.com")
+        self.assertEqual(result["api_key"], "existing-api-key")
+        self.assertEqual(result["api_secret"], "existing-api-secret")
+
+    def test_resolve_provisioning_credentials_generates_missing_credentials(self):
+        generated = iter(["generated-api-key", "generated-api-secret"])
+        set_value_calls = []
+        encrypted_secret_calls = []
+
+        def fake_generate_hash(length=32):
+            return next(generated)
+
+        def fake_set_value(*args, **kwargs):
+            set_value_calls.append((args, kwargs))
+
+        def fake_set_encrypted_password(*args, **kwargs):
+            encrypted_secret_calls.append((args, kwargs))
+
+        with (
+            patch.object(
+                provisioning.frappe,
+                "session",
+                SimpleNamespace(user="owner@example.com"),
+            ),
+            patch.object(provisioning.frappe.db, "get_value", return_value=None),
+            patch.object(provisioning, "get_decrypted_password", return_value=None),
+            patch.object(
+                provisioning.frappe, "generate_hash", side_effect=fake_generate_hash
+            ),
+            patch.object(
+                provisioning.frappe.db, "set_value", side_effect=fake_set_value
+            ),
+            patch.object(
+                provisioning,
+                "set_encrypted_password",
+                side_effect=fake_set_encrypted_password,
+            ),
+        ):
+            result = provisioning.resolve_provisioning_credentials()
+
+        self.assertEqual(result["api_key"], "generated-api-key")
+        self.assertEqual(result["api_secret"], "generated-api-secret")
+        self.assertEqual(
+            set_value_calls[0][0][:4],
+            ("User", "owner@example.com", "api_key", "generated-api-key"),
+        )
+        self.assertEqual(
+            encrypted_secret_calls[0][0],
+            ("User", "owner@example.com", "generated-api-secret", "api_secret"),
+        )
+
     def test_create_pos_provisioning_returns_one_time_link(self):
         cache = _FakeCache()
         fake_device = SimpleNamespace(
@@ -212,6 +287,43 @@ class PosProvisioningTests(unittest.TestCase):
         self.assertEqual(result["device_id"], "tab-a-001")
         self.assertEqual(result["config_version"], 7)
         self.assertEqual(result["setup"]["pos_profile"], "Counter 1")
+
+    def test_create_device_provisioning_qr_uses_auto_generated_credentials(self):
+        with (
+            patch.object(
+                provisioning,
+                "resolve_provisioning_credentials",
+                return_value={
+                    "user": "owner@example.com",
+                    "api_key": "generated-api-key",
+                    "api_secret": "generated-api-secret",
+                },
+            ),
+            patch.object(
+                provisioning,
+                "create_pos_provisioning",
+                return_value={
+                    "status": "ok",
+                    "provisioning_link": "kopos://provision?token=abc",
+                    "setup_preview": {"device": "KOPOS-DEVICE-001"},
+                },
+            ) as create_mock,
+        ):
+            result = provisioning.create_device_provisioning_qr(
+                device="KOPOS-DEVICE-001",
+                erpnext_url="https://erp.example.com",
+            )
+
+        create_mock.assert_called_once_with(
+            device="KOPOS-DEVICE-001",
+            erpnext_url="https://erp.example.com",
+            api_key="generated-api-key",
+            api_secret="generated-api-secret",
+            expires_in_seconds=None,
+        )
+        self.assertEqual(
+            result["setup_preview"]["provisioning_user"], "owner@example.com"
+        )
 
 
 if __name__ == "__main__":

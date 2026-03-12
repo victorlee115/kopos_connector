@@ -41,13 +41,11 @@ class KoPOSProvisioningPage {
 							<div class="kopos-field" data-field="currency"></div>
 							<div class="kopos-field" data-field="expires_in_seconds"></div>
 						</div>
-						<div class="kopos-field" data-field="api_key"></div>
-						<div class="kopos-field" data-field="api_secret"></div>
 						<div class="kopos-provisioning-actions">
 							<button class="btn btn-primary kopos-generate">${__("Generate QR")}</button>
 							<button class="btn btn-default kopos-copy-link" style="display:none">${__("Copy Link")}</button>
 						</div>
-						<p class="text-muted small kopos-status">${__("Enter the ERP token credentials used by this POS, then generate a one-time QR.")}</p>
+						<p class="text-muted small kopos-status">${__("Generate a one-time QR using the current ERP user's API credentials.")}</p>
 					</div>
 					<div class="kopos-provisioning-card kopos-provisioning-preview">
 						<div class="kopos-preview-empty">
@@ -108,8 +106,6 @@ class KoPOSProvisioningPage {
 			{ fieldname: "warehouse", label: __("Warehouse"), fieldtype: "Link", options: "Warehouse" },
 			{ fieldname: "currency", label: __("Currency"), fieldtype: "Link", options: "Currency" },
 			{ fieldname: "expires_in_seconds", label: __("Expires In (seconds)"), fieldtype: "Int", default: 900 },
-			{ fieldname: "api_key", label: __("API Key"), fieldtype: "Data", reqd: 1 },
-			{ fieldname: "api_secret", label: __("API Secret"), fieldtype: "Password", reqd: 1 },
 		];
 
 		defs.forEach((df) => {
@@ -178,8 +174,8 @@ class KoPOSProvisioningPage {
 
 	async generate() {
 		const values = this.get_values();
-		if (!values.device || !values.api_key || !values.api_secret) {
-			frappe.msgprint({ title: __("Missing fields"), message: __("KoPOS Device, API Key, and API Secret are required."), indicator: "red" });
+		if (!values.device) {
+			frappe.msgprint({ title: __("Missing fields"), message: __("KoPOS Device is required."), indicator: "red" });
 			return;
 		}
 
@@ -189,7 +185,7 @@ class KoPOSProvisioningPage {
 
 		try {
 			const response = await frappe.call({
-				method: "kopos.api.create_pos_provisioning",
+				method: "kopos.api.create_device_provisioning_qr",
 				args: values,
 			});
 			const payload = response.message || response;
@@ -217,6 +213,7 @@ class KoPOSProvisioningPage {
 		this.page.body.find(".kopos-meta").html(`
 			<div><strong>${__("Device")}:</strong> ${this.escape_html(preview.device || "-")}</div>
 			<div><strong>${__("POS Profile")}:</strong> ${this.escape_html(preview.pos_profile || "-")}</div>
+			<div><strong>${__("Provisioning User")}:</strong> ${this.escape_html(preview.provisioning_user || frappe.session.user || "-")}</div>
 			<div><strong>${__("Company")}:</strong> ${this.escape_html(preview.company || "-")}</div>
 			<div><strong>${__("Warehouse")}:</strong> ${this.escape_html(preview.warehouse || "-")}</div>
 			<div><strong>${__("Expires At")}:</strong> ${frappe.datetime.str_to_user(payload.expires_at)}</div>

@@ -343,13 +343,79 @@ def ensure_kopos_client_scripts() -> None:
 def ensure_kopos_device_provisioning_script() -> None:
     script_name = "KoPOS Device Provisioning Shortcut"
     script_body = """
+const koposEscapeHtml = (value) => String(value || "")
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/\"/g, "&quot;")
+  .replace(/'/g, "&#39;");
+
+async function koposShowProvisioningQr(payload) {
+  const preview = payload.setup_preview || {};
+  const message = `
+    <div style="text-align:center;padding:8px 0;">
+      <img
+        src="data:image/svg+xml;base64,${payload.provisioning_qr_svg}"
+        alt="${koposEscapeHtml(__("KoPOS provisioning QR"))}"
+        style="width:280px;height:280px;max-width:100%;border-radius:16px;border:1px solid var(--border-color);background:#fff;padding:12px;"
+      />
+      <div style="margin-top:16px;color:var(--text-muted);line-height:1.7;text-align:left;display:inline-block;">
+        <div><strong>${koposEscapeHtml(__("Device"))}:</strong> ${koposEscapeHtml(preview.device || "-")}</div>
+        <div><strong>${koposEscapeHtml(__("POS Profile"))}:</strong> ${koposEscapeHtml(preview.pos_profile || "-")}</div>
+        <div><strong>${koposEscapeHtml(__("Provisioning User"))}:</strong> ${koposEscapeHtml(preview.provisioning_user || frappe.session.user || "-")}</div>
+        <div><strong>${koposEscapeHtml(__("Expires At"))}:</strong> ${koposEscapeHtml(frappe.datetime.str_to_user(payload.expires_at))}</div>
+      </div>
+      <div style="margin-top:12px;word-break:break-all;font-size:12px;color:var(--text-muted);"><code>${koposEscapeHtml(payload.provisioning_link)}</code></div>
+    </div>
+  `;
+
+  frappe.msgprint({
+    title: __("KoPOS Setup QR"),
+    message,
+    wide: true,
+    primary_action: {
+      label: __("Copy Link"),
+      action: async () => {
+        try {
+          await navigator.clipboard.writeText(payload.provisioning_link);
+          frappe.show_alert({ message: __("Provisioning link copied"), indicator: "green" });
+        } catch (error) {
+          frappe.msgprint(payload.provisioning_link);
+        }
+      },
+    },
+  });
+}
+
 frappe.ui.form.on("KoPOS Device", {
   refresh(frm) {
     if (frm.is_new()) {
       return;
     }
 
-    frm.add_custom_button(__("Generate KoPOS Setup QR"), () => {
+    frm.add_custom_button(__("Generate KoPOS Setup QR"), async () => {
+      frappe.dom.freeze(__("Generating KoPOS setup QR..."));
+      try {
+        const response = await frappe.call({
+          method: "kopos.api.create_device_provisioning_qr",
+          args: {
+            device: frm.doc.name,
+            erpnext_url: window.location.origin,
+          },
+        });
+        await koposShowProvisioningQr(response.message || response);
+      } catch (error) {
+        frappe.msgprint({
+          title: __("Provisioning failed"),
+          message: error?.message || __("Failed to generate provisioning QR"),
+          indicator: "red",
+        });
+      } finally {
+        frappe.dom.unfreeze();
+      }
+    }, __("KoPOS"));
+
+    frm.add_custom_button(__("Advanced Provisioning"), () => {
       frappe.route_options = {
         device: frm.doc.name,
       };

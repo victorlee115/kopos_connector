@@ -8,6 +8,7 @@ from urllib.parse import quote
 import frappe
 from frappe import _
 from frappe.twofactor import get_qr_svg_code
+from frappe.utils.password import get_decrypted_password, set_encrypted_password
 from frappe.utils import cint, cstr, now_datetime
 
 from kopos_connector.api.devices import get_device_doc, serialize_device_config
@@ -17,6 +18,63 @@ PROVISIONING_CACHE_PREFIX = "kopos:provisioning:"
 DEFAULT_TTL_SECONDS = 15 * 60
 MIN_TTL_SECONDS = 60
 MAX_TTL_SECONDS = 24 * 60 * 60
+
+
+def resolve_provisioning_credentials(
+    user: str | None = None, rotate: bool | int | str = False
+) -> dict[str, str]:
+    resolved_user = (
+        cstr(user).strip() or cstr(getattr(frappe.session, "user", None)).strip()
+    )
+    if not resolved_user or resolved_user == "Guest":
+        frappe.throw(_("Authentication required to generate POS provisioning"))
+
+    should_rotate = bool(cint(rotate))
+    api_key_value = cstr(frappe.db.get_value("User", resolved_user, "api_key")).strip()
+    api_secret_value = cstr(
+        get_decrypted_password(
+            "User",
+            resolved_user,
+            "api_secret",
+            raise_exception=False,
+        )
+        or ""
+    ).strip()
+
+    if should_rotate or not api_key_value:
+        api_key_value = frappe.generate_hash(length=15)
+        frappe.db.set_value(
+            "User", resolved_user, "api_key", api_key_value, update_modified=False
+        )
+
+    if should_rotate or not api_secret_value:
+        api_secret_value = frappe.generate_hash(length=32)
+        set_encrypted_password("User", resolved_user, api_secret_value, "api_secret")
+
+    return {
+        "user": resolved_user,
+        "api_key": api_key_value,
+        "api_secret": api_secret_value,
+    }
+
+
+def create_device_provisioning_qr(
+    device: str | None = None,
+    erpnext_url: str | None = None,
+    expires_in_seconds: int | str | None = None,
+    user: str | None = None,
+    rotate_credentials: bool | int | str = False,
+) -> dict[str, Any]:
+    credentials = resolve_provisioning_credentials(user=user, rotate=rotate_credentials)
+    payload = create_pos_provisioning(
+        device=device,
+        erpnext_url=erpnext_url,
+        api_key=credentials["api_key"],
+        api_secret=credentials["api_secret"],
+        expires_in_seconds=expires_in_seconds,
+    )
+    payload.setdefault("setup_preview", {})["provisioning_user"] = credentials["user"]
+    return payload
 
 
 def create_pos_provisioning(
