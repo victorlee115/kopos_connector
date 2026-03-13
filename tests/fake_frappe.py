@@ -79,9 +79,15 @@ def install_fake_frappe_modules() -> None:
     setattr(utils_module, "cint", cint)
     setattr(utils_module, "flt", flt)
     setattr(utils_module, "add_to_date", add_to_date)
-    setattr(utils_module, "get_datetime", lambda value=None: value)
-    setattr(utils_module, "now_datetime", lambda: datetime(2026, 3, 11, 12, 0, 0))
-    setattr(utils_module, "nowdate", lambda: "2026-03-11")
+    setattr(
+        utils_module,
+        "get_datetime",
+        lambda value=None: datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if isinstance(value, str) and value
+        else (value or datetime(2026, 3, 13, 10, 5, 0)),
+    )
+    setattr(utils_module, "now_datetime", lambda: datetime(2026, 3, 13, 10, 5, 0))
+    setattr(utils_module, "nowdate", lambda: "2026-03-13")
     setattr(utils_module, "get_url", lambda: "https://erp.example.com")
 
     setattr(frappe_module, "_", lambda value: value)
@@ -106,6 +112,7 @@ def install_fake_frappe_modules() -> None:
         SimpleNamespace(
             get_value=lambda *args, **kwargs: None,
             exists=lambda *args, **kwargs: False,
+            has_column=lambda *args, **kwargs: False,
             set_value=lambda *args, **kwargs: None,
             sql=lambda *args, **kwargs: [],
             commit=lambda: None,

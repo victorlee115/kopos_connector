@@ -343,6 +343,109 @@ def process_refund(**kwargs: Any) -> None:
         )
 
 
+@frappe.whitelist(methods=["POST"])
+def request_shift_manager_approval(**kwargs: Any) -> None:
+    """
+    Request a manager approval token for shift operations.
+
+    This endpoint requires manager credentials or a server-verified manager session.
+    It returns a short-lived signed token that can be used to authorize
+    privileged shift actions (open_shift, close_shift, reopen_shift).
+
+    Required parameters:
+        - device_id: The KoPOS device ID
+        - staff_id: The staff user ID performing the action
+        - action: The action to authorize (open_shift, close_shift, reopen_shift)
+
+    Optional parameters:
+        - shift_id: The shift ID (required for close_shift and reopen_shift)
+        - ttl_seconds: Token validity duration (default: 300 seconds / 5 minutes)
+
+    Returns:
+        - token: The approval token string
+        - token_id: Unique token identifier
+        - issued_at: Unix timestamp when token was issued
+        - expires_at: Unix timestamp when token expires
+    """
+    from kopos_connector.utils.manager_approval import (
+        generate_manager_approval_token,
+    )
+
+    try:
+        payload = _get_submit_payload(kwargs)
+
+        # Require authenticated session (not guest)
+        session_user = frappe.utils.cstr(getattr(frappe.session, "user", None)).strip()
+        if not session_user or session_user == "Guest":
+            frappe.throw(
+                _("Authentication required for manager approval"),
+                frappe.ValidationError,
+            )
+
+        # Verify the requesting user has manager privileges
+        # This can be via System Manager role or can_manager_override on device
+        device_id = frappe.utils.cstr(payload.get("device_id"))
+        if device_id:
+            device_doc = require_device_context(device_id=device_id)
+
+            # Check if user is System Manager
+            roles = (
+                frappe.get_roles(session_user) if hasattr(frappe, "get_roles") else []
+            )
+            is_system_manager = "System Manager" in roles
+
+            # Check if user has can_manager_override on this device
+            is_device_manager = False
+            if hasattr(device_doc, "device_users"):
+                for user_row in device_doc.device_users or []:
+                    if frappe.utils.cstr(getattr(user_row, "user", "")) == session_user:
+                        if frappe.utils.cint(
+                            getattr(user_row, "can_manager_override", 0)
+                        ):
+                            is_device_manager = True
+                            break
+
+            if not is_system_manager and not is_device_manager:
+                frappe.throw(
+                    _("User {0} is not authorized to approve shift operations").format(
+                        session_user
+                    ),
+                    frappe.ValidationError,
+                )
+        else:
+            # Without device_id, require System Manager role
+            require_system_manager()
+
+        result = generate_manager_approval_token(
+            device_id=device_id,
+            staff_id=frappe.utils.cstr(payload.get("staff_id")),
+            action=frappe.utils.cstr(payload.get("action")),
+            manager_id=session_user,
+            shift_id=frappe.utils.cstr(payload.get("shift_id")) or None,
+            ttl_seconds=payload.get("ttl_seconds"),
+        )
+
+        _write_response(
+            {
+                "status": "ok",
+                **result,
+            }
+        )
+    except frappe.ValidationError as exc:
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(), "KoPOS request_shift_manager_approval failed"
+        )
+        _write_response(
+            {
+                "status": "error",
+                "message": "Unexpected server error while requesting manager approval",
+            },
+            http_status_code=500,
+        )
+
+
 __all__ = [
     "close_shift",
     "create_device_provisioning_qr",
@@ -359,6 +462,7 @@ __all__ = [
     "process_refund",
     "publish_promotion_snapshot",
     "redeem_pos_provisioning",
+    "request_shift_manager_approval",
     "review_promotion_reconciliation",
     "submit_order",
 ]
