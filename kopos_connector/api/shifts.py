@@ -317,6 +317,23 @@ def _validate_timestamp_skew(
     return parsed
 
 
+def _coerce_to_site_local_naive(value: datetime) -> datetime:
+    """Convert a datetime to site-local naive format for Frappe DATETIME fields."""
+    if not isinstance(value, datetime) or not value.tzinfo:
+        return value
+
+    timezone_name = cstr(
+        getattr(frappe.db, "get_single_value", lambda *_args, **_kwargs: None)(
+            "System Settings", "time_zone"
+        )
+        or ""
+    ).strip()
+    if not timezone_name:
+        return value.replace(tzinfo=None)
+
+    return value.astimezone(ZoneInfo(timezone_name)).replace(tzinfo=None)
+
+
 # -----------------------------------------------------------------------------
 # Phase 7 - Audit Logging
 # -----------------------------------------------------------------------------
@@ -810,7 +827,9 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
             frappe.ValidationError,
         )
 
-    period_start = _validate_timestamp_skew(opened_at, "opened_at")
+    period_start = _coerce_to_site_local_naive(
+        _validate_timestamp_skew(opened_at, "opened_at")
+    )
     posting_date = period_start.date() if hasattr(period_start, "date") else nowdate()
 
     opening_amount = flt(opening_float_sen) / 100
@@ -1002,7 +1021,9 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "message": _("Shift already closed"),
         }
 
-    period_end = _validate_timestamp_skew(closed_at, "closed_at")
+    period_end = _coerce_to_site_local_naive(
+        _validate_timestamp_skew(closed_at, "closed_at")
+    )
     posting_date = period_end.date() if hasattr(period_end, "date") else nowdate()
 
     counted_amount = flt(counted_cash_sen) / 100

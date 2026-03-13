@@ -73,6 +73,14 @@ class ShiftSyncTests(unittest.TestCase):
 
         self.assertEqual(parsed.tzinfo, timezone.utc)
 
+    def test_coerce_to_site_local_naive_converts_utc_for_storage(self):
+        converted = shifts._coerce_to_site_local_naive(
+            datetime(2026, 3, 13, 12, 15, 15, 88000, tzinfo=timezone.utc)
+        )
+
+        self.assertEqual(converted.tzinfo, None)
+        self.assertEqual(converted, datetime(2026, 3, 13, 20, 15, 15, 88000))
+
     def test_create_kopos_custom_fields_includes_shift_tracking_fields(self):
         captured = {}
 
