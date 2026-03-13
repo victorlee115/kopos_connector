@@ -7,6 +7,8 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
+from zoneinfo import ZoneInfo
+
 import frappe
 from frappe import _
 from frappe.utils import cint, cstr, flt, now_datetime, nowdate
@@ -278,15 +280,33 @@ def _validate_timestamp_skew(
     else:
         parsed = server_now
 
-    # Handle timezone-aware vs naive datetime comparison
-    # Make both naive for comparison if needed
-    parsed_naive = parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
-    server_naive = server_now.replace(tzinfo=None) if server_now.tzinfo else server_now
+    parsed_for_compare = parsed
+    server_for_compare = server_now
 
-    skew = abs((parsed_naive - server_naive).total_seconds())
+    if parsed.tzinfo and not server_now.tzinfo:
+        timezone_name = cstr(
+            getattr(frappe.db, "get_single_value", lambda *_args, **_kwargs: None)(
+                "System Settings", "time_zone"
+            )
+            or ""
+        ).strip()
+        site_tz = ZoneInfo(timezone_name) if timezone_name else None
+        if site_tz:
+            parsed_for_compare = parsed.astimezone(site_tz)
+            server_for_compare = server_now.replace(tzinfo=site_tz)
+        else:
+            parsed_for_compare = parsed.replace(tzinfo=None)
+    elif server_now.tzinfo and not parsed.tzinfo:
+        parsed_for_compare = parsed.replace(tzinfo=server_now.tzinfo)
+
+    skew = abs((parsed_for_compare - server_for_compare).total_seconds())
 
     if skew > max_skew_seconds:
-        direction = "in the future" if parsed_naive > server_naive else "in the past"
+        direction = (
+            "in the future"
+            if parsed_for_compare > server_for_compare
+            else "in the past"
+        )
         frappe.throw(
             _(
                 "{0} timestamp is too far {1} (skew: {2} seconds, max allowed: {3})"

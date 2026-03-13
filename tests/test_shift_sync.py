@@ -1,6 +1,7 @@
 import importlib
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -61,6 +62,17 @@ class MutableDoc(SimpleNamespace):
 
 
 class ShiftSyncTests(unittest.TestCase):
+    def test_timestamp_skew_accepts_equivalent_utc_and_local_instants(self):
+        server_now = datetime(2026, 3, 13, 18, 0, 0)
+
+        with patch.object(shifts, "now_datetime", return_value=server_now):
+            parsed = shifts._validate_timestamp_skew(
+                datetime(2026, 3, 13, 10, 0, 0, tzinfo=timezone.utc),
+                "opened_at",
+            )
+
+        self.assertEqual(parsed.tzinfo, timezone.utc)
+
     def test_create_kopos_custom_fields_includes_shift_tracking_fields(self):
         captured = {}
 
