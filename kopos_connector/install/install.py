@@ -393,6 +393,7 @@ def create_kopos_custom_fields():
                 "fieldtype": "Check",
                 "insert_after": "custom_kopos_modifier_total",
                 "read_only": 1,
+                "search_index": 1,
             },
             {
                 "fieldname": "custom_kopos_modifiers_table",

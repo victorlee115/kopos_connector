@@ -4,12 +4,32 @@ KoPOS Modifier API
 Handles validation, sanitization, and processing of modifier data.
 """
 
+from __future__ import annotations
+
 import json
+import re
+import unicodedata
 import frappe
 from frappe import _
 from frappe.utils import cstr, flt, cint, getdate, add_days, today
 from typing import TypedDict, Any
 from html import escape
+
+
+SNAPSHOT_VERSION = "1.0"
+MAX_MODIFIERS_PER_ITEM = 50
+MAX_MODIFIER_ID_LENGTH = 140
+MAX_MODIFIER_NAME_LENGTH = 255
+MAX_MODIFIER_PRICE = 999999
+MIN_MODIFIER_PRICE = -999999
+
+DANGEROUS_PATTERNS = re.compile(
+    r"(javascript|vbscript|data|blob):|"
+    r"expression\s*\(|"
+    r"@import|"
+    r"behavior\s*:",
+    re.IGNORECASE,
+)
 
 
 class ModifierDict(TypedDict):
@@ -27,6 +47,7 @@ class ModifierDict(TypedDict):
 class ModifierSnapshot(TypedDict):
     """Type definition for modifier snapshot."""
 
+    version: str
     modifiers: list[ModifierDict]
     total: float
     count: int
@@ -37,19 +58,26 @@ MODIFIER_SCHEMA = {
     "properties": {
         "modifiers": {
             "type": "array",
-            "maxItems": 50,
+            "maxItems": MAX_MODIFIERS_PER_ITEM,
             "items": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "maxLength": 140},
-                    "group_id": {"type": "string", "maxLength": 140},
-                    "name": {"type": "string", "maxLength": 255},
-                    "group_name": {"type": "string", "maxLength": 255},
-                    "price": {"type": "number", "minimum": -999999, "maximum": 999999},
+                    "id": {"type": "string", "maxLength": MAX_MODIFIER_ID_LENGTH},
+                    "group_id": {"type": "string", "maxLength": MAX_MODIFIER_ID_LENGTH},
+                    "name": {"type": "string", "maxLength": MAX_MODIFIER_NAME_LENGTH},
+                    "group_name": {
+                        "type": "string",
+                        "maxLength": MAX_MODIFIER_NAME_LENGTH,
+                    },
+                    "price": {
+                        "type": "number",
+                        "minimum": MIN_MODIFIER_PRICE,
+                        "maximum": MAX_MODIFIER_PRICE,
+                    },
                     "base_price": {
                         "type": "number",
-                        "minimum": -999999,
-                        "maximum": 999999,
+                        "minimum": MIN_MODIFIER_PRICE,
+                        "maximum": MAX_MODIFIER_PRICE,
                     },
                     "is_default": {"type": "boolean"},
                 },
@@ -70,12 +98,20 @@ def validate_modifier_data(raw_modifiers: list) -> list[dict]:
         raw_modifiers: Raw modifier data from POS client
 
     Returns:
-        Validated modifier list
+        Validated and normalized modifier list
 
     Raises:
         frappe.ValidationError: If validation fails
     """
-    import jsonschema
+    try:
+        import jsonschema
+    except ImportError:
+        frappe.throw(
+            _(
+                "Modifier validation requires jsonschema package. Install via: pip install jsonschema"
+            ),
+            frappe.ValidationError,
+        )
 
     try:
         jsonschema.validate({"modifiers": raw_modifiers}, MODIFIER_SCHEMA)
@@ -84,13 +120,27 @@ def validate_modifier_data(raw_modifiers: list) -> list[dict]:
             _("Invalid modifier data: {0}").format(e.message), frappe.ValidationError
         )
 
-    return raw_modifiers
+    normalized = []
+    for mod in raw_modifiers:
+        if isinstance(mod, dict):
+            normalized.append(
+                {
+                    "id": cstr(mod.get("id", "")),
+                    "group_id": cstr(mod.get("group_id", "")),
+                    "name": mod.get("name", ""),
+                    "group_name": mod.get("group_name", ""),
+                    "price": flt(mod.get("price")),
+                    "base_price": flt(mod.get("base_price")),
+                    "is_default": bool(mod.get("is_default")),
+                }
+            )
+    return normalized
 
 
 def sanitize_modifier_text(value: str) -> str:
     """
     Sanitize text for safe storage and display.
-    Prevents XSS attacks by escaping HTML entities.
+    Prevents XSS attacks by escaping HTML entities and removing dangerous patterns.
 
     Args:
         value: Raw text input
@@ -101,8 +151,50 @@ def sanitize_modifier_text(value: str) -> str:
     if not value:
         return ""
 
-    sanitized = escape(str(value))
-    return sanitized[:255]
+    text = str(value)
+
+    normalized = unicodedata.normalize("NFKC", text)
+
+    sanitized = "".join(c for c in normalized if ord(c) >= 32 or c in "\n\r\t")
+
+    if DANGEROUS_PATTERNS.search(sanitized):
+        sanitized = DANGEROUS_PATTERNS.sub("[removed]", sanitized)
+
+    sanitized = escape(sanitized, quote=True)
+
+    if len(sanitized) > MAX_MODIFIER_NAME_LENGTH:
+        last_amp = sanitized.rfind("&", 0, MAX_MODIFIER_NAME_LENGTH)
+        if last_amp > MAX_MODIFIER_NAME_LENGTH - 6:
+            sanitized = sanitized[:last_amp]
+        else:
+            sanitized = sanitized[:MAX_MODIFIER_NAME_LENGTH]
+
+    return sanitized
+
+
+def validate_modifier_totals(snapshot: dict) -> dict:
+    """
+    Validate and correct modifier totals.
+
+    Args:
+        snapshot: Modifier snapshot dictionary
+
+    Returns:
+        Snapshot with validated/corrected totals
+    """
+    modifiers = snapshot.get("modifiers", [])
+    calculated_total = sum(flt(m.get("price", 0)) for m in modifiers)
+    reported_total = flt(snapshot.get("total", 0))
+
+    if abs(calculated_total - reported_total) > 0.01:
+        frappe.log_error(
+            title="KoPOS Modifier Total Mismatch",
+            message=f"Calculated: {calculated_total}, Reported: {reported_total}, "
+            f"Modifier count: {len(modifiers)}",
+        )
+        snapshot["total"] = calculated_total
+
+    return snapshot
 
 
 def build_modifiers_snapshot(raw_item: dict) -> ModifierSnapshot:
@@ -122,38 +214,66 @@ def build_modifiers_snapshot(raw_item: dict) -> ModifierSnapshot:
         frappe.ValidationError: If validation fails
     """
     if not isinstance(raw_item, dict):
-        raise TypeError(f"Expected dict, got {type(raw_item).__name__}")
-
-    raw_modifiers = raw_item.get("modifiers") or []
-
-    if not isinstance(raw_modifiers, list):
-        frappe.log_error(
-            title="KoPOS Modifier Warning",
-            message=f"Expected list for modifiers, got {type(raw_modifiers).__name__}",
+        raise TypeError(
+            f"build_modifiers_snapshot expected dict, got {type(raw_item).__name__}"
         )
+
+    raw_modifiers = raw_item.get("modifiers")
+
+    if raw_modifiers is None:
         raw_modifiers = []
+    elif not isinstance(raw_modifiers, list):
+        frappe.log_error(
+            title="KoPOS Modifier Type Error",
+            message=json.dumps(
+                {
+                    "error": "modifiers field has invalid type",
+                    "expected": "list",
+                    "actual": type(raw_modifiers).__name__,
+                    "raw_item_keys": list(raw_item.keys())
+                    if isinstance(raw_item, dict)
+                    else None,
+                }
+            ),
+        )
+        frappe.throw(
+            _("Invalid modifiers data type: expected list, got {0}").format(
+                type(raw_modifiers).__name__
+            ),
+            frappe.ValidationError,
+        )
 
     validated = validate_modifier_data(raw_modifiers)
 
-    sanitized_modifiers = [
-        {
-            "id": cstr(mod.get("id", "")),
-            "group_id": cstr(mod.get("group_id", "")),
-            "name": sanitize_modifier_text(mod.get("name", "")),
-            "group_name": sanitize_modifier_text(mod.get("group_name", "")),
-            "price": flt(mod.get("price"), precision=2),
-            "base_price": flt(mod.get("base_price"), precision=2),
-            "is_default": bool(mod.get("is_default")),
-        }
-        for mod in validated
-        if isinstance(mod, dict)
-    ]
+    sanitized_modifiers = []
+    for idx, mod in enumerate(validated):
+        if not isinstance(mod, dict):
+            frappe.log_error(
+                title="KoPOS Modifier Warning",
+                message=f"Skipping non-dict modifier at index {idx}: {type(mod).__name__}",
+            )
+            continue
 
-    return {
+        sanitized_modifiers.append(
+            {
+                "id": cstr(mod.get("id", "")),
+                "group_id": cstr(mod.get("group_id", "")),
+                "name": sanitize_modifier_text(mod.get("name", "")),
+                "group_name": sanitize_modifier_text(mod.get("group_name", "")),
+                "price": flt(mod.get("price"), 2),
+                "base_price": flt(mod.get("base_price"), 2),
+                "is_default": bool(mod.get("is_default")),
+            }
+        )
+
+    snapshot: ModifierSnapshot = {
+        "version": SNAPSHOT_VERSION,
         "modifiers": sanitized_modifiers,
-        "total": flt(raw_item.get("modifier_total"), precision=2),
+        "total": flt(raw_item.get("modifier_total"), 2),
         "count": len(sanitized_modifiers),
     }
+
+    return validate_modifier_totals(snapshot)
 
 
 def serialize_json_compact(payload: Any) -> str:
@@ -191,9 +311,47 @@ def populate_modifiers_on_item(invoice_item: Any, raw_item: dict) -> None:
     _populate_modifiers_table(invoice_item, snapshot)
 
 
+def _batch_resolve_links(modifiers: list[dict]) -> dict[str, set[str]]:
+    """
+    Resolve all links in 2 queries instead of 2N queries.
+
+    Args:
+        modifiers: List of modifier dictionaries
+
+    Returns:
+        Dictionary with 'groups' and 'options' sets of existing names
+    """
+    group_ids = {m.get("group_id") for m in modifiers if m.get("group_id")}
+    option_ids = {m.get("id") for m in modifiers if m.get("id")}
+
+    existing_groups = set()
+    existing_options = set()
+
+    if group_ids:
+        existing_groups = set(
+            frappe.db.get_all(
+                "KoPOS Modifier Group",
+                filters={"name": ("in", list(group_ids))},
+                pluck="name",
+            )
+        )
+
+    if option_ids:
+        existing_options = set(
+            frappe.db.get_all(
+                "KoPOS Modifier Option",
+                filters={"name": ("in", list(option_ids))},
+                pluck="name",
+            )
+        )
+
+    return {"groups": existing_groups, "options": existing_options}
+
+
 def _populate_modifiers_table(invoice_item: Any, snapshot: dict) -> None:
     """
     Populate child table with modifier data.
+    Uses batch link resolution for performance.
 
     Args:
         invoice_item: POS Invoice Item document
@@ -201,10 +359,20 @@ def _populate_modifiers_table(invoice_item: Any, snapshot: dict) -> None:
     """
     modifiers = snapshot.get("modifiers", [])
 
+    if not modifiers:
+        return
+
     try:
+        existing_links = _batch_resolve_links(modifiers)
+
         for idx, mod in enumerate(modifiers):
-            modifier_group = _resolve_link(mod.get("group_id"), "KoPOS Modifier Group")
-            modifier_option = _resolve_link(mod.get("id"), "KoPOS Modifier Option")
+            group_id = mod.get("group_id", "")
+            option_id = mod.get("id", "")
+
+            modifier_group = group_id if group_id in existing_links["groups"] else None
+            modifier_option = (
+                option_id if option_id in existing_links["options"] else None
+            )
 
             invoice_item.append(
                 "custom_kopos_modifiers_table",
@@ -219,11 +387,19 @@ def _populate_modifiers_table(invoice_item: Any, snapshot: dict) -> None:
                     "display_order": idx,
                 },
             )
+    except frappe.ValidationError:
+        raise
     except Exception as e:
         frappe.log_error(
             title="KoPOS Modifier Population Error",
-            message=f"Failed to populate modifiers for {invoice_item.name}: {str(e)}\n\n"
-            f"Snapshot: {json.dumps(snapshot, indent=2)}",
+            message=json.dumps(
+                {
+                    "error_type": type(e).__name__,
+                    "error_message": str(e),
+                    "invoice_item": getattr(invoice_item, "name", "unknown"),
+                    "modifier_count": len(modifiers),
+                }
+            ),
         )
         raise
 
@@ -259,6 +435,9 @@ def copy_modifiers_to_refund(
         original_item: Original invoice item
         refund_qty: Quantity being refunded (None = full refund)
     """
+    if not hasattr(credit_item, "custom_kopos_modifiers"):
+        return
+
     if not hasattr(original_item, "custom_kopos_modifiers"):
         return
 
@@ -267,10 +446,14 @@ def copy_modifiers_to_refund(
 
     try:
         snapshot = frappe.parse_json(original_item.custom_kopos_modifiers or "{}")
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError) as e:
+        frappe.log_error(
+            title="KoPOS Modifier Parse Error",
+            message=f"Failed to parse modifiers JSON for {getattr(original_item, 'name', 'unknown')}: {e}",
+        )
         return
 
-    if not snapshot.get("modifiers"):
+    if not snapshot or not snapshot.get("modifiers"):
         return
 
     original_qty = abs(flt(getattr(original_item, "qty", 0)))
@@ -278,17 +461,28 @@ def copy_modifiers_to_refund(
         refund_qty = original_qty
 
     if original_qty <= 0:
+        frappe.log_error(
+            title="KoPOS Modifier Warning",
+            message=f"Original item {getattr(original_item, 'name', 'unknown')} "
+            f"has invalid qty: {original_qty}",
+        )
         return
 
-    ratio = min(1.0, max(0.0, flt(refund_qty) / original_qty))
+    refund_qty_val = flt(refund_qty)
+    if refund_qty_val < 0:
+        return
+
+    ratio = min(1.0, max(0.0, refund_qty_val / original_qty))
 
     credit_item.custom_kopos_modifiers = original_item.custom_kopos_modifiers
-    credit_item.custom_kopos_modifier_total = (
-        flt(original_item.custom_kopos_modifier_total or 0) * ratio
+    credit_item.custom_kopos_modifier_total = round(
+        flt(original_item.custom_kopos_modifier_total or 0) * ratio, 2
     )
     credit_item.custom_kopos_has_modifiers = original_item.custom_kopos_has_modifiers
 
-    if hasattr(original_item, "custom_kopos_modifiers_table"):
+    if hasattr(original_item, "custom_kopos_modifiers_table") and hasattr(
+        credit_item, "custom_kopos_modifiers_table"
+    ):
         for mod_entry in original_item.custom_kopos_modifiers_table:
             credit_item.append(
                 "custom_kopos_modifiers_table",
@@ -297,7 +491,9 @@ def copy_modifiers_to_refund(
                     "modifier_group_name": mod_entry.modifier_group_name,
                     "modifier_option": mod_entry.modifier_option,
                     "modifier_name": mod_entry.modifier_name,
-                    "price_adjustment": flt(mod_entry.price_adjustment) * ratio,
+                    "price_adjustment": round(
+                        flt(mod_entry.price_adjustment) * ratio, 2
+                    ),
                     "base_price": mod_entry.base_price,
                     "is_default": mod_entry.is_default,
                     "display_order": mod_entry.display_order,
@@ -318,9 +514,25 @@ def aggregate_modifier_stats(date: str | None = None) -> int:
         Number of stat records created/updated
     """
     if not date:
-        date = add_days(today(), -1)
+        target_date = add_days(today(), -1)
+    else:
+        try:
+            target_date = getdate(date)
+        except Exception:
+            frappe.log_error(
+                title="KoPOS Modifier Stats Error",
+                message=f"Invalid date format: {date}",
+            )
+            return 0
 
-    date = getdate(date).isoformat()
+    if target_date > getdate(today()):
+        frappe.log_error(
+            title="KoPOS Modifier Stats Error",
+            message=f"Cannot aggregate stats for future dates: {target_date}",
+        )
+        return 0
+
+    date = target_date.isoformat()
 
     stats = frappe.db.sql(
         """
@@ -331,54 +543,64 @@ def aggregate_modifier_stats(date: str | None = None) -> int:
             m.modifier_name,
             m.modifier_group_name as group_name,
             COUNT(*) as selection_count,
-            SUM(m.price_adjustment * i.qty) as revenue
+            SUM(m.price_adjustment * ii.qty) as revenue
         FROM `tabKoPOS Invoice Item Modifier` m
         INNER JOIN `tabPOS Invoice Item` ii ON m.parent = ii.name
         INNER JOIN `tabPOS Invoice` inv ON ii.parent = inv.name
         WHERE inv.posting_date = %s
           AND inv.docstatus = 1
           AND inv.is_return = 0
+          AND m.modifier_option IS NOT NULL
         GROUP BY m.modifier_option, m.modifier_group, m.modifier_name, m.modifier_group_name
-    """,
+        """,
         (date, date),
         as_dict=True,
     )
 
     count = 0
     for stat in stats:
-        existing = frappe.db.exists(
-            "KoPOS Modifier Stats",
-            {
-                "date": date,
-                "modifier_option": stat.modifier_option,
-            },
-        )
+        try:
+            existing = frappe.db.exists(
+                "KoPOS Modifier Stats",
+                {
+                    "date": date,
+                    "modifier_option": stat.modifier_option,
+                },
+            )
 
-        if existing:
-            doc = frappe.get_doc("KoPOS Modifier Stats", existing)
-            doc.selection_count = stat.selection_count
-            doc.revenue = flt(stat.revenue) or 0
-            doc.save(ignore_permissions=True)
-        else:
-            doc = frappe.new_doc("KoPOS Modifier Stats")
-            doc.date = date
-            doc.modifier_option = stat.modifier_option
-            doc.modifier_group = stat.modifier_group
-            doc.modifier_name = stat.modifier_name
-            doc.group_name = stat.group_name
-            doc.selection_count = stat.selection_count
-            doc.revenue = flt(stat.revenue) or 0
-            doc.insert(ignore_permissions=True)
+            if existing:
+                doc = frappe.get_doc("KoPOS Modifier Stats", existing)
+                doc.selection_count = stat.selection_count
+                doc.revenue = flt(stat.revenue) or 0
+                doc.save(ignore_permissions=True)
+            else:
+                doc = frappe.new_doc("KoPOS Modifier Stats")
+                doc.date = date
+                doc.modifier_option = stat.modifier_option
+                doc.modifier_group = stat.modifier_group
+                doc.modifier_name = stat.modifier_name
+                doc.group_name = stat.group_name
+                doc.selection_count = stat.selection_count
+                doc.revenue = flt(stat.revenue) or 0
+                doc.insert(ignore_permissions=True)
 
-        count += 1
+            count += 1
+        except Exception as e:
+            frappe.log_error(
+                title="KoPOS Modifier Stats Error",
+                message=f"Failed to process stat for {stat.modifier_option}: {e}",
+            )
+            continue
 
-    frappe.db.commit()
     return count
 
 
 @frappe.whitelist()
 def get_modifier_sales_report(
-    from_date: str, to_date: str, modifier_group: str | None = None
+    from_date: str,
+    to_date: str,
+    modifier_group: str | None = None,
+    limit: int = 100,
 ) -> list[dict]:
     """
     Get modifier sales report with permission check.
@@ -387,6 +609,7 @@ def get_modifier_sales_report(
         from_date: Start date
         to_date: End date
         modifier_group: Optional filter by group
+        limit: Maximum results to return (default 100, max 1000)
 
     Returns:
         List of modifier sales data
@@ -394,30 +617,33 @@ def get_modifier_sales_report(
     if not frappe.has_permission("POS Invoice", "read"):
         frappe.throw(_("Not permitted to view sales reports"), frappe.PermissionError)
 
-    from_date = getdate(from_date).isoformat()
-    to_date = getdate(to_date).isoformat()
+    try:
+        from_date = getdate(from_date).isoformat()
+        to_date = getdate(to_date).isoformat()
+    except Exception:
+        frappe.throw(_("Invalid date format"), frappe.ValidationError)
 
-    conditions = ["date BETWEEN %s AND %s"]
-    params = [from_date, to_date]
+    limit = min(cint(limit), 1000)
+
+    filters = {
+        "date": ["between", [from_date, to_date]],
+    }
 
     if modifier_group:
         if not frappe.db.exists("KoPOS Modifier Group", modifier_group):
             frappe.throw(_("Invalid modifier group"), frappe.ValidationError)
-        conditions.append("modifier_group = %s")
-        params.append(modifier_group)
+        filters["modifier_group"] = modifier_group
 
-    return frappe.db.sql(
-        f"""
-        SELECT 
-            modifier_name,
-            group_name,
-            SUM(selection_count) as total_selections,
-            SUM(revenue) as total_revenue
-        FROM `tabKoPOS Modifier Stats`
-        WHERE {" AND ".join(conditions)}
-        GROUP BY modifier_name, group_name
-        ORDER BY total_selections DESC
-    """,
-        tuple(params),
-        as_dict=True,
+    return frappe.get_all(
+        "KoPOS Modifier Stats",
+        filters=filters,
+        fields=[
+            "modifier_name",
+            "group_name",
+            "SUM(selection_count) as total_selections",
+            "SUM(revenue) as total_revenue",
+        ],
+        group_by="modifier_name, group_name",
+        order_by="total_selections DESC",
+        limit_page_length=limit,
     )

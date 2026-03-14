@@ -97,8 +97,12 @@
    "role": "POS Manager"
   }
  ],
- "sort_field": "date",
- "sort_order": "DESC",
- "states": [],
- "title_field": "modifier_name"
+  "sort_field": "date",
+  "sort_order": "DESC",
+  "states": [],
+  "title_field": "modifier_name",
+  "indexes": [
+    {"fields": ["date", "modifier_option"], "unique": true},
+    {"fields": ["modifier_group"]}
+  ]
 }
