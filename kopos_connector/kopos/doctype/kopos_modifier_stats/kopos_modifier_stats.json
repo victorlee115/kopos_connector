@@ -4,9 +4,8 @@
  "allow_import": 0,
  "autoname": "KOPOS-MOD-STATS-.#####",
  "creation": "2026-03-14 00:00:00.000000",
- "doctype": "DocType",
- "document_type": "Setup",
- "engine": "InnoDB",
+  "doctype": "DocType",
+  "engine": "InnoDB",
  "field_order": [
   "date",
   "modifier_option",

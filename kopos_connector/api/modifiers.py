@@ -387,8 +387,6 @@ def _populate_modifiers_table(invoice_item: Any, snapshot: dict) -> None:
                     "display_order": idx,
                 },
             )
-    except frappe.ValidationError:
-        raise
     except Exception as e:
         frappe.log_error(
             title="KoPOS Modifier Population Error",
@@ -402,26 +400,6 @@ def _populate_modifiers_table(invoice_item: Any, snapshot: dict) -> None:
             ),
         )
         raise
-
-
-def _resolve_link(value: str, doctype: str) -> str | None:
-    """
-    Safely resolve link field, returning None if not exists.
-
-    Args:
-        value: Link value to resolve
-        doctype: Target DocType
-
-    Returns:
-        Link value if exists, None otherwise
-    """
-    if not value:
-        return None
-
-    if frappe.db.exists(doctype, value):
-        return value
-
-    return None
 
 
 def copy_modifiers_to_refund(
@@ -518,7 +496,7 @@ def aggregate_modifier_stats(date: str | None = None) -> int:
     else:
         try:
             target_date = getdate(date)
-        except Exception:
+        except (ValueError, TypeError):
             frappe.log_error(
                 title="KoPOS Modifier Stats Error",
                 message=f"Invalid date format: {date}",
@@ -620,7 +598,7 @@ def get_modifier_sales_report(
     try:
         from_date = getdate(from_date).isoformat()
         to_date = getdate(to_date).isoformat()
-    except Exception:
+    except (ValueError, TypeError):
         frappe.throw(_("Invalid date format"), frappe.ValidationError)
 
     limit = min(cint(limit), 1000)
