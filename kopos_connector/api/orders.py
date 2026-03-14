@@ -9,6 +9,11 @@ from frappe.utils import add_to_date, cint, get_datetime, now_datetime
 
 from kopos_connector.api.catalog import get_default_pos_profile, get_tax_rate_value
 from kopos_connector.api.devices import elevate_device_api_user, get_device_doc
+from kopos_connector.api.modifiers import (
+    build_modifiers_snapshot,
+    copy_modifiers_to_refund,
+    populate_modifiers_on_item,
+)
 
 
 PAYMENT_METHOD_ALIASES = {
@@ -365,6 +370,10 @@ def build_pos_invoice(payload: dict[str, Any], pos_profile_doc):
             )
         if warehouse:
             invoice_item.warehouse = warehouse
+        if hasattr(invoice_item, "custom_kopos_modifiers") and raw_item.get(
+            "modifiers"
+        ):
+            populate_modifiers_on_item(invoice_item, raw_item)
 
     if order["discount_amount"] > 0:
         invoice.apply_discount_on = "Grand Total"
@@ -1037,6 +1046,8 @@ def build_credit_note(
                 item.custom_kopos_promotion_allocation = (
                     build_refund_promotion_allocation(original_item, abs(flt(item.qty)))
                 )
+            if hasattr(item, "custom_kopos_modifiers_table") and original_item:
+                copy_modifiers_to_refund(item, original_item)
     else:
         requested = {item["item_code"]: item for item in validated["items"]}
         kept_items = []
@@ -1078,6 +1089,8 @@ def build_credit_note(
                 credit_item.custom_kopos_promotion_allocation = (
                     build_refund_promotion_allocation(original_item, qty)
                 )
+            if hasattr(credit_item, "custom_kopos_modifiers_table"):
+                copy_modifiers_to_refund(credit_item, original_item, qty)
             kept_items.append(credit_item)
 
         credit_note.set("items", kept_items)

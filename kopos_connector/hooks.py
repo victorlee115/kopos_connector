@@ -103,13 +103,11 @@ before_uninstall = "kopos_connector.uninstall.before_uninstall"
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": ["kopos_connector.tasks.all"],
-# 	"daily": ["kopos_connector.tasks.daily"],
-# 	"hourly": ["kopos_connector.tasks.hourly"],
-# 	"weekly": ["kopos_connector.tasks.weekly"],
-# 	"monthly": ["kopos_connector.tasks.monthly"],
-# }
+scheduler_events = {
+    "daily": [
+        "kopos_connector.api.modifiers.aggregate_modifier_stats",
+    ],
+}
 
 # Testing
 # -------

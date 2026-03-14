@@ -369,7 +369,38 @@ def create_kopos_custom_fields():
                 "read_only": 1,
                 "hidden": 1,
                 "no_copy": 1,
-            }
+            },
+            {
+                "fieldname": "custom_kopos_modifiers",
+                "label": "KoPOS Modifiers JSON",
+                "fieldtype": "Long Text",
+                "insert_after": "custom_kopos_promotion_allocation",
+                "read_only": 1,
+                "hidden": 1,
+                "no_copy": 0,
+            },
+            {
+                "fieldname": "custom_kopos_modifier_total",
+                "label": "KoPOS Modifier Total",
+                "fieldtype": "Currency",
+                "insert_after": "custom_kopos_modifiers",
+                "read_only": 1,
+                "precision": "2",
+            },
+            {
+                "fieldname": "custom_kopos_has_modifiers",
+                "label": "Has Modifiers",
+                "fieldtype": "Check",
+                "insert_after": "custom_kopos_modifier_total",
+                "read_only": 1,
+            },
+            {
+                "fieldname": "custom_kopos_modifiers_table",
+                "label": "KoPOS Modifiers",
+                "fieldtype": "Table",
+                "options": "KoPOS Invoice Item Modifier",
+                "insert_after": "custom_kopos_has_modifiers",
+            },
         ],
         "Sales Invoice": [
             {

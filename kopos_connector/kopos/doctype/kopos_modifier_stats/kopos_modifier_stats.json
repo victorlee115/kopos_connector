@@ -1,0 +1,104 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 0,
+ "autoname": "KOPOS-MOD-STATS-.#####",
+ "creation": "2026-03-14 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "date",
+  "modifier_option",
+  "modifier_name",
+  "column_break_4",
+  "modifier_group",
+  "group_name",
+  "section_break_7",
+  "selection_count",
+  "revenue"
+ ],
+ "fields": [
+  {
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "modifier_option",
+   "fieldtype": "Link",
+   "label": "Modifier Option",
+   "options": "KoPOS Modifier Option",
+   "reqd": 1
+  },
+  {
+   "fieldname": "modifier_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Modifier Name"
+  },
+  {
+   "fieldname": "column_break_4",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "modifier_group",
+   "fieldtype": "Link",
+   "label": "Modifier Group",
+   "options": "KoPOS Modifier Group"
+  },
+  {
+   "fieldname": "group_name",
+   "fieldtype": "Data",
+   "label": "Group Name"
+  },
+  {
+   "fieldname": "section_break_7",
+   "fieldtype": "Section Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "selection_count",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Selection Count"
+  },
+  {
+   "default": "0",
+   "fieldname": "revenue",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Revenue",
+   "precision": "2"
+  }
+ ],
+ "links": [],
+ "modified": "2026-03-14 00:00:00.000000",
+ "module": "KoPOS",
+ "name": "KoPOS Modifier Stats",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "POS Manager"
+  }
+ ],
+ "sort_field": "date",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "modifier_name"
+}
