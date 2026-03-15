@@ -492,7 +492,7 @@ def aggregate_modifier_stats(date: str | None = None) -> int:
         Number of stat records created/updated
     """
     if not date:
-        target_date = add_days(today(), -1)
+        target_date = getdate(add_days(today(), -1))
     else:
         try:
             target_date = getdate(date)
