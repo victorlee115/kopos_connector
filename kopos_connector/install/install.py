@@ -613,6 +613,13 @@ def ensure_pos_invoice_modifier_script() -> None:
  * Shows modifier badges and expandable details
  */
 
+const koposEscapeHtml = (value) => String(value || "")
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&#39;");
+
 frappe.ui.form.on("POS Invoice Item", {
     custom_kopos_has_modifiers: function(frm, cdt, cdn) {
         try {
@@ -699,22 +706,22 @@ const ModifierBadgeManager = {
         }
     },
     
-    _getRowElement: function(rowName) {
-        const $grid = cur_frm.fields_dict.items?.grid;
-        return $grid?.wrapper?.find(`[data-name="${rowName}"]`);
+    _getRowElement: function(frm, rowName) {
+        const $grid = frm.fields_dict.items?.grid;
+        return $grid?.wrapper?.find(`[data-name="${koposEscapeHtml(rowName)}"]`);
     },
     
-    _createBadge: function(row) {
+    _createBadge: function(frm, row) {
         const count = this._getModifierCount(row);
         return $(`
             <span class="modifier-badge label label-info" 
-                  style="margin-left: 8px; cursor: pointer;"
-                  onclick="show_item_modifiers('${row.name}')">
+                  style="margin-left: 8px; cursor: pointer"
+                  onclick="show_item_modifiers('${koposEscapeHtml(row.name}')">
                 <i class="fa fa-plus-circle"></i> ${count} ${__("modifiers")}
             </span>
         `);
     },
-    
+
     _getModifierCount: function(row) {
         try {
             const snapshot = JSON.parse(row.custom_kopos_modifiers || "{}");
@@ -723,7 +730,7 @@ const ModifierBadgeManager = {
             return 0;
         }
     },
-    
+
     cleanup: function(rowName) {
         this._cache.delete(rowName);
     }

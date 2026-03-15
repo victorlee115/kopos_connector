@@ -83,7 +83,11 @@
  "name": "KoPOS Invoice Item Modifier",
  "owner": "Administrator",
  "permissions": [],
- "sort_field": "display_order",
- "sort_order": "ASC",
- "states": []
+  "sort_field": "display_order",
+  "sort_order": "ASC",
+  "states": [],
+  "indexes": [
+    {"fields": ["modifier_option", "modifier_group"]},
+    {"fields": ["modifier_name"]}
+  ]
 }
