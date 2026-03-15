@@ -440,8 +440,10 @@ def create_kopos_custom_fields():
 
 
 def ensure_kopos_client_scripts() -> None:
+    ensure_kopos_roles()
     ensure_kopos_device_provisioning_script()
     ensure_pos_profile_provisioning_script()
+    ensure_pos_invoice_modifier_script()
 
 
 def ensure_kopos_roles() -> None:
@@ -593,6 +595,260 @@ frappe.ui.form.on(\"POS Profile\", {
                 "doctype": "Client Script",
                 "name": script_name,
                 "dt": "POS Profile",
+                "view": "Form",
+                "enabled": 1,
+                "script": script_body,
+            }
+        )
+        doc.insert(ignore_permissions=True)
+
+    frappe.db.commit()
+
+
+def ensure_pos_invoice_modifier_script() -> None:
+    script_name = "KoPOS POS Invoice Modifier Display"
+    script_body = """
+/**
+ * KoPOS Modifier Display for POS Invoice
+ * Shows modifier badges and expandable details
+ */
+
+frappe.ui.form.on("POS Invoice Item", {
+    custom_kopos_has_modifiers: function(frm, cdt, cdn) {
+        try {
+            const row = frappe.get_doc(cdt, cdn);
+            
+            if (!row) {
+                console.warn(`Row not found: ${cdt}/${cdn}`);
+                return;
+            }
+            
+            ModifierBadgeManager.toggle(frm, row);
+            
+        } catch (error) {
+            frappe.show_alert({
+                message: __("Error updating modifier display"),
+                indicator: "red"
+            }, 5);
+            console.error("Modifier handler error:", error);
+        }
+    },
+    
+    items_remove: function(frm, cdt, cdn) {
+        ModifierBadgeManager.cleanup(cdn);
+    }
+});
+
+
+frappe.ui.form.on("POS Invoice", {
+    refresh: function(frm) {
+        if (frm.doc.docstatus === 1) {
+            const modifierCount = frm.doc.items.reduce((sum, item) => 
+                sum + (item.custom_kopos_has_modifiers || 0), 0);
+            
+            if (modifierCount > 0) {
+                frm.add_custom_button(__("Modifier Summary"), () => {
+                    show_modifier_summary(frm);
+                }, __("View"));
+            }
+        }
+        
+        frm.doc.items.forEach(item => {
+            if (item.custom_kopos_has_modifiers) {
+                ModifierBadgeManager.show(frm, item);
+            }
+        });
+    }
+});
+
+
+const ModifierBadgeManager = {
+    _cache: new Map(),
+    
+    toggle: function(frm, row) {
+        const hasModifiers = Boolean(row.custom_kopos_has_modifiers);
+        const rowName = row.name;
+        
+        if (hasModifiers) {
+            this._show(frm, row);
+            this._cache.set(rowName, true);
+        } else {
+            this._hide(frm, row);
+            this._cache.delete(rowName);
+        }
+    },
+    
+    show: function(frm, row) {
+        this._show(frm, row);
+    },
+    
+    _show: function(frm, row) {
+        const $row = this._getRowElement(row.name);
+        if (!$row) return;
+        
+        this._hide(frm, row);
+        
+        const badge = this._createBadge(row);
+        $row.find(".col-name").append(badge);
+    },
+    
+    _hide: function(frm, row) {
+        const $row = this._getRowElement(row.name);
+        if ($row) {
+            $row.find(".modifier-badge").remove();
+        }
+    },
+    
+    _getRowElement: function(rowName) {
+        const $grid = cur_frm.fields_dict.items?.grid;
+        return $grid?.wrapper?.find(`[data-name="${rowName}"]`);
+    },
+    
+    _createBadge: function(row) {
+        const count = this._getModifierCount(row);
+        return $(`
+            <span class="modifier-badge label label-info" 
+                  style="margin-left: 8px; cursor: pointer;"
+                  onclick="show_item_modifiers('${row.name}')">
+                <i class="fa fa-plus-circle"></i> ${count} ${__("modifiers")}
+            </span>
+        `);
+    },
+    
+    _getModifierCount: function(row) {
+        try {
+            const snapshot = JSON.parse(row.custom_kopos_modifiers || "{}");
+            return snapshot.count || snapshot.modifiers?.length || 0;
+        } catch {
+            return 0;
+        }
+    },
+    
+    cleanup: function(rowName) {
+        this._cache.delete(rowName);
+    }
+};
+
+
+window.show_item_modifiers = function(itemName) {
+    const item = cur_frm.doc.items.find(i => i.name === itemName);
+    if (!item) return;
+    
+    let snapshot = {};
+    try {
+        snapshot = JSON.parse(item.custom_kopos_modifiers || "{}");
+    } catch (e) {
+        console.warn("Invalid modifier JSON for item:", itemName);
+        return;
+    }
+    
+    const table = $(`
+        <table class="table table-bordered">
+            <thead>
+                <tr>
+                    <th>${__("Item")}</th>
+                    <th>${__("Modifiers")}</th>
+                    <th class="text-right">${__("Total")}</th>
+                </tr>
+            </thead>
+            <tbody>
+    `);
+    
+    snapshot.modifiers.forEach(mod => {
+        table.find("tbody").append($(`
+            <tr>
+                <td>${mod.name || "-"}</td>
+                <td>${mod.group_name || "-"}</td>
+                <td class="text-right">${format_currency(mod.price || 0)}</td>
+            </tr>
+        `));
+    });
+    
+    table.append("</tbody></table>");
+    
+    frappe.msgprint({
+        title: __("Modifiers for {0}").format(item.item_name || item.item_code),
+        message: table,
+        wide: true
+    });
+};
+
+
+function format_currency(amount) {
+    return new Intl.NumberFormat(frappe.boot.user.lang || "en-MY", {
+        style: "currency",
+        currency: frappe.boot.currency || "MYR"
+    }).format(amount);
+}
+
+
+function show_modifier_summary(frm) {
+    const items = frm.doc.items.filter(i => i.custom_kopos_has_modifiers);
+    
+    const table = $(`
+        <table class="table table-bordered">
+            <thead>
+                <tr>
+                    <th>${__("Item")}</th>
+                    <th>${__("Modifiers")}</th>
+                    <th class="text-right">${__("Total")}</th>
+                </tr>
+            </thead>
+            <tbody>
+    `);
+    
+    items.forEach(item => {
+        let snapshot = {};
+        try {
+            snapshot = JSON.parse(item.custom_kopos_modifiers || "{}");
+        } catch {
+            return;
+        }
+        
+        snapshot.modifiers.forEach(mod => {
+            table.find("tbody").append($(`
+                <tr>
+                    <td>${item.item_name}</td>
+                    <td>${mod.name} (${mod.group_name})</td>
+                    <td class="text-right">${format_currency(mod.price || 0)}</td>
+                </tr>
+            `));
+        });
+    });
+    
+    table.append("</tbody></table>");
+    
+    const totalModifiers = items.reduce((sum, item) => {
+        try {
+            const snapshot = JSON.parse(item.custom_kopos_modifiers || "{}");
+            return sum + (snapshot.total || 0);
+        } catch {
+            return sum;
+        }
+    }, 0);
+    
+    frappe.msgprint({
+        title: __("Modifier Summary"),
+        message: table,
+        wide: true
+    });
+}
+""".strip()
+
+    existing_name = frappe.db.exists("Client Script", script_name)
+    if existing_name:
+        doc = frappe.get_doc("Client Script", existing_name)
+        doc.dt = "POS Invoice"
+        doc.view = "Form"
+        doc.enabled = 1
+        doc.script = script_body
+        doc.save(ignore_permissions=True)
+    else:
+        doc = frappe.get_doc(
+            {
+                "doctype": "Client Script",
+                "name": script_name,
+                "dt": "POS Invoice",
                 "view": "Form",
                 "enabled": 1,
                 "script": script_body,
