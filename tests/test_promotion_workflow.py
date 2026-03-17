@@ -57,6 +57,36 @@ class PromotionWorkflowTests(unittest.TestCase):
             "review_required",
         )
 
+    def test_get_promotion_snapshot_payload_returns_none_when_no_published_snapshot(
+        self,
+    ):
+        from kopos_connector.api.promotions import get_promotion_snapshot_payload
+
+        with patch(
+            "kopos_connector.api.promotions.get_latest_published_snapshot",
+            return_value=None,
+        ):
+            with patch(
+                "kopos_connector.api.promotions.resolve_snapshot_pos_profile",
+                return_value="Test POS",
+            ):
+                result = get_promotion_snapshot_payload(pos_profile="Test POS")
+
+        self.assertIsNone(result)
+
+    def test_snapshot_deletion_blocked_when_referenced_by_invoice(self):
+        import frappe
+        from kopos_connector.kopos.doctype.kopos_promotion_snapshot.kopos_promotion_snapshot import (
+            KoPOSPromotionSnapshot,
+        )
+
+        snapshot = KoPOSPromotionSnapshot()
+        snapshot.snapshot_version = "KOPOS-PROMO-20260317000000-ABCD1234"
+
+        with patch.object(frappe.db, "exists", return_value="POS-INV-001"):
+            with self.assertRaises(frappe.ValidationError):
+                snapshot.on_trash()
+
     def test_reconcile_promotion_payload_matches_exact_snapshot_version(self):
         snapshot = SimpleNamespace(
             snapshot_hash="hash-1",

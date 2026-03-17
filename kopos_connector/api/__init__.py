@@ -86,16 +86,33 @@ def get_promotion_snapshot(
     device_id: str | None = None,
 ) -> None:
     """Return the latest KoPOS promotion snapshot for a POS profile."""
-    require_device_context(device_id=device_id)
-    if device_id:
-        mark_device_seen(device_id=device_id)
-    _write_response(
-        get_promotion_snapshot_payload(
+    try:
+        require_device_context(device_id=device_id)
+        if device_id:
+            mark_device_seen(device_id=device_id)
+        payload = get_promotion_snapshot_payload(
             pos_profile=pos_profile,
             current_version=current_version,
             device_id=device_id,
         )
-    )
+        if payload is None:
+            _write_response(
+                {
+                    "status": "unavailable",
+                    "reason": "no_published_snapshot",
+                    "message": "No promotion snapshot has been published for this POS profile",
+                }
+            )
+        else:
+            _write_response(payload)
+    except frappe.ValidationError as exc:
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "KoPOS get_promotion_snapshot failed")
+        _write_response(
+            {"status": "error", "message": "Failed to fetch promotion snapshot"},
+            http_status_code=500,
+        )
 
 
 @frappe.whitelist(methods=["POST"])
@@ -313,6 +330,45 @@ def close_shift(**kwargs: Any) -> None:
             {
                 "status": "error",
                 "message": "Unexpected server error while closing shift",
+            },
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist()
+def get_device_open_shift(device_id: str | None = None) -> None:
+    """Public KoPOS endpoint to get the current open shift for a device.
+
+    This allows KoPOS to discover and adopt an existing open shift that was
+    created from another device or from ERPNext directly.
+    """
+    from .shifts import get_device_open_shift_payload
+
+    try:
+        resolved_device_id = frappe.utils.cstr(device_id)
+        if not resolved_device_id:
+            _write_response(
+                {"status": "error", "message": "device_id is required"},
+                http_status_code=400,
+            )
+            return
+
+        require_device_context(device_id=resolved_device_id)
+        mark_device_seen(device_id=resolved_device_id)
+
+        result = get_device_open_shift_payload(device_id=resolved_device_id)
+        if result:
+            _write_response({"status": "ok", "shift": result})
+        else:
+            _write_response({"status": "ok", "shift": None})
+    except frappe.ValidationError as exc:
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "KoPOS get_device_open_shift failed")
+        _write_response(
+            {
+                "status": "error",
+                "message": "Unexpected server error while fetching open shift",
             },
             http_status_code=500,
         )

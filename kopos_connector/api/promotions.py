@@ -33,8 +33,12 @@ def get_promotion_snapshot_payload(
     pos_profile: str | None = None,
     current_version: str | None = None,
     device_id: str | None = None,
-) -> dict[str, Any]:
-    """Return the latest published promotion snapshot for a POS profile."""
+) -> dict[str, Any] | None:
+    """Return the latest published promotion snapshot for a POS profile.
+
+    Returns None if no published snapshot exists. The POS client should
+    handle this by operating in manual_only mode until a snapshot is published.
+    """
     profile_name = resolve_snapshot_pos_profile(pos_profile, device_id=device_id)
     latest = get_latest_published_snapshot(profile_name)
 
@@ -55,10 +59,7 @@ def get_promotion_snapshot_payload(
         )
         return payload
 
-    payload = build_snapshot_payload(profile_name)
-    payload["source"] = "live"
-    payload["is_current"] = cstr(current_version) == cstr(payload["snapshot_version"])
-    return payload
+    return None
 
 
 def publish_promotion_snapshot(

@@ -21,6 +21,8 @@ def install_fake_frappe_modules() -> None:
     frappe_custom_field_custom_field_module = sys.modules.get(
         "frappe.custom.doctype.custom_field.custom_field"
     )
+    frappe_model_module = sys.modules.get("frappe.model")
+    frappe_model_document_module = sys.modules.get("frappe.model.document")
 
     if frappe_module is None:
         frappe_module = ModuleType("frappe")
@@ -50,6 +52,12 @@ def install_fake_frappe_modules() -> None:
         sys.modules["frappe.custom.doctype.custom_field.custom_field"] = (
             frappe_custom_field_custom_field_module
         )
+    if frappe_model_module is None:
+        frappe_model_module = ModuleType("frappe.model")
+        sys.modules["frappe.model"] = frappe_model_module
+    if frappe_model_document_module is None:
+        frappe_model_document_module = ModuleType("frappe.model.document")
+        sys.modules["frappe.model.document"] = frappe_model_document_module
 
     class ValidationError(Exception):
         pass
@@ -159,3 +167,8 @@ def install_fake_frappe_modules() -> None:
         "create_custom_fields",
         lambda *args, **kwargs: None,
     )
+
+    class Document:
+        pass
+
+    setattr(frappe_model_document_module, "Document", Document)
