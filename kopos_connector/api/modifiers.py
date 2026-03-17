@@ -11,7 +11,7 @@ import re
 import unicodedata
 import frappe
 from frappe import _
-from frappe.utils import cstr, flt, cint, getdate, add_days, today
+from frappe.utils import cstr, flt, cint, getdate, add_days, today, now_datetime
 from typing import TypedDict, Any
 from html import escape
 
@@ -479,21 +479,24 @@ def copy_modifiers_to_refund(
             )
 
 
-def aggregate_modifier_stats(date: str | None = None) -> int:
+def aggregate_modifier_stats(date: str | None = None) -> dict:
     """
     Aggregate modifier stats for a given date.
 
-    Called nightly by scheduler to pre-compute analytics.
+    Uses DELETE + bulk INSERT for idempotency.
+    Uses Query Builder instead of raw SQL for maintainability.
 
     Args:
         date: Date to aggregate (default: yesterday)
 
     Returns:
-        Number of stat records created/updated
+        dict with processed, failed, and error details
     """
-    if not date:
-        target_date = getdate(add_days(today(), -1))
-    else:
+    from frappe.query_builder import DocType
+
+    result = {"processed": 0, "failed": 0, "errors": []}
+
+    if date:
         try:
             target_date = getdate(date)
         except (ValueError, TypeError):
@@ -501,79 +504,124 @@ def aggregate_modifier_stats(date: str | None = None) -> int:
                 title="KoPOS Modifier Stats Error",
                 message=f"Invalid date format: {date}",
             )
-            return 0
+            return result
+    else:
+        target_date = getdate(add_days(today(), -1))
 
     if target_date > getdate(today()):
         frappe.log_error(
             title="KoPOS Modifier Stats Error",
             message=f"Cannot aggregate stats for future dates: {target_date}",
         )
-        return 0
+        return result
 
-    date = target_date.isoformat()
+    date_str = target_date.isoformat()
 
-    stats = frappe.db.sql(
-        """
-        SELECT 
-            %s as date,
-            m.modifier_option,
-            m.modifier_group,
-            m.modifier_name,
-            m.modifier_group_name as group_name,
-            COUNT(*) as selection_count,
-            SUM(m.price_adjustment * ii.qty) as revenue
-        FROM `tabKoPOS Invoice Item Modifier` m
-        INNER JOIN `tabPOS Invoice Item` ii ON m.parent = ii.name
-        INNER JOIN `tabPOS Invoice` inv ON ii.parent = inv.name
-        WHERE inv.posting_date = %s
-          AND inv.docstatus = 1
-          AND inv.is_return = 0
-          AND m.modifier_option IS NOT NULL
-        GROUP BY m.modifier_option, m.modifier_group, m.modifier_name, m.modifier_group_name
-        """,
-        (date, date),
-        as_dict=True,
-    )
+    InvoiceItemModifier = DocType("KoPOS Invoice Item Modifier")
+    InvoiceItem = DocType("POS Invoice Item")
+    Invoice = DocType("POS Invoice")
 
-    count = 0
+    try:
+        stats = (
+            frappe.qb.from_(InvoiceItemModifier)
+            .inner_join(InvoiceItem)
+            .on(InvoiceItemModifier.parent == InvoiceItem.name)
+            .inner_join(Invoice)
+            .on(InvoiceItem.parent == Invoice.name)
+            .select(
+                InvoiceItemModifier.modifier_option,
+                InvoiceItemModifier.modifier_group,
+                InvoiceItemModifier.modifier_name,
+                InvoiceItemModifier.modifier_group_name.as_("group_name"),
+                frappe.qb.functions.Count("*").as_("selection_count"),
+                frappe.qb.functions.Sum(
+                    InvoiceItemModifier.price_adjustment * InvoiceItem.qty
+                ).as_("revenue"),
+            )
+            .where(Invoice.posting_date == date_str)
+            .where(Invoice.docstatus == 1)
+            .where(Invoice.is_return == 0)
+            .where(InvoiceItemModifier.modifier_option.isnotnull())
+            .groupby(
+                InvoiceItemModifier.modifier_option,
+                InvoiceItemModifier.modifier_group,
+                InvoiceItemModifier.modifier_name,
+                InvoiceItemModifier.modifier_group_name,
+            )
+            .run(as_dict=True)
+        )
+    except Exception as e:
+        frappe.log_error(
+            title="KoPOS Modifier Stats Query Error",
+            message=f"Date: {date_str}, Error: {str(e)}\n\n{frappe.get_traceback()}",
+        )
+        _notify_aggregation_failure(date_str, str(e))
+        return result
+
+    if not stats:
+        frappe.logger("kopos").info(f"No modifier stats to aggregate for {date_str}")
+        return result
+
+    frappe.db.delete("KoPOS Modifier Stats", {"date": date_str})
+
     for stat in stats:
         try:
-            existing = frappe.db.exists(
-                "KoPOS Modifier Stats",
-                {
-                    "date": date,
-                    "modifier_option": stat.modifier_option,
-                },
-            )
-
-            if existing:
-                doc = frappe.get_doc("KoPOS Modifier Stats", existing)
-                doc.selection_count = stat.selection_count
-                doc.revenue = flt(stat.revenue) or 0
-                doc.save(ignore_permissions=True)
-            else:
-                doc = frappe.new_doc("KoPOS Modifier Stats")
-                doc.date = date
-                doc.modifier_option = stat.modifier_option
-                doc.modifier_group = stat.modifier_group
-                doc.modifier_name = stat.modifier_name
-                doc.group_name = stat.group_name
-                doc.selection_count = stat.selection_count
-                doc.revenue = flt(stat.revenue) or 0
-                doc.insert(ignore_permissions=True)
-
-            count += 1
+            doc = frappe.new_doc("KoPOS Modifier Stats")
+            doc.date = date_str
+            doc.modifier_option = stat.modifier_option
+            doc.modifier_group = stat.modifier_group
+            doc.modifier_name = stat.modifier_name
+            doc.group_name = stat.group_name
+            doc.selection_count = cint(stat.selection_count)
+            doc.revenue = flt(stat.revenue) or 0
+            doc.insert(ignore_permissions=True)
+            result["processed"] += 1
         except Exception as e:
-            frappe.log_error(
-                title="KoPOS Modifier Stats Error",
-                message=f"Failed to process stat for {stat.modifier_option}: {e}",
+            result["failed"] += 1
+            result["errors"].append(
+                {
+                    "modifier_option": stat.modifier_option,
+                    "error": str(e),
+                }
             )
-            continue
 
-    return count
+    frappe.db.commit()
+
+    frappe.logger("kopos").info(
+        f"Modifier stats aggregated: {result['processed']} records for {date_str}"
+    )
+
+    return result
+
+
+def _notify_aggregation_failure(date: str, error: str) -> None:
+    """Send email notification for aggregation failures."""
+    from html import escape
+
+    recipients = frappe.get_all(
+        "User", filters={"role": "System Manager", "enabled": 1}, pluck="email"
+    )
+
+    if not recipients:
+        return
+
+    frappe.sendmail(
+        recipients=recipients,
+        subject=f"[KoPOS] Modifier Stats Aggregation Failed - {date}",
+        message=f"""
+        <p>The daily modifier stats aggregation failed.</p>
+        <p><strong>Date:</strong> {date}</p>
+        <p><strong>Time:</strong> {now_datetime()}</p>
+        <p><strong>Error:</strong> {escape(error)}</p>
+        <p>Please check the Error Log for details.</p>
+        <p>Retry command:</p>
+        <code>bench execute kopos_connector.api.modifiers.aggregate_modifier_stats --kwargs '{{"date": "{date}"}}'</code>
+        """,
+    )
 
 
 @frappe.whitelist()
+@frappe.rate_limit(limit=10, seconds=60)
 def get_modifier_sales_report(
     from_date: str,
     to_date: str,
@@ -596,10 +644,15 @@ def get_modifier_sales_report(
         frappe.throw(_("Not permitted to view sales reports"), frappe.PermissionError)
 
     try:
-        from_date = getdate(from_date).isoformat()
-        to_date = getdate(to_date).isoformat()
+        from_date_obj = getdate(from_date)
+        to_date_obj = getdate(to_date)
+        from_date = from_date_obj.isoformat()
+        to_date = to_date_obj.isoformat()
     except (ValueError, TypeError):
         frappe.throw(_("Invalid date format"), frappe.ValidationError)
+
+    if (to_date_obj - from_date_obj).days > 365:
+        frappe.throw(_("Date range cannot exceed 365 days"), frappe.ValidationError)
 
     limit = min(cint(limit), 1000)
 
@@ -625,3 +678,61 @@ def get_modifier_sales_report(
         order_by="total_selections DESC",
         limit_page_length=limit,
     )
+
+
+@frappe.whitelist()
+def aggregate_modifier_stats_range(from_date: str, to_date: str) -> int:
+    """
+    Aggregate modifier stats for a date range.
+
+    Args:
+        from_date: Start date
+        to_date: End date
+
+    Returns:
+        Total records processed
+    """
+    start = getdate(from_date)
+    end = getdate(to_date)
+
+    if start > end:
+        frappe.throw(_("From Date cannot be after To Date"))
+
+    if (end - start).days > 365:
+        frappe.throw(_("Date range cannot exceed 365 days"))
+
+    total_processed = 0
+    current = start
+
+    while current <= end:
+        result = aggregate_modifier_stats(current.isoformat())
+        total_processed += result.get("processed", 0)
+        current = add_days(current, 1)
+
+    return total_processed
+
+
+@frappe.whitelist()
+def retry_failed_aggregations(from_date: str, to_date: str) -> dict:
+    """
+    Admin endpoint to retry failed aggregation dates.
+    Requires System Manager role.
+    """
+    if not frappe.has_permission("KoPOS Modifier Stats", "write"):
+        frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+    start = getdate(from_date)
+    end = getdate(to_date)
+
+    if (end - start).days > 365:
+        frappe.throw(_("Date range cannot exceed 365 days"))
+
+    results = []
+    current = start
+
+    while current <= end:
+        result = aggregate_modifier_stats(current.isoformat())
+        results.append({"date": current.isoformat(), **result})
+        current = add_days(current, 1)
+
+    return {"retries": results}

@@ -87,7 +87,9 @@
   "sort_order": "ASC",
   "states": [],
   "indexes": [
+    {"fields": ["parent"]},
     {"fields": ["modifier_option", "modifier_group"]},
-    {"fields": ["modifier_name"]}
+    {"fields": ["modifier_name"]},
+    {"fields": ["modifier_option", "modifier_group", "modifier_name", "modifier_group_name", "price_adjustment", "parent"], "name": "idx_aggregation_covering"}
   ]
 }

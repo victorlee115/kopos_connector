@@ -130,7 +130,7 @@ def create_kopos_custom_fields():
                 "collapsible": 1,
             },
             {
-                "fieldname": "modifier_groups",
+                "fieldname": "kopos_modifier_groups",
                 "label": "KoPOS Modifier Groups",
                 "fieldtype": "Table",
                 "options": "KoPOS Item Modifier Group",
@@ -716,7 +716,7 @@ const ModifierBadgeManager = {
         return $(`
             <span class="modifier-badge label label-info" 
                   style="margin-left: 8px; cursor: pointer"
-                  onclick="show_item_modifiers('${koposEscapeHtml(row.name}')">
+                  onclick="show_item_modifiers('${koposEscapeHtml(row.name)}')">
                 <i class="fa fa-plus-circle"></i> ${count} ${__("modifiers")}
             </span>
         `);
@@ -764,8 +764,8 @@ window.show_item_modifiers = function(itemName) {
     snapshot.modifiers.forEach(mod => {
         table.find("tbody").append($(`
             <tr>
-                <td>${mod.name || "-"}</td>
-                <td>${mod.group_name || "-"}</td>
+                <td>${koposEscapeHtml(mod.name) || "-"}</td>
+                <td>${koposEscapeHtml(mod.group_name) || "-"}</td>
                 <td class="text-right">${format_currency(mod.price || 0)}</td>
             </tr>
         `));
@@ -815,8 +815,8 @@ function show_modifier_summary(frm) {
         snapshot.modifiers.forEach(mod => {
             table.find("tbody").append($(`
                 <tr>
-                    <td>${item.item_name}</td>
-                    <td>${mod.name} (${mod.group_name})</td>
+                    <td>${koposEscapeHtml(item.item_name)}</td>
+                    <td>${koposEscapeHtml(mod.name)} (${koposEscapeHtml(mod.group_name)})</td>
                     <td class="text-right">${format_currency(mod.price || 0)}</td>
                 </tr>
             `));
