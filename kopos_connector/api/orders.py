@@ -74,6 +74,7 @@ def submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
             pos_profile_doc = resolve_pos_profile(validated)
             invoice = build_pos_invoice(validated, pos_profile_doc)
             invoice.insert(ignore_permissions=True)
+            _insert_fallback_modifier_rows(invoice)
             invoice.submit()
             record_invoice_promotion_comment(invoice)
     except Exception:
@@ -97,6 +98,25 @@ def submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "pos_invoice": invoice.name,
         "idempotency_key": idempotency_key,
     }
+
+
+def _insert_fallback_modifier_rows(invoice) -> None:
+    """Insert modifier rows that were stored as fallback during build_pos_invoice."""
+    rows_to_insert = []
+    for item in invoice.items:
+        if hasattr(item, "_kopos_modifier_rows") and item._kopos_modifier_rows:
+            for child in item._kopos_modifier_rows:
+                child.parent = item.name
+                rows_to_insert.append(child)
+
+    if rows_to_insert:
+        for child in rows_to_insert:
+            child.db_insert()
+        # Reload the items to reflect the new child rows
+        for item in invoice.items:
+            if hasattr(item, "_kopos_modifier_rows") and item._kopos_modifier_rows:
+                item.load_children_from_db()
+                delattr(item, "_kopos_modifier_rows")
 
 
 def validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:

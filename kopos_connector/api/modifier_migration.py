@@ -7,6 +7,8 @@ from frappe.utils import getdate, add_days, flt, today, now_datetime, cint
 import json
 import re
 
+MAX_BATCH_SIZE = 1000
+
 
 def extract_modifiers_from_description(description: str) -> list[dict]:
     """
@@ -22,8 +24,11 @@ def extract_modifiers_from_description(description: str) -> list[dict]:
     if not description or "Modifiers:" not in description:
         return []
 
+    # Scope regex to only text after "Modifiers:" to avoid false positives
+    modifiers_section = description.split("Modifiers:", 1)[1]
+
     pattern = r"-\s*([^(\n]+?)\s*\(([+-]?[\d.]+)\)"
-    matches = re.findall(pattern, description)
+    matches = re.findall(pattern, modifiers_section)
 
     modifiers = []
     for name, price_str in matches:
@@ -43,7 +48,7 @@ def smart_match_modifier_option(name: str) -> dict:
 
     Returns dict with modifier_option and modifier_group if found.
     """
-    if not name:
+    if not name or len(name) < 2:
         return {
             "modifier_option": None,
             "modifier_group": None,
@@ -51,6 +56,7 @@ def smart_match_modifier_option(name: str) -> dict:
             "group_name": "Unknown",
         }
 
+    # Exact match first
     option = frappe.db.get_value(
         "KoPOS Modifier Option",
         {"modifier_name": name},
@@ -60,7 +66,7 @@ def smart_match_modifier_option(name: str) -> dict:
 
     if option:
         group_name = frappe.db.get_value(
-            "KoPOS Modifier Group", option.parent, "modifier_group_name"
+            "KoPOS Modifier Group", option.parent, "group_name"
         )
         return {
             "modifier_option": option.name,
@@ -69,21 +75,24 @@ def smart_match_modifier_option(name: str) -> dict:
             "group_name": group_name or "Unknown",
         }
 
+    # Case-insensitive exact match
+    escaped_name = name.replace("%", r"\%").replace("_", r"\_")
     option = frappe.db.sql(
         """
         SELECT name, parent, modifier_name 
         FROM `tabKoPOS Modifier Option`
-        WHERE LOWER(modifier_name) LIKE LOWER(%s)
+        WHERE LOWER(modifier_name) = LOWER(%s)
+        ORDER BY name ASC
         LIMIT 1
         """,
-        (f"%{name}%",),
+        (escaped_name,),
         as_dict=True,
     )
 
     if option:
         option = option[0]
         group_name = frappe.db.get_value(
-            "KoPOS Modifier Group", option.parent, "modifier_group_name"
+            "KoPOS Modifier Group", option.parent, "group_name"
         )
         return {
             "modifier_option": option.name,
@@ -100,24 +109,90 @@ def smart_match_modifier_option(name: str) -> dict:
     }
 
 
+def _batch_match_modifiers(modifier_names: list[str]) -> dict[str, dict]:
+    """
+    Batch-resolve all modifier names in a single query.
+    Returns dict mapping modifier_name -> option record.
+    """
+    if not modifier_names:
+        return {}
+
+    # Exact match
+    options = frappe.db.sql(
+        """
+        SELECT opt.name, opt.parent, opt.modifier_name, grp.group_name
+        FROM `tabKoPOS Modifier Option` opt
+        INNER JOIN `tabKoPOS Modifier Group` grp ON grp.name = opt.parent
+        WHERE opt.modifier_name IN %s
+        """,
+        (tuple(modifier_names),),
+        as_dict=True,
+    )
+
+    result = {}
+    for opt in options:
+        result[opt.modifier_name] = {
+            "modifier_option": opt.name,
+            "modifier_group": opt.parent,
+            "modifier_name": opt.modifier_name,
+            "group_name": opt.group_name or "Unknown",
+        }
+
+    return result
+
+
+def _backup_migration_json_fields(items: list[dict]) -> int:
+    """
+    Backup existing custom_kopos_modifiers values before migration overwrites them.
+    Returns count of backed-up records.
+    """
+    backed_up = 0
+    for item in items:
+        existing = item.get("custom_kopos_modifiers")
+        if existing and existing.strip() and existing.strip() != "{}":
+            frappe.db.set_value(
+                "POS Invoice Item",
+                item["name"],
+                "_kopos_modifiers_backup",
+                existing,
+                update_modified=False,
+            )
+            backed_up += 1
+
+    # Commit backup before processing
+    if backed_up > 0:
+        frappe.db.commit()
+
+    return backed_up
+
+
 @frappe.whitelist()
 def migrate_invoice_modifiers(batch_size: int = 500, dry_run: bool = False) -> dict:
     """
     Migrate modifiers from description field to child table.
 
     Args:
-        batch_size: Number of items to process per batch
+        batch_size: Number of items to process per batch (max 1000)
         dry_run: If True, return counts without making changes
 
     Returns:
         Summary of migration results
     """
+    if not frappe.has_permission("POS Invoice Item", "write"):
+        frappe.throw(_("Not permitted to run migrations"), frappe.PermissionError)
+
+    batch_size = min(cint(batch_size), MAX_BATCH_SIZE)
+    if batch_size <= 0:
+        batch_size = 500
+
     results = {
         "processed": 0,
         "migrated": 0,
         "skipped": 0,
         "errors": 0,
         "unmatched": [],
+        "failed_items": [],
+        "backed_up": 0,
     }
 
     items = frappe.db.sql(
@@ -138,9 +213,24 @@ def migrate_invoice_modifiers(batch_size: int = 500, dry_run: bool = False) -> d
         as_dict=True,
     )
 
+    if not items:
+        return results
+
+    if not dry_run:
+        results["backed_up"] = _backup_migration_json_fields(items)
+
+    # Batch-resolve all modifier names
+    all_names = set()
+    for item in items:
+        modifiers = extract_modifiers_from_description(item.get("description", ""))
+        for mod in modifiers:
+            all_names.add(mod["name"])
+
+    batch_matches = _batch_match_modifiers(list(all_names)) if all_names else {}
+
     for item in items:
         try:
-            modifiers = extract_modifiers_from_description(item.description)
+            modifiers = extract_modifiers_from_description(item.get("description", ""))
 
             if not modifiers:
                 results["skipped"] += 1
@@ -156,7 +246,10 @@ def migrate_invoice_modifiers(batch_size: int = 500, dry_run: bool = False) -> d
             invoice_item = frappe.get_doc("POS Invoice Item", item.name)
 
             for idx, mod in enumerate(modifiers):
-                matched = smart_match_modifier_option(mod["name"])
+                matched = batch_matches.get(mod["name"])
+
+                if not matched:
+                    matched = smart_match_modifier_option(mod["name"])
 
                 if not matched["modifier_option"]:
                     if len(results["unmatched"]) < 100:
@@ -171,43 +264,52 @@ def migrate_invoice_modifiers(batch_size: int = 500, dry_run: bool = False) -> d
                         "modifier_group_name": matched["group_name"],
                         "modifier_option": matched["modifier_option"],
                         "modifier_name": matched["modifier_name"] or mod["name"],
-                        "price_adjustment": mod["price"],
+                        "price_adjustment": flt(mod["price"], 2),
+                        "base_price": flt(mod["price"], 2),
+                        "is_default": 0,
                         "display_order": idx,
                     },
                 )
 
                 snapshot_modifiers.append(
                     {
-                        "id": matched["modifier_option"],
+                        "id": matched["modifier_option"] or "",
+                        "group_id": matched["modifier_group"] or "",
                         "name": matched["modifier_name"] or mod["name"],
                         "group_name": matched["group_name"],
-                        "price": mod["price"],
+                        "price": flt(mod["price"], 2),
+                        "base_price": flt(mod["price"], 2),
+                        "is_default": False,
                     }
                 )
 
+            total = round(sum(m["price"] for m in snapshot_modifiers), 2)
             snapshot = {
                 "version": "1.0",
                 "modifiers": snapshot_modifiers,
-                "total": sum(m["price"] for m in snapshot_modifiers),
+                "total": total,
                 "count": len(snapshot_modifiers),
             }
-            invoice_item.custom_kopos_modifiers = json.dumps(snapshot)
-            invoice_item.custom_kopos_has_modifiers = len(snapshot_modifiers) > 0
+            invoice_item.custom_kopos_modifiers = json.dumps(
+                snapshot, sort_keys=True, separators=(",", ":")
+            )
+            invoice_item.custom_kopos_modifier_total = total
+            invoice_item.custom_kopos_has_modifiers = 1 if snapshot_modifiers else 0
 
             invoice_item.save(ignore_permissions=True)
+            frappe.db.commit()
             results["migrated"] += 1
 
         except Exception as e:
+            frappe.db.rollback()
             results["errors"] += 1
+            results["failed_items"].append(item.name)
             frappe.log_error(
                 title="KoPOS Modifier Migration Error",
                 message=f"Item: {item.name}, Error: {str(e)}\n\n{frappe.get_traceback()}",
             )
 
         results["processed"] += 1
-
-    if not dry_run:
-        frappe.db.commit()
 
     return results
 
@@ -221,6 +323,9 @@ def backfill_modifier_stats(
     """
     Backfill modifier stats for historical data after migration.
     """
+    if not frappe.has_permission("KoPOS Modifier Stats", "write"):
+        frappe.throw(_("Not permitted to run backfill"), frappe.PermissionError)
+
     from kopos_connector.api.modifiers import aggregate_modifier_stats
 
     if not from_date:
@@ -301,6 +406,11 @@ def get_migration_status() -> dict:
     """
     Get status of migration - how many invoices need migration.
     """
+    if not frappe.has_permission("POS Invoice Item", "read"):
+        frappe.throw(
+            _("Not permitted to view migration status"), frappe.PermissionError
+        )
+
     total_with_modifiers = frappe.db.sql(
         """
         SELECT COUNT(*)

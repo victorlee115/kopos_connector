@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from types import ModuleType, SimpleNamespace
 
 
@@ -63,11 +63,14 @@ def install_fake_frappe_modules() -> None:
         except (TypeError, ValueError):
             return 0
 
-    def flt(value):
+    def flt(value, precision=None):
         try:
-            return float(value)
+            result = float(value)
         except (TypeError, ValueError):
             return 0.0
+        if precision is not None:
+            return round(result, int(precision))
+        return result
 
     def add_to_date(value=None, **kwargs):
         base = value or datetime(2026, 3, 13, 18, 5, 0)
@@ -75,10 +78,31 @@ def install_fake_frappe_modules() -> None:
             base = datetime.fromisoformat(base)
         return base + timedelta(**kwargs)
 
+    def add_days(value, days):
+        base = value
+        if isinstance(base, str):
+            base = date.fromisoformat(base[:10])
+        elif isinstance(base, datetime):
+            base = base.date()
+        return base + timedelta(days=days)
+
+    def getdate(value=None):
+        if value is None:
+            return date.today()
+        if isinstance(value, date):
+            return value
+        return date.fromisoformat(str(value)[:10])
+
+    def today_str():
+        return "2026-03-13"
+
     setattr(utils_module, "cstr", cstr)
     setattr(utils_module, "cint", cint)
     setattr(utils_module, "flt", flt)
     setattr(utils_module, "add_to_date", add_to_date)
+    setattr(utils_module, "add_days", add_days)
+    setattr(utils_module, "getdate", getdate)
+    setattr(utils_module, "today", today_str)
     setattr(
         utils_module,
         "get_datetime",
@@ -90,9 +114,14 @@ def install_fake_frappe_modules() -> None:
     setattr(utils_module, "nowdate", lambda: "2026-03-13")
     setattr(utils_module, "get_url", lambda: "https://erp.example.com")
 
+    class PermissionError(Exception):
+        pass
+
     setattr(frappe_module, "_", lambda value: value)
     setattr(frappe_module, "ValidationError", ValidationError)
+    setattr(frappe_module, "PermissionError", PermissionError)
     setattr(frappe_module, "whitelist", lambda *args, **kwargs: (lambda fn: fn))
+    setattr(frappe_module, "sendmail", lambda *args, **kwargs: None)
     setattr(
         frappe_module,
         "throw",
@@ -111,11 +140,13 @@ def install_fake_frappe_modules() -> None:
         "db",
         SimpleNamespace(
             get_value=lambda *args, **kwargs: None,
+            get_all=lambda *args, **kwargs: [],
             exists=lambda *args, **kwargs: False,
             has_column=lambda *args, **kwargs: False,
             get_single_value=lambda *args, **kwargs: "Asia/Kuala_Lumpur",
             set_value=lambda *args, **kwargs: None,
             sql=lambda *args, **kwargs: [],
+            delete=lambda *args, **kwargs: None,
             commit=lambda: None,
             rollback=lambda: None,
         ),
@@ -138,6 +169,36 @@ def install_fake_frappe_modules() -> None:
         frappe_module,
         "logger",
         lambda *args, **kwargs: SimpleNamespace(info=lambda *a, **k: None),
+    )
+    setattr(
+        frappe_module,
+        "log_error",
+        lambda *args, **kwargs: None,
+    )
+    setattr(frappe_module, "has_permission", lambda *args, **kwargs: True)
+    setattr(frappe_module, "has_role", lambda *args, **kwargs: True)
+    setattr(
+        frappe_module,
+        "qb",
+        SimpleNamespace(
+            from_=lambda *args, **kwargs: SimpleNamespace(
+                inner_join=lambda *args, **kwargs: SimpleNamespace(
+                    on=lambda *args, **kwargs: SimpleNamespace(
+                        select=lambda *args, **kwargs: SimpleNamespace(
+                            where=lambda *args, **kwargs: SimpleNamespace(
+                                groupby=lambda *args, **kwargs: SimpleNamespace(
+                                    run=lambda *a, **k: []
+                                )
+                            )
+                        )
+                    )
+                )
+            ),
+            functions=SimpleNamespace(
+                Count=lambda *a, **k: None,
+                Sum=lambda *a, **k: None,
+            ),
+        ),
     )
     setattr(
         frappe_module,

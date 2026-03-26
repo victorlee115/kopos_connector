@@ -23,16 +23,19 @@ def before_uninstall():
 def remove_custom_fields():
     """Remove all custom fields created by KoPOS Connector"""
     custom_field_names = [
+        # Item fields
         "Item-kopos_availability_section",
         "Item-custom_kopos_availability_mode",
         "Item-custom_kopos_track_stock",
         "Item-custom_kopos_min_qty",
         "Item-custom_kopos_is_prep_item",
         "Item-kopos_modifiers_section",
-        "Item-modifier_groups",
+        "Item-custom_kopos_modifier_groups",
+        # POS Profile fields
         "POS Profile-kopos_sst_section",
         "POS Profile-custom_kopos_enable_sst",
         "POS Profile-custom_kopos_sst_rate",
+        # POS Invoice fields
         "POS Invoice-custom_kopos_idempotency_key",
         "POS Invoice-custom_kopos_device_id",
         "POS Invoice-custom_kopos_refund_reason_code",
@@ -46,13 +49,20 @@ def remove_custom_fields():
         "POS Invoice-custom_kopos_promotion_reviewed_by",
         "POS Invoice-custom_kopos_promotion_reviewed_at",
         "POS Invoice-custom_kopos_promotion_review_notes",
+        # POS Invoice Item fields (modifiers)
+        "POS Invoice Item-custom_kopos_promotion_allocation",
+        "POS Invoice Item-custom_kopos_modifiers",
+        "POS Invoice Item-custom_kopos_modifier_total",
+        "POS Invoice Item-custom_kopos_has_modifiers",
+        "POS Invoice Item-custom_kopos_modifiers_table",
+        # POS Opening/Closing fields
         "POS Opening Entry-custom_kopos_idempotency_key",
         "POS Opening Entry-custom_kopos_shift_id",
         "POS Opening Entry-custom_kopos_device_id",
         "POS Closing Entry-custom_kopos_idempotency_key",
         "POS Closing Entry-custom_kopos_shift_id",
         "POS Closing Entry-custom_kopos_device_id",
-        "POS Invoice Item-custom_kopos_promotion_allocation",
+        # Sales Invoice fields
         "Sales Invoice-custom_kopos_refund_idempotency_key",
         "Sales Invoice-custom_kopos_device_id",
     ]

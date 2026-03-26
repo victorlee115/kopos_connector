@@ -374,19 +374,31 @@ def _populate_modifiers_table(invoice_item: Any, snapshot: dict) -> None:
                 option_id if option_id in existing_links["options"] else None
             )
 
-            invoice_item.append(
-                "custom_kopos_modifiers_table",
-                {
-                    "modifier_group": modifier_group,
-                    "modifier_group_name": mod.get("group_name", ""),
-                    "modifier_option": modifier_option,
-                    "modifier_name": mod.get("name", ""),
-                    "price_adjustment": flt(mod.get("price")),
-                    "base_price": flt(mod.get("base_price")),
-                    "is_default": bool(mod.get("is_default")),
-                    "display_order": idx,
-                },
-            )
+            child_data = {
+                "modifier_group": modifier_group,
+                "modifier_group_name": mod.get("group_name", ""),
+                "modifier_option": modifier_option,
+                "modifier_name": mod.get("name", ""),
+                "price_adjustment": flt(mod.get("price")),
+                "base_price": flt(mod.get("base_price")),
+                "is_default": bool(mod.get("is_default")),
+                "display_order": idx,
+            }
+
+            if hasattr(invoice_item, "custom_kopos_modifiers_table"):
+                invoice_item.append("custom_kopos_modifiers_table", child_data)
+            else:
+                # Fallback: use frappe.new_doc to create child row
+                child = frappe.new_doc("KoPOS Invoice Item Modifier")
+                child.update(child_data)
+                child.parent = invoice_item.name
+                child.parenttype = "POS Invoice Item"
+                child.parentfield = "custom_kopos_modifiers_table"
+                child.idx = idx + 1
+                # Store for later bulk insert
+                if not hasattr(invoice_item, "_kopos_modifier_rows"):
+                    invoice_item._kopos_modifier_rows = []
+                invoice_item._kopos_modifier_rows.append(child)
     except Exception as e:
         frappe.log_error(
             title="KoPOS Modifier Population Error",
@@ -621,7 +633,6 @@ def _notify_aggregation_failure(date: str, error: str) -> None:
 
 
 @frappe.whitelist()
-@frappe.rate_limit(limit=10, seconds=60)
 def get_modifier_sales_report(
     from_date: str,
     to_date: str,
@@ -692,6 +703,9 @@ def aggregate_modifier_stats_range(from_date: str, to_date: str) -> int:
     Returns:
         Total records processed
     """
+    if not frappe.has_permission("KoPOS Modifier Stats", "write"):
+        frappe.throw(_("Not permitted"), frappe.PermissionError)
+
     start = getdate(from_date)
     end = getdate(to_date)
 
