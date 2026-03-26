@@ -42,6 +42,10 @@ requires_erpnext_version = ">=16.0.0,<17.0.0"
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 
+doctype_js = {
+    "POS Invoice": "public/js/pos_invoice.js",
+}
+
 # Home Pages
 # ----------
 
@@ -103,13 +107,11 @@ before_uninstall = "kopos_connector.uninstall.before_uninstall"
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": ["kopos_connector.tasks.all"],
-# 	"daily": ["kopos_connector.tasks.daily"],
-# 	"hourly": ["kopos_connector.tasks.hourly"],
-# 	"weekly": ["kopos_connector.tasks.weekly"],
-# 	"monthly": ["kopos_connector.tasks.monthly"],
-# }
+scheduler_events = {
+    "daily": [
+        "kopos_connector.api.modifiers.aggregate_modifier_stats",
+    ],
+}
 
 # Testing
 # -------

@@ -1,0 +1,17 @@
+{
+ "add_total_row": 1,
+ "disabled": 0,
+ "doctype": "Report",
+ "is_standard": "No",
+ "module": "KoPOS",
+ "name": "Modifier Sales Analytics",
+ "ref_doctype": "POS Invoice",
+ "report_name": "Modifier Sales Analytics",
+ "report_type": "Script Report",
+ "roles": [
+  {"role": "POS Manager"},
+  {"role": "Accounts Manager"}
+ ],
+ "prepared_report": 0,
+ "timeout": 300
+}

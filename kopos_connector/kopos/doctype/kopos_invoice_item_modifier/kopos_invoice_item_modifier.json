@@ -1,0 +1,95 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 0,
+ "autoname": "KOPOS-INVOICE-ITEM-MOD-.#####",
+ "creation": "2026-03-14 00:00:00.000000",
+  "doctype": "DocType",
+  "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "modifier_group",
+  "modifier_group_name",
+  "modifier_option",
+  "modifier_name",
+  "column_break_5",
+  "price_adjustment",
+  "base_price",
+  "is_default",
+  "display_order"
+ ],
+ "fields": [
+  {
+   "fieldname": "modifier_group",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Modifier Group",
+   "options": "KoPOS Modifier Group"
+  },
+  {
+   "fieldname": "modifier_group_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Group Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "modifier_option",
+   "fieldtype": "Link",
+   "label": "Modifier Option",
+   "options": "KoPOS Modifier Option"
+  },
+  {
+   "fieldname": "modifier_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Option Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_5",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "price_adjustment",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Price Adjustment",
+   "precision": "2",
+   "reqd": 1
+  },
+  {
+   "fieldname": "base_price",
+   "fieldtype": "Currency",
+   "label": "Base Price",
+   "precision": "2"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_default",
+   "fieldtype": "Check",
+   "label": "Is Default"
+  },
+  {
+   "default": "0",
+   "fieldname": "display_order",
+   "fieldtype": "Int",
+   "label": "Display Order"
+  }
+ ],
+ "istable": 1,
+ "modified": "2026-03-14 00:00:00.000000",
+ "module": "KoPOS",
+ "name": "KoPOS Invoice Item Modifier",
+ "owner": "Administrator",
+ "permissions": [],
+  "sort_field": "display_order",
+  "sort_order": "ASC",
+  "states": [],
+  "indexes": [
+    {"fields": ["parent"]},
+    {"fields": ["modifier_group", "modifier_option"]},
+    {"fields": ["parent", "modifier_option"], "unique": true},
+    {"fields": ["modifier_option", "modifier_group", "modifier_name", "modifier_group_name", "price_adjustment", "parent"], "name": "idx_aggregation_covering"}
+  ]
+}
