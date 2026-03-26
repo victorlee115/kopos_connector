@@ -507,9 +507,9 @@ def set_invoice_promotion_metadata(invoice: Any, payload: dict[str, Any]) -> Non
 
     pricing_context = payload.get("pricing_context") or {}
     applied_promotions = payload.get("applied_promotions") or []
-    pos_profile = cstr(
-        payload.get("pos_profile") or getattr(invoice, "pos_profile", None)
-    )
+    pos_profile = cstr(getattr(invoice, "pos_profile", None))
+    if not pos_profile:
+        pos_profile = cstr(payload.get("pos_profile"))
     reconciliation = (
         reconcile_promotion_payload(pos_profile, payload)
         if pos_profile and applied_promotions
@@ -532,7 +532,7 @@ def set_invoice_promotion_metadata(invoice: Any, payload: dict[str, Any]) -> Non
                 "discount_amount": item.get("discount_amount"),
                 "promotion_allocations": item.get("promotion_allocations") or [],
             }
-            for item in payload.get("order", {}).get("items", [])
+            for item in (payload.get("order") or {}).get("items", [])
         ],
     }
     append_promotion_audit_event(

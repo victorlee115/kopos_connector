@@ -126,6 +126,7 @@ def install_fake_frappe_modules() -> None:
             sql=lambda *args, **kwargs: [],
             commit=lambda: None,
             rollback=lambda: None,
+            escape=lambda x: x,
         ),
     )
     setattr(

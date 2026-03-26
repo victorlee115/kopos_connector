@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
 from typing import Any
@@ -24,6 +25,7 @@ MINOR_RECONCILIATION_ISSUES = {
 
 MAJOR_RECONCILIATION_ISSUES = {
     "Applied promotions missing snapshot version",
+    "Applied promotion amount evidence is invalid",
     "Referenced promotion snapshot was not found",
     "Promotion snapshot hash mismatch",
     "Applied promotion ids do not match published snapshot",
@@ -37,6 +39,23 @@ def cint(value: Any) -> int:
 
 def flt(value: Any) -> float:
     return float(frappe_flt(value))
+
+
+def sort_string_values(values: list[str]) -> list[str]:
+    return sorted(values)
+
+
+def amount_to_sen(value: Any) -> int | None:
+    raw_value = cstr(value).strip()
+    if not raw_value:
+        return None
+    try:
+        decimal_value = Decimal(raw_value)
+    except InvalidOperation:
+        return None
+    return int(
+        (decimal_value * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    )
 
 
 def build_effective_snapshot_body(
@@ -123,23 +142,25 @@ def get_snapshot_by_hash_any_profile(snapshot_hash: str):
 def ensure_persisted_snapshot(
     pos_profile: str,
     at_time: Any | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> tuple[Any, bool]:
-    payload = build_snapshot_payload_for_persistence(pos_profile, at_time)
-    snapshot_hash = payload["snapshot_version"]
-    existing = get_snapshot_by_hash(pos_profile, payload["snapshot_hash"])
+    resolved_payload = payload or build_snapshot_payload_for_persistence(
+        pos_profile, at_time
+    )
+    existing = get_snapshot_by_hash(pos_profile, resolved_payload["snapshot_hash"])
     if existing:
         return existing, False
     try:
         snapshot = frappe.new_doc("KoPOS Promotion Snapshot")
-        snapshot.snapshot_version = payload["snapshot_version"]
+        snapshot.snapshot_version = resolved_payload["snapshot_version"]
         snapshot.status = SNAPSHOT_STATUS_PUBLISHED
         snapshot.pos_profile = pos_profile
-        snapshot.published_at = payload["published_at"]
-        snapshot.effective_from = payload["effective_from"]
-        snapshot.snapshot_hash = payload["snapshot_hash"]
-        snapshot.promotion_count = len(payload["promotions"])
+        snapshot.published_at = resolved_payload["published_at"]
+        snapshot.effective_from = resolved_payload["effective_from"]
+        snapshot.snapshot_hash = resolved_payload["snapshot_hash"]
+        snapshot.promotion_count = len(resolved_payload["promotions"])
         snapshot.snapshot_payload = json.dumps(
-            payload, sort_keys=True, separators=(",", ":")
+            resolved_payload, sort_keys=True, separators=(",", ":")
         )
         snapshot.insert(ignore_permissions=True)
         add_audit_comment(
@@ -148,11 +169,11 @@ def ensure_persisted_snapshot(
                 pos_profile, snapshot.promotion_count
             ),
         )
-        frappe.db.commit()
         return snapshot, True
     except frappe.UniqueValidationError:
-        frappe.db.rollback()
-        existing = get_snapshot_by_hash(pos_profile, payload["snapshot_hash"])
+        if hasattr(frappe.db, "rollback"):
+            frappe.db.rollback()
+        existing = get_snapshot_by_hash(pos_profile, resolved_payload["snapshot_hash"])
         if existing:
             return existing, False
         raise
@@ -164,23 +185,21 @@ def get_promotion_snapshot_payload(
     device_id: str | None = None,
 ) -> dict[str, Any] | None:
     profile_name = resolve_snapshot_pos_profile(pos_profile, device_id=device_id)
-    evaluation_time = now_datetime()
-    effective_body = build_effective_snapshot_body(profile_name, evaluation_time)
-    if not effective_body.get("promotions"):
+    latest = get_latest_published_snapshot(profile_name)
+    if not latest:
         return None
-    snapshot, _created = ensure_persisted_snapshot(profile_name, evaluation_time)
-    payload = frappe.parse_json(snapshot.snapshot_payload or "{}")
+    payload = frappe.parse_json(latest.snapshot_payload or "{}")
     if not isinstance(payload, dict):
         payload = {}
     payload.update(
         {
-            "snapshot_version": snapshot.snapshot_version,
-            "snapshot_hash": snapshot.snapshot_hash,
-            "published_at": snapshot.published_at,
-            "effective_from": snapshot.effective_from,
-            "pos_profile": snapshot.pos_profile,
+            "snapshot_version": latest.snapshot_version,
+            "snapshot_hash": latest.snapshot_hash,
+            "published_at": latest.published_at,
+            "effective_from": latest.effective_from,
+            "pos_profile": latest.pos_profile,
             "source": "published",
-            "is_current": cstr(current_version) == cstr(snapshot.snapshot_version),
+            "is_current": cstr(current_version) == cstr(latest.snapshot_version),
         }
     )
     return payload
@@ -191,14 +210,31 @@ def publish_promotion_snapshot(
 ) -> dict[str, Any]:
     require_system_manager()
     profile_name = resolve_snapshot_pos_profile(pos_profile, device_id=device_id)
-    effective_body = build_effective_snapshot_body(profile_name)
-    if not effective_body.get("promotions"):
+    payload = build_snapshot_payload_for_persistence(profile_name)
+    if not payload.get("promotions"):
         return {
             "status": "no_promotions",
             "message": "No active promotions to publish",
             "pos_profile": profile_name,
         }
-    snapshot, created = ensure_persisted_snapshot(profile_name)
+    latest = get_latest_published_snapshot(profile_name)
+    if latest and cstr(latest.snapshot_hash) == cstr(payload["snapshot_hash"]):
+        return {
+            "status": "unchanged",
+            "snapshot_version": latest.snapshot_version,
+            "snapshot_hash": latest.snapshot_hash,
+            "pos_profile": latest.pos_profile,
+            "promotion_count": latest.promotion_count,
+        }
+    snapshot, created = ensure_persisted_snapshot(profile_name, payload=payload)
+    if latest and cstr(latest.name) != cstr(getattr(snapshot, "name", None)):
+        latest.status = SNAPSHOT_STATUS_SUPERSEDED
+        latest.save(ignore_permissions=True)
+    if cstr(getattr(snapshot, "status", None)) != SNAPSHOT_STATUS_PUBLISHED:
+        snapshot.status = SNAPSHOT_STATUS_PUBLISHED
+        snapshot.save(ignore_permissions=True)
+    if hasattr(frappe.db, "commit"):
+        frappe.db.commit()
     if created:
         return {
             "status": "published",
@@ -228,20 +264,25 @@ def reconcile_promotion_payload(
 
     snapshot_version = cstr(pricing_context.get("snapshot_version"))
     snapshot_hash = cstr(pricing_context.get("snapshot_hash"))
-    if not snapshot_version:
-        return build_reconciliation_result(
-            "review_required", "Applied promotions missing snapshot version"
-        )
-
-    snapshot = get_snapshot_by_version(pos_profile, snapshot_version)
+    snapshot = None
+    if snapshot_version:
+        snapshot = get_snapshot_by_version(pos_profile, snapshot_version)
     if not snapshot and snapshot_hash:
         snapshot = get_snapshot_by_hash(pos_profile, snapshot_hash)
 
     if not snapshot:
-        snapshot_any_profile = get_snapshot_by_version_any_profile(snapshot_version)
+        snapshot_any_profile = None
+        if snapshot_version:
+            snapshot_any_profile = get_snapshot_by_version_any_profile(snapshot_version)
+        if not snapshot_any_profile and snapshot_hash:
+            snapshot_any_profile = get_snapshot_by_hash_any_profile(snapshot_hash)
         if snapshot_any_profile:
             return build_reconciliation_result(
                 "review_required", "Promotion snapshot profile mismatch"
+            )
+        if not snapshot_version and not snapshot_hash:
+            return build_reconciliation_result(
+                "review_required", "Applied promotions missing snapshot version"
             )
         return build_reconciliation_result(
             "review_required", "Referenced promotion snapshot was not found"
@@ -269,18 +310,29 @@ def reconcile_promotion_payload(
             "Applied promotion ids do not match published snapshot",
         )
 
-    applied_total = sum(
-        flt(promotion.get("amount")) for promotion in applied_promotions
-    )
-    line_total = 0.0
+    applied_total_sen = 0
+    for promotion in applied_promotions:
+        promotion_amount_sen = amount_to_sen(promotion.get("amount"))
+        if promotion_amount_sen is None:
+            return build_reconciliation_result(
+                "review_required", "Applied promotion amount evidence is invalid"
+            )
+        applied_total_sen += promotion_amount_sen
+    line_total_sen = 0
     for item in (payload.get("order") or {}).get("items", []):
         if not isinstance(item, dict):
             continue
         for allocation in item.get("promotion_allocations") or []:
             if isinstance(allocation, dict):
-                line_total += flt(allocation.get("amount"))
+                allocation_amount_sen = amount_to_sen(allocation.get("amount"))
+                if allocation_amount_sen is None:
+                    return build_reconciliation_result(
+                        "review_required",
+                        "Applied promotion amount evidence is invalid",
+                    )
+                line_total_sen += allocation_amount_sen
 
-    if abs(applied_total - line_total) > 0.01:
+    if applied_total_sen != line_total_sen:
         return build_reconciliation_result(
             "review_required",
             "Applied promotion total does not match line allocations",
@@ -467,8 +519,6 @@ def review_promotion_reconciliation(
             cstr(notes) or "No notes provided",
         ),
     )
-    frappe.db.commit()
-
     return {
         "status": "ok",
         "pos_invoice": invoice.name,
@@ -488,10 +538,20 @@ def repair_promotion_reconciliation_invoices(
     filters: dict[str, Any] = {
         "custom_kopos_promotion_reconciliation_status": "review_required"
     }
+    if frappe.db.has_column("POS Invoice", "custom_kopos_promotion_review_status"):
+        filters["custom_kopos_promotion_review_status"] = [
+            "in",
+            ["", REVIEW_STATUS_PENDING],
+        ]
     invoices = frappe.get_all(
         "POS Invoice",
         filters=filters,
-        fields=["name", "pos_profile", "custom_kopos_promotion_payload"],
+        fields=[
+            "name",
+            "pos_profile",
+            "custom_kopos_promotion_payload",
+            "custom_kopos_promotion_review_status",
+        ],
         order_by="modified asc",
         limit_page_length=limit,
     )
@@ -500,69 +560,102 @@ def repair_promotion_reconciliation_invoices(
     still_pending = 0
     for invoice_row in invoices:
         scanned += 1
-        invoice_name = invoice_row.get("name")
-        pos_profile = cstr(invoice_row.get("pos_profile"))
-        payload_str = invoice_row.get("custom_kopos_promotion_payload")
-        if not payload_str:
-            still_pending += 1
-            continue
-        payload = frappe.parse_json(payload_str)
-        if not isinstance(payload, dict):
-            still_pending += 1
-            continue
-        pricing_context = payload.get("pricing_context") or {}
-        snapshot_version = cstr(pricing_context.get("snapshot_version"))
-        snapshot_hash = cstr(pricing_context.get("snapshot_hash"))
-        applied_promotions = payload.get("applied_promotions") or []
-        if not snapshot_version or not applied_promotions:
-            still_pending += 1
-            continue
-        snapshot = get_snapshot_by_version(pos_profile, snapshot_version)
-        if not snapshot and snapshot_hash:
-            snapshot = get_snapshot_by_hash(pos_profile, snapshot_hash)
-        if not snapshot:
-            snapshot_any = get_snapshot_by_version_any_profile(snapshot_version)
-            if snapshot_any:
+        invoice_name = cstr(invoice_row.get("name"))
+        try:
+            pos_profile = cstr(invoice_row.get("pos_profile"))
+            review_status = cstr(
+                invoice_row.get("custom_kopos_promotion_review_status")
+            )
+            if review_status not in ("", REVIEW_STATUS_PENDING):
                 still_pending += 1
                 continue
+            payload_str = invoice_row.get("custom_kopos_promotion_payload")
+            if not payload_str:
+                still_pending += 1
+                continue
+            payload = frappe.parse_json(payload_str)
+            if not isinstance(payload, dict):
+                still_pending += 1
+                continue
+            pricing_context = payload.get("pricing_context") or {}
+            snapshot_version = cstr(pricing_context.get("snapshot_version"))
+            snapshot_hash = cstr(pricing_context.get("snapshot_hash"))
+            applied_promotions = payload.get("applied_promotions") or []
+            if not applied_promotions or (not snapshot_version and not snapshot_hash):
+                still_pending += 1
+                continue
+            snapshot = None
+            repair_path = "version"
+            if snapshot_version:
+                snapshot = get_snapshot_by_version(pos_profile, snapshot_version)
+            if not snapshot and snapshot_hash:
+                snapshot = get_snapshot_by_hash(pos_profile, snapshot_hash)
+                if snapshot:
+                    repair_path = "hash"
+            if not snapshot:
+                snapshot_any = None
+                if snapshot_version:
+                    snapshot_any = get_snapshot_by_version_any_profile(snapshot_version)
+                if not snapshot_any and snapshot_hash:
+                    snapshot_any = get_snapshot_by_hash_any_profile(snapshot_hash)
+                if snapshot_any:
+                    still_pending += 1
+                    continue
+                still_pending += 1
+                continue
+            new_reconciliation = reconcile_promotion_payload(pos_profile, payload)
+            if new_reconciliation.get("status") != "matched":
+                still_pending += 1
+                continue
+            payload["reconciliation"] = new_reconciliation
+            append_promotion_audit_event(
+                payload,
+                "repair.matched",
+                {
+                    "message": "Legacy invoice repaired via persisted snapshot evidence",
+                    "repair_path": repair_path,
+                    "snapshot_version": new_reconciliation.get("snapshot_version"),
+                    "snapshot_hash": new_reconciliation.get("snapshot_hash"),
+                },
+            )
+            invoice_doc = frappe.get_doc("POS Invoice", invoice_name)
+            update_fields = {}
+            if hasattr(invoice_doc, "custom_kopos_promotion_payload"):
+                update_fields["custom_kopos_promotion_payload"] = (
+                    serialize_json_compact(payload)
+                )
+            if hasattr(invoice_doc, "custom_kopos_promotion_reconciliation_status"):
+                update_fields["custom_kopos_promotion_reconciliation_status"] = (
+                    "matched"
+                )
+            if hasattr(invoice_doc, "custom_kopos_promotion_review_status"):
+                update_fields["custom_kopos_promotion_review_status"] = (
+                    REVIEW_STATUS_NOT_REQUIRED
+                )
+            if hasattr(invoice_doc, "custom_kopos_promotion_snapshot_version"):
+                update_fields["custom_kopos_promotion_snapshot_version"] = cstr(
+                    new_reconciliation.get("snapshot_version")
+                )
+            if update_fields:
+                frappe.db.set_value(
+                    "POS Invoice", invoice_name, update_fields, update_modified=True
+                )
+            add_audit_comment(
+                invoice_doc,
+                "KoPOS promotion reconciliation repaired automatically via {0} evidence".format(
+                    repair_path
+                ),
+            )
+            repaired += 1
+        except Exception:
+            if hasattr(frappe, "log_error"):
+                frappe.log_error(
+                    frappe.get_traceback(),
+                    "KoPOS promotion reconciliation repair failed for {0}".format(
+                        invoice_name or "unknown invoice"
+                    ),
+                )
             still_pending += 1
-            continue
-        new_reconciliation = reconcile_promotion_payload(pos_profile, payload)
-        if new_reconciliation.get("status") != "matched":
-            still_pending += 1
-            continue
-        payload["reconciliation"] = new_reconciliation
-        append_promotion_audit_event(
-            payload,
-            "repair.matched",
-            {
-                "message": "Legacy invoice repaired via hash fallback",
-                "snapshot_version": new_reconciliation.get("snapshot_version"),
-                "snapshot_hash": new_reconciliation.get("snapshot_hash"),
-            },
-        )
-        invoice_doc = frappe.get_doc("POS Invoice", invoice_name)
-        update_fields = {}
-        if hasattr(invoice_doc, "custom_kopos_promotion_payload"):
-            update_fields["custom_kopos_promotion_payload"] = serialize_json_compact(
-                payload
-            )
-        if hasattr(invoice_doc, "custom_kopos_promotion_reconciliation_status"):
-            update_fields["custom_kopos_promotion_reconciliation_status"] = "matched"
-        if hasattr(invoice_doc, "custom_kopos_promotion_review_status"):
-            update_fields["custom_kopos_promotion_review_status"] = (
-                REVIEW_STATUS_NOT_REQUIRED
-            )
-        if update_fields:
-            frappe.db.set_value(
-                "POS Invoice", invoice_name, update_fields, update_modified=True
-            )
-        add_audit_comment(
-            invoice_doc,
-            "KoPOS promotion reconciliation repaired automatically via hash fallback",
-        )
-        repaired += 1
-    frappe.db.commit()
     return {
         "scanned": scanned,
         "repaired": repaired,
@@ -632,23 +725,29 @@ def serialize_promotion(doc, pos_profile: str) -> dict[str, Any]:
         "valid_from": doc.valid_from,
         "valid_upto": doc.valid_upto,
         "pos_profile": pos_profile,
-        "eligible_items": [
-            cstr(row.item_code)
-            for row in (doc.eligible_items or [])
-            if cstr(row.item_code)
-        ],
+        "eligible_items": sort_string_values(
+            [
+                cstr(row.item_code)
+                for row in (doc.eligible_items or [])
+                if cstr(row.item_code)
+            ]
+        ),
         "min_qty": cint(doc.min_qty or 0),
         "min_amount": flt(doc.min_amount or 0),
-        "eligible_item_groups": [
-            cstr(row.item_group)
-            for row in (doc.eligible_item_groups or [])
-            if cstr(row.item_group)
-        ],
-        "selected_pos_profiles": [
-            cstr(row.pos_profile)
-            for row in (doc.eligible_pos_profiles or [])
-            if cstr(row.pos_profile)
-        ],
+        "eligible_item_groups": sort_string_values(
+            [
+                cstr(row.item_group)
+                for row in (doc.eligible_item_groups or [])
+                if cstr(row.item_group)
+            ]
+        ),
+        "selected_pos_profiles": sort_string_values(
+            [
+                cstr(row.pos_profile)
+                for row in (doc.eligible_pos_profiles or [])
+                if cstr(row.pos_profile)
+            ]
+        ),
     }
 
 
