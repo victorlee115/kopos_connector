@@ -1098,3 +1098,95 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "pos_closing_entry": closing_doc.name,
         "pos_opening_entry": pos_opening_entry,
     }
+
+
+def get_device_open_shift_payload(device_id: str) -> dict[str, Any] | None:
+    """Get the current open shift for a KoPOS device.
+
+    This endpoint allows KoPOS to discover and adopt an existing open shift
+    that was created from another device or from ERPNext directly.
+
+    Args:
+        device_id: The KoPOS device ID to look up
+
+    Returns:
+        Dict with shift data if an open shift exists, None otherwise:
+        - pos_opening_entry: The ERPNext document name
+        - shift_id: The KoPOS shift ID (if stored)
+        - device_id: The device ID
+        - staff_id: The ERP user who opened the shift
+        - opening_float_sen: Opening cash amount in sen/cents
+        - opened_at: ISO timestamp when shift was opened
+    """
+    device_doc = get_device_doc(device_id=device_id)
+    pos_profile_name = device_doc.pos_profile
+    if not pos_profile_name:
+        return None
+
+    filters: dict[str, Any] = {
+        "pos_profile": pos_profile_name,
+        "docstatus": 1,
+        "status": "Open",
+    }
+
+    fields = [
+        "name",
+        "user",
+        "period_start_date",
+        "custom_kopos_shift_id",
+        "custom_kopos_device_id",
+    ]
+
+    try:
+        entries = frappe.get_all(
+            "POS Opening Entry",
+            filters=filters,
+            fields=fields,
+            order_by="creation desc",
+            limit=10,
+        )
+    except Exception:
+        return None
+
+    if not entries:
+        return None
+
+    for entry in entries:
+        custom_device_id = cstr(entry.get("custom_kopos_device_id"))
+        if custom_device_id == device_id:
+            opening_float_sen = _get_opening_float_sen(entry["name"])
+            return {
+                "pos_opening_entry": entry["name"],
+                "shift_id": cstr(entry.get("custom_kopos_shift_id")) or None,
+                "device_id": device_id,
+                "staff_id": cstr(entry.get("user")),
+                "opening_float_sen": opening_float_sen,
+                "opened_at": _format_datetime_iso(entry.get("period_start_date")),
+            }
+
+    return None
+
+
+def _get_opening_float_sen(pos_opening_entry: str) -> int:
+    """Get the opening float amount in sen from a POS Opening Entry."""
+    try:
+        balance_details = frappe.get_all(
+            "POS Opening Entry Balance Detail",
+            filters={"parent": pos_opening_entry, "parentfield": "balance_details"},
+            fields=["opening_amount"],
+        )
+        total = sum(flt(row.get("opening_amount", 0)) for row in balance_details)
+        return int(round(total * 100))
+    except Exception:
+        return 0
+
+
+def _format_datetime_iso(value: Any) -> str | None:
+    """Convert a datetime value to ISO format string."""
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, str):
+        return value
+    return str(value)
