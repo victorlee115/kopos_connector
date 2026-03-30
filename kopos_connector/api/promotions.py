@@ -183,25 +183,30 @@ def get_promotion_snapshot_payload(
     pos_profile: str | None = None,
     current_version: str | None = None,
     device_id: str | None = None,
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     profile_name = resolve_snapshot_pos_profile(pos_profile, device_id=device_id)
     latest = get_latest_published_snapshot(profile_name)
-    if not latest:
-        return None
-    payload = frappe.parse_json(latest.snapshot_payload or "{}")
-    if not isinstance(payload, dict):
-        payload = {}
-    payload.update(
-        {
-            "snapshot_version": latest.snapshot_version,
-            "snapshot_hash": latest.snapshot_hash,
-            "published_at": latest.published_at,
-            "effective_from": latest.effective_from,
-            "pos_profile": latest.pos_profile,
-            "source": "published",
-            "is_current": cstr(current_version) == cstr(latest.snapshot_version),
-        }
-    )
+
+    if latest:
+        payload = frappe.parse_json(latest.snapshot_payload or "{}")
+        if not isinstance(payload, dict):
+            payload = {}
+        payload.update(
+            {
+                "snapshot_version": latest.snapshot_version,
+                "snapshot_hash": latest.snapshot_hash,
+                "published_at": latest.published_at,
+                "effective_from": latest.effective_from,
+                "pos_profile": latest.pos_profile,
+                "source": "published",
+                "is_current": cstr(current_version) == cstr(latest.snapshot_version),
+            }
+        )
+        return payload
+
+    payload = build_snapshot_payload(profile_name)
+    payload["source"] = "live"
+    payload["is_current"] = False
     return payload
 
 

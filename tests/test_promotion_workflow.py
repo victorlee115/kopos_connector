@@ -145,9 +145,17 @@ class PromotionWorkflowTests(unittest.TestCase):
 
         self.assertEqual(hash_a, hash_b)
 
-    def test_get_promotion_snapshot_payload_returns_none_when_no_published_snapshot(
+    def test_get_promotion_snapshot_payload_returns_live_snapshot_when_no_published(
         self,
     ):
+        live_payload = {
+            "pos_profile": "Test POS",
+            "effective_from": "2026-03-13T18:05:00",
+            "promotions": [{"promotion_id": "PROMO-1"}],
+            "published_at": "2026-03-13T18:05:00",
+            "snapshot_hash": "live-hash",
+            "snapshot_version": "KOPOS-PROMO-live-hash",
+        }
         with (
             patch(
                 "kopos_connector.api.promotions.get_latest_published_snapshot",
@@ -157,10 +165,16 @@ class PromotionWorkflowTests(unittest.TestCase):
                 "kopos_connector.api.promotions.resolve_snapshot_pos_profile",
                 return_value="Test POS",
             ),
+            patch(
+                "kopos_connector.api.promotions.build_snapshot_payload",
+                return_value=live_payload,
+            ),
         ):
             result = get_promotion_snapshot_payload(pos_profile="Test POS")
 
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["source"], "live")
+        self.assertFalse(result["is_current"])
 
     def test_get_promotion_snapshot_payload_returns_latest_persisted_snapshot_only(
         self,
