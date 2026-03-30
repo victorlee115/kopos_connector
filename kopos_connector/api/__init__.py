@@ -533,8 +533,12 @@ def check_maybank_payment(
     try:
         require_kopos_api_access()
         resolved_device_id = frappe.utils.cstr(device_id).strip() or None
-        device = require_device_context(device_id=resolved_device_id)
-        resolved_device_id = frappe.utils.cstr(getattr(device, "device_id", ""))
+        if resolved_device_id:
+            device = require_device_context(device_id=resolved_device_id)
+            resolved_device_id = frappe.utils.cstr(getattr(device, "device_id", ""))
+        else:
+            device = _resolve_device_from_user()
+            resolved_device_id = frappe.utils.cstr(getattr(device, "device_id", ""))
         _write_response(
             check_maybank_payment_payload(
                 transaction_refno=frappe.utils.cstr(transaction_refno),
@@ -549,6 +553,38 @@ def check_maybank_payment(
             {"status": "error", "message": "Failed to check payment status"},
             http_status_code=500,
         )
+
+
+def _resolve_device_from_user():
+    """Resolve the KoPOS Device from the authenticated API key user."""
+    from .devices import KOPOS_DEVICE_API_ROLE, get_device_doc, get_session_roles
+
+    resolved_user = frappe.utils.cstr(getattr(frappe.session, "user", None)).strip()
+    if not resolved_user or resolved_user == "Guest":
+        frappe.throw("Authentication required", frappe.ValidationError)
+
+    roles = get_session_roles(resolved_user)
+    if "System Manager" in roles:
+        frappe.throw("System Manager must provide device_id", frappe.ValidationError)
+
+    if KOPOS_DEVICE_API_ROLE not in roles:
+        frappe.throw(
+            frappe._("User {0} is not allowed to access KoPOS device APIs").format(
+                resolved_user
+            ),
+            frappe.ValidationError,
+        )
+
+    device_name = frappe.db.get_value(
+        "KoPOS Device", {"api_user": resolved_user}, "name"
+    )
+    if not device_name:
+        frappe.throw(
+            frappe._("No KoPOS Device found for user {0}").format(resolved_user),
+            frappe.ValidationError,
+        )
+
+    return get_device_doc(name=device_name)
 
 
 __all__ = [
