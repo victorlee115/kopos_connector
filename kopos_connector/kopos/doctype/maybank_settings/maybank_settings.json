@@ -1,0 +1,85 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 0,
+ "allow_rename": 0,
+ "creation": "2026-03-26 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "section_credentials",
+  "username",
+  "encrypted_pin",
+  "user_type",
+  "outlet_id",
+  "section_api",
+  "base_url"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "fieldname": "section_credentials",
+   "fieldtype": "Section Break",
+   "label": "API Credentials"
+  },
+  {
+   "fieldname": "username",
+   "fieldtype": "Data",
+   "label": "Username",
+   "reqd": 1
+  },
+  {
+   "fieldname": "encrypted_pin",
+   "fieldtype": "Password",
+   "label": "PIN (PBKDF2 Encrypted)",
+   "reqd": 1
+  },
+  {
+   "default": "merchant",
+   "fieldname": "user_type",
+   "fieldtype": "Select",
+   "label": "Account Type",
+   "options": "merchant\ncashier\ncorporate"
+  },
+  {
+   "fieldname": "outlet_id",
+   "fieldtype": "Data",
+   "label": "Default Outlet ID",
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_api",
+   "fieldtype": "Section Break",
+   "label": "API Configuration"
+  },
+  {
+   "default": "https://emerchant.maybank2u.com.my:8443/api/",
+   "fieldname": "base_url",
+   "fieldtype": "Data",
+   "label": "API Base URL"
+  }
+ ],
+ "issingle": 1,
+ "module": "KoPOS",
+ "name": "Maybank Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

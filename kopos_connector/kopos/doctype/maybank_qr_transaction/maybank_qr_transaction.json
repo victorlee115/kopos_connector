@@ -1,0 +1,204 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 0,
+ "allow_rename": 0,
+ "autoname": "MBQR-.{transaction_refno}",
+ "creation": "2026-03-26 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "transaction_refno",
+  "status",
+  "maybank_status",
+  "section_amount",
+  "sale_amount",
+  "sale_amount_sen",
+  "section_qr",
+  "qr_data",
+  "section_links",
+  "pos_invoice",
+  "outlet_id",
+  "device_id",
+  "idempotency_key",
+  "idempotency_scope_key",
+  "section_timing",
+  "round_number",
+  "created_at",
+  "scanned_at",
+  "paid_at",
+  "expires_at",
+  "last_polled_at",
+  "poll_count",
+  "section_debug",
+  "raw_response"
+ ],
+ "fields": [
+  {
+   "fieldname": "transaction_refno",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Transaction Ref",
+   "reqd": 1,
+   "search_index": 1,
+   "unique": 1
+  },
+  {
+   "default": "pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "pending\nscanned\npaid\nfailed\ntimeout\nunknown",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "maybank_status",
+   "fieldtype": "Int",
+   "label": "Raw Maybank Status"
+  },
+  {
+   "fieldname": "section_amount",
+   "fieldtype": "Section Break",
+   "label": "Amount"
+  },
+  {
+   "fieldname": "sale_amount",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Amount (RM)",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sale_amount_sen",
+   "fieldtype": "Int",
+   "label": "Amount (sen)"
+  },
+  {
+   "fieldname": "section_qr",
+   "fieldtype": "Section Break",
+   "label": "QR Data"
+  },
+  {
+   "fieldname": "qr_data",
+   "fieldtype": "Long Text",
+   "label": "QR Data (EMVCo)"
+  },
+  {
+   "fieldname": "section_links",
+   "fieldtype": "Section Break",
+   "label": "Links"
+  },
+  {
+    "fieldname": "pos_invoice",
+   "fieldtype": "Link",
+   "label": "POS Invoice",
+   "options": "POS Invoice",
+   "search_index": 1
+  },
+  {
+   "fieldname": "outlet_id",
+   "fieldtype": "Data",
+   "label": "Outlet ID"
+  },
+  {
+    "fieldname": "device_id",
+    "fieldtype": "Data",
+    "label": "Device ID"
+  },
+  {
+    "fieldname": "idempotency_key",
+    "fieldtype": "Data",
+    "label": "Idempotency Key"
+  },
+  {
+   "fieldname": "idempotency_scope_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Scoped Idempotency Key",
+   "unique": 1
+  },
+  {
+   "fieldname": "section_timing",
+   "fieldtype": "Section Break",
+   "label": "Timing"
+  },
+  {
+   "default": "1",
+   "fieldname": "round_number",
+   "fieldtype": "Int",
+   "label": "QR Round"
+  },
+  {
+   "fieldname": "created_at",
+   "fieldtype": "Datetime",
+   "label": "Created At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "scanned_at",
+   "fieldtype": "Datetime",
+   "label": "Scanned At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "paid_at",
+   "fieldtype": "Datetime",
+   "label": "Paid At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "expires_at",
+   "fieldtype": "Datetime",
+   "label": "Expires At"
+  },
+  {
+   "fieldname": "last_polled_at",
+   "fieldtype": "Datetime",
+   "label": "Last Polled",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "poll_count",
+   "fieldtype": "Int",
+   "label": "Poll Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_debug",
+   "fieldtype": "Section Break",
+   "collapsible": 1,
+   "label": "Debug"
+  },
+  {
+   "fieldname": "raw_response",
+   "fieldtype": "Code",
+   "hidden": 1,
+   "label": "Raw Response",
+   "options": "JSON",
+   "read_only": 1
+  }
+ ],
+ "module": "KoPOS",
+ "name": "Maybank QR Transaction",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "KoPOS Device API"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
