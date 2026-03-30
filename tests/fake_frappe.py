@@ -120,6 +120,7 @@ def install_fake_frappe_modules() -> None:
     )
     setattr(utils_module, "now_datetime", lambda: datetime(2026, 3, 13, 18, 5, 0))
     setattr(utils_module, "nowdate", lambda: "2026-03-13")
+    setattr(utils_module, "get_system_timezone", lambda: "Asia/Kuala_Lumpur")
     setattr(utils_module, "get_url", lambda: "https://erp.example.com")
 
     class PermissionError(Exception):

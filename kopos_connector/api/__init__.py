@@ -502,10 +502,61 @@ def request_shift_manager_approval(**kwargs: Any) -> None:
         )
 
 
+@frappe.whitelist(methods=["POST"])
+def generate_maybank_qr(**kwargs: Any) -> None:
+    """Generate a Maybank DuitNow QR code for POS payment."""
+    from .maybank_qr import generate_maybank_qr_payload
+
+    try:
+        payload = _get_submit_payload(kwargs)
+        require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
+        _write_response(generate_maybank_qr_payload(payload))
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(frappe.get_traceback(), "KoPOS generate_maybank_qr failed")
+        _write_response(
+            {"status": "error", "message": "Failed to generate QR code"},
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist()
+def check_maybank_payment(
+    transaction_refno: str | None = None, device_id: str | None = None
+) -> None:
+    """Check payment status of a Maybank QR transaction."""
+    from .maybank_qr import check_maybank_payment_payload
+
+    try:
+        require_kopos_api_access()
+        resolved_device_id = frappe.utils.cstr(device_id).strip() or None
+        device = require_device_context(device_id=resolved_device_id)
+        resolved_device_id = frappe.utils.cstr(getattr(device, "device_id", ""))
+        _write_response(
+            check_maybank_payment_payload(
+                transaction_refno=frappe.utils.cstr(transaction_refno),
+                device_id=resolved_device_id,
+            )
+        )
+    except frappe.ValidationError as exc:
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "KoPOS check_maybank_payment failed")
+        _write_response(
+            {"status": "error", "message": "Failed to check payment status"},
+            http_status_code=500,
+        )
+
+
 __all__ = [
+    "check_maybank_payment",
     "close_shift",
     "create_device_provisioning_qr",
     "create_pos_provisioning",
+    "generate_maybank_qr",
     "get_catalog",
     "get_device_config",
     "get_item_modifiers",
