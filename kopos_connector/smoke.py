@@ -485,8 +485,291 @@ def _ensure_item_group() -> str:
     return doc.name
 
 
+def setup_full_smoke_json(erpnext_url: str | None = None) -> dict[str, Any]:
+    return setup_full_smoke_data(erpnext_url=erpnext_url)
+
+
+def reset_smoke_json() -> dict[str, Any]:
+    return reset_smoke_data()
+
+
+def dump_smoke_json() -> dict[str, Any]:
+    return dump_smoke_state()
+
+
 def _first_name(doctype: str, filters: dict[str, Any]) -> str:
     names = frappe.get_all(doctype, filters=filters, pluck="name", limit=1)
     if not names:
         frappe.throw(f"No {doctype} found for filters: {filters}")
     return names[0]
+
+
+def _ensure_frappe_user(email: str, display_name: str) -> None:
+    existing = frappe.db.exists("User", email)
+    if existing:
+        return
+    doc = frappe.get_doc(
+        {
+            "doctype": "User",
+            "email": email,
+            "first_name": display_name,
+            "enabled": 1,
+            "user_type": "System User",
+            "send_welcome_email": 0,
+            "new_password": frappe.generate_hash(length=32),
+        }
+    )
+    doc.insert(ignore_permissions=True)
+
+
+def _ensure_item_modifier_link(item_code: str, modifier_group_name: str) -> None:
+    group = frappe.db.exists(
+        "KoPOS Modifier Group", {"group_name": modifier_group_name}
+    )
+    if not group:
+        return
+    item = frappe.get_doc("Item", item_code)
+    if not hasattr(item, "modifier_groups"):
+        return
+    if any(
+        getattr(row, "modifier_group", None) == group for row in item.modifier_groups
+    ):
+        return
+    item.append("modifier_groups", {"modifier_group": group, "display_order": 1})
+    item.save(ignore_permissions=True)
+
+
+def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
+    from kopos_connector.utils.pin import hash_pin
+
+    _ensure_frappe_user("staff@smoke.kopos.local", "Staff Ahmad")
+    _ensure_frappe_user("manager@smoke.kopos.local", "Manager Siti")
+
+    users = [
+        {
+            "user": "staff@smoke.kopos.local",
+            "display_name": "Staff Ahmad",
+            "active": 1,
+            "default_cashier": 1,
+            "pin_hash": hash_pin("1234"),
+            "can_manager_override": 0,
+            "can_refund": 1,
+            "can_void": 0,
+            "can_open_shift": 1,
+            "can_close_shift": 1,
+        },
+        {
+            "user": "manager@smoke.kopos.local",
+            "display_name": "Manager Siti",
+            "active": 1,
+            "default_cashier": 0,
+            "pin_hash": hash_pin("2345"),
+            "can_manager_override": 1,
+            "can_refund": 1,
+            "can_void": 1,
+            "can_open_shift": 1,
+            "can_close_shift": 1,
+        },
+    ]
+
+    printers = [
+        {
+            "role": "receipt",
+            "enabled": 1,
+            "protocol": "escpos_tcp",
+            "host": "receipt-printer",
+            "port": 9100,
+            "copies": 1,
+        },
+    ]
+
+    existing = frappe.db.exists("KoPOS Device", {"device_id": device_id})
+    if existing:
+        doc = frappe.get_doc("KoPOS Device", existing)
+        doc.pos_profile = pos_profile
+        doc.device_users = []
+        doc.printers = []
+        for row in users:
+            doc.append("device_users", row)
+        for row in printers:
+            doc.append("printers", row)
+        doc.save(ignore_permissions=True)
+        return doc
+
+    doc = frappe.get_doc(
+        {
+            "doctype": "KoPOS Device",
+            "device_id": device_id,
+            "device_name": "Smoke Test Tablet",
+            "device_prefix": "SMK",
+            "pos_profile": pos_profile,
+            "enabled": 1,
+            "allow_training_mode": 1,
+            "allow_manual_settings_override": 0,
+            "app_min_version": "0.1.0",
+            "device_users": users,
+            "printers": printers,
+        }
+    )
+    doc.insert(ignore_permissions=True)
+    return doc
+
+
+def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
+    base = setup_refund_smoke_data()
+    company = base["company"]
+
+    pos_opening = base.get("pos_opening_entry")
+    if pos_opening:
+        docstatus = frappe.db.get_value("POS Opening Entry", pos_opening, "docstatus")
+        if docstatus == 1:
+            frappe.db.set_value(
+                "POS Opening Entry", pos_opening, "docstatus", 2, update_modified=False
+            )
+        frappe.delete_doc(
+            "POS Opening Entry", pos_opening, force=True, ignore_permissions=True
+        )
+        frappe.db.commit()
+
+    device_id = "SMOKE-TAB-A001"
+    device_doc = _ensure_kopos_device(
+        device_id=device_id,
+        pos_profile=base["pos_profile"],
+        company=company,
+    )
+
+    _ensure_item_modifier_link(base["item_code"], "Size")
+
+    from kopos_connector.api.provisioning import (
+        create_pos_provisioning,
+        ensure_device_api_credentials,
+    )
+
+    credentials = ensure_device_api_credentials(device_doc)
+
+    resolved_url = erpnext_url or frappe.utils.get_url().rstrip("/")
+    provisioning = create_pos_provisioning(
+        device=device_doc.name,
+        erpnext_url=resolved_url,
+        api_key=credentials["api_key"],
+        api_secret=credentials["api_secret"],
+        expires_in_seconds=86400,
+    )
+
+    frappe.db.commit()
+
+    return {
+        "erpnext_url": resolved_url,
+        "site": frappe.local.site,
+        "device_id": device_id,
+        "device_name": device_doc.device_name,
+        "device_prefix": device_doc.device_prefix,
+        "api_key": credentials["api_key"],
+        "api_secret": credentials["api_secret"],
+        "provisioning_token": provisioning.get("token"),
+        "pos_profile": base["pos_profile"],
+        "company": company,
+        "warehouse": base["warehouse"],
+        "currency": frappe.db.get_value("Company", company, "default_currency")
+        or "MYR",
+        "item_code": base["item_code"],
+        "stock_item_code": "STOCK-MATCHA",
+        "users": [
+            {
+                "id": "staff@smoke.kopos.local",
+                "display_name": "Staff Ahmad",
+                "pin": "1234",
+            },
+            {
+                "id": "manager@smoke.kopos.local",
+                "display_name": "Manager Siti",
+                "pin": "2345",
+            },
+        ],
+    }
+
+
+def reset_smoke_data() -> dict[str, Any]:
+    device_id = "SMOKE-TAB-A001"
+    device_name = frappe.db.get_value("KoPOS Device", {"device_id": device_id}, "name")
+    if not device_name:
+        return setup_full_smoke_data()
+
+    for doctype in ("POS Invoice", "POS Closing Entry", "POS Opening Entry"):
+        records = frappe.get_all(
+            doctype,
+            filters={"custom_kopos_device_id": device_id},
+            pluck="name",
+        )
+        for name in records:
+            docstatus = frappe.db.get_value(doctype, name, "docstatus")
+            if docstatus == 1:
+                frappe.db.set_value(
+                    doctype, name, "docstatus", 2, update_modified=False
+                )
+            frappe.delete_doc(doctype, name, force=True, ignore_permissions=True)
+
+    frappe.db.commit()
+
+    return setup_full_smoke_data()
+
+
+def dump_smoke_state() -> dict[str, Any]:
+    device_id = "SMOKE-TAB-A001"
+    device_name = frappe.db.get_value("KoPOS Device", {"device_id": device_id}, "name")
+    if not device_name:
+        return {"status": "not_seeded", "message": "Run setup_full_smoke_data first"}
+
+    device = frappe.get_doc("KoPOS Device", device_name)
+    invoices = frappe.get_all(
+        "POS Invoice",
+        filters={"custom_kopos_device_id": device_id},
+        fields=["name", "grand_total", "docstatus", "posting_date"],
+    )
+    openings = frappe.get_all(
+        "POS Opening Entry",
+        filters={"custom_kopos_device_id": device_id, "docstatus": 1},
+        pluck="name",
+    )
+
+    from frappe.utils.password import get_decrypted_password
+
+    api_user = (device.api_user or "").strip()
+    api_key = ""
+    api_secret = ""
+    if api_user:
+        api_key = (frappe.db.get_value("User", api_user, "api_key") or "").strip()
+        api_secret = (
+            get_decrypted_password(
+                "User", api_user, "api_secret", raise_exception=False
+            )
+            or ""
+        ).strip()
+
+    return {
+        "status": "ready",
+        "site": frappe.local.site,
+        "device": {
+            "device_id": device_id,
+            "enabled": bool(device.enabled),
+            "pos_profile": device.pos_profile,
+            "config_version": device.config_version,
+        },
+        "credentials": {
+            "api_key": api_key,
+            "api_secret": api_secret,
+        },
+        "data": {
+            "items": len(frappe.get_all("Item", filters={"is_sales_item": 1})),
+            "modifier_groups": len(frappe.get_all("KoPOS Modifier Group")),
+            "open_shift": len(openings) > 0,
+            "pos_invoices": len(invoices),
+            "invoices": invoices,
+        },
+        "endpoints": {
+            "base": frappe.utils.get_url().rstrip("/"),
+            "ping": "api/method/kopos_connector.api.ping",
+            "catalog": "api/method/kopos_connector.api.get_catalog",
+            "submit_order": "api/method/kopos_connector.api.submit_order",
+        },
+    }
