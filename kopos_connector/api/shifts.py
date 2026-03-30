@@ -13,7 +13,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint, cstr, flt, now_datetime, nowdate
 
-from kopos_connector.api.devices import get_device_doc
+from kopos_connector.api.devices import elevate_device_api_user, get_device_doc
 
 
 # -----------------------------------------------------------------------------
@@ -964,140 +964,140 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
             frappe.ValidationError,
         )
 
-    opening_entry = frappe.get_doc("POS Opening Entry", pos_opening_entry)
-    if opening_entry.docstatus != 1:
-        frappe.throw(
-            _("POS Opening Entry {0} is not submitted").format(pos_opening_entry),
-            frappe.ValidationError,
+    with elevate_device_api_user():
+        opening_entry = frappe.get_doc("POS Opening Entry", pos_opening_entry)
+        if opening_entry.docstatus != 1:
+            frappe.throw(
+                _("POS Opening Entry {0} is not submitted").format(pos_opening_entry),
+                frappe.ValidationError,
+            )
+        if opening_entry.status != "Open":
+            frappe.throw(
+                _("POS Opening Entry {0} is not open").format(pos_opening_entry),
+                frappe.ValidationError,
+            )
+        if frappe.utils.cstr(opening_entry.pos_profile) != pos_profile_name:
+            frappe.throw(
+                _("POS Opening Entry {0} does not belong to POS Profile {1}").format(
+                    pos_opening_entry, pos_profile_name
+                ),
+                frappe.ValidationError,
+            )
+        if staff_id and frappe.utils.cstr(opening_entry.user) != staff_id:
+            frappe.throw(
+                _("POS Opening Entry {0} does not belong to user {1}").format(
+                    pos_opening_entry, staff_id
+                ),
+                frappe.ValidationError,
+            )
+        opening_device_id = frappe.utils.cstr(
+            _doc_value(opening_entry, "custom_kopos_device_id")
         )
-    if opening_entry.status != "Open":
-        frappe.throw(
-            _("POS Opening Entry {0} is not open").format(pos_opening_entry),
-            frappe.ValidationError,
+        if opening_device_id and opening_device_id != device_id:
+            frappe.throw(
+                _("POS Opening Entry {0} does not belong to device {1}").format(
+                    pos_opening_entry, device_id
+                ),
+                frappe.ValidationError,
+            )
+        opening_shift_id = frappe.utils.cstr(
+            _doc_value(opening_entry, "custom_kopos_shift_id")
         )
-    if frappe.utils.cstr(opening_entry.pos_profile) != pos_profile_name:
-        frappe.throw(
-            _("POS Opening Entry {0} does not belong to POS Profile {1}").format(
-                pos_opening_entry, pos_profile_name
-            ),
-            frappe.ValidationError,
+        if opening_shift_id and opening_shift_id != shift_id:
+            frappe.throw(
+                _("POS Opening Entry {0} does not belong to shift {1}").format(
+                    pos_opening_entry, shift_id
+                ),
+                frappe.ValidationError,
+            )
+
+        existing_close = frappe.db.exists(
+            "POS Closing Entry",
+            {"pos_opening_entry": pos_opening_entry, "docstatus": 1},
         )
-    if staff_id and frappe.utils.cstr(opening_entry.user) != staff_id:
-        frappe.throw(
-            _("POS Opening Entry {0} does not belong to user {1}").format(
-                pos_opening_entry, staff_id
-            ),
-            frappe.ValidationError,
+        if existing_close:
+            return {
+                "status": "duplicate",
+                "pos_closing_entry": existing_close,
+                "message": _("Shift already closed"),
+            }
+
+        period_end = _coerce_to_site_local_naive(
+            _validate_timestamp_skew(closed_at, "closed_at")
         )
-    opening_device_id = frappe.utils.cstr(
-        _doc_value(opening_entry, "custom_kopos_device_id")
-    )
-    if opening_device_id and opening_device_id != device_id:
-        frappe.throw(
-            _("POS Opening Entry {0} does not belong to device {1}").format(
-                pos_opening_entry, device_id
-            ),
-            frappe.ValidationError,
-        )
-    opening_shift_id = frappe.utils.cstr(
-        _doc_value(opening_entry, "custom_kopos_shift_id")
-    )
-    if opening_shift_id and opening_shift_id != shift_id:
-        frappe.throw(
-            _("POS Opening Entry {0} does not belong to shift {1}").format(
-                pos_opening_entry, shift_id
-            ),
-            frappe.ValidationError,
+        posting_date = period_end.date() if hasattr(period_end, "date") else nowdate()
+
+        counted_amount = flt(counted_cash_sen) / 100
+        cash_mode = _get_cash_mode_of_payment(
+            frappe.get_cached_doc("POS Profile", opening_entry.pos_profile)
         )
 
-    existing_close = frappe.db.exists(
-        "POS Closing Entry",
-        {"pos_opening_entry": pos_opening_entry, "docstatus": 1},
-    )
-    if existing_close:
+        balance_details = []
+        for row in opening_entry.balance_details:
+            mode = row.mode_of_payment
+            opening_amt = flt(row.opening_amount)
+            if frappe.utils.cstr(mode) == cash_mode:
+                balance_details.append(
+                    {
+                        "mode_of_payment": mode,
+                        "opening_amount": opening_amt,
+                        "closing_amount": counted_amount,
+                    }
+                )
+            else:
+                balance_details.append(
+                    {
+                        "mode_of_payment": mode,
+                        "opening_amount": opening_amt,
+                        "closing_amount": opening_amt,
+                    }
+                )
+
+        remarks = (
+            f"KoPOS idempotency_key: {idempotency_key}\n"
+            f"KoPOS shift_id: {shift_id}\n"
+            f"KoPOS device_id: {device_id}"
+        )
+        if discrepancy_note:
+            remarks = f"{remarks}\n{discrepancy_note}"
+
+        closing_doc = frappe.get_doc(
+            {
+                "doctype": "POS Closing Entry",
+                "pos_opening_entry": pos_opening_entry,
+                "pos_profile": opening_entry.pos_profile,
+                "company": opening_entry.company,
+                "user": opening_entry.user,
+                "period_end_date": period_end,
+                "posting_date": posting_date,
+                "remarks": remarks,
+                "balance_details": balance_details,
+            }
+        )
+
+        _set_custom_field_value(
+            closing_doc, "custom_kopos_idempotency_key", idempotency_key
+        )
+        _set_custom_field_value(closing_doc, "custom_kopos_shift_id", shift_id)
+        _set_custom_field_value(closing_doc, "custom_kopos_device_id", device_id)
+
+        closing_doc.insert(ignore_permissions=True)
+        closing_doc.submit()
+
+        _log_shift_audit(
+            action="close_shift",
+            device_id=device_id,
+            staff_id=staff_id,
+            result="success",
+            erp_doc_type="POS Closing Entry",
+            erp_doc_name=closing_doc.name,
+        )
+
         return {
-            "status": "duplicate",
-            "pos_closing_entry": existing_close,
-            "message": _("Shift already closed"),
-        }
-
-    period_end = _coerce_to_site_local_naive(
-        _validate_timestamp_skew(closed_at, "closed_at")
-    )
-    posting_date = period_end.date() if hasattr(period_end, "date") else nowdate()
-
-    counted_amount = flt(counted_cash_sen) / 100
-    cash_mode = _get_cash_mode_of_payment(
-        frappe.get_cached_doc("POS Profile", opening_entry.pos_profile)
-    )
-
-    balance_details = []
-    for row in opening_entry.balance_details:
-        mode = row.mode_of_payment
-        opening_amt = flt(row.opening_amount)
-        if frappe.utils.cstr(mode) == cash_mode:
-            balance_details.append(
-                {
-                    "mode_of_payment": mode,
-                    "opening_amount": opening_amt,
-                    "closing_amount": counted_amount,
-                }
-            )
-        else:
-            balance_details.append(
-                {
-                    "mode_of_payment": mode,
-                    "opening_amount": opening_amt,
-                    "closing_amount": opening_amt,
-                }
-            )
-
-    remarks = (
-        f"KoPOS idempotency_key: {idempotency_key}\n"
-        f"KoPOS shift_id: {shift_id}\n"
-        f"KoPOS device_id: {device_id}"
-    )
-    if discrepancy_note:
-        remarks = f"{remarks}\n{discrepancy_note}"
-
-    closing_doc = frappe.get_doc(
-        {
-            "doctype": "POS Closing Entry",
+            "status": "ok",
+            "pos_closing_entry": closing_doc.name,
             "pos_opening_entry": pos_opening_entry,
-            "pos_profile": opening_entry.pos_profile,
-            "company": opening_entry.company,
-            "user": opening_entry.user,
-            "period_end_date": period_end,
-            "posting_date": posting_date,
-            "remarks": remarks,
-            "balance_details": balance_details,
         }
-    )
-
-    _set_custom_field_value(
-        closing_doc, "custom_kopos_idempotency_key", idempotency_key
-    )
-    _set_custom_field_value(closing_doc, "custom_kopos_shift_id", shift_id)
-    _set_custom_field_value(closing_doc, "custom_kopos_device_id", device_id)
-
-    closing_doc.insert(ignore_permissions=True)
-    closing_doc.submit()
-
-    # Phase 7: Audit logging for successful shift close
-    _log_shift_audit(
-        action="close_shift",
-        device_id=device_id,
-        staff_id=staff_id,
-        result="success",
-        erp_doc_type="POS Closing Entry",
-        erp_doc_name=closing_doc.name,
-    )
-
-    return {
-        "status": "ok",
-        "pos_closing_entry": closing_doc.name,
-        "pos_opening_entry": pos_opening_entry,
-    }
 
 
 def get_device_open_shift_payload(device_id: str) -> dict[str, Any] | None:
