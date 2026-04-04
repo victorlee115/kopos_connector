@@ -20,9 +20,8 @@
   "pos_invoice",
   "outlet_id",
   "device_id",
-  "idempotency_key",
-  "idempotency_scope_key",
-  "section_timing",
+   "idempotency_key",
+   "section_timing",
   "round_number",
   "created_at",
   "scanned_at",
@@ -110,16 +109,9 @@
   {
     "fieldname": "idempotency_key",
     "fieldtype": "Data",
-    "label": "Idempotency Key"
-  },
-  {
-   "fieldname": "idempotency_scope_key",
-   "fieldtype": "Data",
-   "hidden": 1,
-   "label": "Scoped Idempotency Key",
-   "unique": 1
-  },
-  {
+     "label": "Idempotency Key"
+   },
+   {
    "fieldname": "section_timing",
    "fieldtype": "Section Break",
    "label": "Timing"

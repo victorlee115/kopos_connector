@@ -33,10 +33,6 @@ REUSABLE_STATUSES = ("pending", "scanned")
 UNKNOWN_STATUS = "unknown"
 
 
-def _scoped_idempotency_key(device_id: str, idempotency_key: str) -> str:
-    return f"{device_id}:{idempotency_key}"
-
-
 def _serialize_site_datetime(value: Any) -> str:
     dt = get_datetime(value)
     if dt.tzinfo is None:
@@ -62,14 +58,6 @@ def _load_existing_txn(device_id: str, idempotency_key: str) -> Any:
         "expires_at",
         "device_id",
     ]
-    existing = frappe.db.get_value(
-        "Maybank QR Transaction",
-        {"idempotency_scope_key": _scoped_idempotency_key(device_id, idempotency_key)},
-        fields,
-        as_dict=True,
-    )
-    if existing:
-        return existing
     return frappe.db.get_value(
         "Maybank QR Transaction",
         {"idempotency_key": idempotency_key, "device_id": device_id},
@@ -271,9 +259,6 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "maybank_status": 2,
                 "device_id": device_id,
                 "idempotency_key": idempotency_key,
-                "idempotency_scope_key": _scoped_idempotency_key(
-                    device_id, idempotency_key
-                ),
                 "round_number": 1,
                 "created_at": current_now,
                 "expires_at": expires_at,
