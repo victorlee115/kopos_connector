@@ -63,7 +63,20 @@
  "module": "KoPOS",
  "name": "KoPOS Modifier Option",
  "owner": "Administrator",
- "permissions": [],
+ "permissions": [
+  {
+   "read": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "role": "Item Manager"
+  },
+  {
+   "read": 1,
+   "role": "POS User"
+  }
+ ],
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
