@@ -182,6 +182,10 @@ def serialize_device_config(
         "device_id": cstr(device_doc.device_id).strip(),
         "device_name": cstr(device_doc.device_name).strip() or None,
         "device_prefix": cstr(device_doc.device_prefix).strip().upper() or None,
+        "static_qr_payload": cstr(
+            getattr(device_doc, "static_qr_payload", None)
+        ).strip()
+        or None,
         "enabled": bool(cint(device_doc.enabled)),
         "managed_by_erp": True,
         "config_version": cint(device_doc.config_version or 1),

@@ -256,6 +256,7 @@ class PosProvisioningTests(unittest.TestCase):
                     "device_id": "tab-a-001",
                     "device_name": "Tablet A",
                     "device_prefix": "A",
+                    "static_qr_payload": "000201STATICERP",
                     "pos_profile": "Counter 1",
                     "company": "KoPOS Demo Sdn Bhd",
                     "warehouse": "Main Warehouse",
@@ -300,6 +301,7 @@ class PosProvisioningTests(unittest.TestCase):
         cached = json.loads(cache.values["kopos:provisioning:token-123"])
         self.assertEqual(cached["setup"]["pos_profile"], "Counter 1")
         self.assertEqual(cached["setup"]["device_prefix"], "A")
+        self.assertEqual(cached["setup"]["static_qr_payload"], "000201STATICERP")
         self.assertEqual(cached["setup"]["device_id"], "tab-a-001")
         self.assertEqual(cached["setup"]["api_key"], "api-key")
         self.assertEqual(
@@ -316,6 +318,7 @@ class PosProvisioningTests(unittest.TestCase):
                     "device_id": "tab-a-001",
                     "erpnext_url": "https://erp.example.com",
                     "pos_profile": "Counter 1",
+                    "static_qr_payload": "000201STATICERP",
                     "api_key": "api-key",
                     "api_secret": "api-secret",
                 },
@@ -328,6 +331,7 @@ class PosProvisioningTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["setup"]["device_id"], "tab-a-001")
         self.assertEqual(result["setup"]["pos_profile"], "Counter 1")
+        self.assertEqual(result["setup"]["static_qr_payload"], "000201STATICERP")
         self.assertIn("kopos:provisioning:token-123", cache.deleted)
 
     def test_get_device_config_returns_serialized_device_payload(self):
@@ -342,6 +346,7 @@ class PosProvisioningTests(unittest.TestCase):
                     "device_id": "tab-a-001",
                     "config_version": 7,
                     "pos_profile": "Counter 1",
+                    "static_qr_payload": "000201STATICERP",
                     "printers": [{"role": "receipt", "host": "printer-main"}],
                 },
             ),
@@ -352,6 +357,7 @@ class PosProvisioningTests(unittest.TestCase):
         self.assertEqual(result["device_id"], "tab-a-001")
         self.assertEqual(result["config_version"], 7)
         self.assertEqual(result["setup"]["pos_profile"], "Counter 1")
+        self.assertEqual(result["setup"]["static_qr_payload"], "000201STATICERP")
 
     def test_create_device_provisioning_qr_uses_auto_generated_credentials(self):
         with (
