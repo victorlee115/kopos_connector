@@ -10,6 +10,12 @@ frappe.ui.form.on("POS Invoice", {
     }
 });
 
+frappe.ui.form.on("POS Invoice Item", {
+    items_remove: function(frm, cdt, cdn) {
+        kopos_modifier_ui.cleanup(cdn);
+    }
+});
+
 
 var kopos_modifier_ui = {
     _cache: new Map(),
@@ -164,5 +170,9 @@ var kopos_modifier_ui = {
     
     reset: function() {
         this._cache.clear();
+    },
+    
+    cleanup: function(rowName) {
+        this._cache.delete(rowName);
     }
 };
