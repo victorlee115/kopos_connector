@@ -86,11 +86,10 @@
   },
   {
    "depends_on": "eval:!doc.__islocal",
-   "description": "Optional. Link this group to a modifier option. When that option is selected on the POS, this group appears. Leave empty for always-visible groups.",
+   "description": "Optional. Enter a modifier option ID. When that option is selected on the POS, this group appears. Leave empty for always-visible groups.",
    "fieldname": "parent_option_id",
-   "fieldtype": "Link",
-   "label": "Show When Option Selected",
-   "options": "KoPOS Modifier Option"
+   "fieldtype": "Data",
+   "label": "Show When Option Selected"
   },
   {
    "fieldname": "options_section",
