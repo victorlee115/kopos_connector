@@ -6,7 +6,11 @@ import frappe
 from frappe import _
 from frappe.utils import now_datetime
 
-from kopos_connector.api.devices import get_device_doc
+from kopos_connector.api.devices import (
+    KOPOS_DEVICE_API_ROLE,
+    get_device_doc,
+    get_session_roles,
+)
 
 
 CatalogPayload = dict[str, Any]
@@ -464,19 +468,28 @@ def flt(value: Any) -> float:
 
 
 @frappe.whitelist()
-def get_modifier_option_list(
-    doctype: str,
-    txt: str,
-    searchfield: str,
-    start: int,
-    page_len: int,
-    filters: dict | None = None,
-) -> list[tuple[str, str]]:
-    """Return modifier options for Autocomplete field."""
-    results = frappe.get_all(
-        "KoPOS Modifier Option",
-        filters={"is_active": 1},
-        fields=["name", "option_name", "parent"],
-        order_by="parent asc, display_order asc, option_name asc",
-    )
-    return [(row.name, f"{row.option_name} ({row.parent})") for row in results]
+def list_modifier_option_choices() -> list[ERPRecord]:
+    roles = get_session_roles()
+    if (
+        "System Manager" not in roles
+        and "Item Manager" not in roles
+        and KOPOS_DEVICE_API_ROLE not in roles
+    ):
+        frappe.throw(
+            _("User {0} is not allowed to access KoPOS modifier configuration").format(
+                cstr(getattr(frappe.session, "user", None)).strip() or _("Guest")
+            ),
+            frappe.ValidationError,
+        )
+
+    return [
+        {
+            "value": cstr(option.get("id")).strip(),
+            "label": "{0} ({1})".format(
+                cstr(option.get("name")).strip(),
+                cstr(option.get("group_id")).strip(),
+            ),
+        }
+        for option in get_modifier_options()
+        if cstr(option.get("id")).strip()
+    ]

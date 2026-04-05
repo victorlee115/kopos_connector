@@ -10,6 +10,7 @@ from .catalog import (
     get_tax_rate_value,
 )
 from .devices import (
+    elevate_device_api_user,
     mark_device_seen,
     require_device_context,
     require_kopos_api_access,
@@ -44,7 +45,8 @@ def get_catalog(since: str | None = None, device_id: str | None = None) -> None:
         require_device_context(device_id=device_id)
         if device_id:
             mark_device_seen(device_id=device_id)
-        _write_response(build_catalog_payload(since=since, device_id=device_id))
+        with elevate_device_api_user():
+            _write_response(build_catalog_payload(since=since, device_id=device_id))
     except Exception:
         frappe.log_error(frappe.get_traceback(), "KoPOS get_catalog failed")
         raise
@@ -67,7 +69,8 @@ def get_tax_rate(pos_profile: str | None = None, device_id: str | None = None) -
 def get_item_modifiers(item_code: str) -> None:
     """Public KoPOS endpoint returning modifiers for a single item."""
     require_kopos_api_access()
-    _write_response({"modifier_groups": get_item_modifiers_payload(item_code)})
+    with elevate_device_api_user():
+        _write_response({"modifier_groups": get_item_modifiers_payload(item_code)})
 
 
 @frappe.whitelist()

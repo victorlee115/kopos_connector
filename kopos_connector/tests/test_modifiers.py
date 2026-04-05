@@ -418,5 +418,119 @@ class TestCatalogModifierGroups(unittest.TestCase):
         self.assertEqual(group["parent_option_id"], "opt-parent")
 
 
+class TestModifierOptionChoices(unittest.TestCase):
+    @patch("kopos_connector.api.catalog.get_modifier_options")
+    @patch("kopos_connector.api.catalog.get_session_roles")
+    def test_list_modifier_option_choices_for_system_manager(
+        self, mock_get_session_roles, mock_get_modifier_options
+    ):
+        from kopos_connector.api.catalog import list_modifier_option_choices
+
+        mock_get_session_roles.return_value = {"System Manager"}
+        mock_get_modifier_options.return_value = [
+            {"id": "KOPOS-OPT-00001", "name": "Iced", "group_id": "Temperature"},
+            {"id": "KOPOS-OPT-00002", "name": "Hot", "group_id": "Temperature"},
+        ]
+
+        result = list_modifier_option_choices()
+
+        self.assertEqual(
+            result,
+            [
+                {"value": "KOPOS-OPT-00001", "label": "Iced (Temperature)"},
+                {"value": "KOPOS-OPT-00002", "label": "Hot (Temperature)"},
+            ],
+        )
+
+    @patch("kopos_connector.api.catalog.get_session_roles")
+    def test_list_modifier_option_choices_rejects_unauthorized_user(
+        self, mock_get_session_roles
+    ):
+        from kopos_connector.api.catalog import list_modifier_option_choices
+
+        mock_get_session_roles.return_value = {"POS User"}
+
+        with patch(
+            "kopos_connector.api.catalog.frappe.session",
+            MagicMock(user="cashier@example.com"),
+        ):
+            with self.assertRaises(Exception):
+                list_modifier_option_choices()
+
+
+class TestCatalogApiElevation(unittest.TestCase):
+    def test_get_catalog_elevates_device_requests(self):
+        from kopos_connector.api import get_catalog
+
+        events = []
+
+        class ElevationContext:
+            def __enter__(self):
+                events.append("enter")
+
+            def __exit__(self, exc_type, exc, tb):
+                events.append("exit")
+
+        with (
+            patch(
+                "kopos_connector.api.require_device_context"
+            ) as require_device_context,
+            patch("kopos_connector.api.mark_device_seen") as mark_device_seen,
+            patch(
+                "kopos_connector.api.elevate_device_api_user",
+                return_value=ElevationContext(),
+            ),
+            patch(
+                "kopos_connector.api.build_catalog_payload",
+                return_value={"items": [], "modifier_groups": [], "categories": []},
+            ) as build_catalog_payload,
+            patch(
+                "kopos_connector.api.frappe.local",
+                MagicMock(response={}),
+            ),
+        ):
+            get_catalog(device_id="device-1")
+
+        require_device_context.assert_called_once_with(device_id="device-1")
+        mark_device_seen.assert_called_once_with(device_id="device-1")
+        build_catalog_payload.assert_called_once_with(since=None, device_id="device-1")
+        self.assertEqual(events, ["enter", "exit"])
+
+    def test_get_item_modifiers_elevates_device_requests(self):
+        from kopos_connector.api import get_item_modifiers
+
+        events = []
+
+        class ElevationContext:
+            def __enter__(self):
+                events.append("enter")
+
+            def __exit__(self, exc_type, exc, tb):
+                events.append("exit")
+
+        with (
+            patch(
+                "kopos_connector.api.require_kopos_api_access"
+            ) as require_kopos_api_access,
+            patch(
+                "kopos_connector.api.elevate_device_api_user",
+                return_value=ElevationContext(),
+            ),
+            patch(
+                "kopos_connector.api.get_item_modifiers_payload",
+                return_value=[],
+            ) as get_item_modifiers_payload,
+            patch(
+                "kopos_connector.api.frappe.local",
+                MagicMock(response={}),
+            ),
+        ):
+            get_item_modifiers("ITEM-1")
+
+        require_kopos_api_access.assert_called_once_with()
+        get_item_modifiers_payload.assert_called_once_with("ITEM-1")
+        self.assertEqual(events, ["enter", "exit"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -443,6 +443,7 @@ def ensure_kopos_client_scripts() -> None:
     ensure_kopos_roles()
     ensure_kopos_device_provisioning_script()
     ensure_pos_profile_provisioning_script()
+    ensure_modifier_group_parent_option_script()
 
 
 def ensure_kopos_roles() -> None:
@@ -600,6 +601,83 @@ frappe.ui.form.on(\"POS Profile\", {
             }
         )
         doc.insert(ignore_permissions=True)
+
+    frappe.db.commit()
+
+
+def ensure_modifier_group_parent_option_script() -> None:
+    script_name = "KoPOS Modifier Group Parent Option Picker"
+    script_body = """
+async function koposLoadParentOptionChoices(frm) {
+  const response = await frappe.call({
+    method: "kopos_connector.api.catalog.list_modifier_option_choices",
+  });
+
+  const choices = response.message || response || [];
+  const labels = {};
+  const values = [];
+
+  for (const choice of choices) {
+    const value = String(choice.value || "").trim();
+    if (!value) {
+      continue;
+    }
+
+    values.push(value);
+    labels[value] = String(choice.label || value);
+  }
+
+  frm.__koposParentOptionLabels = labels;
+  frm.set_df_property("parent_option_id", "options", values.join("\n"));
+
+  const current = String(frm.doc.parent_option_id || "").trim();
+  const description = current && labels[current]
+    ? __("Selected option: {0}", [labels[current]])
+    : __("Optional. Start typing an option ID to pick a parent modifier option.");
+
+  frm.set_df_property("parent_option_id", "description", description);
+}
+
+frappe.ui.form.on("KoPOS Modifier Group", {
+  refresh(frm) {
+    if (frm.is_new()) {
+      return;
+    }
+
+    void koposLoadParentOptionChoices(frm);
+  },
+
+  parent_option_id(frm) {
+    const labels = frm.__koposParentOptionLabels || {};
+    const current = String(frm.doc.parent_option_id || "").trim();
+    const description = current && labels[current]
+      ? __("Selected option: {0}", [labels[current]])
+      : __("Optional. Start typing an option ID to pick a parent modifier option.");
+
+    frm.set_df_property("parent_option_id", "description", description);
+  },
+});
+""".strip()
+
+    existing_name = frappe.db.exists("Client Script", script_name)
+    if existing_name:
+        doc = frappe.get_doc("Client Script", existing_name)
+        doc.dt = "KoPOS Modifier Group"
+        doc.view = "Form"
+        doc.enabled = 1
+        doc.script = script_body
+        doc.save(ignore_permissions=True)
+    else:
+        frappe.get_doc(
+            {
+                "doctype": "Client Script",
+                "name": script_name,
+                "dt": "KoPOS Modifier Group",
+                "view": "Form",
+                "enabled": 1,
+                "script": script_body,
+            }
+        ).insert(ignore_permissions=True)
 
     frappe.db.commit()
 

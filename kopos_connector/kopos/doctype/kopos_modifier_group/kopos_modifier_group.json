@@ -89,8 +89,7 @@
    "description": "Optional. When that option is selected on the POS, this group appears. Leave empty for always-visible groups.",
    "fieldname": "parent_option_id",
    "fieldtype": "Autocomplete",
-   "label": "Show When Option Selected",
-   "options": "kopos_connector.api.catalog.get_modifier_option_list"
+   "label": "Show When Option Selected"
   },
   {
    "fieldname": "options_section",
