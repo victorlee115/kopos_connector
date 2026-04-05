@@ -319,5 +319,104 @@ class TestExtractModifiersFromDescription(unittest.TestCase):
         self.assertEqual(result[0]["price"], 2.00)
 
 
+class TestCatalogModifierGroups(unittest.TestCase):
+    @patch("kopos_connector.api.catalog.frappe.get_all")
+    def test_get_modifier_groups_includes_parent_option_id(self, mock_get_all):
+        from kopos_connector.api.catalog import get_modifier_groups
+
+        mock_get_all.return_value = [
+            {
+                "id": "grp-temp",
+                "name": "Temperature",
+                "selection_type": "single",
+                "is_required": 1,
+                "min_selections": 0,
+                "max_selections": 1,
+                "display_order": 1,
+                "parent_option_id": None,
+            },
+            {
+                "id": "grp-ice",
+                "name": "Ice Level",
+                "selection_type": "single",
+                "is_required": 1,
+                "min_selections": 0,
+                "max_selections": 1,
+                "display_order": 2,
+                "parent_option_id": "opt-iced",
+            },
+        ]
+
+        result = get_modifier_groups()
+
+        self.assertEqual(len(result), 2)
+        self.assertIsNone(result[0]["parent_option_id"])
+        self.assertEqual(result[1]["parent_option_id"], "opt-iced")
+
+    @patch("kopos_connector.api.catalog.frappe.get_all")
+    def test_get_modifier_groups_handles_missing_parent_option_id(self, mock_get_all):
+        from kopos_connector.api.catalog import get_modifier_groups
+
+        mock_get_all.return_value = [
+            {
+                "id": "grp-size",
+                "name": "Size",
+                "selection_type": "single",
+                "is_required": 1,
+                "min_selections": 0,
+                "max_selections": 1,
+                "display_order": 1,
+            },
+        ]
+
+        result = get_modifier_groups()
+
+        self.assertEqual(len(result), 1)
+        self.assertIsNone(result[0].get("parent_option_id"))
+
+    @patch("kopos_connector.api.catalog.frappe.get_all")
+    def test_get_modifier_groups_with_since_filter(self, mock_get_all):
+        from kopos_connector.api.catalog import get_modifier_groups
+
+        mock_get_all.return_value = []
+
+        get_modifier_groups(since="2026-03-01T00:00:00")
+
+        mock_get_all.assert_called_once()
+        call_filters = mock_get_all.call_args[1]["filters"]
+        self.assertEqual(call_filters["is_active"], 1)
+        self.assertEqual(call_filters["modified"], [">=", "2026-03-01T00:00:00"])
+
+    @patch("kopos_connector.api.catalog.frappe.get_all")
+    def test_get_modifier_groups_returns_all_required_fields(self, mock_get_all):
+        from kopos_connector.api.catalog import get_modifier_groups
+
+        mock_get_all.return_value = [
+            {
+                "id": "grp-test",
+                "name": "Test Group",
+                "selection_type": "multiple",
+                "is_required": 1,
+                "min_selections": 2,
+                "max_selections": 5,
+                "display_order": 10,
+                "parent_option_id": "opt-parent",
+            },
+        ]
+
+        result = get_modifier_groups()
+
+        self.assertEqual(len(result), 1)
+        group = result[0]
+        self.assertEqual(group["id"], "grp-test")
+        self.assertEqual(group["name"], "Test Group")
+        self.assertEqual(group["selection_type"], "multiple")
+        self.assertEqual(group["is_required"], 1)
+        self.assertEqual(group["min_selections"], 2)
+        self.assertEqual(group["max_selections"], 5)
+        self.assertEqual(group["display_order"], 10)
+        self.assertEqual(group["parent_option_id"], "opt-parent")
+
+
 if __name__ == "__main__":
     unittest.main()

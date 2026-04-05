@@ -17,6 +17,8 @@
   "max_selections",
   "display_order",
   "is_active",
+  "conditional_section",
+  "parent_option_id",
   "options_section",
   "options"
  ],
@@ -76,6 +78,19 @@
    "fieldname": "is_active",
    "fieldtype": "Check",
    "label": "Active"
+  },
+  {
+   "fieldname": "conditional_section",
+   "fieldtype": "Section Break",
+   "label": "Conditional Display"
+  },
+  {
+   "depends_on": "eval:!doc.__islocal",
+   "description": "Optional. Link this group to a modifier option. When that option is selected on the POS, this group appears. Leave empty for always-visible groups.",
+   "fieldname": "parent_option_id",
+   "fieldtype": "Link",
+   "label": "Show When Option Selected",
+   "options": "KoPOS Modifier Option"
   },
   {
    "fieldname": "options_section",

@@ -344,6 +344,7 @@ def get_modifier_groups(since: str | None = None) -> list[ERPRecord]:
             "min_selections",
             "max_selections",
             "display_order",
+            "parent_option_id",
         ],
         order_by="display_order asc, group_name asc",
     )
@@ -357,6 +358,7 @@ def get_modifier_groups(since: str | None = None) -> list[ERPRecord]:
             "min_selections": cint(row.get("min_selections") or 0),
             "max_selections": cint(row.get("max_selections") or 1),
             "display_order": cint(row.get("display_order") or 0),
+            "parent_option_id": row.get("parent_option_id"),
         }
         for row in rows
     ]
