@@ -86,10 +86,11 @@
   },
   {
    "depends_on": "eval:!doc.__islocal",
-   "description": "Optional. Enter a modifier option ID. When that option is selected on the POS, this group appears. Leave empty for always-visible groups.",
+   "description": "Optional. When that option is selected on the POS, this group appears. Leave empty for always-visible groups.",
    "fieldname": "parent_option_id",
-   "fieldtype": "Data",
-   "label": "Show When Option Selected"
+   "fieldtype": "Autocomplete",
+   "label": "Show When Option Selected",
+   "options": "kopos_connector.api.catalog.get_modifier_option_list"
   },
   {
    "fieldname": "options_section",

@@ -461,3 +461,22 @@ def cstr(value: Any) -> str:
 
 def flt(value: Any) -> float:
     return frappe.utils.flt(value)
+
+
+@frappe.whitelist()
+def get_modifier_option_list(
+    doctype: str,
+    txt: str,
+    searchfield: str,
+    start: int,
+    page_len: int,
+    filters: dict | None = None,
+) -> list[tuple[str, str]]:
+    """Return modifier options for Autocomplete field."""
+    results = frappe.get_all(
+        "KoPOS Modifier Option",
+        filters={"is_active": 1},
+        fields=["name", "option_name", "parent"],
+        order_by="parent asc, display_order asc, option_name asc",
+    )
+    return [(row.name, f"{row.option_name} ({row.parent})") for row in results]
