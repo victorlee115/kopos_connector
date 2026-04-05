@@ -138,6 +138,10 @@
   {
    "read": 1,
    "role": "POS User"
+  },
+  {
+   "read": 1,
+   "role": "KoPOS Device API"
   }
  ],
  "sort_field": "display_order",

@@ -47,7 +47,24 @@
  "module": "KoPOS",
  "name": "KoPOS Item Modifier Group",
  "owner": "Administrator",
- "permissions": [],
+ "permissions": [
+  {
+   "read": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "role": "Item Manager"
+  },
+  {
+   "read": 1,
+   "role": "POS User"
+  },
+  {
+   "read": 1,
+   "role": "KoPOS Device API"
+  }
+ ],
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": []
