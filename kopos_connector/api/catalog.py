@@ -255,7 +255,7 @@ def get_item_modifier_groups(item_code: str) -> list[str]:
         filters={
             "parent": item_code,
             "parenttype": "Item",
-            "parentfield": "modifier_groups",
+            "parentfield": "custom_kopos_modifier_groups",
         },
         order_by="display_order asc, idx asc",
         pluck="modifier_group",

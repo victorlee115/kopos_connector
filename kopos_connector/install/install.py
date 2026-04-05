@@ -130,7 +130,7 @@ def create_kopos_custom_fields():
                 "collapsible": 1,
             },
             {
-                "fieldname": "kopos_modifier_groups",
+                "fieldname": "custom_kopos_modifier_groups",
                 "label": "KoPOS Modifier Groups",
                 "fieldtype": "Table",
                 "options": "KoPOS Item Modifier Group",

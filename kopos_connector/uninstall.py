@@ -31,6 +31,8 @@ def remove_custom_fields():
         "Item-custom_kopos_is_prep_item",
         "Item-kopos_modifiers_section",
         "Item-custom_kopos_modifier_groups",
+        # Legacy field name (without custom_ prefix) - remove duplicates
+        "Item-kopos_modifier_groups",
         # POS Profile fields
         "POS Profile-kopos_sst_section",
         "POS Profile-custom_kopos_enable_sst",
