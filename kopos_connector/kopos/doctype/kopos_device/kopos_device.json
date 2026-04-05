@@ -12,6 +12,7 @@
   "device_id",
   "device_name",
   "device_prefix",
+  "static_qr_payload",
   "enabled",
   "pos_profile",
   "api_user",
@@ -46,6 +47,11 @@
    "fieldname": "device_prefix",
    "fieldtype": "Data",
    "label": "Device Prefix"
+  },
+  {
+   "fieldname": "static_qr_payload",
+   "fieldtype": "Small Text",
+   "label": "Static QR Payload"
   },
   {
    "default": "1",

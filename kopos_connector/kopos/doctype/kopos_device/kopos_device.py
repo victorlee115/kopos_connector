@@ -16,6 +16,9 @@ class KoPOSDevice(Document):
         self.device_id = cstr(self.device_id).strip()
         self.device_name = cstr(self.device_name).strip()
         self.device_prefix = cstr(self.device_prefix).strip().upper()
+        self.static_qr_payload = (
+            cstr(getattr(self, "static_qr_payload", None)).strip() or None
+        )
         self.app_min_version = cstr(self.app_min_version).strip() or None
 
         if not self.device_id:
@@ -143,6 +146,7 @@ def _config_signature(doc: Document) -> str:
         "device_id": cstr(doc.device_id).strip(),
         "device_name": cstr(doc.device_name).strip(),
         "device_prefix": cstr(doc.device_prefix).strip().upper(),
+        "static_qr_payload": cstr(getattr(doc, "static_qr_payload", None)).strip(),
         "enabled": cint(doc.enabled),
         "pos_profile": cstr(doc.pos_profile).strip(),
         "allow_training_mode": cint(doc.allow_training_mode),
