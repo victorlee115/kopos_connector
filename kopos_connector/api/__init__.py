@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import frappe
+from frappe import _
 
 from .catalog import (
     build_catalog_payload,
@@ -11,6 +12,7 @@ from .catalog import (
 )
 from .devices import (
     elevate_device_api_user,
+    get_authenticated_device_doc,
     mark_device_seen,
     require_device_context,
     require_kopos_api_access,
@@ -455,14 +457,12 @@ def request_shift_manager_approval(**kwargs: Any) -> None:
 
             # Check if user has can_manager_override on this device
             is_device_manager = False
-            if hasattr(device_doc, "device_users"):
-                for user_row in device_doc.device_users or []:
-                    if frappe.utils.cstr(getattr(user_row, "user", "")) == session_user:
-                        if frappe.utils.cint(
-                            getattr(user_row, "can_manager_override", 0)
-                        ):
-                            is_device_manager = True
-                            break
+            device_users = getattr(device_doc, "device_users", None)
+            for user_row in device_users or []:
+                if frappe.utils.cstr(getattr(user_row, "user", "")) == session_user:
+                    if frappe.utils.cint(getattr(user_row, "can_manager_override", 0)):
+                        is_device_manager = True
+                        break
 
             if not is_system_manager and not is_device_manager:
                 frappe.throw(
@@ -540,7 +540,7 @@ def check_maybank_payment(
             device = require_device_context(device_id=resolved_device_id)
             resolved_device_id = frappe.utils.cstr(getattr(device, "device_id", ""))
         else:
-            device = _resolve_device_from_user()
+            device = get_authenticated_device_doc()
             resolved_device_id = frappe.utils.cstr(getattr(device, "device_id", ""))
         _write_response(
             check_maybank_payment_payload(
@@ -556,38 +556,6 @@ def check_maybank_payment(
             {"status": "error", "message": "Failed to check payment status"},
             http_status_code=500,
         )
-
-
-def _resolve_device_from_user():
-    """Resolve the KoPOS Device from the authenticated API key user."""
-    from .devices import KOPOS_DEVICE_API_ROLE, get_device_doc, get_session_roles
-
-    resolved_user = frappe.utils.cstr(getattr(frappe.session, "user", None)).strip()
-    if not resolved_user or resolved_user == "Guest":
-        frappe.throw("Authentication required", frappe.ValidationError)
-
-    roles = get_session_roles(resolved_user)
-    if "System Manager" in roles:
-        frappe.throw("System Manager must provide device_id", frappe.ValidationError)
-
-    if KOPOS_DEVICE_API_ROLE not in roles:
-        frappe.throw(
-            frappe._("User {0} is not allowed to access KoPOS device APIs").format(
-                resolved_user
-            ),
-            frappe.ValidationError,
-        )
-
-    device_name = frappe.db.get_value(
-        "KoPOS Device", {"api_user": resolved_user}, "name"
-    )
-    if not device_name:
-        frappe.throw(
-            frappe._("No KoPOS Device found for user {0}").format(resolved_user),
-            frappe.ValidationError,
-        )
-
-    return get_device_doc(name=device_name)
 
 
 __all__ = [

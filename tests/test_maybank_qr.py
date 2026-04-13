@@ -4,6 +4,7 @@ import importlib
 import sys
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from tests.fake_frappe import install_fake_frappe_modules
@@ -107,7 +108,7 @@ class MaybankQrStatusTests(unittest.TestCase):
             device_id="device-1",
         )
 
-        delete_calls: list[tuple] = []
+        delete_calls: list[object] = []
 
         def fake_sql(sql, *args, **kwargs):
             if "DELETE" in sql:

@@ -63,6 +63,11 @@ def require_device_api_access(device_doc) -> None:
             frappe.ValidationError,
         )
 
+    ensure_unique_device_api_user(
+        resolved_user,
+        current_device_name=cstr(getattr(device_doc, "name", None)).strip() or None,
+    )
+
 
 def require_kopos_api_access() -> None:
     roles = get_session_roles()
@@ -151,6 +156,84 @@ def get_device_doc(device_id: str | None = None, name: str | None = None):
         return frappe.get_doc("KoPOS Device", name_value)
 
     frappe.throw(_("KoPOS Device is required"), frappe.ValidationError)
+
+
+def get_authenticated_device_doc():
+    cached_device = getattr(getattr(frappe, "flags", None), "kopos_device", None)
+    cached_user = cstr(getattr(cached_device, "api_user", None)).strip()
+    session_user = cstr(getattr(frappe.session, "user", None)).strip()
+    if cached_device and cached_user and cached_user == session_user:
+        return cached_device
+
+    if not session_user or session_user == "Guest":
+        frappe.throw(_("Authentication required"), frappe.ValidationError)
+
+    roles = get_session_roles(session_user)
+    if "System Manager" in roles:
+        frappe.throw(_("System Manager must provide device_id"), frappe.ValidationError)
+
+    if KOPOS_DEVICE_API_ROLE not in roles:
+        frappe.throw(
+            _("User {0} is not allowed to access KoPOS device APIs").format(
+                session_user
+            ),
+            frappe.ValidationError,
+        )
+
+    device_rows = frappe.get_all(
+        "KoPOS Device",
+        filters={"api_user": session_user},
+        fields=["name"],
+        limit_page_length=2,
+    )
+    if not device_rows:
+        frappe.throw(
+            _("No KoPOS Device found for user {0}").format(session_user),
+            frappe.ValidationError,
+        )
+
+    if len(device_rows) > 1:
+        frappe.throw(
+            _("User {0} is assigned to multiple KoPOS Devices").format(session_user),
+            frappe.ValidationError,
+        )
+
+    device_doc = get_device_doc(name=cstr(device_rows[0].get("name")).strip())
+    setattr(frappe.flags, "kopos_device", device_doc)
+    return device_doc
+
+
+def ensure_unique_device_api_user(
+    api_user: str | None, *, current_device_name: str | None = None
+) -> None:
+    resolved_user = cstr(api_user).strip()
+    if not resolved_user:
+        return
+
+    filters: dict[str, Any] = {"api_user": resolved_user}
+    current_name = cstr(current_device_name).strip()
+    if current_name:
+        filters["name"] = ["!=", current_name]
+
+    conflicting_devices = frappe.get_all(
+        "KoPOS Device",
+        filters=filters,
+        fields=["name", "device_id"],
+        limit_page_length=1,
+    )
+    if not conflicting_devices:
+        return
+
+    conflict_name = (
+        cstr(conflicting_devices[0].get("device_id")).strip()
+        or cstr(conflicting_devices[0].get("name")).strip()
+    )
+    frappe.throw(
+        _("API user {0} is already assigned to KoPOS Device {1}").format(
+            resolved_user, conflict_name
+        ),
+        frappe.ValidationError,
+    )
 
 
 def get_device_pos_profile_doc(device_id: str | None = None, name: str | None = None):
