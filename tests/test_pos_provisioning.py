@@ -16,6 +16,9 @@ provisioning = importlib.import_module("kopos_connector.api.provisioning")
 kopos_device_module = importlib.import_module(
     "kopos_connector.kopos.doctype.kopos_device.kopos_device"
 )
+normalize_duplicate_device_api_users = importlib.import_module(
+    "kopos_connector.patches.normalize_duplicate_device_api_users"
+)
 
 
 class _FakeCache:
@@ -484,6 +487,68 @@ class PosProvisioningTests(unittest.TestCase):
                 device.validate()
 
         self.assertIn("already assigned to KoPOS Device", str(error.exception))
+
+    def test_duplicate_api_user_patch_clears_secondary_devices(self):
+        set_value_calls = []
+
+        def fake_set_value(*args, **kwargs):
+            set_value_calls.append((args, kwargs))
+
+        duplicate_rows = [
+            {
+                "name": "KOPOS-DEVICE-002",
+                "device_id": "tab-b-001",
+                "api_user": "shared@kopos.local",
+                "last_seen_at": "2026-03-11T09:50:00",
+                "modified": "2026-03-11 10:05:00.000000",
+            },
+            {
+                "name": "KOPOS-DEVICE-001",
+                "device_id": "tab-a-001",
+                "api_user": "shared@kopos.local",
+                "last_seen_at": "2026-03-11T10:05:00",
+                "modified": "2026-03-11 09:55:00.000000",
+            },
+            {
+                "name": "KOPOS-DEVICE-003",
+                "device_id": "tab-c-001",
+                "api_user": "unique@kopos.local",
+                "last_seen_at": "2026-03-11T09:30:00",
+                "modified": "2026-03-11 09:30:00.000000",
+            },
+        ]
+
+        with (
+            patch.object(
+                normalize_duplicate_device_api_users.frappe,
+                "get_all",
+                return_value=duplicate_rows,
+            ),
+            patch.object(
+                normalize_duplicate_device_api_users.frappe.db,
+                "set_value",
+                side_effect=fake_set_value,
+            ),
+            patch.object(
+                normalize_duplicate_device_api_users.frappe, "log_error"
+            ) as log_error,
+            patch.object(
+                normalize_duplicate_device_api_users.frappe.db, "commit"
+            ) as commit,
+        ):
+            normalize_duplicate_device_api_users.execute()
+
+        self.assertEqual(
+            set_value_calls,
+            [
+                (
+                    ("KoPOS Device", "KOPOS-DEVICE-001", "api_user", None),
+                    {"update_modified": False},
+                )
+            ],
+        )
+        log_error.assert_called_once()
+        commit.assert_called_once()
 
 
 if __name__ == "__main__":
