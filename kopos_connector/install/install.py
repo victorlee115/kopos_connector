@@ -5,6 +5,10 @@ import frappe
 from frappe import _
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
+from kopos_connector.patches.normalize_duplicate_device_api_users import (
+    execute as normalize_duplicate_device_api_users,
+)
+
 
 KOPOS_DEVICE_API_ROLE = "KoPOS Device API"
 
@@ -33,6 +37,11 @@ def before_install():
 
     frappe.logger().info("KoPOS Connector: Pre-installation checks passed")
     return True
+
+
+def before_migrate():
+    """Normalize duplicate device API users before DocType schema sync."""
+    normalize_duplicate_device_api_users()
 
 
 def after_install():

@@ -67,6 +67,7 @@ doctype_js = {
 # ------------
 
 before_install = "kopos_connector.install.install.before_install"
+before_migrate = "kopos_connector.install.install.before_migrate"
 after_install = "kopos_connector.install.install.after_install"
 after_migrate = "kopos_connector.install.install.after_migrate"
 
