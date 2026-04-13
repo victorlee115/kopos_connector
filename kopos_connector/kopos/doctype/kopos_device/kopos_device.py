@@ -8,6 +8,7 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import cint, cstr
 
+from kopos_connector.api.devices import ensure_unique_device_api_user
 from kopos_connector.utils.pin import hash_pin
 
 
@@ -16,6 +17,7 @@ class KoPOSDevice(Document):
         self.device_id = cstr(self.device_id).strip()
         self.device_name = cstr(self.device_name).strip()
         self.device_prefix = cstr(self.device_prefix).strip().upper()
+        self.api_user = cstr(getattr(self, "api_user", None)).strip() or None
         self.static_qr_payload = (
             cstr(getattr(self, "static_qr_payload", None)).strip() or None
         )
@@ -27,6 +29,7 @@ class KoPOSDevice(Document):
         if not self.device_name:
             frappe.throw(_("Device Name is required"), frappe.ValidationError)
 
+        ensure_unique_device_api_user(self.api_user, current_device_name=self.name)
         self._validate_printers()
         self._normalize_users()
         self._bump_config_version_if_needed()

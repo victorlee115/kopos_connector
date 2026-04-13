@@ -13,6 +13,9 @@ catalog = importlib.import_module("kopos_connector.api.catalog")
 devices = importlib.import_module("kopos_connector.api.devices")
 auth = importlib.import_module("kopos_connector.auth")
 provisioning = importlib.import_module("kopos_connector.api.provisioning")
+kopos_device_module = importlib.import_module(
+    "kopos_connector.kopos.doctype.kopos_device.kopos_device"
+)
 
 
 class _FakeCache:
@@ -218,6 +221,33 @@ class PosProvisioningTests(unittest.TestCase):
             with self.assertRaises(devices.frappe.ValidationError):
                 devices.require_device_api_access(device_doc)
 
+    def test_require_device_api_access_rejects_shared_api_user_mapping(self):
+        device_doc = SimpleNamespace(
+            name="KOPOS-DEVICE-001",
+            device_id="tab-a-001",
+            api_user="device-a@kopos.local",
+        )
+
+        with (
+            patch.object(
+                devices.frappe, "session", SimpleNamespace(user="device-a@kopos.local")
+            ),
+            patch.object(
+                devices.frappe,
+                "get_roles",
+                return_value=[devices.KOPOS_DEVICE_API_ROLE],
+            ),
+            patch.object(
+                devices.frappe,
+                "get_all",
+                return_value=[{"name": "KOPOS-DEVICE-002", "device_id": "tab-b-001"}],
+            ),
+        ):
+            with self.assertRaises(devices.frappe.ValidationError) as error:
+                devices.require_device_api_access(device_doc)
+
+        self.assertIn("already assigned to KoPOS Device", str(error.exception))
+
     def test_device_api_users_are_blocked_from_non_api_routes(self):
         with (
             patch.object(
@@ -405,6 +435,55 @@ class PosProvisioningTests(unittest.TestCase):
         self.assertEqual(
             result["setup_preview"]["provisioning_user"], "device-001@kopos.local"
         )
+
+    def test_ensure_device_api_credentials_rejects_shared_api_user_mapping(self):
+        device_doc = SimpleNamespace(
+            name="KOPOS-DEVICE-001",
+            device_id="tab-a-001",
+            device_name="Tablet A",
+            api_user="shared-device@kopos.local",
+        )
+
+        with (
+            patch.object(provisioning.frappe.db, "exists", return_value=True),
+            patch.object(
+                provisioning.frappe,
+                "get_all",
+                return_value=[{"name": "KOPOS-DEVICE-002", "device_id": "tab-b-001"}],
+            ),
+        ):
+            with self.assertRaises(provisioning.frappe.ValidationError) as error:
+                provisioning.ensure_device_api_credentials(device_doc)
+
+        self.assertIn("already assigned to KoPOS Device", str(error.exception))
+
+    def test_kopos_device_validate_rejects_shared_api_user_mapping(self):
+        device = kopos_device_module.KoPOSDevice()
+        device.name = "KOPOS-DEVICE-001"
+        device.device_id = "tab-a-001"
+        device.device_name = "Tablet A"
+        device.device_prefix = "a"
+        device.api_user = "shared-device@kopos.local"
+        device.static_qr_payload = None
+        device.app_min_version = None
+        device.printers = []
+        device.device_users = []
+        device.config_version = 1
+        device.allow_training_mode = 0
+        device.allow_manual_settings_override = 0
+        device.enabled = 1
+        device.pos_profile = "Counter 1"
+        device.is_new = lambda: True
+
+        with patch.object(
+            kopos_device_module.frappe,
+            "get_all",
+            return_value=[{"name": "KOPOS-DEVICE-002", "device_id": "tab-b-001"}],
+        ):
+            with self.assertRaises(kopos_device_module.frappe.ValidationError) as error:
+                device.validate()
+
+        self.assertIn("already assigned to KoPOS Device", str(error.exception))
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from frappe.utils import cint, cstr, now_datetime
 
 from kopos_connector.api.devices import (
     KOPOS_DEVICE_API_ROLE,
+    ensure_unique_device_api_user,
     get_device_doc,
     require_device_api_access,
     require_system_manager,
@@ -267,6 +268,10 @@ def _ensure_device_api_user(device_doc) -> str:
     user_email = cstr(
         getattr(device_doc, "api_user", None)
     ).strip() or _device_api_user_email(device_doc)
+    ensure_unique_device_api_user(
+        user_email,
+        current_device_name=cstr(getattr(device_doc, "name", None)).strip() or None,
+    )
     display_name = (
         cstr(getattr(device_doc, "device_name", None)).strip()
         or cstr(getattr(device_doc, "device_id", None)).strip()
