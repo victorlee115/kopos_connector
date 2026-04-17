@@ -51,6 +51,7 @@ def after_install():
     Called automatically after app installation
     """
     try:
+        ensure_kopos_module_defs()
         ensure_kopos_custom_fields(skip_if_missing_doctypes=True)
         create_fb_custom_fields()
     except Exception as e:
@@ -63,8 +64,22 @@ def after_install():
 
 def after_migrate():
     """Ensure KoPOS custom fields exist after DocTypes are synced."""
+    ensure_kopos_module_defs()
     ensure_kopos_custom_fields(skip_if_missing_doctypes=False)
     create_fb_custom_fields()
+
+
+def ensure_kopos_module_defs() -> None:
+    if frappe.db.exists("Module Def", "KoPOS"):
+        return
+
+    frappe.get_doc(
+        {
+            "doctype": "Module Def",
+            "module_name": "KoPOS",
+            "app_name": "kopos_connector",
+        }
+    ).insert(ignore_permissions=True)
 
 
 def ensure_kopos_custom_fields(skip_if_missing_doctypes: bool) -> None:
