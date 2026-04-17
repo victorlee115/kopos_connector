@@ -1,0 +1,236 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 1,
+    "allow_rename": 0,
+    "autoname": "format:FB-SHIFT-{YYYY}-{MM}-{DD}-{#####}",
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "shift_section",
+        "shift_code",
+        "device_id",
+        "staff_id",
+        "column_break_1",
+        "status",
+        "event_project",
+        "warehouse",
+        "company",
+        "timing_section",
+        "opened_at",
+        "closed_at",
+        "cash_section",
+        "opening_float",
+        "expected_cash",
+        "column_break_2",
+        "counted_cash",
+        "cash_variance",
+        "approval_section",
+        "manager_approved_by",
+        "approval_notes",
+        "exception_section",
+        "close_blocked_reason",
+        "remarks"
+    ],
+    "fields": [
+        {
+            "fieldname": "shift_section",
+            "fieldtype": "Section Break",
+            "label": "Shift Information"
+        },
+        {
+            "fieldname": "shift_code",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Shift Code",
+            "reqd": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "device_id",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Device ID",
+            "reqd": 1
+        },
+        {
+            "fieldname": "staff_id",
+            "fieldtype": "Link",
+            "label": "Staff",
+            "options": "User",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "default": "Open",
+            "fieldname": "status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Status",
+            "options": "Open\nClosing\nClosed\nException\nCancelled",
+            "reqd": 1
+        },
+        {
+            "fieldname": "event_project",
+            "fieldtype": "Link",
+            "label": "Event/Project",
+            "options": "Project"
+        },
+        {
+            "fieldname": "warehouse",
+            "fieldtype": "Link",
+            "label": "Booth Warehouse",
+            "options": "Warehouse",
+            "reqd": 1
+        },
+        {
+            "fieldname": "company",
+            "fieldtype": "Link",
+            "label": "Company",
+            "options": "Company",
+            "reqd": 1
+        },
+        {
+            "fieldname": "timing_section",
+            "fieldtype": "Section Break",
+            "label": "Timing"
+        },
+        {
+            "default": "Now",
+            "fieldname": "opened_at",
+            "fieldtype": "Datetime",
+            "label": "Opened At",
+            "reqd": 1
+        },
+        {
+            "fieldname": "closed_at",
+            "fieldtype": "Datetime",
+            "label": "Closed At"
+        },
+        {
+            "fieldname": "cash_section",
+            "fieldtype": "Section Break",
+            "label": "Cash Control"
+        },
+        {
+            "fieldname": "opening_float",
+            "fieldtype": "Currency",
+            "label": "Opening Float",
+            "reqd": 1
+        },
+        {
+            "fieldname": "expected_cash",
+            "fieldtype": "Currency",
+            "label": "Expected Cash",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_2",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "counted_cash",
+            "fieldtype": "Currency",
+            "label": "Counted Cash"
+        },
+        {
+            "fieldname": "cash_variance",
+            "fieldtype": "Currency",
+            "label": "Cash Variance",
+            "read_only": 1
+        },
+        {
+            "fieldname": "approval_section",
+            "fieldtype": "Section Break",
+            "label": "Approval"
+        },
+        {
+            "fieldname": "manager_approved_by",
+            "fieldtype": "Link",
+            "label": "Manager Approved By",
+            "options": "User"
+        },
+        {
+            "fieldname": "approval_notes",
+            "fieldtype": "Small Text",
+            "label": "Approval Notes"
+        },
+        {
+            "fieldname": "exception_section",
+            "fieldtype": "Section Break",
+            "label": "Exception Handling"
+        },
+        {
+            "fieldname": "close_blocked_reason",
+            "fieldtype": "Small Text",
+            "label": "Close Blocked Reason",
+            "read_only": 1
+        },
+        {
+            "fieldname": "remarks",
+            "fieldtype": "Small Text",
+            "label": "Remarks"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "links": [
+        {
+            "group": "Orders",
+            "link_doctype": "FB Order",
+            "link_fieldname": "shift"
+        }
+    ],
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Shift",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "KoPOS Manager",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 0,
+            "export": 0,
+            "print": 1,
+            "read": 1,
+            "report": 0,
+            "role": "KoPOS Cashier",
+            "share": 0,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1,
+    "track_seen": 1,
+    "track_views": 1
+}

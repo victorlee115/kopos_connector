@@ -1,0 +1,146 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 0,
+    "allow_rename": 0,
+    "autoname": "format:FB-REFILL-{YYYY}-{MM}-{DD}-{#####}",
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "request_info",
+        "request_id",
+        "event_project",
+        "from_warehouse",
+        "to_warehouse",
+        "column_break_1",
+        "status",
+        "requested_by",
+        "approved_by",
+        "fulfilled_stock_entry",
+        "received_at",
+        "lines"
+    ],
+    "fields": [
+        {
+            "fieldname": "company",
+            "fieldtype": "Link",
+            "label": "Company",
+            "options": "Company",
+            "reqd": 1
+        },
+        {
+            "fieldname": "request_info",
+            "fieldtype": "Section Break",
+            "label": "Request Information"
+        },
+        {
+            "fieldname": "request_id",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Request ID",
+            "reqd": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "event_project",
+            "fieldtype": "Link",
+            "label": "Event/Project",
+            "options": "Project"
+        },
+        {
+            "fieldname": "from_warehouse",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "From Warehouse",
+            "options": "Warehouse",
+            "reqd": 1
+        },
+        {
+            "fieldname": "to_warehouse",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "To Warehouse",
+            "options": "Warehouse",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "default": "Draft",
+            "fieldname": "status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Status",
+            "options": "Draft\nRequested\nApproved\nFulfilled\nReceived\nCancelled",
+            "reqd": 1
+        },
+        {
+            "fieldname": "requested_by",
+            "fieldtype": "Link",
+            "label": "Requested By",
+            "options": "User"
+        },
+        {
+            "fieldname": "approved_by",
+            "fieldtype": "Link",
+            "label": "Approved By",
+            "options": "User"
+        },
+        {
+            "fieldname": "fulfilled_stock_entry",
+            "fieldtype": "Link",
+            "label": "Fulfilled Stock Entry",
+            "options": "Stock Entry"
+        },
+        {
+            "fieldname": "received_at",
+            "fieldtype": "Datetime",
+            "label": "Received At"
+        },
+        {
+            "fieldname": "lines",
+            "fieldtype": "Table",
+            "label": "Refill Lines",
+            "options": "FB Booth Refill Line"
+        }
+    ],
+    "is_submittable": 1,
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Booth Refill Request",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "KoPOS Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1
+}

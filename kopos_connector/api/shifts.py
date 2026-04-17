@@ -645,6 +645,54 @@ def _find_closing_entry_name(shift_id: str) -> str | None:
         return None
 
 
+def _ensure_fb_shift_for_kopos_shift(
+    *,
+    shift_id: str,
+    device_id: str,
+    staff_id: str,
+    company: str,
+    warehouse: str,
+    opening_float: float,
+    opened_at: Any | None,
+) -> str:
+    shift_code = cstr(shift_id).strip()
+    if not shift_code:
+        frappe.throw(_("shift_id is required"), frappe.ValidationError)
+
+    booth_warehouse = cstr(warehouse).strip()
+    if not booth_warehouse:
+        frappe.throw(
+            _("A booth warehouse is required before opening a KoPOS shift"),
+            frappe.ValidationError,
+        )
+
+    shift_name = frappe.db.get_value("FB Shift", {"shift_code": shift_code}, "name")
+    shift_doc = (
+        frappe.get_doc("FB Shift", shift_name)
+        if shift_name
+        else frappe.new_doc("FB Shift")
+    )
+
+    if not shift_name:
+        shift_doc.shift_code = shift_code
+
+    shift_doc.device_id = cstr(device_id).strip()
+    shift_doc.staff_id = cstr(staff_id).strip()
+    shift_doc.company = cstr(company).strip()
+    shift_doc.warehouse = booth_warehouse
+    shift_doc.status = "Open"
+    shift_doc.opening_float = flt(opening_float)
+    if opened_at:
+        shift_doc.opened_at = opened_at
+
+    if shift_name:
+        shift_doc.save(ignore_permissions=True)
+    else:
+        shift_doc.insert(ignore_permissions=True)
+
+    return cstr(shift_doc.name)
+
+
 # -----------------------------------------------------------------------------
 # Phase 5 - Manager Approval Token Verification
 # -----------------------------------------------------------------------------
@@ -775,6 +823,14 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
             _("POS Profile {0} has no company configured").format(pos_profile_name),
             frappe.ValidationError,
         )
+    warehouse = cstr(getattr(pos_profile, "warehouse", None)).strip()
+    if not warehouse:
+        frappe.throw(
+            _("POS Profile {0} has no warehouse configured").format(pos_profile_name),
+            frappe.ValidationError,
+        )
+
+    opening_amount = flt(opening_float_sen) / 100
 
     # Phase 1 & 2: Validate device user assignment, active status, ERP user enabled,
     # and can_open_shift permission
@@ -792,6 +848,15 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     existing_by_idempotency = _find_by_idempotency("POS Opening Entry", idempotency_key)
     if existing_by_idempotency:
+        _ensure_fb_shift_for_kopos_shift(
+            shift_id=shift_id,
+            device_id=device_id,
+            staff_id=staff_id,
+            company=company,
+            warehouse=warehouse,
+            opening_float=opening_amount,
+            opened_at=opened_at or None,
+        )
         return {
             "status": "duplicate",
             "pos_opening_entry": existing_by_idempotency,
@@ -807,6 +872,15 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         allow_device_fallback=False,
     )
     if existing_by_shift:
+        _ensure_fb_shift_for_kopos_shift(
+            shift_id=shift_id,
+            device_id=device_id,
+            staff_id=staff_id,
+            company=company,
+            warehouse=warehouse,
+            opening_float=opening_amount,
+            opened_at=opened_at or None,
+        )
         return {
             "status": "duplicate",
             "pos_opening_entry": existing_by_shift,
@@ -831,8 +905,6 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         _validate_timestamp_skew(opened_at, "opened_at")
     )
     posting_date = period_start.date() if hasattr(period_start, "date") else nowdate()
-
-    opening_amount = flt(opening_float_sen) / 100
 
     remarks = (
         f"KoPOS idempotency_key: {idempotency_key}\n"
@@ -867,6 +939,15 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     doc.insert(ignore_permissions=True)
     doc.submit()
+    _ensure_fb_shift_for_kopos_shift(
+        shift_id=shift_id,
+        device_id=device_id,
+        staff_id=staff_id,
+        company=company,
+        warehouse=warehouse,
+        opening_float=opening_amount,
+        opened_at=period_start,
+    )
 
     # Phase 7: Audit logging for successful shift open
     _log_shift_audit(

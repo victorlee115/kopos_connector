@@ -117,6 +117,25 @@ scheduler_events = {
     ],
 }
 
+doc_events = {
+    "FB Booth Refill Request": {
+        "validate": "kopos_connector.api.fb_refill.validate_fb_refill_request",
+        "on_submit": "kopos_connector.api.fb_refill.on_submit_fb_refill_request",
+    },
+    "FB Return Event": {
+        "validate": "kopos_connector.api.fb_returns.validate_fb_return_event",
+        "on_submit": "kopos_connector.api.fb_returns.on_submit_fb_return_event",
+    },
+    "FB Remake Event": {
+        "validate": "kopos_connector.api.fb_remakes.validate_fb_remake_event",
+        "on_submit": "kopos_connector.api.fb_remakes.on_submit_fb_remake_event",
+    },
+    "FB Waste Event": {
+        "validate": "kopos_connector.api.fb_waste.validate_fb_waste_event",
+        "on_submit": "kopos_connector.api.fb_waste.on_submit_fb_waste_event",
+    },
+}
+
 # Testing
 # -------
 

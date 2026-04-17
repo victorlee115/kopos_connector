@@ -244,12 +244,16 @@ def review_promotion_reconciliation(**kwargs: Any) -> None:
 @frappe.whitelist(methods=["POST"])
 def submit_order(**kwargs: Any) -> None:
     """Public KoPOS endpoint for order submission with raw JSON responses."""
-    from .orders import submit_order_payload
+    from kopos_connector.kopos.api.fb_orders import submit_order as submit_fb_order
 
     try:
         payload = _get_submit_payload(kwargs)
         require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
-        result = submit_order_payload(payload)
+        if getattr(frappe, "request", None) and not frappe.request.get_data(
+            as_text=True
+        ):
+            frappe.local.form_dict = payload
+        result = submit_fb_order()
         _write_response(result)
     except frappe.ValidationError as exc:
         frappe.db.rollback()

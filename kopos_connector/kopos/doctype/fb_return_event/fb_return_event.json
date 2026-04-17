@@ -1,0 +1,137 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 0,
+    "allow_rename": 0,
+    "autoname": "format:FB-RETURN-{YYYY}-{MM}-{DD}-{#####}",
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "return_info",
+        "return_id",
+        "fb_order",
+        "original_sales_invoice",
+        "return_sales_invoice",
+        "column_break_1",
+        "reason_code",
+        "reason_text",
+        "return_to_stock",
+        "status",
+        "lines_section",
+        "lines"
+    ],
+    "fields": [
+        {
+            "fieldname": "return_info",
+            "fieldtype": "Section Break",
+            "label": "Return Information"
+        },
+        {
+            "fieldname": "return_id",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Return ID",
+            "reqd": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "fb_order",
+            "fieldtype": "Link",
+            "label": "FB Order",
+            "options": "FB Order"
+        },
+        {
+            "fieldname": "original_sales_invoice",
+            "fieldtype": "Link",
+            "label": "Original Sales Invoice",
+            "options": "Sales Invoice"
+        },
+        {
+            "fieldname": "return_sales_invoice",
+            "fieldtype": "Link",
+            "label": "Return Sales Invoice",
+            "options": "Sales Invoice"
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "reason_code",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Reason Code",
+            "options": "Wrong Order\nCustomer Changed Mind\nQuality Issue\nItem Unavailable\nOther"
+        },
+        {
+            "fieldname": "reason_text",
+            "fieldtype": "Small Text",
+            "label": "Reason Text"
+        },
+        {
+            "default": "0",
+            "fieldname": "return_to_stock",
+            "fieldtype": "Check",
+            "in_list_view": 1,
+            "label": "Return to Stock"
+        },
+        {
+            "default": "Draft",
+            "fieldname": "status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Status",
+            "options": "Draft\nSubmitted\nCancelled"
+        },
+        {
+            "fieldname": "lines_section",
+            "fieldtype": "Section Break",
+            "label": "Return Lines"
+        },
+        {
+            "fieldname": "lines",
+            "fieldtype": "Table",
+            "label": "Lines",
+            "options": "FB Return Event Line"
+        }
+    ],
+    "is_submittable": 1,
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Return Event",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "submit": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "KoPOS Manager",
+            "share": 1,
+            "submit": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1
+}

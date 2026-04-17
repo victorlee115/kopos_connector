@@ -18,9 +18,16 @@ from kopos_connector.api.modifiers import (
 
 PAYMENT_METHOD_ALIASES = {
     "cash": {"cash"},
-    "qr": {"qr", "duitnow qr", "duitnow", "e wallet", "ewallet", "wallet"},
+    "qr": {"duitnow qr"},
     "card": {"card", "credit card", "debit card"},
     "voucher": {"voucher", "coupon", "gift voucher"},
+}
+
+PAYMENT_METHOD_CANONICAL_NAMES = {
+    "cash": "Cash",
+    "qr": "DuitNow QR",
+    "card": "Card",
+    "voucher": "Voucher",
 }
 
 AMOUNT_TOLERANCE = 0.01
@@ -461,9 +468,33 @@ def resolve_mode_of_payment(
 ) -> str:
     """Map KoPOS payment methods to ERPNext Mode of Payment values."""
     normalized_method = normalize_token(method)
+    if normalized_method == "duitnow qr":
+        canonical_modes = [
+            row.mode_of_payment
+            for row in (pos_profile_doc.get("payments") or [])
+            if row.mode_of_payment == "DuitNow QR"
+        ]
+        if canonical_modes:
+            return canonical_modes[0]
+
+    canonical_name = PAYMENT_METHOD_CANONICAL_NAMES.get(normalized_method)
     available_modes = [
         row.mode_of_payment for row in (pos_profile_doc.get("payments") or [])
     ]
+    if normalized_method in {
+        "qr",
+        "maybank qr",
+        "duitnow",
+        "e wallet",
+        "ewallet",
+        "wallet",
+    }:
+        frappe.throw(
+            _("payment_method must be DuitNow QR"),
+            frappe.ValidationError,
+        )
+    if canonical_name and canonical_name in available_modes:
+        return canonical_name
     for mode in available_modes:
         if normalize_token(mode) == normalized_method:
             return mode

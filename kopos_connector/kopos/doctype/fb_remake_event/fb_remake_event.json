@@ -1,0 +1,112 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 0,
+    "allow_rename": 0,
+    "autoname": "format:FB-REMAKE-{YYYY}-{MM}-{DD}-{#####}",
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "remake_id",
+        "original_order",
+        "original_order_line",
+        "original_resolved_sale",
+        "reason_code",
+        "reason_text",
+        "replacement_stock_entry",
+        "status"
+    ],
+    "fields": [
+        {
+            "fieldname": "remake_id",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Remake ID",
+            "reqd": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "original_order",
+            "fieldtype": "Link",
+            "label": "Original Order",
+            "options": "FB Order"
+        },
+        {
+            "fieldname": "original_order_line",
+            "fieldtype": "Link",
+            "label": "Original Order Line",
+            "options": "FB Order Line"
+        },
+        {
+            "fieldname": "original_resolved_sale",
+            "fieldtype": "Link",
+            "label": "Original Resolved Sale",
+            "options": "FB Resolved Sale"
+        },
+        {
+            "fieldname": "reason_code",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Reason Code",
+            "options": "Spill\nQuality Issue\nWrong Preparation\nCustomer Request\nOther"
+        },
+        {
+            "fieldname": "reason_text",
+            "fieldtype": "Small Text",
+            "label": "Reason Text"
+        },
+        {
+            "fieldname": "replacement_stock_entry",
+            "fieldtype": "Link",
+            "label": "Replacement Stock Entry",
+            "options": "Stock Entry"
+        },
+        {
+            "default": "Draft",
+            "fieldname": "status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Status",
+            "options": "Draft\nSubmitted\nCancelled"
+        }
+    ],
+    "is_submittable": 1,
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Remake Event",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "submit": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "KoPOS Manager",
+            "share": 1,
+            "submit": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1
+}

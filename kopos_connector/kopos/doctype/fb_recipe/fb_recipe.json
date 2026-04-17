@@ -1,0 +1,230 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 1,
+    "allow_rename": 1,
+    "autoname": "field:recipe_code",
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Setup",
+    "engine": "InnoDB",
+    "field_order": [
+        "recipe_info",
+        "recipe_code",
+        "recipe_name",
+        "sellable_item",
+        "column_break_1",
+        "recipe_type",
+        "status",
+        "version_no",
+        "yield_section",
+        "yield_qty",
+        "yield_uom",
+        "default_serving_qty",
+        "default_serving_uom",
+        "column_break_2",
+        "station",
+        "company",
+        "effective_dates",
+        "effective_from",
+        "effective_to",
+        "components_section",
+        "components",
+        "modifier_groups_section",
+        "allowed_modifier_groups",
+        "notes_section",
+        "notes"
+    ],
+    "fields": [
+        {
+            "fieldname": "recipe_info",
+            "fieldtype": "Section Break",
+            "label": "Recipe Information"
+        },
+        {
+            "fieldname": "recipe_code",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Recipe Code",
+            "reqd": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "recipe_name",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Recipe Name",
+            "reqd": 1
+        },
+        {
+            "fieldname": "sellable_item",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Sellable Item",
+            "options": "Item",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "default": "Finished Drink",
+            "fieldname": "recipe_type",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Recipe Type",
+            "options": "Finished Drink\nAdd-On\nPrep Batch\nPackaging Assembly",
+            "reqd": 1
+        },
+        {
+            "default": "Draft",
+            "fieldname": "status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Status",
+            "options": "Draft\nActive\nRetired",
+            "reqd": 1
+        },
+        {
+            "default": "1",
+            "fieldname": "version_no",
+            "fieldtype": "Int",
+            "label": "Version No",
+            "reqd": 1
+        },
+        {
+            "fieldname": "yield_section",
+            "fieldtype": "Section Break",
+            "label": "Yield Information"
+        },
+        {
+            "default": "1",
+            "fieldname": "yield_qty",
+            "fieldtype": "Float",
+            "label": "Yield Qty",
+            "reqd": 1
+        },
+        {
+            "fieldname": "yield_uom",
+            "fieldtype": "Link",
+            "label": "Yield UOM",
+            "options": "UOM",
+            "reqd": 1
+        },
+        {
+            "default": "1",
+            "fieldname": "default_serving_qty",
+            "fieldtype": "Float",
+            "label": "Default Serving Qty",
+            "reqd": 1
+        },
+        {
+            "fieldname": "default_serving_uom",
+            "fieldtype": "Link",
+            "label": "Default Serving UOM",
+            "options": "UOM",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_2",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "station",
+            "fieldtype": "Data",
+            "label": "Station"
+        },
+        {
+            "fieldname": "company",
+            "fieldtype": "Link",
+            "label": "Company",
+            "options": "Company",
+            "reqd": 1
+        },
+        {
+            "fieldname": "effective_dates",
+            "fieldtype": "Section Break",
+            "label": "Effective Dates"
+        },
+        {
+            "fieldname": "effective_from",
+            "fieldtype": "Datetime",
+            "label": "Effective From"
+        },
+        {
+            "fieldname": "effective_to",
+            "fieldtype": "Datetime",
+            "label": "Effective To"
+        },
+        {
+            "fieldname": "components_section",
+            "fieldtype": "Section Break",
+            "label": "Recipe Components"
+        },
+        {
+            "fieldname": "components",
+            "fieldtype": "Table",
+            "label": "Components",
+            "options": "FB Recipe Component"
+        },
+        {
+            "fieldname": "modifier_groups_section",
+            "fieldtype": "Section Break",
+            "label": "Allowed Modifier Groups"
+        },
+        {
+            "fieldname": "allowed_modifier_groups",
+            "fieldtype": "Table",
+            "label": "Allowed Modifier Groups",
+            "options": "FB Allowed Modifier Group"
+        },
+        {
+            "fieldname": "notes_section",
+            "fieldtype": "Section Break",
+            "label": "Notes"
+        },
+        {
+            "fieldname": "notes",
+            "fieldtype": "Small Text",
+            "label": "Notes"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Recipe",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "KoPOS Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1,
+    "track_seen": 1,
+    "track_views": 1
+}

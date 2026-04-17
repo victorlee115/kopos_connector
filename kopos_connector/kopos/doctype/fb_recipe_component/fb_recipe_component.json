@@ -1,0 +1,135 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 0,
+    "allow_rename": 0,
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "item",
+        "component_type",
+        "qty",
+        "uom",
+        "column_break_1",
+        "stock_qty",
+        "stock_uom",
+        "is_optional",
+        "is_substitutable",
+        "substitution_key",
+        "effects",
+        "affects_stock",
+        "affects_cogs",
+        "loss_factor_pct",
+        "sort_order",
+        "remarks"
+    ],
+    "fields": [
+        {
+            "fieldname": "item",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Item",
+            "options": "Item",
+            "reqd": 1
+        },
+        {
+            "fieldname": "component_type",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Component Type",
+            "options": "Ingredient\nPrep Item\nPackaging\nTool Usage",
+            "reqd": 1
+        },
+        {
+            "fieldname": "qty",
+            "fieldtype": "Float",
+            "in_list_view": 1,
+            "label": "Qty",
+            "reqd": 1
+        },
+        {
+            "fieldname": "uom",
+            "fieldtype": "Link",
+            "label": "UOM",
+            "options": "UOM",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "stock_qty",
+            "fieldtype": "Float",
+            "label": "Stock Qty"
+        },
+        {
+            "fieldname": "stock_uom",
+            "fieldtype": "Link",
+            "label": "Stock UOM",
+            "options": "UOM"
+        },
+        {
+            "default": "0",
+            "fieldname": "is_optional",
+            "fieldtype": "Check",
+            "label": "Is Optional"
+        },
+        {
+            "default": "0",
+            "fieldname": "is_substitutable",
+            "fieldtype": "Check",
+            "label": "Is Substitutable"
+        },
+        {
+            "fieldname": "substitution_key",
+            "fieldtype": "Data",
+            "label": "Substitution Key"
+        },
+        {
+            "fieldname": "effects",
+            "fieldtype": "Section Break",
+            "label": "Effects"
+        },
+        {
+            "default": "1",
+            "fieldname": "affects_stock",
+            "fieldtype": "Check",
+            "label": "Affects Stock"
+        },
+        {
+            "default": "1",
+            "fieldname": "affects_cogs",
+            "fieldtype": "Check",
+            "label": "Affects COGS"
+        },
+        {
+            "default": "0",
+            "fieldname": "loss_factor_pct",
+            "fieldtype": "Percent",
+            "label": "Loss Factor %"
+        },
+        {
+            "fieldname": "sort_order",
+            "fieldtype": "Int",
+            "label": "Sort Order"
+        },
+        {
+            "fieldname": "remarks",
+            "fieldtype": "Small Text",
+            "label": "Remarks"
+        }
+    ],
+    "istable": 1,
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Recipe Component",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1
+}
