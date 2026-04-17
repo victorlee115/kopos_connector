@@ -7,7 +7,7 @@
  "creation": "2026-03-26 00:00:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",
- "field_order": [
+  "field_order": [
   "transaction_refno",
   "status",
   "maybank_status",
@@ -16,9 +16,10 @@
   "sale_amount_sen",
   "section_qr",
   "qr_data",
-  "section_links",
-  "pos_invoice",
-  "outlet_id",
+   "section_links",
+   "fb_order",
+   "sales_invoice",
+   "outlet_id",
   "device_id",
    "idempotency_key",
    "section_timing",
@@ -89,13 +90,20 @@
    "fieldtype": "Section Break",
    "label": "Links"
   },
-  {
-    "fieldname": "pos_invoice",
-   "fieldtype": "Link",
-   "label": "POS Invoice",
-   "options": "POS Invoice",
-   "search_index": 1
-  },
+   {
+    "fieldname": "fb_order",
+    "fieldtype": "Link",
+    "label": "F&B Order",
+    "options": "FB Order",
+    "search_index": 1
+   },
+   {
+    "fieldname": "sales_invoice",
+    "fieldtype": "Link",
+    "label": "Sales Invoice",
+    "options": "Sales Invoice",
+    "search_index": 1
+   },
   {
    "fieldname": "outlet_id",
    "fieldtype": "Data",

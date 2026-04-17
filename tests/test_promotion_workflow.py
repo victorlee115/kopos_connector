@@ -295,6 +295,51 @@ class PromotionWorkflowTests(unittest.TestCase):
         self.assertEqual(result["status"], "published")
         self.assertEqual(result["snapshot_version"], "snap-1")
 
+    def test_publish_promotion_snapshot_persists_empty_snapshot(self):
+        payload = {
+            "promotions": [],
+            "snapshot_hash": "empty-hash",
+            "snapshot_version": "empty-snap-1",
+            "published_at": "2026-03-13T18:05:00",
+            "effective_from": "2026-03-13T18:05:00",
+        }
+        snapshot = SimpleNamespace(
+            name="SNAP-EMPTY-1",
+            snapshot_version="empty-snap-1",
+            snapshot_hash="empty-hash",
+            pos_profile="KoPOS Main",
+            promotion_count=0,
+            status="Published",
+        )
+
+        with (
+            patch(
+                "kopos_connector.api.promotions.require_system_manager",
+            ),
+            patch(
+                "kopos_connector.api.promotions.resolve_snapshot_pos_profile",
+                return_value="KoPOS Main",
+            ),
+            patch(
+                "kopos_connector.api.promotions.build_snapshot_payload_for_persistence",
+                return_value=payload,
+            ),
+            patch(
+                "kopos_connector.api.promotions.get_latest_published_snapshot",
+                return_value=None,
+            ),
+            patch(
+                "kopos_connector.api.promotions.ensure_persisted_snapshot",
+                return_value=(snapshot, True),
+            ) as ensure_snapshot,
+        ):
+            result = publish_promotion_snapshot(pos_profile="KoPOS Main")
+
+        ensure_snapshot.assert_called_once_with("KoPOS Main", payload=payload)
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(result["promotion_count"], 0)
+        self.assertEqual(result["snapshot_version"], "empty-snap-1")
+
     def test_snapshot_deletion_blocked_when_referenced_by_invoice(self):
         from kopos_connector.kopos.doctype.kopos_promotion_snapshot.kopos_promotion_snapshot import (
             KoPOSPromotionSnapshot,
