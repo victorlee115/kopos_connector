@@ -216,12 +216,6 @@ def publish_promotion_snapshot(
     require_system_manager()
     profile_name = resolve_snapshot_pos_profile(pos_profile, device_id=device_id)
     payload = build_snapshot_payload_for_persistence(profile_name)
-    if not payload.get("promotions"):
-        return {
-            "status": "no_promotions",
-            "message": "No active promotions to publish",
-            "pos_profile": profile_name,
-        }
     latest = get_latest_published_snapshot(profile_name)
     if latest and cstr(latest.snapshot_hash) == cstr(payload["snapshot_hash"]):
         return {

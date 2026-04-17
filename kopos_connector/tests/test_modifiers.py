@@ -4,7 +4,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from tests.fake_frappe import install_fake_frappe_modules
+from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
 
 install_fake_frappe_modules()
 

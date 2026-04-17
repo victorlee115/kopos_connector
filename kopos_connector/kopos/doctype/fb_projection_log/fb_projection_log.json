@@ -1,0 +1,186 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 0,
+    "allow_rename": 0,
+    "autoname": "format:FB-PROJ-{YYYY}-{MM}-{DD}-{#####}",
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "projection_id",
+        "source_info",
+        "source_doctype",
+        "source_name",
+        "source_event_type",
+        "column_break_1",
+        "projection_type",
+        "idempotency_key",
+        "payload_hash",
+        "target_info",
+        "target_doctype",
+        "target_name",
+        "column_break_2",
+        "state",
+        "retry_count",
+        "last_error",
+        "timing",
+        "created_at",
+        "last_attempt_at"
+    ],
+    "fields": [
+        {
+            "fieldname": "projection_id",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Projection ID",
+            "reqd": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "source_info",
+            "fieldtype": "Section Break",
+            "label": "Source"
+        },
+        {
+            "fieldname": "source_doctype",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Source DocType",
+            "options": "DocType",
+            "reqd": 1
+        },
+        {
+            "fieldname": "source_name",
+            "fieldtype": "Dynamic Link",
+            "in_list_view": 1,
+            "label": "Source Name",
+            "options": "source_doctype",
+            "reqd": 1
+        },
+        {
+            "fieldname": "source_event_type",
+            "fieldtype": "Data",
+            "label": "Source Event Type"
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "projection_type",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Projection Type",
+            "options": "Sales Invoice\nSales Return\nStock Issue\nStock Reversal\nTransfer\nWaste\nJournal Entry",
+            "reqd": 1
+        },
+        {
+            "fieldname": "idempotency_key",
+            "fieldtype": "Data",
+            "label": "Idempotency Key"
+        },
+        {
+            "fieldname": "payload_hash",
+            "fieldtype": "Data",
+            "label": "Payload Hash"
+        },
+        {
+            "fieldname": "target_info",
+            "fieldtype": "Section Break",
+            "label": "Target"
+        },
+        {
+            "fieldname": "target_doctype",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Target DocType",
+            "options": "DocType"
+        },
+        {
+            "fieldname": "target_name",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Target Name"
+        },
+        {
+            "fieldname": "column_break_2",
+            "fieldtype": "Column Break"
+        },
+        {
+            "default": "Pending",
+            "fieldname": "state",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "State",
+            "options": "Pending\nSucceeded\nFailed\nReversed",
+            "reqd": 1
+        },
+        {
+            "default": "0",
+            "fieldname": "retry_count",
+            "fieldtype": "Int",
+            "label": "Retry Count"
+        },
+        {
+            "fieldname": "last_error",
+            "fieldtype": "Small Text",
+            "label": "Last Error"
+        },
+        {
+            "fieldname": "timing",
+            "fieldtype": "Section Break",
+            "label": "Timing"
+        },
+        {
+            "default": "Now",
+            "fieldname": "created_at",
+            "fieldtype": "Datetime",
+            "label": "Created At",
+            "reqd": 1
+        },
+        {
+            "fieldname": "last_attempt_at",
+            "fieldtype": "Datetime",
+            "label": "Last Attempt At"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Projection Log",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "KoPOS Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1,
+    "track_seen": 1,
+    "track_views": 1
+}

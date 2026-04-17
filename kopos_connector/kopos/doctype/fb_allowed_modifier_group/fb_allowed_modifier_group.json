@@ -1,0 +1,77 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 0,
+    "allow_rename": 0,
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "modifier_group",
+        "required",
+        "override_min_selection",
+        "override_max_selection",
+        "column_break_1",
+        "default_modifier",
+        "display_order",
+        "always_prompt"
+    ],
+    "fields": [
+        {
+            "fieldname": "modifier_group",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Modifier Group",
+            "options": "FB Modifier Group",
+            "reqd": 1
+        },
+        {
+            "default": "0",
+            "fieldname": "required",
+            "fieldtype": "Check",
+            "label": "Required"
+        },
+        {
+            "fieldname": "override_min_selection",
+            "fieldtype": "Int",
+            "label": "Override Min Selection"
+        },
+        {
+            "fieldname": "override_max_selection",
+            "fieldtype": "Int",
+            "label": "Override Max Selection"
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "default_modifier",
+            "fieldtype": "Link",
+            "label": "Default Modifier",
+            "options": "FB Modifier"
+        },
+        {
+            "fieldname": "display_order",
+            "fieldtype": "Int",
+            "label": "Display Order"
+        },
+        {
+            "default": "0",
+            "fieldname": "always_prompt",
+            "fieldtype": "Check",
+            "label": "Always Prompt"
+        }
+    ],
+    "istable": 1,
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Allowed Modifier Group",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1
+}

@@ -1,0 +1,197 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 1,
+    "allow_rename": 1,
+    "autoname": "field:modifier_code",
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Setup",
+    "engine": "InnoDB",
+    "field_order": [
+        "modifier_code",
+        "modifier_name",
+        "modifier_group",
+        "column_break_1",
+        "kind",
+        "price_adjustment",
+        "is_default",
+        "display_order",
+        "active",
+        "substitution_section",
+        "target_substitution_key",
+        "target_item",
+        "new_item",
+        "qty_delta",
+        "qty_uom",
+        "scale_percent",
+        "instruction_section",
+        "instruction_text",
+        "effects_section",
+        "affects_stock",
+        "affects_recipe"
+    ],
+    "fields": [
+        {
+            "fieldname": "modifier_code",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Modifier Code",
+            "reqd": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "modifier_name",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Modifier Name",
+            "reqd": 1
+        },
+        {
+            "fieldname": "modifier_group",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Modifier Group",
+            "options": "FB Modifier Group",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "default": "Instruction Only",
+            "fieldname": "kind",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Kind",
+            "options": "Instruction Only\nAdd\nReplace\nRemove\nScale",
+            "reqd": 1
+        },
+        {
+            "default": "0",
+            "fieldname": "price_adjustment",
+            "fieldtype": "Currency",
+            "label": "Price Adjustment"
+        },
+        {
+            "default": "0",
+            "fieldname": "is_default",
+            "fieldtype": "Check",
+            "label": "Is Default"
+        },
+        {
+            "fieldname": "display_order",
+            "fieldtype": "Int",
+            "label": "Display Order"
+        },
+        {
+            "default": "1",
+            "fieldname": "active",
+            "fieldtype": "Check",
+            "label": "Active"
+        },
+        {
+            "fieldname": "substitution_section",
+            "fieldtype": "Section Break",
+            "label": "Substitution"
+        },
+        {
+            "fieldname": "target_substitution_key",
+            "fieldtype": "Data",
+            "label": "Target Substitution Key"
+        },
+        {
+            "fieldname": "target_item",
+            "fieldtype": "Link",
+            "label": "Target Item",
+            "options": "Item"
+        },
+        {
+            "fieldname": "new_item",
+            "fieldtype": "Link",
+            "label": "New Item",
+            "options": "Item"
+        },
+        {
+            "fieldname": "qty_delta",
+            "fieldtype": "Float",
+            "label": "Qty Delta"
+        },
+        {
+            "fieldname": "qty_uom",
+            "fieldtype": "Link",
+            "label": "Qty UOM",
+            "options": "UOM"
+        },
+        {
+            "fieldname": "scale_percent",
+            "fieldtype": "Percent",
+            "label": "Scale Percent"
+        },
+        {
+            "fieldname": "instruction_section",
+            "fieldtype": "Section Break",
+            "label": "Instruction"
+        },
+        {
+            "fieldname": "instruction_text",
+            "fieldtype": "Data",
+            "label": "Instruction Text"
+        },
+        {
+            "fieldname": "effects_section",
+            "fieldtype": "Section Break",
+            "label": "Effects"
+        },
+        {
+            "default": "0",
+            "fieldname": "affects_stock",
+            "fieldtype": "Check",
+            "label": "Affects Stock"
+        },
+        {
+            "default": "0",
+            "fieldname": "affects_recipe",
+            "fieldtype": "Check",
+            "label": "Affects Recipe"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Modifier",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "KoPOS Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1,
+    "track_seen": 1,
+    "track_views": 1
+}

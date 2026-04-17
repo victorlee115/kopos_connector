@@ -1,0 +1,127 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 1,
+    "allow_rename": 1,
+    "autoname": "field:group_code",
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Setup",
+    "engine": "InnoDB",
+    "field_order": [
+        "group_code",
+        "group_name",
+        "column_break_1",
+        "selection_type",
+        "is_required",
+        "min_selection",
+        "max_selection",
+        "display_order",
+        "active",
+        "default_resolution_policy"
+    ],
+    "fields": [
+        {
+            "fieldname": "group_code",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Group Code",
+            "reqd": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "group_name",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Group Name",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "default": "Single",
+            "fieldname": "selection_type",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Selection Type",
+            "options": "Single\nMultiple",
+            "reqd": 1
+        },
+        {
+            "default": "0",
+            "fieldname": "is_required",
+            "fieldtype": "Check",
+            "in_list_view": 1,
+            "label": "Required"
+        },
+        {
+            "depends_on": "eval:doc.selection_type === 'Multiple'",
+            "fieldname": "min_selection",
+            "fieldtype": "Int",
+            "label": "Min Selection"
+        },
+        {
+            "depends_on": "eval:doc.selection_type === 'Multiple'",
+            "fieldname": "max_selection",
+            "fieldtype": "Int",
+            "label": "Max Selection"
+        },
+        {
+            "fieldname": "display_order",
+            "fieldtype": "Int",
+            "label": "Display Order"
+        },
+        {
+            "default": "1",
+            "fieldname": "active",
+            "fieldtype": "Check",
+            "label": "Active"
+        },
+        {
+            "default": "Auto Apply Default",
+            "fieldname": "default_resolution_policy",
+            "fieldtype": "Select",
+            "label": "Default Resolution Policy",
+            "options": "Auto Apply Default\nRequire Explicit Selection"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Modifier Group",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 1,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "KoPOS Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1,
+    "track_seen": 1,
+    "track_views": 1
+}

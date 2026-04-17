@@ -6,9 +6,10 @@ from typing import Any
 from urllib.parse import quote
 
 import frappe
+from frappe.core.doctype.user.user import generate_keys
 from frappe import _
 from frappe.twofactor import get_qr_svg_code
-from frappe.utils.password import get_decrypted_password, set_encrypted_password
+from frappe.utils.password import get_decrypted_password
 from frappe.utils import cint, cstr, now_datetime
 
 from kopos_connector.api.devices import (
@@ -44,19 +45,10 @@ def ensure_device_api_credentials(
         or ""
     ).strip()
 
-    if should_rotate or not api_key_value:
-        api_key_value = frappe.generate_hash(length=15)
-        frappe.db.set_value(
-            "User",
-            resolved_user,
-            "api_key",
-            api_key_value,
-            update_modified=False,
-        )
-
-    if should_rotate or not api_secret_value:
-        api_secret_value = frappe.generate_hash(length=32)
-        set_encrypted_password("User", resolved_user, api_secret_value, "api_secret")
+    if should_rotate or not api_key_value or not api_secret_value:
+        generated = generate_keys(resolved_user)
+        api_key_value = cstr(generated.get("api_key")).strip()
+        api_secret_value = cstr(generated.get("api_secret")).strip()
 
     return {
         "user": resolved_user,

@@ -1,0 +1,191 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 0,
+    "allow_rename": 0,
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "line_id",
+        "backend_line_uuid",
+        "item_info",
+        "item",
+        "item_name_snapshot",
+        "qty",
+        "uom",
+        "column_break_1",
+        "unit_price",
+        "modifier_total",
+        "discount_amount",
+        "line_total",
+        "recipe_section",
+        "recipe",
+        "recipe_version",
+        "is_recipe_managed",
+        "tracking_section",
+        "refunded_qty",
+        "remade_qty",
+        "resolved_sale",
+        "modifiers_section",
+        "selected_modifiers",
+        "snapshot_section",
+        "resolved_components_snapshot",
+        "remarks"
+    ],
+    "fields": [
+        {
+            "fieldname": "line_id",
+            "fieldtype": "Data",
+            "label": "Line ID",
+            "reqd": 1
+        },
+        {
+            "fieldname": "backend_line_uuid",
+            "fieldtype": "Data",
+            "label": "Backend Line UUID",
+            "unique": 1
+        },
+        {
+            "fieldname": "item_info",
+            "fieldtype": "Section Break",
+            "label": "Item Information"
+        },
+        {
+            "fieldname": "item",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Item",
+            "options": "Item",
+            "reqd": 1
+        },
+        {
+            "fieldname": "item_name_snapshot",
+            "fieldtype": "Data",
+            "label": "Item Name Snapshot",
+            "read_only": 1
+        },
+        {
+            "fieldname": "qty",
+            "fieldtype": "Float",
+            "in_list_view": 1,
+            "label": "Quantity",
+            "reqd": 1
+        },
+        {
+            "fieldname": "uom",
+            "fieldtype": "Link",
+            "label": "UOM",
+            "options": "UOM",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "unit_price",
+            "fieldtype": "Currency",
+            "in_list_view": 1,
+            "label": "Unit Price"
+        },
+        {
+            "fieldname": "modifier_total",
+            "fieldtype": "Currency",
+            "label": "Modifier Total"
+        },
+        {
+            "fieldname": "discount_amount",
+            "fieldtype": "Currency",
+            "label": "Discount Amount"
+        },
+        {
+            "fieldname": "line_total",
+            "fieldtype": "Currency",
+            "in_list_view": 1,
+            "label": "Line Total"
+        },
+        {
+            "fieldname": "recipe_section",
+            "fieldtype": "Section Break",
+            "label": "Recipe"
+        },
+        {
+            "fieldname": "recipe",
+            "fieldtype": "Link",
+            "label": "Recipe",
+            "options": "FB Recipe"
+        },
+        {
+            "fieldname": "recipe_version",
+            "fieldtype": "Int",
+            "label": "Recipe Version"
+        },
+        {
+            "default": "0",
+            "fieldname": "is_recipe_managed",
+            "fieldtype": "Check",
+            "label": "Is Recipe Managed"
+        },
+        {
+            "fieldname": "tracking_section",
+            "fieldtype": "Section Break",
+            "label": "Return/Remake Tracking"
+        },
+        {
+            "fieldname": "refunded_qty",
+            "fieldtype": "Float",
+            "label": "Refunded Qty"
+        },
+        {
+            "fieldname": "remade_qty",
+            "fieldtype": "Float",
+            "label": "Remade Qty"
+        },
+        {
+            "fieldname": "resolved_sale",
+            "fieldtype": "Link",
+            "label": "Resolved Sale",
+            "options": "FB Resolved Sale",
+            "read_only": 1
+        },
+        {
+            "fieldname": "modifiers_section",
+            "fieldtype": "Section Break",
+            "label": "Modifiers"
+        },
+        {
+            "fieldname": "selected_modifiers",
+            "fieldtype": "Table",
+            "label": "Selected Modifiers",
+            "options": "FB Selected Modifier"
+        },
+        {
+            "fieldname": "snapshot_section",
+            "fieldtype": "Section Break",
+            "label": "Resolved Snapshot"
+        },
+        {
+            "fieldname": "resolved_components_snapshot",
+            "fieldtype": "Code",
+            "label": "Resolved Components Snapshot",
+            "options": "JSON"
+        },
+        {
+            "fieldname": "remarks",
+            "fieldtype": "Small Text",
+            "label": "Remarks"
+        }
+    ],
+    "istable": 1,
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Order Line",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1
+}

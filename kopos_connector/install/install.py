@@ -5,6 +5,7 @@ import frappe
 from frappe import _
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
+from kopos_connector.kopos.install.fb_custom_fields import create_fb_custom_fields
 from kopos_connector.patches.normalize_duplicate_device_api_users import (
     execute as normalize_duplicate_device_api_users,
 )
@@ -51,6 +52,7 @@ def after_install():
     """
     try:
         ensure_kopos_custom_fields(skip_if_missing_doctypes=True)
+        create_fb_custom_fields()
     except Exception as e:
         frappe.log_error(
             title="KoPOS Connector: Failed to create custom fields",
@@ -62,6 +64,7 @@ def after_install():
 def after_migrate():
     """Ensure KoPOS custom fields exist after DocTypes are synced."""
     ensure_kopos_custom_fields(skip_if_missing_doctypes=False)
+    create_fb_custom_fields()
 
 
 def ensure_kopos_custom_fields(skip_if_missing_doctypes: bool) -> None:

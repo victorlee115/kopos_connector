@@ -1,0 +1,13 @@
+FROM frappe/erpnext:v16.8.2
+
+USER root
+
+COPY --chown=frappe:frappe worktree-fnb-erpnext/kopos_connector /home/frappe/frappe-bench/apps/kopos_connector
+
+ENV PYTHONPATH="/home/frappe/frappe-bench/apps:/home/frappe/frappe-bench/apps/frappe"
+
+USER frappe
+
+RUN /home/frappe/frappe-bench/env/bin/pip install --no-cache-dir -r /home/frappe/frappe-bench/apps/kopos_connector/requirements.txt
+
+RUN cp /home/frappe/frappe-bench/sites/apps.txt /tmp/default_apps.txt

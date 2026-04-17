@@ -1,0 +1,300 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 1,
+    "allow_rename": 0,
+    "autoname": "format:FB-ORDER-{YYYY}-{MM}-{DD}-{#####}",
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "order_info_section",
+        "order_id",
+        "external_idempotency_key",
+        "source",
+        "column_break_1",
+        "device_id",
+        "shift",
+        "staff_id",
+        "location_section",
+        "event_project",
+        "booth_warehouse",
+        "company",
+        "currency",
+        "customer_section",
+        "customer",
+        "status_section",
+        "status",
+        "invoice_status",
+        "stock_status",
+        "column_break_2",
+        "sales_invoice",
+        "ingredient_stock_entry",
+        "totals_section",
+        "net_total",
+        "tax_total",
+        "rounding_adjustment",
+        "grand_total",
+        "notes_section",
+        "notes"
+    ],
+    "fields": [
+        {
+            "fieldname": "order_info_section",
+            "fieldtype": "Section Break",
+            "label": "Order Information"
+        },
+        {
+            "fieldname": "order_id",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Order ID",
+            "reqd": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "external_idempotency_key",
+            "fieldtype": "Data",
+            "label": "Idempotency Key",
+            "unique": 1
+        },
+        {
+            "fieldname": "source",
+            "fieldtype": "Select",
+            "label": "Source",
+            "options": "POS\nERP\nManual\nAPI",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "device_id",
+            "fieldtype": "Data",
+            "label": "Device ID",
+            "reqd": 1
+        },
+        {
+            "fieldname": "shift",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Shift",
+            "options": "FB Shift",
+            "reqd": 1
+        },
+        {
+            "fieldname": "staff_id",
+            "fieldtype": "Link",
+            "label": "Staff",
+            "options": "User",
+            "reqd": 1
+        },
+        {
+            "fieldname": "location_section",
+            "fieldtype": "Section Break",
+            "label": "Location & Accounting"
+        },
+        {
+            "fieldname": "event_project",
+            "fieldtype": "Link",
+            "label": "Event/Project",
+            "options": "Project"
+        },
+        {
+            "fieldname": "booth_warehouse",
+            "fieldtype": "Link",
+            "label": "Booth Warehouse",
+            "options": "Warehouse",
+            "reqd": 1
+        },
+        {
+            "fieldname": "company",
+            "fieldtype": "Link",
+            "label": "Company",
+            "options": "Company",
+            "reqd": 1
+        },
+        {
+            "fieldname": "currency",
+            "fieldtype": "Link",
+            "label": "Currency",
+            "options": "Currency",
+            "reqd": 1
+        },
+        {
+            "fieldname": "customer_section",
+            "fieldtype": "Section Break",
+            "label": "Customer"
+        },
+        {
+            "fieldname": "customer",
+            "fieldtype": "Link",
+            "label": "Customer",
+            "options": "Customer"
+        },
+        {
+            "fieldname": "status_section",
+            "fieldtype": "Section Break",
+            "label": "Status & Projections"
+        },
+        {
+            "default": "Draft",
+            "fieldname": "status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Order Status",
+            "options": "Draft\nSubmitted\nCancelled",
+            "reqd": 1
+        },
+        {
+            "default": "Pending",
+            "fieldname": "invoice_status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Invoice Status",
+            "options": "Pending\nPosted\nReversed\nFailed",
+            "reqd": 1
+        },
+        {
+            "default": "Pending",
+            "fieldname": "stock_status",
+            "fieldtype": "Select",
+            "label": "Stock Status",
+            "options": "Pending\nPosted\nReversed\nFailed",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_2",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "sales_invoice",
+            "fieldtype": "Link",
+            "label": "Sales Invoice",
+            "options": "Sales Invoice",
+            "read_only": 1
+        },
+        {
+            "fieldname": "ingredient_stock_entry",
+            "fieldtype": "Link",
+            "label": "Ingredient Stock Entry",
+            "options": "Stock Entry",
+            "read_only": 1
+        },
+        {
+            "fieldname": "totals_section",
+            "fieldtype": "Section Break",
+            "label": "Totals"
+        },
+        {
+            "fieldname": "net_total",
+            "fieldtype": "Currency",
+            "label": "Net Total"
+        },
+        {
+            "fieldname": "tax_total",
+            "fieldtype": "Currency",
+            "label": "Tax Total"
+        },
+        {
+            "fieldname": "rounding_adjustment",
+            "fieldtype": "Currency",
+            "label": "Rounding Adjustment"
+        },
+        {
+            "fieldname": "grand_total",
+            "fieldtype": "Currency",
+            "label": "Grand Total"
+        },
+        {
+            "fieldname": "notes_section",
+            "fieldtype": "Section Break",
+            "label": "Notes"
+        },
+        {
+            "fieldname": "notes",
+            "fieldtype": "Small Text",
+            "label": "Notes"
+        },
+        {
+            "fieldname": "items",
+            "fieldtype": "Table",
+            "label": "Items",
+            "options": "FB Order Line",
+            "reqd": 1
+        },
+        {
+            "fieldname": "payments",
+            "fieldtype": "Table",
+            "label": "Payments",
+            "options": "FB Order Payment"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "is_submittable": 1,
+    "links": [
+        {
+            "group": "Projections",
+            "link_doctype": "FB Resolved Sale",
+            "link_fieldname": "fb_order"
+        },
+        {
+            "group": "Projections",
+            "link_doctype": "FB Projection Log",
+            "link_fieldname": "source_name"
+        }
+    ],
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Order",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "submit": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "KoPOS Manager",
+            "share": 1,
+            "submit": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 0,
+            "export": 0,
+            "print": 1,
+            "read": 1,
+            "report": 0,
+            "role": "KoPOS Cashier",
+            "share": 0,
+            "submit": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1,
+    "track_seen": 1,
+    "track_views": 1
+}

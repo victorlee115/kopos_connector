@@ -6,6 +6,16 @@ import frappe
 from frappe.utils import flt, now_datetime, nowdate
 
 
+DEMO_DRINK_ITEM = "STRAWBERRY-MATCHA-LATTE"
+DEMO_DRINK_NAME = "Strawberry Matcha Latte"
+DEMO_RECIPE_CODE = "SMOKE-STRAWBERRY-MATCHA"
+DEMO_MATCHA_ITEM = "SMOKE-MATCHA-POWDER"
+DEMO_STRAWBERRY_ITEM = "SMOKE-STRAWBERRY-PUREE"
+DEMO_MILK_ITEM = "SMOKE-MILK"
+DEMO_CUP_ITEM = "SMOKE-CUP"
+DEMO_CURRENCY = "MYR"
+
+
 def setup_refund_smoke_data() -> dict[str, Any]:
     from erpnext.setup.utils import before_tests
 
@@ -19,6 +29,7 @@ def setup_refund_smoke_data() -> dict[str, Any]:
     expense_account = _ensure_expense_account(company)
 
     _ensure_mode_of_payment("Cash", company, cash_account, "Cash")
+    _ensure_mode_of_payment("DuitNow QR", company, cash_account, "Bank")
 
     pos_profile = _ensure_pos_profile(
         company=company,
@@ -145,9 +156,250 @@ def get_stock_item_smoke_state() -> dict[str, Any]:
     return {
         "company": company,
         "warehouse": warehouse,
-        "item_code": "STOCK-MATCHA",
-        "actual_qty": get_bin_qty("STOCK-MATCHA", warehouse),
+        "item_code": DEMO_MATCHA_ITEM,
+        "actual_qty": get_bin_qty(DEMO_MATCHA_ITEM, warehouse),
     }
+
+
+def get_demo_ingredient_state() -> dict[str, Any]:
+    company = frappe.get_all("Company", pluck="name", limit=1)[0]
+    warehouse = _ensure_warehouse(company)
+    return {
+        "company": company,
+        "warehouse": warehouse,
+        "matcha_qty": get_bin_qty(DEMO_MATCHA_ITEM, warehouse),
+        "strawberry_qty": get_bin_qty(DEMO_STRAWBERRY_ITEM, warehouse),
+        "milk_qty": get_bin_qty(DEMO_MILK_ITEM, warehouse),
+        "cup_qty": get_bin_qty(DEMO_CUP_ITEM, warehouse),
+    }
+
+
+def set_demo_ingredient_quantities(
+    matcha_qty: float = 500,
+    strawberry_qty: float = 1000,
+    milk_qty: float = 2000,
+    cup_qty: float = 20,
+) -> dict[str, Any]:
+    from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+
+    company = frappe.get_all("Company", pluck="name", limit=1)[0]
+    warehouse = _ensure_warehouse(company)
+    _ensure_stock_item()
+
+    def _set_qty(item_code: str, target_qty: float) -> None:
+        current_qty = get_bin_qty(item_code, warehouse)
+        delta = flt(target_qty) - current_qty
+        if delta > 0:
+            entry = make_stock_entry(
+                item_code=item_code,
+                qty=delta,
+                company=company,
+                to_warehouse=warehouse,
+                do_not_save=True,
+            )
+            entry.insert(ignore_permissions=True)
+            entry.submit()
+        elif delta < 0:
+            entry = make_stock_entry(
+                item_code=item_code,
+                qty=abs(delta),
+                company=company,
+                from_warehouse=warehouse,
+                do_not_save=True,
+            )
+            entry.insert(ignore_permissions=True)
+            entry.submit()
+
+    _set_qty(DEMO_MATCHA_ITEM, matcha_qty)
+    _set_qty(DEMO_STRAWBERRY_ITEM, strawberry_qty)
+    _set_qty(DEMO_MILK_ITEM, milk_qty)
+    _set_qty(DEMO_CUP_ITEM, cup_qty)
+    frappe.db.commit()
+    return get_demo_ingredient_state()
+
+
+def ensure_demo_fb_shift(shift_code: str = "smoke-shift-001") -> dict[str, Any]:
+    existing_name = frappe.db.get_value("FB Shift", {"shift_code": shift_code}, "name")
+    if existing_name:
+        shift = frappe.get_doc("FB Shift", existing_name)
+        return {
+            "name": shift.name,
+            "shift_code": shift.shift_code,
+            "device_id": shift.device_id,
+            "staff_id": shift.staff_id,
+            "warehouse": shift.warehouse,
+            "company": shift.company,
+            "status": shift.status,
+        }
+
+    company = frappe.get_all("Company", pluck="name", limit=1)[0]
+    warehouse = _ensure_warehouse(company)
+    shift = frappe.new_doc("FB Shift")
+    shift.shift_code = shift_code
+    shift.device_id = "SMOKE-TAB-A001"
+    shift.staff_id = "staff@smoke.kopos.local"
+    shift.warehouse = warehouse
+    shift.company = company
+    shift.status = "Open"
+    shift.opening_float = 0
+    shift.insert(ignore_permissions=True)
+    frappe.db.commit()
+    return {
+        "name": shift.name,
+        "shift_code": shift.shift_code,
+        "device_id": shift.device_id,
+        "staff_id": shift.staff_id,
+        "warehouse": shift.warehouse,
+        "company": shift.company,
+        "status": shift.status,
+    }
+
+
+def run_demo_fb_sale_audit(return_to_stock: bool = False) -> dict[str, Any]:
+    from kopos_connector.api.fb_returns import process_return as process_fb_return
+    from kopos_connector.kopos.api.fb_orders import submit_order
+
+    shift = ensure_demo_fb_shift()
+    before = set_demo_ingredient_quantities()
+    order_id = f"SMOKE-DEMO-{frappe.generate_hash(length=8)}"
+    idempotency_key = f"SMOKE-DEMO-{frappe.generate_hash(length=16)}"
+    frappe.local.form_dict = {
+        "order_id": order_id,
+        "idempotency_key": idempotency_key,
+        "device_id": "SMOKE-TAB-A001",
+        "shift_id": shift["shift_code"],
+        "staff_id": shift["staff_id"],
+        "warehouse": shift["warehouse"],
+        "company": shift["company"],
+        "currency": DEMO_CURRENCY,
+        "order": {
+            "display_number": "SMK-DEMO-1",
+            "order_type": "takeaway",
+            "created_at": now_datetime().isoformat(),
+            "items": [
+                {
+                    "line_id": f"LINE-{frappe.generate_hash(length=8)}",
+                    "item_code": DEMO_DRINK_ITEM,
+                    "item_name": DEMO_DRINK_NAME,
+                    "qty": 1,
+                    "rate": 12.0,
+                    "discount_amount": 0,
+                    "modifier_total": 0,
+                    "amount": 12.0,
+                    "modifiers": [],
+                }
+            ],
+            "payments": [
+                {
+                    "payment_method": "Cash",
+                    "amount": 12.0,
+                    "tendered_amount": 12.0,
+                    "change_amount": 0,
+                }
+            ],
+        },
+    }
+    result = submit_order()
+    frappe.db.commit()
+    order_doc = frappe.get_doc("FB Order", result["fb_order"])
+    after_submit = get_demo_ingredient_state()
+
+    refund_result = None
+    after_return = None
+    if return_to_stock:
+        resolved_sales = frappe.get_all(
+            "FB Resolved Sale",
+            filters={"fb_order": order_doc.name},
+            pluck="name",
+        )
+        if resolved_sales:
+            frappe.local.form_dict = {
+                "return_id": f"RETURN-{frappe.generate_hash(length=8)}",
+                "fb_order": order_doc.name,
+                "original_sales_invoice": order_doc.sales_invoice,
+                "reason_code": "Other",
+                "reason_text": "Smoke audit return",
+                "return_to_stock": 1,
+                "lines": [
+                    {
+                        "original_resolved_sale": resolved_sales[0],
+                        "qty_returned": 1,
+                    }
+                ],
+            }
+            refund_result = process_fb_return()
+            frappe.db.commit()
+            after_return = get_demo_ingredient_state()
+
+    return {
+        "before": before,
+        "submit_result": result,
+        "fb_order": {
+            "name": order_doc.name,
+            "sales_invoice": order_doc.sales_invoice,
+            "ingredient_stock_entry": order_doc.ingredient_stock_entry,
+            "invoice_status": order_doc.invoice_status,
+            "stock_status": order_doc.stock_status,
+        },
+        "after_submit": after_submit,
+        "refund_result": refund_result,
+        "after_return": after_return,
+    }
+
+
+def run_demo_out_of_stock_audit() -> dict[str, Any]:
+    ensure_demo_fb_shift()
+    set_demo_ingredient_quantities(matcha_qty=0)
+    from kopos_connector.kopos.api.fb_orders import submit_order
+
+    frappe.local.form_dict = {
+        "order_id": f"OOS-{frappe.generate_hash(length=8)}",
+        "idempotency_key": f"OOS-{frappe.generate_hash(length=16)}",
+        "device_id": "SMOKE-TAB-A001",
+        "shift_id": "smoke-shift-001",
+        "staff_id": "staff@smoke.kopos.local",
+        "warehouse": _ensure_warehouse(
+            frappe.get_all("Company", pluck="name", limit=1)[0]
+        ),
+        "company": frappe.get_all("Company", pluck="name", limit=1)[0],
+        "currency": DEMO_CURRENCY,
+        "order": {
+            "display_number": "SMK-OOS-1",
+            "order_type": "takeaway",
+            "created_at": now_datetime().isoformat(),
+            "items": [
+                {
+                    "line_id": f"LINE-{frappe.generate_hash(length=8)}",
+                    "item_code": DEMO_DRINK_ITEM,
+                    "item_name": DEMO_DRINK_NAME,
+                    "qty": 1,
+                    "rate": 12.0,
+                    "discount_amount": 0,
+                    "modifier_total": 0,
+                    "amount": 12.0,
+                    "modifiers": [],
+                }
+            ],
+            "payments": [
+                {
+                    "payment_method": "Cash",
+                    "amount": 12.0,
+                    "tendered_amount": 12.0,
+                    "change_amount": 0,
+                }
+            ],
+        },
+    }
+    try:
+        submit_order()
+        return {"status": "unexpected_success", "stock": get_demo_ingredient_state()}
+    except Exception as exc:
+        frappe.db.rollback()
+        return {
+            "status": "blocked",
+            "message": str(exc),
+            "stock": get_demo_ingredient_state(),
+        }
 
 
 def get_bin_qty(item_code: str, warehouse: str) -> float:
@@ -303,7 +555,7 @@ def _ensure_pos_profile(
 ) -> str:
     name = "KoPOS Main"
     existing = frappe.db.exists("POS Profile", name)
-    currency = frappe.db.get_value("Company", company, "default_currency") or "USD"
+    currency = DEMO_CURRENCY
     if existing:
         doc = frappe.get_doc("POS Profile", existing)
         doc.company = company
@@ -315,6 +567,8 @@ def _ensure_pos_profile(
         doc.write_off_limit = 0
         if not any(row.mode_of_payment == "Cash" for row in doc.payments):
             doc.append("payments", {"mode_of_payment": "Cash", "default": 1})
+        if not any(row.mode_of_payment == "DuitNow QR" for row in doc.payments):
+            doc.append("payments", {"mode_of_payment": "DuitNow QR", "default": 0})
         doc.save(ignore_permissions=True)
         return doc.name
 
@@ -329,7 +583,10 @@ def _ensure_pos_profile(
             "write_off_account": write_off_account,
             "write_off_cost_center": write_off_cost_center,
             "write_off_limit": 0,
-            "payments": [{"mode_of_payment": "Cash", "default": 1}],
+            "payments": [
+                {"mode_of_payment": "Cash", "default": 1},
+                {"mode_of_payment": "DuitNow QR", "default": 0},
+            ],
         }
     )
     doc.insert(ignore_permissions=True)
@@ -412,8 +669,9 @@ def _ensure_modifier_group() -> str:
 
 
 def _ensure_item(company: str, warehouse: str, modifier_group: str) -> str:
-    item_code = "ICED-MATCHA"
+    item_code = DEMO_DRINK_ITEM
     if frappe.db.exists("Item", item_code):
+        _ensure_demo_recipe(company)
         return item_code
 
     item_group = _ensure_item_group()
@@ -421,7 +679,7 @@ def _ensure_item(company: str, warehouse: str, modifier_group: str) -> str:
         {
             "doctype": "Item",
             "item_code": item_code,
-            "item_name": "Iced Matcha Latte",
+            "item_name": DEMO_DRINK_NAME,
             "item_group": item_group,
             "stock_uom": "Nos",
             "is_sales_item": 1,
@@ -436,32 +694,119 @@ def _ensure_item(company: str, warehouse: str, modifier_group: str) -> str:
             "modifier_groups", {"modifier_group": modifier_group, "display_order": 1}
         )
     doc.insert(ignore_permissions=True)
+    recipe_name = _ensure_demo_recipe(company)
+    if hasattr(doc, "custom_fb_recipe_required"):
+        doc.custom_fb_recipe_required = 1
+    if hasattr(doc, "custom_fb_default_recipe"):
+        doc.custom_fb_default_recipe = recipe_name
+    if hasattr(doc, "custom_fb_track_theoretical_stock"):
+        doc.custom_fb_track_theoretical_stock = 1
+    doc.save(ignore_permissions=True)
     return item_code
 
 
 def _ensure_stock_item() -> str:
-    item_code = "STOCK-MATCHA"
-    if frappe.db.exists("Item", item_code):
-        return item_code
-
     item_group = _ensure_item_group()
-    doc = frappe.get_doc(
+    _ensure_uom("Nos")
+    ingredient_specs = [
+        (DEMO_MATCHA_ITEM, "Matcha Powder", "Gram", 1),
+        (DEMO_STRAWBERRY_ITEM, "Strawberry Puree", "Millilitre", 1),
+        (DEMO_MILK_ITEM, "Milk", "Millilitre", 1),
+        (DEMO_CUP_ITEM, "Cup", "Nos", 1),
+    ]
+    for item_code, item_name, uom, is_stock in ingredient_specs:
+        if frappe.db.exists("Item", item_code):
+            continue
+        doc = frappe.get_doc(
+            {
+                "doctype": "Item",
+                "item_code": item_code,
+                "item_name": item_name,
+                "item_group": item_group,
+                "stock_uom": uom,
+                "is_sales_item": 0,
+                "is_stock_item": is_stock,
+                "standard_rate": 1,
+                "custom_kopos_availability_mode": "auto",
+                "custom_kopos_track_stock": 1,
+                "custom_kopos_min_qty": 1,
+            }
+        )
+        doc.insert(ignore_permissions=True)
+    return DEMO_MATCHA_ITEM
+
+
+def _ensure_demo_recipe(company: str) -> str:
+    if frappe.db.exists("FB Recipe", DEMO_RECIPE_CODE):
+        return DEMO_RECIPE_CODE
+
+    _ensure_stock_item()
+    recipe = frappe.new_doc("FB Recipe")
+    recipe.recipe_code = DEMO_RECIPE_CODE
+    recipe.recipe_name = DEMO_DRINK_NAME
+    recipe.sellable_item = DEMO_DRINK_ITEM
+    recipe.recipe_type = "Finished Drink"
+    recipe.status = "Active"
+    recipe.version_no = 1
+    recipe.company = company
+    recipe.yield_qty = 1
+    recipe.yield_uom = "Nos"
+    recipe.default_serving_qty = 1
+    recipe.default_serving_uom = "Nos"
+    recipe.append(
+        "components",
         {
-            "doctype": "Item",
-            "item_code": item_code,
-            "item_name": "Stock Matcha Latte",
-            "item_group": item_group,
-            "stock_uom": "Nos",
-            "is_sales_item": 1,
-            "is_stock_item": 1,
-            "standard_rate": 10,
-            "custom_kopos_availability_mode": "auto",
-            "custom_kopos_track_stock": 1,
-            "custom_kopos_min_qty": 1,
-        }
+            "item": DEMO_MATCHA_ITEM,
+            "component_type": "Ingredient",
+            "qty": 18.0,
+            "uom": "Gram",
+            "affects_stock": 1,
+            "affects_cogs": 1,
+        },
     )
+    recipe.append(
+        "components",
+        {
+            "item": DEMO_STRAWBERRY_ITEM,
+            "component_type": "Ingredient",
+            "qty": 40.0,
+            "uom": "Millilitre",
+            "affects_stock": 1,
+            "affects_cogs": 1,
+        },
+    )
+    recipe.append(
+        "components",
+        {
+            "item": DEMO_MILK_ITEM,
+            "component_type": "Ingredient",
+            "qty": 180.0,
+            "uom": "Millilitre",
+            "affects_stock": 1,
+            "affects_cogs": 1,
+        },
+    )
+    recipe.append(
+        "components",
+        {
+            "item": DEMO_CUP_ITEM,
+            "component_type": "Packaging",
+            "qty": 1.0,
+            "uom": "Nos",
+            "affects_stock": 1,
+            "affects_cogs": 1,
+        },
+    )
+    recipe.insert(ignore_permissions=True)
+    return recipe.name
+
+
+def _ensure_uom(uom_name: str) -> str:
+    if frappe.db.exists("UOM", uom_name):
+        return uom_name
+    doc = frappe.get_doc({"doctype": "UOM", "uom_name": uom_name})
     doc.insert(ignore_permissions=True)
-    return item_code
+    return doc.name
 
 
 def _ensure_item_group() -> str:
@@ -537,6 +882,12 @@ def _ensure_item_modifier_link(item_code: str, modifier_group_name: str) -> None
         return
     item.append("modifier_groups", {"modifier_group": group, "display_order": 1})
     item.save(ignore_permissions=True)
+
+
+def _ensure_promotion_snapshot(pos_profile: str) -> dict[str, Any]:
+    from kopos_connector.api.promotions import publish_promotion_snapshot
+
+    return publish_promotion_snapshot(pos_profile=pos_profile)
 
 
 def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
@@ -656,6 +1007,8 @@ def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
         expires_in_seconds=86400,
     )
 
+    promotion_snapshot = _ensure_promotion_snapshot(base["pos_profile"])
+
     frappe.db.commit()
 
     return {
@@ -667,13 +1020,13 @@ def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
         "api_key": credentials["api_key"],
         "api_secret": credentials["api_secret"],
         "provisioning_token": provisioning.get("token"),
+        "promotion_snapshot": promotion_snapshot,
         "pos_profile": base["pos_profile"],
         "company": company,
         "warehouse": base["warehouse"],
-        "currency": frappe.db.get_value("Company", company, "default_currency")
-        or "MYR",
+        "currency": DEMO_CURRENCY,
         "item_code": base["item_code"],
-        "stock_item_code": "STOCK-MATCHA",
+        "stock_item_code": DEMO_MATCHA_ITEM,
         "users": [
             {
                 "id": "staff@smoke.kopos.local",
@@ -765,6 +1118,8 @@ def dump_smoke_state() -> dict[str, Any]:
             "open_shift": len(openings) > 0,
             "pos_invoices": len(invoices),
             "invoices": invoices,
+            "demo_drink": DEMO_DRINK_ITEM,
+            "demo_recipe": DEMO_RECIPE_CODE,
         },
         "endpoints": {
             "base": frappe.utils.get_url().rstrip("/"),

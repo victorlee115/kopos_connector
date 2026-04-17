@@ -1,0 +1,242 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 0,
+    "allow_rename": 0,
+    "autoname": "format:FB-RESOLVED-{YYYY}-{MM}-{DD}-{#####}",
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "reference_section",
+        "resolved_sale_id",
+        "fb_order",
+        "fb_order_line",
+        "backend_line_uuid",
+        "column_break_1",
+        "sales_invoice",
+        "sales_invoice_item_ref",
+        "sellable_item",
+        "qty",
+        "booth_warehouse",
+        "recipe_info",
+        "recipe",
+        "recipe_version",
+        "resolution_hash",
+        "status_section",
+        "status",
+        "return_against_resolved_sale",
+        "remake_against_resolved_sale",
+        "stock_section",
+        "stock_entry_issue",
+        "stock_entry_reversal",
+        "event_project",
+        "components_section",
+        "selected_modifiers",
+        "resolved_components"
+    ],
+    "fields": [
+        {
+            "fieldname": "reference_section",
+            "fieldtype": "Section Break",
+            "label": "References"
+        },
+        {
+            "fieldname": "resolved_sale_id",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Resolved Sale ID",
+            "reqd": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "fb_order",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "FB Order",
+            "options": "FB Order",
+            "reqd": 1
+        },
+        {
+            "fieldname": "fb_order_line",
+            "fieldtype": "Link",
+            "label": "FB Order Line",
+            "options": "FB Order Line"
+        },
+        {
+            "fieldname": "backend_line_uuid",
+            "fieldtype": "Data",
+            "label": "Backend Line UUID"
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "sales_invoice",
+            "fieldtype": "Link",
+            "label": "Sales Invoice",
+            "options": "Sales Invoice"
+        },
+        {
+            "fieldname": "sales_invoice_item_ref",
+            "fieldtype": "Data",
+            "label": "Sales Invoice Item Ref"
+        },
+        {
+            "fieldname": "sellable_item",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Sellable Item",
+            "options": "Item",
+            "reqd": 1
+        },
+        {
+            "fieldname": "qty",
+            "fieldtype": "Float",
+            "label": "Qty",
+            "reqd": 1
+        },
+        {
+            "fieldname": "booth_warehouse",
+            "fieldtype": "Link",
+            "label": "Booth Warehouse",
+            "options": "Warehouse",
+            "reqd": 1
+        },
+        {
+            "fieldname": "recipe_info",
+            "fieldtype": "Section Break",
+            "label": "Recipe Information"
+        },
+        {
+            "fieldname": "recipe",
+            "fieldtype": "Link",
+            "label": "Recipe",
+            "options": "FB Recipe",
+            "reqd": 1
+        },
+        {
+            "fieldname": "recipe_version",
+            "fieldtype": "Int",
+            "label": "Recipe Version",
+            "reqd": 1
+        },
+        {
+            "fieldname": "resolution_hash",
+            "fieldtype": "Data",
+            "label": "Resolution Hash"
+        },
+        {
+            "fieldname": "status_section",
+            "fieldtype": "Section Break",
+            "label": "Status"
+        },
+        {
+            "default": "Submitted",
+            "fieldname": "status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Status",
+            "options": "Submitted\nPartially Returned\nReturned\nRemade\nCancelled",
+            "reqd": 1
+        },
+        {
+            "fieldname": "return_against_resolved_sale",
+            "fieldtype": "Link",
+            "label": "Return Against",
+            "options": "FB Resolved Sale"
+        },
+        {
+            "fieldname": "remake_against_resolved_sale",
+            "fieldtype": "Link",
+            "label": "Remake Against",
+            "options": "FB Resolved Sale"
+        },
+        {
+            "fieldname": "stock_section",
+            "fieldtype": "Section Break",
+            "label": "Stock Entries"
+        },
+        {
+            "fieldname": "stock_entry_issue",
+            "fieldtype": "Link",
+            "label": "Stock Entry Issue",
+            "options": "Stock Entry"
+        },
+        {
+            "fieldname": "stock_entry_reversal",
+            "fieldtype": "Link",
+            "label": "Stock Entry Reversal",
+            "options": "Stock Entry"
+        },
+        {
+            "fieldname": "event_project",
+            "fieldtype": "Link",
+            "label": "Event/Project",
+            "options": "Project"
+        },
+        {
+            "fieldname": "components_section",
+            "fieldtype": "Section Break",
+            "label": "Components"
+        },
+        {
+            "fieldname": "selected_modifiers",
+            "fieldtype": "Table",
+            "label": "Selected Modifiers",
+            "options": "FB Selected Modifier"
+        },
+        {
+            "fieldname": "resolved_components",
+            "fieldtype": "Table",
+            "label": "Resolved Components",
+            "options": "FB Resolved Component"
+        }
+    ],
+    "index_web_pages_for_search": 1,
+    "links": [
+        {
+            "group": "Returns",
+            "link_doctype": "FB Resolved Sale",
+            "link_fieldname": "return_against_resolved_sale"
+        }
+    ],
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Resolved Sale",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "KoPOS Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1,
+    "track_seen": 1,
+    "track_views": 1
+}

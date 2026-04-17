@@ -1,0 +1,76 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 0,
+    "allow_rename": 0,
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "payment_method",
+        "payment_channel_code",
+        "amount",
+        "column_break_1",
+        "tendered_amount",
+        "change_amount",
+        "reference_no",
+        "external_transaction_id"
+    ],
+    "fields": [
+        {
+            "fieldname": "payment_method",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Payment Method",
+            "options": "Mode of Payment",
+            "reqd": 1
+        },
+        {
+            "fieldname": "payment_channel_code",
+            "fieldtype": "Data",
+            "label": "Payment Channel Code"
+        },
+        {
+            "fieldname": "amount",
+            "fieldtype": "Currency",
+            "in_list_view": 1,
+            "label": "Amount",
+            "reqd": 1
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "tendered_amount",
+            "fieldtype": "Currency",
+            "label": "Tendered Amount"
+        },
+        {
+            "fieldname": "change_amount",
+            "fieldtype": "Currency",
+            "label": "Change Amount"
+        },
+        {
+            "fieldname": "reference_no",
+            "fieldtype": "Data",
+            "label": "Reference No"
+        },
+        {
+            "fieldname": "external_transaction_id",
+            "fieldtype": "Data",
+            "label": "External Transaction ID"
+        }
+    ],
+    "istable": 1,
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Order Payment",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1
+}

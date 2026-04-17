@@ -1,0 +1,179 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 0,
+    "allow_rename": 0,
+    "autoname": "format:FB-OVERRIDE-{YYYY}-{MM}-{DD}-{#####}",
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "override_id",
+        "fb_order",
+        "fb_order_line",
+        "resolved_sale",
+        "operator_section",
+        "device_id",
+        "shift",
+        "staff_id",
+        "column_break_1",
+        "manager_user",
+        "warehouse",
+        "stock_info",
+        "item",
+        "available_qty_before",
+        "requested_qty",
+        "shortfall_qty",
+        "reason_section",
+        "reason_code",
+        "reason_text",
+        "approved_at"
+    ],
+    "fields": [
+        {
+            "fieldname": "override_id",
+            "fieldtype": "Data",
+            "label": "Override ID",
+            "reqd": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "fb_order",
+            "fieldtype": "Link",
+            "label": "FB Order",
+            "options": "FB Order"
+        },
+        {
+            "fieldname": "fb_order_line",
+            "fieldtype": "Link",
+            "label": "FB Order Line",
+            "options": "FB Order Line"
+        },
+        {
+            "fieldname": "resolved_sale",
+            "fieldtype": "Link",
+            "label": "Resolved Sale",
+            "options": "FB Resolved Sale"
+        },
+        {
+            "fieldname": "operator_section",
+            "fieldtype": "Section Break",
+            "label": "Operator Information"
+        },
+        {
+            "fieldname": "device_id",
+            "fieldtype": "Data",
+            "label": "Device ID"
+        },
+        {
+            "fieldname": "shift",
+            "fieldtype": "Link",
+            "label": "Shift",
+            "options": "FB Shift"
+        },
+        {
+            "fieldname": "staff_id",
+            "fieldtype": "Link",
+            "label": "Staff",
+            "options": "User"
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "manager_user",
+            "fieldtype": "Link",
+            "label": "Manager",
+            "options": "User"
+        },
+        {
+            "fieldname": "warehouse",
+            "fieldtype": "Link",
+            "label": "Warehouse",
+            "options": "Warehouse"
+        },
+        {
+            "fieldname": "stock_info",
+            "fieldtype": "Section Break",
+            "label": "Stock Information"
+        },
+        {
+            "fieldname": "item",
+            "fieldtype": "Link",
+            "label": "Item",
+            "options": "Item"
+        },
+        {
+            "fieldname": "available_qty_before",
+            "fieldtype": "Float",
+            "label": "Available Qty Before"
+        },
+        {
+            "fieldname": "requested_qty",
+            "fieldtype": "Float",
+            "label": "Requested Qty"
+        },
+        {
+            "fieldname": "shortfall_qty",
+            "fieldtype": "Float",
+            "label": "Shortfall Qty"
+        },
+        {
+            "fieldname": "reason_section",
+            "fieldtype": "Section Break",
+            "label": "Reason"
+        },
+        {
+            "fieldname": "reason_code",
+            "fieldtype": "Select",
+            "label": "Reason Code",
+            "options": "Low Stock\nZero Stock\nCustomer Request\nManager Override\nOther"
+        },
+        {
+            "fieldname": "reason_text",
+            "fieldtype": "Small Text",
+            "label": "Reason Text"
+        },
+        {
+            "fieldname": "approved_at",
+            "fieldtype": "Datetime",
+            "label": "Approved At"
+        }
+    ],
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Stock Override Log",
+    "owner": "Administrator",
+    "permissions": [
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "System Manager",
+            "share": 1,
+            "write": 1
+        },
+        {
+            "create": 1,
+            "delete": 0,
+            "email": 1,
+            "export": 1,
+            "print": 1,
+            "read": 1,
+            "report": 1,
+            "role": "KoPOS Manager",
+            "share": 1,
+            "write": 1
+        }
+    ],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1
+}

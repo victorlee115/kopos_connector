@@ -222,6 +222,8 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
     amount_sen = cint(payload.get("amount_sen", 0))
     device_id = cstr(payload.get("device_id"))
     idempotency_key = cstr(payload.get("idempotency_key"))
+    fb_order = cstr(payload.get("fb_order"))
+    sales_invoice = cstr(payload.get("sales_invoice"))
 
     if amount_sen <= 0 or amount_sen > MAX_AMOUNT_SEN:
         frappe.throw("amount_sen must be between 1 and 10000000")
@@ -229,6 +231,10 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
         frappe.throw("idempotency_key is required")
     if not device_id:
         frappe.throw("device_id is required")
+    if fb_order and not frappe.db.exists("FB Order", fb_order):
+        frappe.throw("fb_order was not found")
+    if sales_invoice and not frappe.db.exists("Sales Invoice", sales_invoice):
+        frappe.throw("sales_invoice was not found")
 
     now = now_datetime()
     existing_response = _resolve_existing_txn(
@@ -259,6 +265,8 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "maybank_status": 2,
                 "device_id": device_id,
                 "idempotency_key": idempotency_key,
+                "fb_order": fb_order or None,
+                "sales_invoice": sales_invoice or None,
                 "round_number": 1,
                 "created_at": current_now,
                 "expires_at": expires_at,

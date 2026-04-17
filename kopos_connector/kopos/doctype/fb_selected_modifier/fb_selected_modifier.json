@@ -1,0 +1,80 @@
+{
+    "allow_copy": 0,
+    "allow_guest_to_view": 0,
+    "allow_import": 0,
+    "allow_rename": 0,
+    "creation": "2026-04-14 00:00:00.000000",
+    "doctype": "DocType",
+    "document_type": "Document",
+    "engine": "InnoDB",
+    "field_order": [
+        "modifier_group",
+        "modifier",
+        "price_adjustment",
+        "column_break_1",
+        "instruction_text",
+        "sort_order",
+        "affects_stock",
+        "affects_recipe"
+    ],
+    "fields": [
+        {
+            "fieldname": "modifier_group",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Modifier Group",
+            "options": "FB Modifier Group",
+            "reqd": 1
+        },
+        {
+            "fieldname": "modifier",
+            "fieldtype": "Link",
+            "in_list_view": 1,
+            "label": "Modifier",
+            "options": "FB Modifier",
+            "reqd": 1
+        },
+        {
+            "default": "0",
+            "fieldname": "price_adjustment",
+            "fieldtype": "Currency",
+            "label": "Price Adjustment"
+        },
+        {
+            "fieldname": "column_break_1",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "instruction_text",
+            "fieldtype": "Data",
+            "label": "Instruction Text"
+        },
+        {
+            "fieldname": "sort_order",
+            "fieldtype": "Int",
+            "label": "Sort Order"
+        },
+        {
+            "default": "0",
+            "fieldname": "affects_stock",
+            "fieldtype": "Check",
+            "label": "Affects Stock"
+        },
+        {
+            "default": "0",
+            "fieldname": "affects_recipe",
+            "fieldtype": "Check",
+            "label": "Affects Recipe"
+        }
+    ],
+    "istable": 1,
+    "modified": "2026-04-14 00:00:00.000000",
+    "modified_by": "Administrator",
+    "module": "KoPOS",
+    "name": "FB Selected Modifier",
+    "owner": "Administrator",
+    "permissions": [],
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "track_changes": 1
+}
