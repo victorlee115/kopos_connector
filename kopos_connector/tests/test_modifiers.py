@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import unittest
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
@@ -66,7 +67,7 @@ class TestModifierValidation(unittest.TestCase):
         from kopos_connector.api.modifiers import sanitize_modifier_text
 
         self.assertEqual(sanitize_modifier_text(""), "")
-        self.assertEqual(sanitize_modifier_text(None), "")
+        self.assertEqual(sanitize_modifier_text(cast(str, None)), "")
 
     def test_sanitize_modifier_text_truncates_long_input(self):
         from kopos_connector.api.modifiers import sanitize_modifier_text
@@ -170,7 +171,7 @@ class TestModifierSnapshot(unittest.TestCase):
         from kopos_connector.api.modifiers import build_modifiers_snapshot
 
         with self.assertRaises(TypeError):
-            build_modifiers_snapshot("not a dict")
+            build_modifiers_snapshot(cast(dict, "not a dict"))
 
 
 class TestModifierTotalValidation(unittest.TestCase):
@@ -250,6 +251,8 @@ class TestBatchResolveLinks(unittest.TestCase):
         self.assertIn("opt-1", result["options"])
         self.assertIn("opt-2", result["options"])
         self.assertNotIn("opt-missing", result["options"])
+        self.assertEqual(mock_get_all.call_args_list[0].args[0], "FB Modifier Group")
+        self.assertEqual(mock_get_all.call_args_list[1].args[0], "FB Modifier")
 
     def test_batch_resolve_handles_empty_modifiers(self):
         from kopos_connector.api.modifiers import _batch_resolve_links
@@ -258,65 +261,6 @@ class TestBatchResolveLinks(unittest.TestCase):
 
         self.assertEqual(result["groups"], set())
         self.assertEqual(result["options"], set())
-
-
-class TestExtractModifiersFromDescription(unittest.TestCase):
-    """Unit tests for legacy description parsing."""
-
-    def test_extracts_modifiers_from_description(self):
-        from kopos_connector.api.modifier_migration import (
-            extract_modifiers_from_description,
-        )
-
-        description = "Iced Latte\n\nModifiers:\n- Oat Milk (+0.50)\n- Large (+1.00)"
-        result = extract_modifiers_from_description(description)
-
-        self.assertEqual(len(result), 2)
-        self.assertEqual(result[0]["name"], "Oat Milk")
-        self.assertEqual(result[0]["price"], 0.50)
-        self.assertEqual(result[1]["name"], "Large")
-        self.assertEqual(result[1]["price"], 1.00)
-
-    def test_returns_empty_for_no_modifiers(self):
-        from kopos_connector.api.modifier_migration import (
-            extract_modifiers_from_description,
-        )
-
-        description = "Iced Latte\nNo modifiers here"
-        result = extract_modifiers_from_description(description)
-        self.assertEqual(result, [])
-
-    def test_returns_empty_for_none(self):
-        from kopos_connector.api.modifier_migration import (
-            extract_modifiers_from_description,
-        )
-
-        result = extract_modifiers_from_description(None)
-        self.assertEqual(result, [])
-
-    def test_handles_negative_prices(self):
-        from kopos_connector.api.modifier_migration import (
-            extract_modifiers_from_description,
-        )
-
-        description = "Item\n\nModifiers:\n- Discount (-1.00)"
-        result = extract_modifiers_from_description(description)
-
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["price"], -1.00)
-
-    def test_ignores_parenthetical_text_before_modifiers(self):
-        """Ensure text before 'Modifiers:' is not matched."""
-        from kopos_connector.api.modifier_migration import (
-            extract_modifiers_from_description,
-        )
-
-        description = "Large Item (freshly made)\n\nModifiers:\n- Extra Sauce (+2.00)"
-        result = extract_modifiers_from_description(description)
-
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["name"], "Extra Sauce")
-        self.assertEqual(result[0]["price"], 2.00)
 
 
 class TestCatalogModifierGroups(unittest.TestCase):
@@ -328,22 +272,22 @@ class TestCatalogModifierGroups(unittest.TestCase):
             {
                 "id": "grp-temp",
                 "name": "Temperature",
-                "selection_type": "single",
+                "selection_type": "Single",
                 "is_required": 1,
-                "min_selections": 0,
-                "max_selections": 1,
+                "min_selection": 0,
+                "max_selection": 1,
                 "display_order": 1,
-                "parent_option_id": None,
+                "parent_modifier": None,
             },
             {
                 "id": "grp-ice",
                 "name": "Ice Level",
-                "selection_type": "single",
+                "selection_type": "Single",
                 "is_required": 1,
-                "min_selections": 0,
-                "max_selections": 1,
+                "min_selection": 0,
+                "max_selection": 1,
                 "display_order": 2,
-                "parent_option_id": "opt-iced",
+                "parent_modifier": "mod-iced",
             },
         ]
 
@@ -351,7 +295,8 @@ class TestCatalogModifierGroups(unittest.TestCase):
 
         self.assertEqual(len(result), 2)
         self.assertIsNone(result[0]["parent_option_id"])
-        self.assertEqual(result[1]["parent_option_id"], "opt-iced")
+        self.assertEqual(result[1]["parent_option_id"], "mod-iced")
+        self.assertEqual(mock_get_all.call_args[0][0], "FB Modifier Group")
 
     @patch("kopos_connector.api.catalog.frappe.get_all")
     def test_get_modifier_groups_handles_missing_parent_option_id(self, mock_get_all):
@@ -361,10 +306,10 @@ class TestCatalogModifierGroups(unittest.TestCase):
             {
                 "id": "grp-size",
                 "name": "Size",
-                "selection_type": "single",
+                "selection_type": "Single",
                 "is_required": 1,
-                "min_selections": 0,
-                "max_selections": 1,
+                "min_selection": 0,
+                "max_selection": 1,
                 "display_order": 1,
             },
         ]
@@ -384,7 +329,8 @@ class TestCatalogModifierGroups(unittest.TestCase):
 
         mock_get_all.assert_called_once()
         call_filters = mock_get_all.call_args[1]["filters"]
-        self.assertEqual(call_filters["is_active"], 1)
+        self.assertEqual(mock_get_all.call_args[0][0], "FB Modifier Group")
+        self.assertEqual(call_filters["active"], 1)
         self.assertEqual(call_filters["modified"], [">=", "2026-03-01T00:00:00"])
 
     @patch("kopos_connector.api.catalog.frappe.get_all")
@@ -395,12 +341,12 @@ class TestCatalogModifierGroups(unittest.TestCase):
             {
                 "id": "grp-test",
                 "name": "Test Group",
-                "selection_type": "multiple",
+                "selection_type": "Multiple",
                 "is_required": 1,
-                "min_selections": 2,
-                "max_selections": 5,
+                "min_selection": 2,
+                "max_selection": 5,
                 "display_order": 10,
-                "parent_option_id": "opt-parent",
+                "parent_modifier": "mod-parent",
             },
         ]
 
@@ -415,7 +361,290 @@ class TestCatalogModifierGroups(unittest.TestCase):
         self.assertEqual(group["min_selections"], 2)
         self.assertEqual(group["max_selections"], 5)
         self.assertEqual(group["display_order"], 10)
-        self.assertEqual(group["parent_option_id"], "opt-parent")
+        self.assertEqual(group["parent_option_id"], "mod-parent")
+
+
+class TestCatalogFBSource(unittest.TestCase):
+    @patch("kopos_connector.api.catalog.frappe.db.sql")
+    def test_get_modifier_options_reads_fb_modifiers_only(self, mock_sql):
+        from kopos_connector.api.catalog import get_modifier_options
+
+        mock_sql.return_value = [
+            {
+                "id": "mod-iced",
+                "group_id": "grp-temp",
+                "name": "Iced",
+                "price_adjustment": 0.5,
+                "is_default": 0,
+                "is_active": 1,
+                "display_order": 1,
+            }
+        ]
+
+        result = get_modifier_options()
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "id": "mod-iced",
+                    "group_id": "grp-temp",
+                    "name": "Iced",
+                    "price_adjustment": 0.5,
+                    "is_default": 0,
+                    "is_active": 1,
+                    "display_order": 1,
+                }
+            ],
+        )
+        query = mock_sql.call_args[0][0]
+        self.assertIn("tabFB Modifier", query)
+        self.assertIn("tabFB Modifier Group", query)
+        self.assertNotIn("tabKoPOS Modifier", query)
+
+    @patch("kopos_connector.api.catalog.frappe.get_all")
+    def test_get_item_modifier_groups_maps_active_fb_recipe_links(self, mock_get_all):
+        from kopos_connector.api.catalog import get_item_modifier_groups_map
+
+        def fake_get_all(doctype, **kwargs):
+            if doctype == "FB Recipe":
+                return [
+                    {
+                        "name": "RECIPE-ITEM-1",
+                        "sellable_item": "ITEM-1",
+                        "effective_from": None,
+                        "effective_to": None,
+                        "version_no": 1,
+                        "modified": "2026-03-13 18:00:00",
+                    }
+                ]
+            if doctype == "FB Allowed Modifier Group":
+                return [
+                    {
+                        "parent": "RECIPE-ITEM-1",
+                        "modifier_group": "grp-temp",
+                        "display_order": 1,
+                        "idx": 1,
+                    },
+                    {
+                        "parent": "RECIPE-ITEM-1",
+                        "modifier_group": "grp-ice",
+                        "display_order": 2,
+                        "idx": 2,
+                    },
+                    {
+                        "parent": "RECIPE-ITEM-1",
+                        "modifier_group": "grp-inactive",
+                        "display_order": 3,
+                        "idx": 3,
+                    },
+                ]
+            if doctype == "FB Modifier Group":
+                return ["grp-temp", "grp-ice"]
+            raise AssertionError(f"Unexpected doctype lookup: {doctype}")
+
+        mock_get_all.side_effect = fake_get_all
+
+        result = get_item_modifier_groups_map(
+            [
+                {
+                    "id": "ITEM-1",
+                    "custom_fb_recipe_required": 1,
+                    "custom_fb_default_recipe": "RECIPE-ITEM-1",
+                }
+            ],
+            company="JiJi",
+        )
+
+        self.assertEqual(result, {"ITEM-1": ["grp-temp", "grp-ice"]})
+
+    @patch("kopos_connector.api.catalog.frappe.get_all")
+    def test_get_item_modifier_groups_requires_active_recipe_for_recipe_managed_item(
+        self, mock_get_all
+    ):
+        from kopos_connector.api.catalog import get_item_modifier_groups_map
+
+        def fake_get_all(doctype, **kwargs):
+            if doctype == "FB Recipe":
+                return []
+            raise AssertionError(f"Unexpected doctype lookup: {doctype}")
+
+        mock_get_all.side_effect = fake_get_all
+
+        with self.assertRaises(Exception) as context:
+            get_item_modifier_groups_map(
+                [
+                    {
+                        "id": "ITEM-1",
+                        "custom_fb_recipe_required": 1,
+                        "custom_fb_default_recipe": "RECIPE-ITEM-1",
+                    }
+                ],
+                company="JiJi",
+            )
+
+        self.assertIn(
+            "No active FB Recipe was found for item(s): ITEM-1",
+            str(context.exception),
+        )
+
+
+class TestFBModifierGroupDependencies(unittest.TestCase):
+    @patch(
+        "kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group.frappe.get_cached_doc"
+    )
+    def test_fb_modifier_group_validate_allows_temperature_to_ice_level_dependency(
+        self, mock_get_cached_doc
+    ):
+        from kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group import (
+            FBModifierGroup,
+        )
+
+        mock_get_cached_doc.side_effect = lambda doctype, name: {
+            ("FB Modifier", "mod-iced"): MagicMock(modifier_group="grp-temp"),
+            ("FB Modifier Group", "grp-temp"): MagicMock(parent_modifier=None),
+        }[(doctype, name)]
+
+        group = FBModifierGroup()
+        group.name = "grp-ice"
+        group.group_code = "grp-ice"
+        group.parent_modifier = "mod-iced"
+
+        group.validate()
+
+    @patch(
+        "kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group.frappe.get_cached_doc"
+    )
+    def test_filter_visible_allowed_modifier_groups_hides_unselected_dependency(
+        self, mock_get_cached_doc
+    ):
+        from kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group import (
+            filter_visible_allowed_modifier_groups,
+        )
+
+        mock_get_cached_doc.side_effect = lambda doctype, name: {
+            ("FB Modifier Group", "grp-temp"): MagicMock(parent_modifier=None),
+            ("FB Modifier Group", "grp-ice"): MagicMock(parent_modifier="mod-iced"),
+        }[(doctype, name)]
+
+        allowed_group_rows = [
+            MagicMock(modifier_group="grp-temp"),
+            MagicMock(modifier_group="grp-ice"),
+        ]
+
+        visible_rows = filter_visible_allowed_modifier_groups(
+            allowed_group_rows, {"mod-hot"}
+        )
+
+        self.assertEqual(
+            [getattr(row, "modifier_group", None) for row in visible_rows],
+            ["grp-temp"],
+        )
+
+    @patch(
+        "kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group.frappe.get_cached_doc"
+    )
+    def test_filter_visible_allowed_modifier_groups_includes_selected_dependency(
+        self, mock_get_cached_doc
+    ):
+        from kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group import (
+            filter_visible_allowed_modifier_groups,
+        )
+
+        mock_get_cached_doc.side_effect = lambda doctype, name: {
+            ("FB Modifier Group", "grp-temp"): MagicMock(parent_modifier=None),
+            ("FB Modifier Group", "grp-ice"): MagicMock(parent_modifier="mod-iced"),
+        }[(doctype, name)]
+
+        allowed_group_rows = [
+            MagicMock(modifier_group="grp-temp"),
+            MagicMock(modifier_group="grp-ice"),
+        ]
+
+        visible_rows = filter_visible_allowed_modifier_groups(
+            allowed_group_rows, {"mod-iced"}
+        )
+
+        self.assertEqual(
+            [getattr(row, "modifier_group", None) for row in visible_rows],
+            ["grp-temp", "grp-ice"],
+        )
+
+    @patch(
+        "kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group.frappe.get_cached_doc"
+    )
+    def test_fb_modifier_group_validate_rejects_circular_parent_dependency(
+        self, mock_get_cached_doc
+    ):
+        from kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group import (
+            FBModifierGroup,
+        )
+
+        mock_get_cached_doc.side_effect = lambda doctype, name: {
+            ("FB Modifier", "mod-iced"): MagicMock(modifier_group="grp-ice"),
+            ("FB Modifier Group", "grp-ice"): MagicMock(parent_modifier="mod-hot"),
+            ("FB Modifier", "mod-hot"): MagicMock(modifier_group="grp-temp"),
+        }[(doctype, name)]
+
+        group = FBModifierGroup()
+        group.name = "grp-temp"
+        group.group_code = "grp-temp"
+        group.parent_modifier = "mod-iced"
+
+        with self.assertRaises(Exception) as context:
+            group.validate()
+
+        self.assertIn("Circular parent modifier dependency", str(context.exception))
+
+    @patch(
+        "kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group.frappe.get_cached_doc"
+    )
+    def test_fb_modifier_group_validate_rejects_parent_modifier_from_same_group(
+        self, mock_get_cached_doc
+    ):
+        from kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group import (
+            FBModifierGroup,
+        )
+
+        mock_get_cached_doc.side_effect = lambda doctype, name: {
+            ("FB Modifier", "mod-iced"): MagicMock(modifier_group="grp-ice"),
+        }[(doctype, name)]
+
+        group = FBModifierGroup()
+        group.name = "grp-ice"
+        group.group_code = "grp-ice"
+        group.parent_modifier = "mod-iced"
+
+        with self.assertRaises(Exception) as context:
+            group.validate()
+
+        self.assertIn(
+            "must belong to another FB Modifier Group", str(context.exception)
+        )
+
+    @patch(
+        "kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group.frappe.get_cached_doc"
+    )
+    def test_fb_modifier_group_validate_rejects_parent_modifier_without_group(
+        self, mock_get_cached_doc
+    ):
+        from kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group import (
+            FBModifierGroup,
+        )
+
+        mock_get_cached_doc.side_effect = lambda doctype, name: {
+            ("FB Modifier", "mod-orphan"): MagicMock(modifier_group=None),
+        }[(doctype, name)]
+
+        group = FBModifierGroup()
+        group.name = "grp-ice"
+        group.group_code = "grp-ice"
+        group.parent_modifier = "mod-orphan"
+
+        with self.assertRaises(Exception) as context:
+            group.validate()
+
+        self.assertIn("must belong to an FB Modifier Group", str(context.exception))
 
 
 class TestModifierOptionChoices(unittest.TestCase):

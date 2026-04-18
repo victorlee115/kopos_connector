@@ -67,7 +67,10 @@ def build_catalog_payload(
 def resolve_catalog_pos_profile(device_id: str | None = None) -> ERPRecord | None:
     if cstr(device_id).strip():
         device_doc = get_device_doc(device_id=device_id)
-        profile = frappe.get_cached_doc("POS Profile", device_doc.pos_profile)
+        profile_name = cstr(getattr(device_doc, "pos_profile", None)).strip()
+        if not profile_name:
+            return get_default_pos_profile()
+        profile = frappe.get_cached_doc("POS Profile", profile_name)
         return profile.as_dict()
     return get_default_pos_profile()
 
@@ -150,26 +153,30 @@ def get_items(
     allowed_item_groups = get_allowed_item_groups(pos_profile)
     if allowed_item_groups:
         filters["item_group"] = ["in", sorted(allowed_item_groups)]
-    if since:
-        filters["modified"] = [">=", since]
+    company = cstr((pos_profile or {}).get("company")).strip() or None
 
-    rows = frappe.get_all(
-        "Item",
+    row_by_item_id: dict[str, ERPRecord] = {}
+    for row in get_saleable_item_rows(filters=filters, since=since):
+        item_id = cstr(row.get("id") or row.get("item_code")).strip()
+        if item_id:
+            row_by_item_id[item_id] = row
+
+    for row in get_saleable_item_rows(
         filters=filters,
-        fields=[
-            "name as id",
-            "item_code",
-            "item_name as name",
-            "item_group as category_id",
-            "standard_rate as price",
-            "disabled",
-            "custom_kopos_availability_mode",
-            "custom_kopos_track_stock",
-            "custom_kopos_min_qty",
-            "custom_kopos_is_prep_item",
-        ],
-        order_by="item_name asc",
+        item_codes=get_recipe_changed_item_codes(company=company, since=since),
+    ):
+        item_id = cstr(row.get("id") or row.get("item_code")).strip()
+        if item_id:
+            row_by_item_id[item_id] = row
+
+    rows = sorted(
+        row_by_item_id.values(),
+        key=lambda row: (
+            cstr(row.get("name") or row.get("item_code")).lower(),
+            cstr(row.get("id") or row.get("item_code")),
+        ),
     )
+    modifier_groups_by_item = get_item_modifier_groups_map(rows, company=company)
 
     items: list[ERPRecord] = []
     for row in rows:
@@ -190,11 +197,71 @@ def get_items(
                 "is_available": get_item_availability(row, warehouse),
                 "is_active": 0 if cint(row.get("disabled")) else 1,
                 "is_prep_item": cint(row.get("custom_kopos_is_prep_item") or 0),
-                "modifier_group_ids": get_item_modifier_groups(item_id),
+                "modifier_group_ids": modifier_groups_by_item.get(item_id, []),
             }
         )
 
     return items
+
+
+def get_saleable_item_rows(
+    filters: dict[str, Any],
+    since: str | None = None,
+    item_codes: set[str] | None = None,
+) -> list[ERPRecord]:
+    query_filters = dict(filters)
+    normalized_item_codes = sorted(
+        {
+            cstr(item_code).strip()
+            for item_code in (item_codes or set())
+            if cstr(item_code).strip()
+        }
+    )
+    if since:
+        query_filters["modified"] = [">=", since]
+    if normalized_item_codes:
+        query_filters["name"] = ["in", normalized_item_codes]
+    if item_codes is not None and not normalized_item_codes:
+        return []
+
+    return frappe.get_all(
+        "Item",
+        filters=query_filters,
+        fields=[
+            "name as id",
+            "item_code",
+            "item_name as name",
+            "item_group as category_id",
+            "standard_rate as price",
+            "disabled",
+            "custom_kopos_availability_mode",
+            "custom_kopos_track_stock",
+            "custom_kopos_min_qty",
+            "custom_kopos_is_prep_item",
+            "custom_fb_recipe_required",
+            "custom_fb_default_recipe",
+        ],
+        order_by="item_name asc",
+    )
+
+
+def get_recipe_changed_item_codes(
+    company: str | None = None, since: str | None = None
+) -> set[str]:
+    if not since:
+        return set()
+
+    filters: dict[str, Any] = {"status": "Active", "modified": [">=", since]}
+    if company:
+        filters["company"] = company
+
+    return {
+        cstr(item_code).strip()
+        for item_code in frappe.get_all(
+            "FB Recipe", filters=filters, pluck="sellable_item"
+        )
+        if cstr(item_code).strip()
+    }
 
 
 def get_allowed_item_groups(pos_profile: ERPRecord | None) -> set[str]:
@@ -252,18 +319,160 @@ def get_allowed_item_groups(pos_profile: ERPRecord | None) -> set[str]:
     } or selected_groups
 
 
-def get_item_modifier_groups(item_code: str) -> list[str]:
-    """Return modifier group ids linked to an Item's child table rows."""
-    return frappe.get_all(
-        "KoPOS Item Modifier Group",
-        filters={
-            "parent": item_code,
-            "parenttype": "Item",
-            "parentfield": "custom_kopos_modifier_groups",
-        },
-        order_by="display_order asc, idx asc",
-        pluck="modifier_group",
+def get_item_modifier_groups(item_code: str, company: str | None = None) -> list[str]:
+    item_id = cstr(item_code).strip()
+    if not item_id:
+        return []
+
+    return get_item_modifier_groups_map(
+        [{"id": item_id, "item_code": item_id}],
+        company=company,
+    ).get(item_id, [])
+
+
+def get_item_modifier_groups_map(
+    item_rows: list[ERPRecord], company: str | None = None
+) -> dict[str, list[str]]:
+    item_codes = sorted(
+        {
+            cstr(row.get("id") or row.get("item_code")).strip()
+            for row in item_rows
+            if cstr(row.get("id") or row.get("item_code")).strip()
+        }
     )
+    if not item_codes:
+        return {}
+
+    recipe_filters: dict[str, Any] = {
+        "sellable_item": ["in", item_codes],
+        "status": "Active",
+    }
+    if company:
+        recipe_filters["company"] = company
+
+    recipe_rows = frappe.get_all(
+        "FB Recipe",
+        filters=recipe_filters,
+        fields=[
+            "name",
+            "sellable_item",
+            "effective_from",
+            "effective_to",
+            "version_no",
+            "modified",
+        ],
+        order_by="sellable_item asc, version_no desc, modified desc",
+    )
+
+    effective_recipe_by_item: dict[str, str] = {}
+    current_time = now_datetime()
+    for row in recipe_rows:
+        item_code = cstr(row.get("sellable_item")).strip()
+        recipe_name = cstr(row.get("name")).strip()
+        if not item_code or not recipe_name:
+            continue
+        if not is_effective_recipe_row(row, current_time):
+            continue
+        existing_recipe_name = effective_recipe_by_item.get(item_code)
+        if existing_recipe_name and existing_recipe_name != recipe_name:
+            frappe.throw(
+                "Multiple active FB Recipes were found for item {0}: {1}, {2}".format(
+                    item_code,
+                    existing_recipe_name,
+                    recipe_name,
+                ),
+                frappe.ValidationError,
+            )
+        effective_recipe_by_item[item_code] = recipe_name
+
+    required_recipe_items = sorted(
+        {
+            cstr(row.get("id") or row.get("item_code")).strip()
+            for row in item_rows
+            if cstr(row.get("id") or row.get("item_code")).strip()
+            and (
+                cint(row.get("custom_fb_recipe_required"))
+                or cstr(row.get("custom_fb_default_recipe")).strip()
+            )
+        }
+    )
+    missing_recipe_items = [
+        item_code
+        for item_code in required_recipe_items
+        if item_code not in effective_recipe_by_item
+    ]
+    if missing_recipe_items:
+        frappe.throw(
+            "No active FB Recipe was found for item(s): {0}".format(
+                ", ".join(missing_recipe_items)
+            ),
+            frappe.ValidationError,
+        )
+
+    recipe_names = sorted(set(effective_recipe_by_item.values()))
+    if not recipe_names:
+        return {}
+
+    allowed_group_rows = frappe.get_all(
+        "FB Allowed Modifier Group",
+        filters={
+            "parent": ["in", recipe_names],
+            "parenttype": "FB Recipe",
+            "parentfield": "allowed_modifier_groups",
+        },
+        fields=["parent", "modifier_group", "display_order", "idx"],
+        order_by="parent asc, display_order asc, idx asc",
+    )
+    allowed_group_ids = sorted(
+        {
+            cstr(row.get("modifier_group")).strip()
+            for row in allowed_group_rows
+            if cstr(row.get("modifier_group")).strip()
+        }
+    )
+    active_group_ids = set(
+        frappe.get_all(
+            "FB Modifier Group",
+            filters={"active": 1, "name": ["in", allowed_group_ids]},
+            pluck="name",
+        )
+    )
+
+    item_code_by_recipe_name = {
+        recipe_name: item_code
+        for item_code, recipe_name in effective_recipe_by_item.items()
+    }
+    group_ids_by_item: dict[str, list[str]] = {}
+    for row in allowed_group_rows:
+        recipe_name = cstr(row.get("parent")).strip()
+        modifier_group = cstr(row.get("modifier_group")).strip()
+        item_code = item_code_by_recipe_name.get(recipe_name)
+        if (
+            not item_code
+            or not modifier_group
+            or modifier_group not in active_group_ids
+        ):
+            continue
+
+        item_group_ids = group_ids_by_item.setdefault(item_code, [])
+        if modifier_group not in item_group_ids:
+            item_group_ids.append(modifier_group)
+
+    return group_ids_by_item
+
+
+def is_effective_recipe_row(row: ERPRecord, current_time: Any) -> bool:
+    effective_from = row.get("effective_from")
+    effective_to = row.get("effective_to")
+    if effective_from and get_datetime(effective_from) > current_time:
+        return False
+    if effective_to and get_datetime(effective_to) < current_time:
+        return False
+    return True
+
+
+def get_datetime(value: Any) -> Any:
+    return frappe.utils.get_datetime(value)
 
 
 def get_item_barcode(item_code: str) -> str | None:
@@ -332,23 +541,22 @@ def get_item_price(
 
 
 def get_modifier_groups(since: str | None = None) -> list[ERPRecord]:
-    """Return active modifier groups."""
-    filters: dict[str, Any] = {"is_active": 1}
+    filters: dict[str, Any] = {"active": 1}
     if since:
         filters["modified"] = [">=", since]
 
     rows = frappe.get_all(
-        "KoPOS Modifier Group",
+        "FB Modifier Group",
         filters=filters,
         fields=[
             "name as id",
             "group_name as name",
             "selection_type",
             "is_required",
-            "min_selections",
-            "max_selections",
+            "min_selection",
+            "max_selection",
             "display_order",
-            "parent_option_id",
+            "parent_modifier",
         ],
         order_by="display_order asc, group_name asc",
     )
@@ -357,20 +565,21 @@ def get_modifier_groups(since: str | None = None) -> list[ERPRecord]:
         {
             "id": row.get("id"),
             "name": row.get("name"),
-            "selection_type": row.get("selection_type") or "single",
+            "selection_type": "multiple"
+            if cstr(row.get("selection_type")).strip().lower() == "multiple"
+            else "single",
             "is_required": cint(row.get("is_required")),
-            "min_selections": cint(row.get("min_selections") or 0),
-            "max_selections": cint(row.get("max_selections") or 1),
+            "min_selections": cint(row.get("min_selection") or 0),
+            "max_selections": cint(row.get("max_selection") or 1),
             "display_order": cint(row.get("display_order") or 0),
-            "parent_option_id": row.get("parent_option_id"),
+            "parent_option_id": cstr(row.get("parent_modifier")).strip() or None,
         }
         for row in rows
     ]
 
 
 def get_modifier_options(since: str | None = None) -> list[ERPRecord]:
-    """Return active modifier options joined to active parent groups."""
-    conditions = ["opt.is_active = 1", "grp.is_active = 1"]
+    conditions = ["opt.active = 1", "grp.active = 1"]
     values: list[Any] = []
     if since:
         conditions.append("(opt.modified >= %s OR grp.modified >= %s)")
@@ -380,16 +589,16 @@ def get_modifier_options(since: str | None = None) -> list[ERPRecord]:
         f"""
 			SELECT
 				opt.name AS id,
-				opt.parent AS group_id,
-				opt.option_name AS name,
+				opt.modifier_group AS group_id,
+				opt.modifier_name AS name,
 				opt.price_adjustment,
 				opt.is_default,
-				opt.is_active,
+				opt.active AS is_active,
 				opt.display_order
-			FROM `tabKoPOS Modifier Option` opt
-			INNER JOIN `tabKoPOS Modifier Group` grp ON grp.name = opt.parent
+			FROM `tabFB Modifier` opt
+			INNER JOIN `tabFB Modifier Group` grp ON grp.name = opt.modifier_group
 			WHERE {" AND ".join(conditions)}
-			ORDER BY opt.parent ASC, opt.display_order ASC, opt.option_name ASC
+			ORDER BY opt.modifier_group ASC, opt.display_order ASC, opt.modifier_name ASC
 		""",
         tuple(values),
         as_dict=True,
@@ -418,7 +627,10 @@ def get_tax_rate_value(
     profile_data = None
     if cstr(device_id).strip():
         device_doc = get_device_doc(device_id=device_id)
-        profile = frappe.get_doc("POS Profile", device_doc.pos_profile)
+        profile_name = cstr(getattr(device_doc, "pos_profile", None)).strip()
+        if not profile_name:
+            return 0.08
+        profile = frappe.get_doc("POS Profile", profile_name)
         profile_data = profile.as_dict()
     elif pos_profile_name:
         profile = frappe.get_doc("POS Profile", pos_profile_name)

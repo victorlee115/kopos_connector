@@ -21,7 +21,7 @@ frappe.query_reports["Modifier Sales Analytics"] = {
             fieldname: "modifier_group",
             label: __("Modifier Group"),
             fieldtype: "Link",
-            options: "KoPOS Modifier Group"
+            options: "FB Modifier Group"
         }
     ],
 

@@ -8,6 +8,7 @@ from pathlib import Path
 ERP_ROOT = Path(
     "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext/kopos_connector"
 )
+WORKTREE_ROOT = ERP_ROOT.parent
 DOCTYPE_ROOT = ERP_ROOT / "kopos" / "doctype"
 
 
@@ -135,6 +136,51 @@ class TestFBSchemaContract(unittest.TestCase):
         )
         for option in ["Instruction Only", "Add", "Replace", "Remove", "Scale"]:
             self.assertIn(option, kind_field["options"])
+
+    def test_fb_modifier_group_schema(self):
+        doc = load_doctype("fb_modifier_group")
+        names = fieldnames(doc)
+        self.assertTrue(
+            {
+                "group_code",
+                "group_name",
+                "selection_type",
+                "is_required",
+                "min_selection",
+                "max_selection",
+                "display_order",
+                "active",
+                "parent_modifier",
+                "default_resolution_policy",
+            }.issubset(names)
+        )
+        parent_modifier_field = next(
+            field
+            for field in doc["fields"]
+            if field.get("fieldname") == "parent_modifier"
+        )
+        self.assertEqual(parent_modifier_field["fieldtype"], "Link")
+        self.assertEqual(parent_modifier_field["options"], "FB Modifier")
+        self.assertEqual(parent_modifier_field["label"], "Parent Modifier Option")
+        self.assertIn("Ice Level", parent_modifier_field["description"])
+
+    def test_fb_modifier_group_authoring_script_exists(self):
+        script_path = DOCTYPE_ROOT / "fb_modifier_group" / "fb_modifier_group.js"
+
+        self.assertTrue(script_path.exists())
+        script = script_path.read_text()
+        self.assertIn('frappe.ui.form.on("FB Modifier Group"', script)
+        self.assertIn("parent_modifier", script)
+        self.assertIn("Temperature contains Hot and Iced", script)
+
+    def test_fb_modifier_dependency_authoring_doc_exists(self):
+        doc_path = WORKTREE_ROOT / "docs" / "FB_MODIFIER_AUTHORING.md"
+
+        self.assertTrue(doc_path.exists())
+        content = doc_path.read_text()
+        self.assertIn("Temperature", content)
+        self.assertIn("Ice Level", content)
+        self.assertIn("Iced", content)
 
     def test_fb_resolved_sale_schema(self):
         doc = load_doctype("fb_resolved_sale")
