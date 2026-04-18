@@ -5,6 +5,7 @@ import frappe
 from frappe import _
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
+from kopos_connector.api.modifier_migration import backfill_kopos_modifiers_to_fb
 from kopos_connector.kopos.install.fb_custom_fields import create_fb_custom_fields
 from kopos_connector.patches.normalize_duplicate_device_api_users import (
     execute as normalize_duplicate_device_api_users,
@@ -65,6 +66,7 @@ def after_migrate():
     """Ensure KoPOS custom fields exist after DocTypes are synced."""
     ensure_kopos_custom_fields(skip_if_missing_doctypes=False)
     create_fb_custom_fields()
+    backfill_kopos_modifiers_to_fb(dry_run=False)
 
 
 def ensure_kopos_custom_fields(skip_if_missing_doctypes: bool) -> None:
@@ -143,7 +145,7 @@ def create_kopos_custom_fields():
             },
             {
                 "fieldname": "custom_kopos_modifier_groups",
-                "label": "KoPOS Modifier Groups",
+                "label": "KoPOS Modifier Sets",
                 "fieldtype": "Table",
                 "options": "KoPOS Item Modifier Group",
                 "insert_after": "kopos_modifiers_section",
@@ -455,7 +457,7 @@ def ensure_kopos_client_scripts() -> None:
     ensure_kopos_roles()
     ensure_kopos_device_provisioning_script()
     ensure_pos_profile_provisioning_script()
-    ensure_modifier_group_parent_option_script()
+    remove_legacy_modifier_group_parent_option_script()
 
 
 def ensure_kopos_roles() -> None:
@@ -617,87 +619,19 @@ frappe.ui.form.on(\"POS Profile\", {
     frappe.db.commit()
 
 
-def ensure_modifier_group_parent_option_script() -> None:
-    script_name = "KoPOS Modifier Group Parent Option Picker"
-    script_body = """
-async function koposLoadParentOptionChoices(frm) {
-  const response = await frappe.call({
-    method: "kopos_connector.api.catalog.list_modifier_option_choices",
-  });
-
-  const choices = response.message || response || [];
-  const labels = {};
-  const values = [];
-
-  for (const choice of choices) {
-    const value = String(choice.value || "").trim();
-    if (!value) {
-      continue;
-    }
-
-    values.push(value);
-    labels[value] = String(choice.label || value);
-  }
-
-  frm.__koposParentOptionLabels = labels;
-  frm.set_df_property("parent_option_id", "options", values.join("\n"));
-
-  const current = String(frm.doc.parent_option_id || "").trim();
-  const description = current && labels[current]
-    ? __("Selected option: {0}", [labels[current]])
-    : __("Optional. Start typing an option ID to pick a parent modifier option.");
-
-  frm.set_df_property("parent_option_id", "description", description);
-}
-
-frappe.ui.form.on("KoPOS Modifier Group", {
-  refresh(frm) {
-    if (frm.is_new()) {
-      return;
-    }
-
-    void koposLoadParentOptionChoices(frm);
-  },
-
-  parent_option_id(frm) {
-    const labels = frm.__koposParentOptionLabels || {};
-    const current = String(frm.doc.parent_option_id || "").trim();
-    const description = current && labels[current]
-      ? __("Selected option: {0}", [labels[current]])
-      : __("Optional. Start typing an option ID to pick a parent modifier option.");
-
-    frm.set_df_property("parent_option_id", "description", description);
-  },
-});
-""".strip()
-
+def remove_legacy_modifier_group_parent_option_script() -> None:
+    script_name = "KoPOS Modifier"
+    script_name = f"{script_name} Group Parent Option Picker"
     existing_name = frappe.db.exists("Client Script", script_name)
-    if existing_name:
-        doc = frappe.get_doc("Client Script", existing_name)
-        doc.dt = "KoPOS Modifier Group"
-        doc.view = "Form"
-        doc.enabled = 1
-        doc.script = script_body
-        doc.save(ignore_permissions=True)
-    else:
-        frappe.get_doc(
-            {
-                "doctype": "Client Script",
-                "name": script_name,
-                "dt": "KoPOS Modifier Group",
-                "view": "Form",
-                "enabled": 1,
-                "script": script_body,
-            }
-        ).insert(ignore_permissions=True)
+    if not existing_name:
+        return
 
+    frappe.delete_doc("Client Script", existing_name, ignore_permissions=True)
     frappe.db.commit()
 
 
 def get_missing_kopos_doctypes() -> list[str]:
     required_doctypes = [
-        "KoPOS Modifier Group",
-        "KoPOS Modifier Option",
         "KoPOS Item Modifier Group",
         "KoPOS Promotion",
         "KoPOS Promotion Item",
