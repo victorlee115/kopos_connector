@@ -209,8 +209,9 @@ def _coerce_mapping(value: Any) -> dict[str, Any]:
 
 
 def _validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    order_payload = (
-        payload.get("order") if isinstance(payload.get("order"), Mapping) else {}
+    order_value = payload.get("order")
+    order_payload: dict[str, Any] = (
+        dict(order_value) if isinstance(order_value, Mapping) else {}
     )
     order_id = cstr(payload.get("order_id") or order_payload.get("id"))
     idempotency_key = cstr(payload.get("idempotency_key"))
@@ -378,6 +379,19 @@ def _validate_order_item(value: Any, index: int) -> dict[str, Any]:
     if recipe and not frappe.db.exists("FB Recipe", recipe):
         frappe.throw(f"FB Recipe {recipe} was not found", frappe.ValidationError)
 
+    validated_modifiers = [
+        _validate_selected_modifier(row, index, modifier_index)
+        for modifier_index, row in enumerate(modifiers, start=1)
+    ]
+    resolved_modifier_total = sum(
+        flt(row["price_adjustment"]) for row in validated_modifiers
+    )
+    if abs(modifier_total - resolved_modifier_total) > 0.0001:
+        frappe.throw(
+            f"items[{index}].modifier_total must equal summed FB modifier price adjustments",
+            frappe.ValidationError,
+        )
+
     expected_total = (unit_price + modifier_total) * qty - discount_amount
     if abs(expected_total - line_total) > 0.0001:
         frappe.throw(
@@ -394,17 +408,14 @@ def _validate_order_item(value: Any, index: int) -> dict[str, Any]:
         "qty": qty,
         "uom": resolved_uom,
         "unit_price": unit_price,
-        "modifier_total": modifier_total,
+        "modifier_total": resolved_modifier_total,
         "discount_amount": discount_amount,
         "line_total": line_total,
         "recipe": recipe,
         "recipe_version": recipe_version,
         "is_recipe_managed": 1 if recipe else 0,
         "remarks": remarks,
-        "selected_modifiers": [
-            _validate_selected_modifier(row, index, modifier_index)
-            for modifier_index, row in enumerate(modifiers, start=1)
-        ],
+        "selected_modifiers": validated_modifiers,
     }
 
 
@@ -436,17 +447,33 @@ def _validate_selected_modifier(
             frappe.ValidationError,
         )
 
-    _require_doc("FB Modifier Group", modifier_group, "modifier_group")
-    _require_doc("FB Modifier", modifier, "modifier")
+    field_prefix = f"items[{item_index}].selected_modifiers[{modifier_index}]"
+    _get_required_fb_modifier_doc(
+        "FB Modifier Group",
+        modifier_group,
+        f"{field_prefix}.modifier_group",
+    )
+    modifier_doc = _get_required_fb_modifier_doc(
+        "FB Modifier",
+        modifier,
+        f"{field_prefix}.modifier",
+    )
+    if cstr(getattr(modifier_doc, "modifier_group", None)) != modifier_group:
+        frappe.throw(
+            f"{field_prefix}.modifier {modifier} does not belong to FB Modifier Group {modifier_group}",
+            frappe.ValidationError,
+        )
 
     return {
         "modifier_group": modifier_group,
         "modifier": modifier,
-        "price_adjustment": price_adjustment,
-        "instruction_text": instruction_text,
-        "sort_order": sort_order,
-        "affects_stock": 1 if affects_stock else 0,
-        "affects_recipe": 1 if affects_recipe else 0,
+        "price_adjustment": flt(getattr(modifier_doc, "price_adjustment", 0)),
+        "instruction_text": instruction_text
+        or cstr(getattr(modifier_doc, "instruction_text", None))
+        or None,
+        "sort_order": sort_order or cint(getattr(modifier_doc, "display_order", 0)),
+        "affects_stock": 1 if cint(getattr(modifier_doc, "affects_stock", 0)) else 0,
+        "affects_recipe": 1 if cint(getattr(modifier_doc, "affects_recipe", 0)) else 0,
     }
 
 
@@ -604,13 +631,20 @@ def _build_fb_order(validated: dict[str, Any]):
                 "remarks": item["remarks"],
             },
         )
-        for modifier in item["selected_modifiers"]:
-            row.append("selected_modifiers", modifier)
+        _set_selected_modifiers_payload(row, item["selected_modifiers"])
 
     for payment in validated["payments"]:
         order_doc.append("payments", payment)
 
     return order_doc
+
+
+def _set_selected_modifiers_payload(line, modifiers: list[dict[str, Any]]) -> None:
+    setattr(
+        line,
+        "_selected_modifiers_payload",
+        [frappe._dict(modifier) for modifier in modifiers],
+    )
 
 
 def _get_existing_fb_order_name(idempotency_key: str) -> str | None:
@@ -1027,6 +1061,26 @@ def _build_payload_hash(doc, projection_type: str) -> str:
 def _require_doc(doctype: str, name: str, field_label: str) -> None:
     if not frappe.db.exists(doctype, name):
         frappe.throw(f"{field_label} {name} was not found", frappe.ValidationError)
+
+
+def _get_required_fb_modifier_doc(doctype: str, name: str, field_label: str):
+    identifier = cstr(name)
+    if _looks_like_legacy_kopos_modifier_identifier(identifier):
+        frappe.throw(
+            f"{field_label} {identifier} is a legacy KoPOS modifier id; submit FB-only modifier ids",
+            frappe.ValidationError,
+        )
+    if not frappe.db.exists(doctype, identifier):
+        frappe.throw(
+            f"{field_label} {identifier} was not found in {doctype}; submit FB-only modifier ids because legacy KoPOS modifier ids are not supported",
+            frappe.ValidationError,
+        )
+    return frappe.get_cached_doc(doctype, identifier)
+
+
+def _looks_like_legacy_kopos_modifier_identifier(value: str) -> bool:
+    normalized_value = cstr(value).strip().upper().replace("_", "-")
+    return normalized_value.startswith("KOPOS-")
 
 
 def _resolve_fb_shift_name(value: str) -> str | None:

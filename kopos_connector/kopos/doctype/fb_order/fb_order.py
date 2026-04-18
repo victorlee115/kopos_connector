@@ -3,12 +3,20 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
+from importlib import import_module
 from typing import Any
 
-import frappe
-from frappe.model.document import Document
-from frappe.utils import flt, now_datetime
+frappe = import_module("frappe")
+BaseDocument = import_module("frappe.model.document").Document
+frappe_utils = import_module("frappe.utils")
 
+flt = frappe_utils.flt
+now_datetime = frappe_utils.now_datetime
+DocumentLike = Any
+
+from kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group import (
+    filter_visible_allowed_modifier_groups,
+)
 from kopos_connector.kopos.services.accounting.sales_invoice_service import (
     create_sales_invoice,
 )
@@ -25,7 +33,18 @@ def cstr(value: Any) -> str:
     return str(frappe.utils.cstr(value))
 
 
-class FBOrder(Document):
+class FBOrder(BaseDocument):
+    def get_selected_modifier_rows(self, line) -> list[Any]:
+        persisted_rows = list(line.get("selected_modifiers") or [])
+        if persisted_rows:
+            return persisted_rows
+
+        transient_rows = getattr(line, "_selected_modifiers_payload", None)
+        if not transient_rows:
+            return []
+
+        return list(transient_rows)
+
     def validate(self):
         self.validate_required_fields()
         self.calculate_totals()
@@ -122,7 +141,7 @@ class FBOrder(Document):
             json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()
 
-    def get_resolved_sales(self) -> list[Document]:
+    def get_resolved_sales(self) -> list[DocumentLike]:
         resolved_sales = []
         for line in self.items:
             if getattr(line, "resolved_sale", None):
@@ -329,7 +348,7 @@ class FBOrder(Document):
             )
         return line_resolutions
 
-    def resolve_recipe_for_line(self, line_index: int, line) -> Document:
+    def resolve_recipe_for_line(self, line_index: int, line) -> DocumentLike:
         if line.recipe:
             recipe_doc = frappe.get_cached_doc("FB Recipe", line.recipe)
         else:
@@ -393,7 +412,7 @@ class FBOrder(Document):
         line.item_name_snapshot = line.item_name_snapshot or recipe_doc.recipe_name
         return recipe_doc
 
-    def find_default_recipe_for_item(self, item_code: str) -> Document:
+    def find_default_recipe_for_item(self, item_code: str) -> DocumentLike:
         candidate_names = frappe.get_all(
             "FB Recipe",
             filters={
@@ -427,7 +446,7 @@ class FBOrder(Document):
 
         return effective_candidates[0]
 
-    def recipe_is_effective(self, recipe_doc: Document) -> bool:
+    def recipe_is_effective(self, recipe_doc: DocumentLike) -> bool:
         submit_time = now_datetime()
         if recipe_doc.effective_from and submit_time < recipe_doc.effective_from:
             return False
@@ -436,16 +455,30 @@ class FBOrder(Document):
         return True
 
     def validate_modifier_selections(
-        self, line_index: int, line, recipe_doc: Document
+        self, line_index: int, line, recipe_doc: DocumentLike
     ) -> list[dict[str, Any]]:
         allowed_group_rows = recipe_doc.get("allowed_modifier_groups") or []
-        allowed_group_map = {
+        all_allowed_group_map = {
             row.modifier_group: row for row in allowed_group_rows if row.modifier_group
         }
         selected_modifiers = []
         selections_by_group: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        selected_rows = self.get_selected_modifier_rows(line)
+        selected_modifier_names = {
+            cstr(selected_row.modifier)
+            for selected_row in selected_rows
+            if cstr(selected_row.modifier)
+        }
+        visible_group_rows = filter_visible_allowed_modifier_groups(
+            allowed_group_rows, selected_modifier_names
+        )
+        visible_group_map = {
+            group_name: row
+            for row in visible_group_rows
+            if (group_name := cstr(getattr(row, "modifier_group", None)))
+        }
 
-        for selected_row in line.get("selected_modifiers") or []:
+        for selected_row in selected_rows:
             if not selected_row.modifier_group or not selected_row.modifier:
                 frappe.throw(
                     "Order line {0} has a selected modifier row without modifier_group or modifier".format(
@@ -454,7 +487,7 @@ class FBOrder(Document):
                     frappe.ValidationError,
                 )
 
-            if selected_row.modifier_group not in allowed_group_map:
+            if selected_row.modifier_group not in all_allowed_group_map:
                 frappe.throw(
                     "Order line {0} selected modifier group {1} is not allowed by recipe {2}".format(
                         self.describe_line(line_index, line),
@@ -507,14 +540,14 @@ class FBOrder(Document):
 
             normalized_modifier = {
                 "row": selected_row,
-                "group_row": allowed_group_map[selected_row.modifier_group],
+                "group_row": all_allowed_group_map[selected_row.modifier_group],
                 "group_doc": modifier_group_doc,
                 "modifier_doc": modifier_doc,
             }
             selections_by_group[selected_row.modifier_group].append(normalized_modifier)
             selected_modifiers.append(normalized_modifier)
 
-        for group_name, group_row in allowed_group_map.items():
+        for group_name, group_row in visible_group_map.items():
             group_doc = frappe.get_cached_doc("FB Modifier Group", group_name)
             selected_count = len(selections_by_group.get(group_name, []))
             min_selection = self.resolve_min_selection(group_doc, group_row)
@@ -546,7 +579,7 @@ class FBOrder(Document):
 
         return selected_modifiers
 
-    def resolve_min_selection(self, group_doc: Document, group_row) -> int:
+    def resolve_min_selection(self, group_doc: DocumentLike, group_row) -> int:
         if group_row.override_min_selection is not None:
             return int(group_row.override_min_selection or 0)
         if int(group_row.required):
@@ -559,7 +592,7 @@ class FBOrder(Document):
             return int(group_doc.min_selection or 1)
         return int(group_doc.min_selection or 0)
 
-    def resolve_max_selection(self, group_doc: Document, group_row) -> int:
+    def resolve_max_selection(self, group_doc: DocumentLike, group_row) -> int:
         if group_row.override_max_selection is not None:
             return int(group_row.override_max_selection or 0)
         if group_doc.selection_type == "Single":
@@ -570,7 +603,7 @@ class FBOrder(Document):
         self,
         line_index: int,
         line,
-        recipe_doc: Document,
+        recipe_doc: DocumentLike,
         selected_modifiers: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         scale_factor = flt(line.qty) / flt(recipe_doc.default_serving_qty or 1)
@@ -684,7 +717,7 @@ class FBOrder(Document):
         return resolved_components
 
     def build_modifier_component(
-        self, modifier_doc: Document, line_index: int, line
+        self, modifier_doc: DocumentLike, line_index: int, line
     ) -> dict[str, Any]:
         target_item = modifier_doc.new_item or modifier_doc.target_item
         if not target_item:
@@ -724,7 +757,7 @@ class FBOrder(Document):
         }
 
     def find_matching_components(
-        self, resolved_components: list[dict[str, Any]], modifier_doc: Document
+        self, resolved_components: list[dict[str, Any]], modifier_doc: DocumentLike
     ) -> list[dict[str, Any]]:
         if modifier_doc.target_substitution_key:
             return [
@@ -839,7 +872,7 @@ class FBOrder(Document):
 
     def build_resolution_hash(
         self,
-        recipe_doc: Document,
+        recipe_doc: DocumentLike,
         selected_modifiers: list[dict[str, Any]],
         resolved_components: list[dict[str, Any]],
     ) -> str:
