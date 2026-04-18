@@ -5,6 +5,108 @@ import frappe
 from frappe import _
 
 
+def _sample_group_code(group_name: str) -> str:
+    slug = "-".join(group_name.lower().replace("&", "and").split())
+    return f"sample-{slug}"
+
+
+def _sample_modifier_code(group_name: str, option_name: str) -> str:
+    group_slug = "-".join(group_name.lower().replace("&", "and").split())
+    option_slug = "-".join(option_name.lower().replace("&", "and").split())
+    return f"sample-{group_slug}-{option_slug}"
+
+
+def _ensure_sample_fb_modifier_group(group_data: dict) -> tuple[str, bool]:
+    group_code = _sample_group_code(group_data["group_name"])
+    group_name = frappe.db.get_value(
+        "FB Modifier Group", {"group_code": group_code}, "name"
+    )
+    created = False
+
+    if group_name:
+        group_doc = frappe.get_doc("FB Modifier Group", group_name)
+        changed = False
+        group_payload = {
+            "group_code": group_code,
+            "group_name": group_data["group_name"],
+            "selection_type": "Multiple"
+            if str(group_data["selection_type"]).lower() == "multiple"
+            else "Single",
+            "is_required": group_data["is_required"],
+            "min_selection": group_data["min_selections"],
+            "max_selection": group_data["max_selections"],
+            "display_order": group_data["display_order"],
+            "active": 1,
+            "default_resolution_policy": "Auto Apply Default",
+        }
+        for fieldname, value in group_payload.items():
+            if getattr(group_doc, fieldname, None) != value:
+                setattr(group_doc, fieldname, value)
+                changed = True
+        if changed:
+            group_doc.save(ignore_permissions=True)
+    else:
+        group_doc = frappe.new_doc("FB Modifier Group")
+        group_doc.group_code = group_code
+        group_doc.group_name = group_data["group_name"]
+        group_doc.selection_type = (
+            "Multiple"
+            if str(group_data["selection_type"]).lower() == "multiple"
+            else "Single"
+        )
+        group_doc.is_required = group_data["is_required"]
+        group_doc.min_selection = group_data["min_selections"]
+        group_doc.max_selection = group_data["max_selections"]
+        group_doc.display_order = group_data["display_order"]
+        group_doc.active = 1
+        group_doc.default_resolution_policy = "Auto Apply Default"
+        group_doc.insert(ignore_permissions=True)
+        created = True
+
+    for option_data in group_data["options"]:
+        _ensure_sample_fb_modifier(
+            group_doc.name, group_data["group_name"], option_data
+        )
+
+    return group_doc.name, created
+
+
+def _ensure_sample_fb_modifier(
+    group_name: str, group_label: str, option_data: dict
+) -> str:
+    modifier_code = _sample_modifier_code(group_label, option_data["option_name"])
+    existing_name = frappe.db.get_value(
+        "FB Modifier", {"modifier_code": modifier_code}, "name"
+    )
+    modifier_payload = {
+        "modifier_code": modifier_code,
+        "modifier_name": option_data["option_name"],
+        "modifier_group": group_name,
+        "kind": "Instruction Only",
+        "price_adjustment": option_data["price_adjustment"],
+        "is_default": option_data["is_default"],
+        "display_order": option_data["display_order"],
+        "active": 1,
+    }
+
+    if existing_name:
+        modifier_doc = frappe.get_doc("FB Modifier", existing_name)
+        changed = False
+        for fieldname, value in modifier_payload.items():
+            if getattr(modifier_doc, fieldname, None) != value:
+                setattr(modifier_doc, fieldname, value)
+                changed = True
+        if changed:
+            modifier_doc.save(ignore_permissions=True)
+        return modifier_doc.name
+
+    modifier_doc = frappe.new_doc("FB Modifier")
+    for fieldname, value in modifier_payload.items():
+        setattr(modifier_doc, fieldname, value)
+    modifier_doc.insert(ignore_permissions=True)
+    return modifier_doc.name
+
+
 def create_sample_modifiers():
     """
     Create sample modifier groups for testing/demo purposes
@@ -200,36 +302,11 @@ def create_sample_modifiers():
     skipped_count = 0
 
     for group_data in sample_groups:
-        # Check if modifier group already exists
-        if frappe.db.exists("KoPOS Modifier Group", group_data["group_name"]):
+        _group_name, created = _ensure_sample_fb_modifier_group(group_data)
+        if created:
+            created_count += 1
+        else:
             skipped_count += 1
-            continue
-
-        # Create modifier group
-        group = frappe.new_doc("KoPOS Modifier Group")
-        group.group_name = group_data["group_name"]
-        group.selection_type = group_data["selection_type"]
-        group.is_required = group_data["is_required"]
-        group.min_selections = group_data["min_selections"]
-        group.max_selections = group_data["max_selections"]
-        group.display_order = group_data["display_order"]
-        group.is_active = 1
-
-        # Add options
-        for option_data in group_data["options"]:
-            group.append(
-                "options",
-                {
-                    "option_name": option_data["option_name"],
-                    "price_adjustment": option_data["price_adjustment"],
-                    "is_default": option_data["is_default"],
-                    "display_order": option_data["display_order"],
-                    "is_active": 1,
-                },
-            )
-
-        group.save()
-        created_count += 1
 
     frappe.db.commit()
 
@@ -244,14 +321,8 @@ def create_sample_modifiers():
 
 @frappe.whitelist()
 def link_sample_modifiers_to_items():
-    """
-    Link sample modifiers to all active items for testing
-    This is useful for quickly testing the modifier flow
-    """
-
-    # Get all modifier groups
     modifier_groups = frappe.get_all(
-        "KoPOS Modifier Group", filters={"is_active": 1}, pluck="name"
+        "FB Modifier Group", filters={"active": 1}, pluck="name"
     )
 
     if not modifier_groups:
@@ -259,43 +330,52 @@ def link_sample_modifiers_to_items():
             _("No active modifier groups found. Please create sample modifiers first.")
         )
 
-    # Get all active items
-    items = frappe.get_all(
-        "Item", filters={"is_sales_item": 1, "disabled": 0}, pluck="name"
-    )
+    recipes = frappe.get_all("FB Recipe", filters={"status": "Active"}, pluck="name")
 
-    if not items:
-        frappe.throw(_("No active items found."))
+    if not recipes:
+        frappe.throw(_("No active FB recipes found."))
 
     updated_count = 0
 
-    for item_code in items:
-        item = frappe.get_doc("Item", item_code)
+    for recipe_name in recipes:
+        recipe = frappe.get_doc("FB Recipe", recipe_name)
+        changed = False
+        for idx, group_name in enumerate(modifier_groups, start=1):
+            existing_row = next(
+                (
+                    row
+                    for row in (recipe.get("allowed_modifier_groups") or [])
+                    if getattr(row, "modifier_group", None) == group_name
+                ),
+                None,
+            )
+            if existing_row:
+                if getattr(existing_row, "display_order", None) != idx:
+                    existing_row.display_order = idx
+                    changed = True
+                continue
 
-        # Clear existing modifier groups
-        item.modifier_groups = []
-
-        # Add all modifier groups
-        for idx, group_name in enumerate(modifier_groups):
-            item.append(
-                "modifier_groups",
+            recipe.append(
+                "allowed_modifier_groups",
                 {
                     "modifier_group": group_name,
                     "display_order": idx,
                     "always_prompt": 0,
                 },
             )
+            changed = True
 
-        item.save()
-        updated_count += 1
+        if changed:
+            recipe.save(ignore_permissions=True)
+            updated_count += 1
 
     frappe.db.commit()
 
     frappe.msgprint(
-        _("Linked {0} modifier groups to {1} items").format(
+        _("Linked {0} modifier groups to {1} recipes").format(
             len(modifier_groups), updated_count
         ),
         title="Modifiers Linked",
     )
 
-    return {"modifier_groups": len(modifier_groups), "items_updated": updated_count}
+    return {"modifier_groups": len(modifier_groups), "recipes_updated": updated_count}

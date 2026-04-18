@@ -1,317 +1,370 @@
 # Copyright (c) 2026, KoPOS and contributors
 # For license information, please see license.txt
 
-import frappe
-from frappe import _
-from frappe.utils import getdate, add_days, flt, today, now_datetime, cint
-import json
+from importlib import import_module
+from typing import Mapping, Sequence, cast
+
+import hashlib
 import re
+from decimal import Decimal, ROUND_HALF_UP
 
-MAX_BATCH_SIZE = 1000
+frappe = import_module("frappe")
+frappe_utils = import_module("frappe.utils")
 
+_ = frappe._
+add_days = frappe_utils.add_days
+cint = frappe_utils.cint
+cstr = frappe_utils.cstr
+flt = frappe_utils.flt
+getdate = frappe_utils.getdate
+now_datetime = frappe_utils.now_datetime
+today = frappe_utils.today
 
-def extract_modifiers_from_description(description: str) -> list[dict]:
-    """
-    Parse modifiers from legacy description field.
-
-    Expected format:
-    Item Name
-
-    Modifiers:
-    - Oat Milk (+0.50)
-    - Large (+1.00)
-    """
-    if not description or "Modifiers:" not in description:
-        return []
-
-    # Scope regex to only text after "Modifiers:" to avoid false positives
-    modifiers_section = description.split("Modifiers:", 1)[1]
-
-    pattern = r"-\s*([^(\n]+?)\s*\(([+-]?[\d.]+)\)"
-    matches = re.findall(pattern, modifiers_section)
-
-    modifiers = []
-    for name, price_str in matches:
-        modifiers.append(
-            {
-                "name": name.strip(),
-                "price": flt(price_str),
-            }
-        )
-
-    return modifiers
+FB_GROUP_CODE_PREFIX = "kopos-fb-group"
+FB_MODIFIER_CODE_PREFIX = "kopos-fb-modifier"
 
 
-def smart_match_modifier_option(name: str) -> dict:
-    """
-    Try to match a modifier name to existing KoPOS Modifier Option.
+def _get_field_value(source: object, fieldname: str) -> object:
+    if isinstance(source, dict):
+        return source.get(fieldname)
+    return getattr(source, fieldname, None)
 
-    Returns dict with modifier_option and modifier_group if found.
-    """
-    if not name or len(name) < 2:
-        return {
-            "modifier_option": None,
-            "modifier_group": None,
-            "modifier_name": name,
-            "group_name": "Unknown",
-        }
 
-    # Exact match first
-    option = frappe.db.get_value(
-        "KoPOS Modifier Option",
-        {"modifier_name": name},
-        ["name", "parent", "modifier_name"],
-        as_dict=True,
+def _normalize_kopos_selection_type(selection_type: object) -> str:
+    return (
+        "Multiple" if cstr(selection_type).strip().lower() == "multiple" else "Single"
     )
 
-    if option:
-        group_name = frappe.db.get_value(
-            "KoPOS Modifier Group", option.parent, "group_name"
-        )
-        return {
-            "modifier_option": option.name,
-            "modifier_group": option.parent,
-            "modifier_name": option.modifier_name,
-            "group_name": group_name or "Unknown",
-        }
 
-    # Case-insensitive exact match
-    escaped_name = name.replace("%", r"\%").replace("_", r"\_")
-    option = frappe.db.sql(
-        """
-        SELECT name, parent, modifier_name 
-        FROM `tabKoPOS Modifier Option`
-        WHERE LOWER(modifier_name) = LOWER(%s)
-        ORDER BY name ASC
-        LIMIT 1
-        """,
-        (escaped_name,),
-        as_dict=True,
+def _stable_backfill_code(prefix: str, legacy_id: str) -> str:
+    normalized_id = cstr(legacy_id).strip() or "legacy"
+    canonical = re.sub(r"[^a-z0-9]+", "-", normalized_id.lower()).strip("-") or "legacy"
+    slug = canonical
+    digest = hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:10]
+    return f"{prefix}-{slug[:40]}-{digest}"
+
+
+def _stable_fb_group_code(legacy_group_id: str) -> str:
+    return _stable_backfill_code(FB_GROUP_CODE_PREFIX, legacy_group_id)
+
+
+def _stable_fb_modifier_code(legacy_option_id: str) -> str:
+    return _stable_backfill_code(FB_MODIFIER_CODE_PREFIX, legacy_option_id)
+
+
+def _legacy_group_sort_key(group: Mapping[str, object]) -> tuple[int, str, str]:
+    return (
+        cint(group.get("display_order") or 0),
+        cstr(group.get("group_name")).strip().lower(),
+        cstr(group.get("legacy_id")).strip().lower(),
     )
 
-    if option:
-        option = option[0]
-        group_name = frappe.db.get_value(
-            "KoPOS Modifier Group", option.parent, "group_name"
-        )
-        return {
-            "modifier_option": option.name,
-            "modifier_group": option.parent,
-            "modifier_name": option.modifier_name,
-            "group_name": group_name or "Unknown",
-        }
 
+def _legacy_option_sort_key(option: Mapping[str, object]) -> tuple[int, str, str]:
+    return (
+        cint(option.get("display_order") or 0),
+        cstr(option.get("option_name")).strip().lower(),
+        cstr(option.get("legacy_id")).strip().lower(),
+    )
+
+
+def _normalize_legacy_modifier_group(group_doc: object) -> dict[str, object]:
+    selection_type = cstr(_get_field_value(group_doc, "selection_type")).strip().lower()
+    option_rows = cast(list[object], _get_field_value(group_doc, "options") or [])
+    options = [
+        {
+            "legacy_id": cstr(_get_field_value(option_row, "name")).strip(),
+            "option_name": cstr(_get_field_value(option_row, "option_name")).strip(),
+            "price_adjustment": flt(
+                _get_field_value(option_row, "price_adjustment"), 2
+            ),
+            "is_default": cint(_get_field_value(option_row, "is_default")),
+            "is_active": cint(_get_field_value(option_row, "is_active") or 0),
+            "display_order": cint(_get_field_value(option_row, "display_order") or 0),
+        }
+        for option_row in option_rows
+        if cstr(_get_field_value(option_row, "name")).strip()
+    ]
+    sorted_options = sorted(options, key=_legacy_option_sort_key)
+    has_active_defaults = any(
+        cint(option.get("is_default")) and cint(option.get("is_active"))
+        for option in sorted_options
+    )
+
+    max_selection_default = 1 if selection_type != "multiple" else 0
     return {
-        "modifier_option": None,
-        "modifier_group": None,
-        "modifier_name": name,
-        "group_name": "Unknown",
+        "legacy_id": cstr(_get_field_value(group_doc, "name")).strip(),
+        "group_name": cstr(_get_field_value(group_doc, "group_name")).strip(),
+        "selection_type": selection_type or "single",
+        "is_required": cint(_get_field_value(group_doc, "is_required")),
+        "min_selections": cint(_get_field_value(group_doc, "min_selections") or 0),
+        "max_selections": cint(
+            _get_field_value(group_doc, "max_selections") or max_selection_default
+        ),
+        "display_order": cint(_get_field_value(group_doc, "display_order") or 0),
+        "is_active": cint(_get_field_value(group_doc, "is_active") or 0),
+        "parent_option_id": cstr(
+            _get_field_value(group_doc, "parent_option_id")
+        ).strip()
+        or None,
+        "default_resolution_policy": (
+            "Auto Apply Default"
+            if has_active_defaults
+            else "Require Explicit Selection"
+        ),
+        "options": sorted_options,
     }
 
 
-def _batch_match_modifiers(modifier_names: list[str]) -> dict[str, dict]:
-    """
-    Batch-resolve all modifier names in a single query.
-    Returns dict mapping modifier_name -> option record.
-    """
-    if not modifier_names:
-        return {}
-
-    # Exact match
-    options = frappe.db.sql(
-        """
-        SELECT opt.name, opt.parent, opt.modifier_name, grp.group_name
-        FROM `tabKoPOS Modifier Option` opt
-        INNER JOIN `tabKoPOS Modifier Group` grp ON grp.name = opt.parent
-        WHERE opt.modifier_name IN %s
-        """,
-        (tuple(modifier_names),),
-        as_dict=True,
+def load_legacy_modifier_groups() -> list[dict[str, object]]:
+    group_rows = frappe.get_all(
+        "KoPOS Modifier Group",
+        fields=["name"],
+        order_by="display_order asc, group_name asc, name asc",
     )
+    normalized_groups: list[dict[str, object]] = []
+    for group_row in group_rows:
+        group_name = cstr(_get_field_value(group_row, "name")).strip()
+        if not group_name:
+            continue
+        normalized_groups.append(
+            _normalize_legacy_modifier_group(
+                frappe.get_doc("KoPOS Modifier Group", group_name)
+            )
+        )
+    return sorted(normalized_groups, key=_legacy_group_sort_key)
 
-    result = {}
-    for opt in options:
-        result[opt.modifier_name] = {
-            "modifier_option": opt.name,
-            "modifier_group": opt.parent,
-            "modifier_name": opt.modifier_name,
-            "group_name": opt.group_name or "Unknown",
+
+def build_fb_modifier_backfill_plan(
+    legacy_groups: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    normalized_groups = sorted(legacy_groups, key=_legacy_group_sort_key)
+    group_codes_by_legacy_group: dict[str, str] = {}
+    modifier_codes_by_legacy_option: dict[str, str] = {}
+    fb_groups: list[dict[str, object]] = []
+    fb_modifiers: list[dict[str, object]] = []
+    pending_parent_links: list[dict[str, str]] = []
+    unresolved_parent_links: list[dict[str, str]] = []
+
+    for legacy_group in normalized_groups:
+        legacy_group_id = cstr(legacy_group.get("legacy_id")).strip()
+        group_code = _stable_fb_group_code(legacy_group_id)
+        group_codes_by_legacy_group[legacy_group_id] = group_code
+
+        fb_group = {
+            "group_code": group_code,
+            "group_name": cstr(legacy_group.get("group_name")).strip()
+            or legacy_group_id,
+            "selection_type": _normalize_kopos_selection_type(
+                legacy_group.get("selection_type")
+            ),
+            "is_required": cint(legacy_group.get("is_required")),
+            "min_selection": cint(legacy_group.get("min_selections") or 0),
+            "max_selection": cint(
+                legacy_group.get("max_selections")
+                or (1 if legacy_group.get("selection_type") != "multiple" else 0)
+            ),
+            "display_order": cint(legacy_group.get("display_order") or 0),
+            "active": cint(legacy_group.get("is_active") or 0),
+            "parent_modifier": None,
+            "default_resolution_policy": cstr(
+                legacy_group.get("default_resolution_policy")
+            ).strip()
+            or "Require Explicit Selection",
         }
 
-    return result
-
-
-def _backup_migration_json_fields(items: list[dict]) -> int:
-    """
-    Backup existing custom_kopos_modifiers values before migration overwrites them.
-    Returns count of backed-up records.
-    """
-    backed_up = 0
-    for item in items:
-        existing = item.get("custom_kopos_modifiers")
-        if existing and existing.strip() and existing.strip() != "{}":
-            frappe.db.set_value(
-                "POS Invoice Item",
-                item["name"],
-                "_kopos_modifiers_backup",
-                existing,
-                update_modified=False,
+        legacy_options = cast(
+            list[dict[str, object]], legacy_group.get("options") or []
+        )
+        for legacy_option in sorted(legacy_options, key=_legacy_option_sort_key):
+            legacy_option_id = cstr(legacy_option.get("legacy_id")).strip()
+            modifier_code = _stable_fb_modifier_code(legacy_option_id)
+            modifier_codes_by_legacy_option[legacy_option_id] = modifier_code
+            fb_modifiers.append(
+                {
+                    "modifier_code": modifier_code,
+                    "modifier_name": cstr(legacy_option.get("option_name")).strip()
+                    or legacy_option_id,
+                    "modifier_group": group_code,
+                    "kind": "Instruction Only",
+                    "price_adjustment": float(
+                        Decimal(
+                            str(flt(legacy_option.get("price_adjustment") or 0))
+                        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    ),
+                    "is_default": cint(legacy_option.get("is_default")),
+                    "display_order": cint(legacy_option.get("display_order") or 0),
+                    "active": cint(legacy_option.get("is_active") or 0),
+                }
             )
-            backed_up += 1
 
-    # Commit backup before processing
-    if backed_up > 0:
-        frappe.db.commit()
+        parent_option_id = cstr(legacy_group.get("parent_option_id")).strip()
+        if parent_option_id:
+            pending_parent_links.append(
+                {
+                    "group_code": group_code,
+                    "group_name": cstr(legacy_group.get("group_name")).strip()
+                    or legacy_group_id,
+                    "parent_option_id": parent_option_id,
+                }
+            )
 
-    return backed_up
+        fb_groups.append(fb_group)
+
+    groups_by_code = {group["group_code"]: group for group in fb_groups}
+    for pending_link in pending_parent_links:
+        parent_modifier = modifier_codes_by_legacy_option.get(
+            pending_link["parent_option_id"]
+        )
+        if not parent_modifier:
+            unresolved_parent_links.append(
+                {
+                    "group_name": pending_link["group_name"],
+                    "parent_option_id": pending_link["parent_option_id"],
+                }
+            )
+            continue
+        groups_by_code[pending_link["group_code"]]["parent_modifier"] = parent_modifier
+
+    if unresolved_parent_links:
+        details = ", ".join(
+            f"{row['group_name']} -> {row['parent_option_id']}"
+            for row in unresolved_parent_links
+        )
+        frappe.throw(
+            _(
+                "Cannot backfill FB modifiers because the following parent_option_id references were not found: {0}"
+            ).format(details),
+            frappe.ValidationError,
+        )
+
+    return {
+        "groups": fb_groups,
+        "modifiers": fb_modifiers,
+        "group_codes_by_legacy_group": group_codes_by_legacy_group,
+        "modifier_codes_by_legacy_option": modifier_codes_by_legacy_option,
+        "resolved_parent_links": len(
+            [group for group in fb_groups if group.get("parent_modifier")]
+        ),
+    }
+
+
+def _get_backfill_doc_name(
+    doctype: str, code_field: str, code_value: str
+) -> str | None:
+    if not code_value:
+        return None
+    existing_name = frappe.db.get_value(doctype, {code_field: code_value}, "name")
+    if existing_name:
+        return cstr(existing_name).strip()
+    if frappe.db.exists(doctype, code_value):
+        return code_value
+    return None
+
+
+def _apply_backfill_payload(doc: object, payload: dict[str, object]) -> bool:
+    changed = False
+    for fieldname, expected_value in payload.items():
+        if getattr(doc, fieldname, None) != expected_value:
+            setattr(doc, fieldname, expected_value)
+            changed = True
+    return changed
+
+
+def _upsert_backfill_doc(
+    doctype: str, code_field: str, payload: dict[str, object]
+) -> str:
+    code_value = cstr(payload.get(code_field)).strip()
+    existing_name = _get_backfill_doc_name(doctype, code_field, code_value)
+    if existing_name:
+        doc = frappe.get_doc(doctype, existing_name)
+        if not _apply_backfill_payload(doc, payload):
+            return "unchanged"
+        doc.save(ignore_permissions=True)
+        return "updated"
+
+    doc = frappe.new_doc(doctype)
+    _apply_backfill_payload(doc, payload)
+    doc.insert(ignore_permissions=True)
+    return "created"
+
+
+def _update_backfill_counts(
+    results: dict[str, object], prefix: str, action: str
+) -> None:
+    key = f"{prefix}_{action}"
+    results[key] = cint(results.get(key) or 0) + 1
 
 
 @frappe.whitelist()
-def migrate_invoice_modifiers(batch_size: int = 500, dry_run: bool = False) -> dict:
-    """
-    Migrate modifiers from description field to child table.
+def backfill_kopos_modifiers_to_fb(dry_run: bool = False) -> dict[str, object]:
+    enforce_permissions = not cint(getattr(frappe.flags, "in_migrate", 0))
+    if enforce_permissions and not frappe.has_permission("FB Modifier Group", "write"):
+        frappe.throw(
+            _("Not permitted to backfill FB Modifier Groups"), frappe.PermissionError
+        )
+    if enforce_permissions and not frappe.has_permission("FB Modifier", "write"):
+        frappe.throw(
+            _("Not permitted to backfill FB Modifiers"), frappe.PermissionError
+        )
 
-    Args:
-        batch_size: Number of items to process per batch (max 1000)
-        dry_run: If True, return counts without making changes
-
-    Returns:
-        Summary of migration results
-    """
-    if not frappe.has_permission("POS Invoice Item", "write"):
-        frappe.throw(_("Not permitted to run migrations"), frappe.PermissionError)
-
-    batch_size = min(cint(batch_size), MAX_BATCH_SIZE)
-    if batch_size <= 0:
-        batch_size = 500
-
-    results = {
-        "processed": 0,
-        "migrated": 0,
-        "skipped": 0,
-        "errors": 0,
-        "unmatched": [],
-        "failed_items": [],
-        "backed_up": 0,
+    legacy_groups = load_legacy_modifier_groups()
+    plan = build_fb_modifier_backfill_plan(legacy_groups)
+    planned_groups = cast(list[dict[str, object]], plan["groups"])
+    planned_modifiers = cast(list[dict[str, object]], plan["modifiers"])
+    results: dict[str, object] = {
+        "dry_run": bool(dry_run),
+        "legacy_groups": len(legacy_groups),
+        "legacy_options": len(planned_modifiers),
+        "resolved_parent_links": cint(plan["resolved_parent_links"]),
+        "groups_created": 0,
+        "groups_updated": 0,
+        "groups_unchanged": 0,
+        "modifiers_created": 0,
+        "modifiers_updated": 0,
+        "modifiers_unchanged": 0,
+        "parent_links_updated": 0,
+        "parent_links_unchanged": 0,
     }
 
-    items = frappe.db.sql(
-        """
-        SELECT ii.name, ii.parent, ii.description, ii.custom_kopos_modifiers
-        FROM `tabPOS Invoice Item` ii
-        INNER JOIN `tabPOS Invoice` inv ON ii.parent = inv.name
-        WHERE inv.docstatus = 1
-          AND ii.description LIKE '%Modifiers:%'
-          AND NOT EXISTS (
-              SELECT 1 FROM `tabKoPOS Invoice Item Modifier` m 
-              WHERE m.parent = ii.name
-          )
-        ORDER BY inv.posting_date DESC
-        LIMIT %s
-        """,
-        (batch_size,),
-        as_dict=True,
-    )
-
-    if not items:
+    if dry_run or not legacy_groups:
         return results
 
-    if not dry_run:
-        results["backed_up"] = _backup_migration_json_fields(items)
-
-    # Batch-resolve all modifier names
-    all_names = set()
-    for item in items:
-        modifiers = extract_modifiers_from_description(item.get("description", ""))
-        for mod in modifiers:
-            all_names.add(mod["name"])
-
-    batch_matches = _batch_match_modifiers(list(all_names)) if all_names else {}
-
-    for item in items:
-        try:
-            modifiers = extract_modifiers_from_description(item.get("description", ""))
-
-            if not modifiers:
-                results["skipped"] += 1
-                results["processed"] += 1
-                continue
-
-            if dry_run:
-                results["migrated"] += 1
-                results["processed"] += 1
-                continue
-
-            snapshot_modifiers = []
-            invoice_item = frappe.get_doc("POS Invoice Item", item.name)
-
-            for idx, mod in enumerate(modifiers):
-                matched = batch_matches.get(mod["name"])
-
-                if not matched:
-                    matched = smart_match_modifier_option(mod["name"])
-
-                if not matched["modifier_option"]:
-                    if len(results["unmatched"]) < 100:
-                        results["unmatched"].append(
-                            {"item": item.name, "modifier": mod["name"]}
-                        )
-
-                invoice_item.append(
-                    "custom_kopos_modifiers_table",
-                    {
-                        "modifier_group": matched["modifier_group"],
-                        "modifier_group_name": matched["group_name"],
-                        "modifier_option": matched["modifier_option"],
-                        "modifier_name": matched["modifier_name"] or mod["name"],
-                        "price_adjustment": flt(mod["price"], 2),
-                        "base_price": flt(mod["price"], 2),
-                        "is_default": 0,
-                        "display_order": idx,
-                    },
-                )
-
-                snapshot_modifiers.append(
-                    {
-                        "id": matched["modifier_option"] or "",
-                        "group_id": matched["modifier_group"] or "",
-                        "name": matched["modifier_name"] or mod["name"],
-                        "group_name": matched["group_name"],
-                        "price": flt(mod["price"], 2),
-                        "base_price": flt(mod["price"], 2),
-                        "is_default": False,
-                    }
-                )
-
-            total = round(sum(m["price"] for m in snapshot_modifiers), 2)
-            snapshot = {
-                "version": "1.0",
-                "modifiers": snapshot_modifiers,
-                "total": total,
-                "count": len(snapshot_modifiers),
-            }
-            invoice_item.custom_kopos_modifiers = json.dumps(
-                snapshot, sort_keys=True, separators=(",", ":")
+    try:
+        for group_payload in planned_groups:
+            base_group_payload = dict(group_payload)
+            base_group_payload.pop("parent_modifier", None)
+            action = _upsert_backfill_doc(
+                "FB Modifier Group", "group_code", base_group_payload
             )
-            invoice_item.custom_kopos_modifier_total = total
-            invoice_item.custom_kopos_has_modifiers = 1 if snapshot_modifiers else 0
+            _update_backfill_counts(results, "groups", action)
 
-            invoice_item.save(ignore_permissions=True)
-            frappe.db.commit()
-            results["migrated"] += 1
-
-        except Exception as e:
-            frappe.db.rollback()
-            results["errors"] += 1
-            results["failed_items"].append(item.name)
-            frappe.log_error(
-                title="KoPOS Modifier Migration Error",
-                message=f"Item: {item.name}, Error: {str(e)}\n\n{frappe.get_traceback()}",
+        for modifier_payload in planned_modifiers:
+            action = _upsert_backfill_doc(
+                "FB Modifier", "modifier_code", modifier_payload
             )
+            _update_backfill_counts(results, "modifiers", action)
 
-        results["processed"] += 1
+        for group_payload in planned_groups:
+            action = _upsert_backfill_doc(
+                "FB Modifier Group",
+                "group_code",
+                {
+                    "group_code": group_payload["group_code"],
+                    "parent_modifier": group_payload.get("parent_modifier"),
+                },
+            )
+            _update_backfill_counts(results, "parent_links", action)
 
-    return results
+        frappe.db.commit()
+        return results
+    except Exception as error:
+        frappe.db.rollback()
+        frappe.log_error(
+            title="KoPOS FB Modifier Backfill Error",
+            message=f"Error: {str(error)}\n\n{frappe.get_traceback()}",
+        )
+        raise
 
 
 @frappe.whitelist()

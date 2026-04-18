@@ -330,7 +330,7 @@ def _batch_resolve_links(modifiers: list[dict]) -> dict[str, set[str]]:
     if group_ids:
         existing_groups = set(
             frappe.db.get_all(
-                "KoPOS Modifier Group",
+                "FB Modifier Group",
                 filters={"name": ("in", list(group_ids))},
                 pluck="name",
             )
@@ -339,7 +339,7 @@ def _batch_resolve_links(modifiers: list[dict]) -> dict[str, set[str]]:
     if option_ids:
         existing_options = set(
             frappe.db.get_all(
-                "KoPOS Modifier Option",
+                "FB Modifier",
                 filters={"name": ("in", list(option_ids))},
                 pluck="name",
             )
@@ -672,7 +672,7 @@ def get_modifier_sales_report(
     }
 
     if modifier_group:
-        if not frappe.db.exists("KoPOS Modifier Group", modifier_group):
+        if not frappe.db.exists("FB Modifier Group", modifier_group):
             frappe.throw(_("Invalid modifier group"), frappe.ValidationError)
         filters["modifier_group"] = modifier_group
 

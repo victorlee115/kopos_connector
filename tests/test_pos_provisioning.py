@@ -520,6 +520,11 @@ class PosProvisioningTests(unittest.TestCase):
 
         with (
             patch.object(
+                normalize_duplicate_device_api_users.frappe.db,
+                "exists",
+                return_value=True,
+            ),
+            patch.object(
                 normalize_duplicate_device_api_users.frappe,
                 "get_all",
                 return_value=duplicate_rows,

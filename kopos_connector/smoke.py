@@ -13,7 +13,10 @@ DEMO_MATCHA_ITEM = "SMOKE-MATCHA-POWDER"
 DEMO_STRAWBERRY_ITEM = "SMOKE-STRAWBERRY-PUREE"
 DEMO_MILK_ITEM = "SMOKE-MILK"
 DEMO_CUP_ITEM = "SMOKE-CUP"
-DEMO_CURRENCY = "MYR"
+DEMO_CURRENCY_FALLBACK = "MYR"
+SMOKE_SIZE_GROUP_CODE = "SMOKE-FB-SIZE"
+SMOKE_SIZE_REGULAR_CODE = "SMOKE-FB-SIZE-REGULAR"
+SMOKE_SIZE_LARGE_CODE = "SMOKE-FB-SIZE-LARGE"
 
 
 def setup_refund_smoke_data() -> dict[str, Any]:
@@ -40,8 +43,12 @@ def setup_refund_smoke_data() -> dict[str, Any]:
     )
     _ensure_pos_settings()
     opening_entry = _ensure_pos_opening_entry(company, pos_profile)
-    modifier_group = _ensure_modifier_group()
-    item = _ensure_item(company, warehouse, modifier_group)
+    modifier_fixture = _ensure_fb_modifier_group()
+    item = _ensure_item(
+        company,
+        modifier_fixture["group"],
+        modifier_fixture["default_modifier"],
+    )
 
     frappe.db.commit()
     return {
@@ -55,6 +62,13 @@ def setup_refund_smoke_data() -> dict[str, Any]:
         "pos_opening_entry": opening_entry,
         "item_code": item,
     }
+
+
+def _get_demo_currency(company: str) -> str:
+    return (
+        frappe.db.get_value("Company", company, "default_currency")
+        or DEMO_CURRENCY_FALLBACK
+    )
 
 
 def inspect_refund_draft(invoice_name: str = "ACC-PSINV-2026-00001") -> dict[str, Any]:
@@ -180,8 +194,6 @@ def set_demo_ingredient_quantities(
     milk_qty: float = 2000,
     cup_qty: float = 20,
 ) -> dict[str, Any]:
-    from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
-
     company = frappe.get_all("Company", pluck="name", limit=1)[0]
     warehouse = _ensure_warehouse(company)
     _ensure_stock_item()
@@ -189,23 +201,50 @@ def set_demo_ingredient_quantities(
     def _set_qty(item_code: str, target_qty: float) -> None:
         current_qty = get_bin_qty(item_code, warehouse)
         delta = flt(target_qty) - current_qty
+        stock_uom = frappe.db.get_value("Item", item_code, "stock_uom") or "Nos"
         if delta > 0:
-            entry = make_stock_entry(
-                item_code=item_code,
-                qty=delta,
-                company=company,
-                to_warehouse=warehouse,
-                do_not_save=True,
+            entry = frappe.get_doc(
+                {
+                    "doctype": "Stock Entry",
+                    "company": company,
+                    "purpose": "Material Receipt",
+                    "stock_entry_type": "Material Receipt",
+                    "posting_date": nowdate(),
+                    "items": [
+                        {
+                            "item_code": item_code,
+                            "t_warehouse": warehouse,
+                            "qty": delta,
+                            "uom": stock_uom,
+                            "stock_uom": stock_uom,
+                            "conversion_factor": 1,
+                            "basic_rate": 1,
+                        }
+                    ],
+                }
             )
             entry.insert(ignore_permissions=True)
             entry.submit()
         elif delta < 0:
-            entry = make_stock_entry(
-                item_code=item_code,
-                qty=abs(delta),
-                company=company,
-                from_warehouse=warehouse,
-                do_not_save=True,
+            entry = frappe.get_doc(
+                {
+                    "doctype": "Stock Entry",
+                    "company": company,
+                    "purpose": "Material Issue",
+                    "stock_entry_type": "Material Issue",
+                    "posting_date": nowdate(),
+                    "items": [
+                        {
+                            "item_code": item_code,
+                            "s_warehouse": warehouse,
+                            "qty": abs(delta),
+                            "uom": stock_uom,
+                            "stock_uom": stock_uom,
+                            "conversion_factor": 1,
+                            "basic_rate": 1,
+                        }
+                    ],
+                }
             )
             entry.insert(ignore_permissions=True)
             entry.submit()
@@ -271,7 +310,7 @@ def run_demo_fb_sale_audit(return_to_stock: bool = False) -> dict[str, Any]:
         "staff_id": shift["staff_id"],
         "warehouse": shift["warehouse"],
         "company": shift["company"],
-        "currency": DEMO_CURRENCY,
+        "currency": _get_demo_currency(shift["company"]),
         "order": {
             "display_number": "SMK-DEMO-1",
             "order_type": "takeaway",
@@ -362,7 +401,9 @@ def run_demo_out_of_stock_audit() -> dict[str, Any]:
             frappe.get_all("Company", pluck="name", limit=1)[0]
         ),
         "company": frappe.get_all("Company", pluck="name", limit=1)[0],
-        "currency": DEMO_CURRENCY,
+        "currency": _get_demo_currency(
+            frappe.get_all("Company", pluck="name", limit=1)[0]
+        ),
         "order": {
             "display_number": "SMK-OOS-1",
             "order_type": "takeaway",
@@ -555,7 +596,7 @@ def _ensure_pos_profile(
 ) -> str:
     name = "KoPOS Main"
     existing = frappe.db.exists("POS Profile", name)
-    currency = DEMO_CURRENCY
+    currency = _get_demo_currency(company)
     if existing:
         doc = frappe.get_doc("POS Profile", existing)
         doc.company = company
@@ -630,48 +671,99 @@ def _ensure_pos_opening_entry(company: str, pos_profile: str) -> str:
     return doc.name
 
 
-def _ensure_modifier_group() -> str:
-    name = "Size"
-    existing = frappe.db.exists("KoPOS Modifier Group", {"group_name": name})
-    if existing:
-        return existing
-
-    doc = frappe.get_doc(
-        {
-            "doctype": "KoPOS Modifier Group",
-            "group_name": name,
-            "selection_type": "single",
-            "is_required": 1,
-            "min_selections": 1,
-            "max_selections": 1,
-            "display_order": 1,
-            "is_active": 1,
-            "options": [
-                {
-                    "option_name": "Regular",
-                    "price_adjustment": 0,
-                    "is_default": 1,
-                    "is_active": 1,
-                    "display_order": 1,
-                },
-                {
-                    "option_name": "Large",
-                    "price_adjustment": 2,
-                    "is_default": 0,
-                    "is_active": 1,
-                    "display_order": 2,
-                },
-            ],
-        }
+def _ensure_fb_modifier_group() -> dict[str, str]:
+    existing_name = frappe.db.get_value(
+        "FB Modifier Group", {"group_code": SMOKE_SIZE_GROUP_CODE}, "name"
     )
-    doc.insert(ignore_permissions=True)
-    return doc.name
+    group_payload = {
+        "group_code": SMOKE_SIZE_GROUP_CODE,
+        "group_name": "Size",
+        "selection_type": "Single",
+        "is_required": 0,
+        "min_selection": 0,
+        "max_selection": 1,
+        "display_order": 1,
+        "active": 1,
+        "default_resolution_policy": "Auto Apply Default",
+    }
+
+    if existing_name:
+        group_doc = frappe.get_doc("FB Modifier Group", existing_name)
+        changed = False
+        for fieldname, value in group_payload.items():
+            if getattr(group_doc, fieldname, None) != value:
+                setattr(group_doc, fieldname, value)
+                changed = True
+        if changed:
+            group_doc.save(ignore_permissions=True)
+        group_name = group_doc.name
+    else:
+        group_doc = frappe.get_doc({"doctype": "FB Modifier Group", **group_payload})
+        group_doc.insert(ignore_permissions=True)
+        group_name = group_doc.name
+
+    default_modifier = _ensure_fb_modifier(
+        modifier_code=SMOKE_SIZE_REGULAR_CODE,
+        modifier_name="Regular",
+        modifier_group=group_name,
+        price_adjustment=0,
+        is_default=1,
+        display_order=1,
+    )
+    _ensure_fb_modifier(
+        modifier_code=SMOKE_SIZE_LARGE_CODE,
+        modifier_name="Large",
+        modifier_group=group_name,
+        price_adjustment=2,
+        is_default=0,
+        display_order=2,
+    )
+
+    return {"group": group_name, "default_modifier": default_modifier}
 
 
-def _ensure_item(company: str, warehouse: str, modifier_group: str) -> str:
+def _ensure_fb_modifier(
+    modifier_code: str,
+    modifier_name: str,
+    modifier_group: str,
+    price_adjustment: float,
+    is_default: int,
+    display_order: int,
+) -> str:
+    existing_name = frappe.db.get_value(
+        "FB Modifier", {"modifier_code": modifier_code}, "name"
+    )
+    modifier_payload = {
+        "modifier_code": modifier_code,
+        "modifier_name": modifier_name,
+        "modifier_group": modifier_group,
+        "kind": "Instruction Only",
+        "price_adjustment": price_adjustment,
+        "is_default": is_default,
+        "display_order": display_order,
+        "active": 1,
+    }
+
+    if existing_name:
+        modifier_doc = frappe.get_doc("FB Modifier", existing_name)
+        changed = False
+        for fieldname, value in modifier_payload.items():
+            if getattr(modifier_doc, fieldname, None) != value:
+                setattr(modifier_doc, fieldname, value)
+                changed = True
+        if changed:
+            modifier_doc.save(ignore_permissions=True)
+        return modifier_doc.name
+
+    modifier_doc = frappe.get_doc({"doctype": "FB Modifier", **modifier_payload})
+    modifier_doc.insert(ignore_permissions=True)
+    return modifier_doc.name
+
+
+def _ensure_item(company: str, modifier_group: str, default_modifier: str) -> str:
     item_code = DEMO_DRINK_ITEM
     if frappe.db.exists("Item", item_code):
-        _ensure_demo_recipe(company)
+        _ensure_demo_recipe(company, modifier_group, default_modifier)
         return item_code
 
     item_group = _ensure_item_group()
@@ -689,12 +781,8 @@ def _ensure_item(company: str, warehouse: str, modifier_group: str) -> str:
             "custom_kopos_track_stock": 0,
         }
     )
-    if hasattr(doc, "modifier_groups"):
-        doc.append(
-            "modifier_groups", {"modifier_group": modifier_group, "display_order": 1}
-        )
     doc.insert(ignore_permissions=True)
-    recipe_name = _ensure_demo_recipe(company)
+    recipe_name = _ensure_demo_recipe(company, modifier_group, default_modifier)
     if hasattr(doc, "custom_fb_recipe_required"):
         doc.custom_fb_recipe_required = 1
     if hasattr(doc, "custom_fb_default_recipe"):
@@ -708,6 +796,8 @@ def _ensure_item(company: str, warehouse: str, modifier_group: str) -> str:
 def _ensure_stock_item() -> str:
     item_group = _ensure_item_group()
     _ensure_uom("Nos")
+    _ensure_uom("Gram")
+    _ensure_uom("Millilitre")
     ingredient_specs = [
         (DEMO_MATCHA_ITEM, "Matcha Powder", "Gram", 1),
         (DEMO_STRAWBERRY_ITEM, "Strawberry Puree", "Millilitre", 1),
@@ -736,9 +826,15 @@ def _ensure_stock_item() -> str:
     return DEMO_MATCHA_ITEM
 
 
-def _ensure_demo_recipe(company: str) -> str:
-    if frappe.db.exists("FB Recipe", DEMO_RECIPE_CODE):
-        return DEMO_RECIPE_CODE
+def _ensure_demo_recipe(
+    company: str, modifier_group: str, default_modifier: str
+) -> str:
+    existing_name = frappe.db.exists("FB Recipe", DEMO_RECIPE_CODE)
+    if existing_name:
+        recipe = frappe.get_doc("FB Recipe", existing_name)
+        if _ensure_recipe_modifier_group(recipe, modifier_group, default_modifier):
+            recipe.save(ignore_permissions=True)
+        return recipe.name
 
     _ensure_stock_item()
     recipe = frappe.new_doc("FB Recipe")
@@ -797,8 +893,45 @@ def _ensure_demo_recipe(company: str) -> str:
             "affects_cogs": 1,
         },
     )
+    _ensure_recipe_modifier_group(recipe, modifier_group, default_modifier)
     recipe.insert(ignore_permissions=True)
     return recipe.name
+
+
+def _ensure_recipe_modifier_group(
+    recipe: Any, modifier_group: str, default_modifier: str
+) -> bool:
+    changed = False
+    existing_row = next(
+        (
+            row
+            for row in (recipe.get("allowed_modifier_groups") or [])
+            if getattr(row, "modifier_group", None) == modifier_group
+        ),
+        None,
+    )
+    expected_values = {
+        "required": 0,
+        "override_min_selection": 0,
+        "override_max_selection": 1,
+        "default_modifier": default_modifier,
+        "display_order": 1,
+        "always_prompt": 0,
+    }
+
+    if existing_row is None:
+        recipe.append(
+            "allowed_modifier_groups",
+            {"modifier_group": modifier_group, **expected_values},
+        )
+        return True
+
+    for fieldname, value in expected_values.items():
+        if getattr(existing_row, fieldname, None) != value:
+            setattr(existing_row, fieldname, value)
+            changed = True
+
+    return changed
 
 
 def _ensure_uom(uom_name: str) -> str:
@@ -865,23 +998,6 @@ def _ensure_frappe_user(email: str, display_name: str) -> None:
         }
     )
     doc.insert(ignore_permissions=True)
-
-
-def _ensure_item_modifier_link(item_code: str, modifier_group_name: str) -> None:
-    group = frappe.db.exists(
-        "KoPOS Modifier Group", {"group_name": modifier_group_name}
-    )
-    if not group:
-        return
-    item = frappe.get_doc("Item", item_code)
-    if not hasattr(item, "modifier_groups"):
-        return
-    if any(
-        getattr(row, "modifier_group", None) == group for row in item.modifier_groups
-    ):
-        return
-    item.append("modifier_groups", {"modifier_group": group, "display_order": 1})
-    item.save(ignore_permissions=True)
 
 
 def _ensure_promotion_snapshot(pos_profile: str) -> dict[str, Any]:
@@ -989,8 +1105,6 @@ def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
         company=company,
     )
 
-    _ensure_item_modifier_link(base["item_code"], "Size")
-
     from kopos_connector.api.provisioning import (
         create_pos_provisioning,
         ensure_device_api_credentials,
@@ -1007,6 +1121,7 @@ def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
         expires_in_seconds=86400,
     )
 
+    set_demo_ingredient_quantities()
     promotion_snapshot = _ensure_promotion_snapshot(base["pos_profile"])
 
     frappe.db.commit()
@@ -1024,7 +1139,7 @@ def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
         "pos_profile": base["pos_profile"],
         "company": company,
         "warehouse": base["warehouse"],
-        "currency": DEMO_CURRENCY,
+        "currency": _get_demo_currency(company),
         "item_code": base["item_code"],
         "stock_item_code": DEMO_MATCHA_ITEM,
         "users": [
@@ -1114,7 +1229,7 @@ def dump_smoke_state() -> dict[str, Any]:
         },
         "data": {
             "items": len(frappe.get_all("Item", filters={"is_sales_item": 1})),
-            "modifier_groups": len(frappe.get_all("KoPOS Modifier Group")),
+            "modifier_groups": len(frappe.get_all("FB Modifier Group")),
             "open_shift": len(openings) > 0,
             "pos_invoices": len(invoices),
             "invoices": invoices,

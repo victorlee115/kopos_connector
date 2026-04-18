@@ -21,6 +21,12 @@ def install_fake_frappe_modules() -> None:
     frappe_custom_field_custom_field_module = sys.modules.get(
         "frappe.custom.doctype.custom_field.custom_field"
     )
+    frappe_core_module = sys.modules.get("frappe.core")
+    frappe_core_doctype_module = sys.modules.get("frappe.core.doctype")
+    frappe_core_doctype_user_module = sys.modules.get("frappe.core.doctype.user")
+    frappe_core_doctype_user_user_module = sys.modules.get(
+        "frappe.core.doctype.user.user"
+    )
     frappe_model_module = sys.modules.get("frappe.model")
     frappe_model_document_module = sys.modules.get("frappe.model.document")
 
@@ -51,6 +57,22 @@ def install_fake_frappe_modules() -> None:
         )
         sys.modules["frappe.custom.doctype.custom_field.custom_field"] = (
             frappe_custom_field_custom_field_module
+        )
+    if frappe_core_module is None:
+        frappe_core_module = ModuleType("frappe.core")
+        sys.modules["frappe.core"] = frappe_core_module
+    if frappe_core_doctype_module is None:
+        frappe_core_doctype_module = ModuleType("frappe.core.doctype")
+        sys.modules["frappe.core.doctype"] = frappe_core_doctype_module
+    if frappe_core_doctype_user_module is None:
+        frappe_core_doctype_user_module = ModuleType("frappe.core.doctype.user")
+        sys.modules["frappe.core.doctype.user"] = frappe_core_doctype_user_module
+    if frappe_core_doctype_user_user_module is None:
+        frappe_core_doctype_user_user_module = ModuleType(
+            "frappe.core.doctype.user.user"
+        )
+        sys.modules["frappe.core.doctype.user.user"] = (
+            frappe_core_doctype_user_user_module
         )
     if frappe_model_module is None:
         frappe_model_module = ModuleType("frappe.model")
@@ -235,6 +257,11 @@ def install_fake_frappe_modules() -> None:
         frappe_custom_field_custom_field_module,
         "create_custom_fields",
         lambda *args, **kwargs: None,
+    )
+    setattr(
+        frappe_core_doctype_user_user_module,
+        "generate_keys",
+        lambda user: {"api_key": f"api-key-{user}", "api_secret": f"api-secret-{user}"},
     )
 
     class Document:
