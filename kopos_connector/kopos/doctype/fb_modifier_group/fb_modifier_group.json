@@ -18,6 +18,7 @@
         "max_selection",
         "display_order",
         "active",
+        "parent_modifier",
         "default_resolution_policy"
     ],
     "fields": [
@@ -78,6 +79,13 @@
             "fieldname": "active",
             "fieldtype": "Check",
             "label": "Active"
+        },
+        {
+            "description": "Optional. Select the FB Modifier option that reveals this group. Example: set Ice Level -> Parent Modifier Option = Iced from Temperature.",
+            "fieldname": "parent_modifier",
+            "fieldtype": "Link",
+            "label": "Parent Modifier Option",
+            "options": "FB Modifier"
         },
         {
             "default": "Auto Apply Default",
