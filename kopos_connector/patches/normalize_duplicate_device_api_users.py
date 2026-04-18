@@ -7,6 +7,9 @@ from frappe.utils import cstr
 
 
 def execute() -> None:
+    if not frappe.db.exists("DocType", "KoPOS Device"):
+        return
+
     device_rows = frappe.get_all(
         "KoPOS Device",
         fields=["name", "device_id", "api_user", "last_seen_at", "modified"],
