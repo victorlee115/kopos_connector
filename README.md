@@ -68,11 +68,11 @@ Example modifier groups:
 In the Item form, under **KoPOS Availability** section:
 
 - **Availability Mode**:
-  - **Auto**: Use stock level (if tracking enabled)
-  - **Force Available**: Always show as available
-  - **Force Unavailable**: Always show as sold out
-- **Track Stock**: Enable stock-based availability
-- **Min Qty**: Minimum quantity required for availability
+  - **Auto**: Advisory stock warnings when below minimum (item stays sellable with warning)
+  - **Force Available**: Always show as available (ignores stock)
+  - **Force Unavailable**: Hard-block sold out (prevents sale)
+- **Track Stock**: Enable stock-based availability checking
+- **Min Qty**: Minimum quantity threshold for advisory warning trigger
 
 ### 4. Configure SST (Optional)
 
@@ -263,10 +263,23 @@ Response:
 - `refund_reason` is required and is stored on the return `POS Invoice`; when `refund_reason_code` is `other`, `refund_reason_notes` becomes the stored reason text.
 - `return_to_stock` controls whether the return updates inventory.
 
-### Stock Availability Notes
+### Stock Availability Policy
 
-- When `Track Stock` is enabled, catalog availability follows ERPNext v16 POS behavior: `actual_qty - get_pos_reserved_qty(item_code, warehouse) >= custom_kopos_min_qty`.
-- This keeps KoPOS availability aligned with submitted POS sales that reserve stock before it is reflected in `Bin.actual_qty`.
+**Advisory Stock Warnings (Auto Mode)**
+- When `Track Stock` is enabled and stock falls below `custom_kopos_min_qty`, the catalog returns `stock_warning: "erp_stock_short"` with `is_available: true`
+- POS shows a "LOW STOCK" warning but allows the sale to proceed
+- At submit-time, ERP logs the shortfall to `FB Stock Override Log` instead of rejecting the order
+- This keeps operations flowing while maintaining an audit trail
+
+**Hard-Block Scenarios**
+- `Force Unavailable` mode: item is hard-blocked (`is_available: false`)
+- Disabled items: hard-blocked
+- Local POS 86 (manual sold-out): hard-blocked
+- These prevent add-to-cart and checkout with clear error messages
+
+**Stock Calculation**
+- Availability follows ERPNext v16 POS behavior: `actual_qty - get_pos_reserved_qty(item_code, warehouse) >= custom_kopos_min_qty`
+- This keeps KoPOS availability aligned with submitted POS sales that reserve stock before it is reflected in `Bin.actual_qty`
 
 ## DocTypes
 

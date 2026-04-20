@@ -122,13 +122,13 @@ Navigate to ERPNext Desk:
 In the Item form, under **KoPOS Availability** section:
 
 - **Availability Mode**:
-  - **Auto**: Use stock level (if tracking enabled)
-  - **Force Available**: Always show as available
-  - **Force Unavailable**: Always show as sold out
+  - **Auto**: Advisory stock warnings when below minimum (item stays sellable with `stock_warning: "erp_stock_short"`)
+  - **Force Available**: Always show as available (ignores stock)
+  - **Force Unavailable**: Hard-block sold out (prevents add-to-cart and checkout)
 
-- **Track Stock**: Enable to use stock-based availability
+- **Track Stock**: Enable to use stock-based availability checking
 
-- **Min Qty**: Minimum quantity required (default: 1)
+- **Min Qty**: Minimum quantity threshold for advisory warning trigger (default: 1)
 
 ### 4. Configure SST (Optional)
 
@@ -261,7 +261,7 @@ Verify the response includes the preset codes:
 - `pricing_error`
 - `other`
 
-### 3. Test Stock-Based Availability
+### 3. Test Advisory Stock Warnings (Auto Mode)
 
 1. Create a stock entry for an item:
    ```bash
@@ -292,7 +292,7 @@ Verify the response includes the preset codes:
      - Set **Min Qty** to 1
 
 3. Pull catalog in KoPOS app
-4. Verify item shows as available
+4. Verify item shows as available (`is_available: true`, no `stock_warning`)
 
 5. Reduce stock below minimum:
    ```python
@@ -308,18 +308,28 @@ Verify the response includes the preset codes:
    ```
 
 6. Pull catalog again
-7. Verify item shows as unavailable
-8. For ERPNext v16 POS setups, also verify availability follows `actual_qty - POS reserved qty`, not only raw `Bin.actual_qty`
+7. Verify item shows advisory warning (`is_available: true`, `stock_warning: "erp_stock_short"`)
+8. Submit an order with the item
+9. Verify order succeeds and shortfall is logged to `FB Stock Override Log`
+10. For ERPNext v16 POS setups, also verify availability follows `actual_qty - POS reserved qty`, not only raw `Bin.actual_qty`
 
-### 4. Test Manual Override
+### 4. Test Hard-Block Sold Out (Force Unavailable)
+
+1. Set **Availability Mode** to "Force Unavailable" on an item
+2. Pull catalog
+3. Verify item shows as unavailable (`is_available: false`)
+4. Attempt to add to cart in POS
+5. Verify hard-block error prevents add-to-cart
+
+### 5. Test Manual Override Modes
 
 1. Set **Availability Mode** to "Force Unavailable"
 2. Pull catalog
-3. Verify item shows as sold out
+3. Verify item shows as hard-block sold out (`is_available: false`)
 
 4. Set **Availability Mode** to "Force Available"
 5. Pull catalog
-6. Verify item shows as available (regardless of stock)
+6. Verify item shows as available (regardless of stock state)
 
 ## Troubleshooting
 
