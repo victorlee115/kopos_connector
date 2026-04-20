@@ -264,6 +264,7 @@ class PosProvisioningTests(unittest.TestCase):
         generated = iter(["generated-api-key", "generated-api-secret"])
         set_value_calls = []
         encrypted_secret_calls = []
+        commit_calls = []
 
         def fake_generate_hash(length=32):
             return next(generated)
@@ -273,6 +274,9 @@ class PosProvisioningTests(unittest.TestCase):
 
         def fake_set_encrypted_password(*args, **kwargs):
             encrypted_secret_calls.append((args, kwargs))
+
+        def fake_commit():
+            commit_calls.append("commit")
 
         with (
             patch.object(provisioning.frappe.db, "get_value", return_value=None),
@@ -292,6 +296,7 @@ class PosProvisioningTests(unittest.TestCase):
             patch.object(
                 provisioning.frappe.db, "set_value", side_effect=fake_set_value
             ),
+            patch.object(provisioning.frappe.db, "commit", side_effect=fake_commit),
             patch.object(
                 provisioning,
                 "set_encrypted_password",
@@ -310,19 +315,24 @@ class PosProvisioningTests(unittest.TestCase):
             encrypted_secret_calls[0][0],
             ("User", "device@example.com", "generated-api-secret", "api_secret"),
         )
+        self.assertEqual(len(commit_calls), 3)
 
     def test_ensure_device_api_credentials_rotates_on_decrypt_failure(self):
         device_doc = SimpleNamespace(
             name="KOPOS-DEVICE-001", api_user="device@example.com"
         )
-        generated = iter(["rotated-api-key", "rotated-api-secret"])
+        generated = iter(["rotated-api-secret"])
         set_value_calls = []
+        commit_calls = []
 
         def fake_generate_hash(length=32):
             return next(generated)
 
         def fake_set_value(*args, **kwargs):
             set_value_calls.append((args, kwargs))
+
+        def fake_commit():
+            commit_calls.append("commit")
 
         with (
             patch.object(
@@ -344,16 +354,45 @@ class PosProvisioningTests(unittest.TestCase):
             patch.object(
                 provisioning.frappe.db, "set_value", side_effect=fake_set_value
             ),
+            patch.object(provisioning.frappe.db, "commit", side_effect=fake_commit),
             patch.object(provisioning, "set_encrypted_password"),
         ):
             result = provisioning.ensure_device_api_credentials(device_doc)
 
-        self.assertEqual(result["api_key"], "rotated-api-key")
+        self.assertEqual(result["api_key"], "existing-api-key")
         self.assertEqual(result["api_secret"], "rotated-api-secret")
-        self.assertEqual(
-            set_value_calls[0][0][:4],
-            ("User", "device@example.com", "api_key", "rotated-api-key"),
+        self.assertEqual(set_value_calls, [])
+        self.assertEqual(len(commit_calls), 2)
+
+    def test_ensure_device_api_credentials_raises_when_secret_cannot_be_verified(self):
+        device_doc = SimpleNamespace(
+            name="KOPOS-DEVICE-001", api_user="device@example.com"
         )
+
+        with (
+            patch.object(
+                provisioning.frappe.db, "get_value", return_value="existing-api-key"
+            ),
+            patch.object(
+                provisioning,
+                "_ensure_device_api_user",
+                return_value="device@example.com",
+            ),
+            patch.object(
+                provisioning,
+                "get_decrypted_password",
+                side_effect=[RuntimeError("decrypt failed"), "wrong-secret"],
+            ),
+            patch.object(
+                provisioning.frappe, "generate_hash", return_value="rotated-api-secret"
+            ),
+            patch.object(provisioning.frappe.db, "commit"),
+            patch.object(provisioning, "set_encrypted_password"),
+        ):
+            with self.assertRaises(provisioning.frappe.ValidationError) as error:
+                provisioning.ensure_device_api_credentials(device_doc)
+
+        self.assertIn("Failed to persist a usable API secret", str(error.exception))
 
     def test_dump_smoke_state_reports_decrypt_failure_explicitly(self):
         fake_device = SimpleNamespace(

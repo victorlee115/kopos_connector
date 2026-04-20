@@ -33,15 +33,27 @@ def ensure_device_api_credentials(
 ) -> dict[str, str]:
     should_rotate = bool(cint(rotate))
     resolved_user = _ensure_device_api_user(device_doc)
+    frappe.db.commit()
     api_key_value = cstr(frappe.db.get_value("User", resolved_user, "api_key")).strip()
     api_secret_value = _read_device_api_secret(resolved_user)
 
-    if should_rotate or not api_key_value or not api_secret_value:
+    if should_rotate or not api_key_value:
         api_key_value = cstr(frappe.generate_hash(length=15)).strip()
-        api_secret_value = cstr(frappe.generate_hash(length=15)).strip()
         frappe.db.set_value("User", resolved_user, "api_key", api_key_value)
-        set_encrypted_password("User", resolved_user, api_secret_value, "api_secret")
+        frappe.db.commit()
+
+    if should_rotate or not api_secret_value:
+        next_secret = cstr(frappe.generate_hash(length=32)).strip()
+        set_encrypted_password("User", resolved_user, next_secret, "api_secret")
+        frappe.db.commit()
         api_secret_value = _read_device_api_secret(resolved_user)
+        if api_secret_value != next_secret:
+            frappe.throw(
+                _("Failed to persist a usable API secret for device user {0}").format(
+                    resolved_user
+                ),
+                frappe.ValidationError,
+            )
 
     if not api_key_value or not api_secret_value:
         frappe.throw(_("Failed to initialize KoPOS device API credentials"))
