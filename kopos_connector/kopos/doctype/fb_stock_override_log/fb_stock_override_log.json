@@ -11,6 +11,7 @@
     "field_order": [
         "override_id",
         "fb_order",
+        "order_reference",
         "fb_order_line",
         "resolved_sale",
         "operator_section",
@@ -28,7 +29,8 @@
         "reason_section",
         "reason_code",
         "reason_text",
-        "approved_at"
+        "approved_at",
+        "logged_at"
     ],
     "fields": [
         {
@@ -43,6 +45,11 @@
             "fieldtype": "Link",
             "label": "FB Order",
             "options": "FB Order"
+        },
+        {
+            "fieldname": "order_reference",
+            "fieldtype": "Data",
+            "label": "Order Reference"
         },
         {
             "fieldname": "fb_order_line",
@@ -140,6 +147,11 @@
             "fieldname": "approved_at",
             "fieldtype": "Datetime",
             "label": "Approved At"
+        },
+        {
+            "fieldname": "logged_at",
+            "fieldtype": "Datetime",
+            "label": "Logged At"
         }
     ],
     "modified": "2026-04-14 00:00:00.000000",

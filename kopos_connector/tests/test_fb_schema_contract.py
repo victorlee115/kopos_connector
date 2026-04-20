@@ -68,6 +68,26 @@ class TestFBSchemaContract(unittest.TestCase):
         )
         self.assertEqual(doc.get("is_submittable"), 1)
 
+    def test_fb_stock_override_log_schema(self):
+        doc = load_doctype("fb_stock_override_log")
+        names = fieldnames(doc)
+        self.assertTrue(
+            {
+                "override_id",
+                "fb_order",
+                "order_reference",
+                "warehouse",
+                "item",
+                "requested_qty",
+                "available_qty_before",
+                "shortfall_qty",
+                "reason_code",
+                "reason_text",
+                "approved_at",
+                "logged_at",
+            }.issubset(names)
+        )
+
     def test_fb_order_line_schema(self):
         doc = load_doctype("fb_order_line")
         names = fieldnames(doc)

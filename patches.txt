@@ -1,2 +1,3 @@
 kopos_connector.patches.remove_duplicate_modifier_client_script
 kopos_connector.patches.normalize_duplicate_device_api_users
+kopos_connector.patches.add_order_reference_to_fb_stock_override_log
