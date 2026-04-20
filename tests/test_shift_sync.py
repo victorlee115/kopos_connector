@@ -130,6 +130,7 @@ class ShiftSyncTests(unittest.TestCase):
         pos_profile = make_doc(
             name="Counter 1",
             company="JiJi",
+            warehouse="Main Warehouse",
             payments=[make_doc(mode_of_payment="Cash", default=1)],
         )
         device_doc = make_doc(
@@ -151,6 +152,7 @@ class ShiftSyncTests(unittest.TestCase):
             custom_kopos_shift_id=None,
             custom_kopos_device_id=None,
         )
+        fb_shift_doc = MutableDoc(name="FB-SHIFT-1")
 
         def fake_get_doc(*args, **kwargs):
             if args and isinstance(args[0], dict):
@@ -176,6 +178,7 @@ class ShiftSyncTests(unittest.TestCase):
             ),
             patch.object(shifts.frappe, "get_cached_doc", return_value=pos_profile),
             patch.object(shifts.frappe, "get_doc", side_effect=fake_get_doc),
+            patch.object(shifts.frappe, "new_doc", return_value=fb_shift_doc),
         ):
             result = shifts.open_shift_payload(
                 {
@@ -200,6 +203,7 @@ class ShiftSyncTests(unittest.TestCase):
         pos_profile = make_doc(
             name="Counter 1",
             company="JiJi",
+            warehouse="Main Warehouse",
             payments=[make_doc(mode_of_payment="Cash", default=1)],
         )
         device_doc = make_doc(
@@ -340,6 +344,125 @@ class ShiftSyncTests(unittest.TestCase):
                     }
                 )
 
+    def test_close_shift_does_not_fallback_to_later_open_shift_for_same_device(self):
+        pos_profile = make_doc(
+            name="Counter 1",
+            company="JiJi",
+            warehouse="Main Warehouse",
+            payments=[make_doc(mode_of_payment="Cash", default=1)],
+        )
+        device_doc = make_doc(
+            name="DEVICE-1",
+            device_id="DEVICE-1",
+            pos_profile="Counter 1",
+            device_users=[
+                make_device_user(
+                    user="john@example.com",
+                    active=True,
+                    can_open_shift=True,
+                    can_close_shift=True,
+                )
+            ],
+        )
+
+        def fake_get_value(doctype, filters=None, fieldname=None, *args, **kwargs):
+            if doctype == "KoPOS Device":
+                return 1
+            if doctype == "User":
+                return 1
+            return None
+
+        with (
+            patch.object(shifts, "get_device_doc", return_value=device_doc),
+            patch.object(shifts.frappe.db, "get_value", side_effect=fake_get_value),
+            patch.object(
+                shifts.frappe.db,
+                "exists",
+                side_effect=lambda doctype, *_args, **_kwargs: doctype == "User",
+            ),
+            patch.object(shifts.frappe, "get_cached_doc", return_value=pos_profile),
+            patch.object(shifts, "_find_closing_entry_name", return_value=None),
+            patch.object(
+                shifts, "_find_opening_entry_name", return_value=None
+            ) as find_open_mock,
+        ):
+            with self.assertRaises(shifts.frappe.ValidationError) as ctx:
+                shifts.close_shift_payload(
+                    {
+                        "idempotency_key": "shift-close-SHIFT-OLD",
+                        "device_id": "DEVICE-1",
+                        "staff_id": "john@example.com",
+                        "shift_id": "SHIFT-OLD",
+                        "counted_cash_sen": 6500,
+                        "closed_at": "2026-03-13T10:10:00Z",
+                    }
+                )
+
+        self.assertIn(
+            "No open POS Opening Entry found for device DEVICE-1", str(ctx.exception)
+        )
+        find_open_mock.assert_called_once_with(
+            pos_profile_name="Counter 1",
+            staff_id="john@example.com",
+            device_id="DEVICE-1",
+            shift_id="SHIFT-OLD",
+            require_open=True,
+            allow_device_fallback=False,
+        )
+
+    def test_get_device_open_shift_returns_none_after_close_only(self):
+        device_doc = make_doc(
+            name="DEVICE-1",
+            device_id="DEVICE-1",
+            pos_profile="Counter 1",
+        )
+
+        with (
+            patch.object(shifts, "get_device_doc", return_value=device_doc),
+            patch.object(shifts.frappe, "get_all", return_value=[]),
+        ):
+            result = shifts.get_device_open_shift_payload("DEVICE-1")
+
+        self.assertIsNone(result)
+
+    def test_get_device_open_shift_returns_explicit_new_shift_after_close_only(self):
+        device_doc = make_doc(
+            name="DEVICE-1",
+            device_id="DEVICE-1",
+            pos_profile="Counter 1",
+        )
+
+        with (
+            patch.object(shifts, "get_device_doc", return_value=device_doc),
+            patch.object(
+                shifts.frappe,
+                "get_all",
+                return_value=[
+                    {
+                        "name": "OPEN-2",
+                        "user": "john@example.com",
+                        "period_start_date": "2026-03-13 10:20:00",
+                        "custom_kopos_shift_id": "SHIFT-2",
+                        "custom_kopos_device_id": "DEVICE-1",
+                    }
+                ],
+            ),
+            patch.object(shifts, "_get_opening_float_sen", return_value=5000),
+        ):
+            result = shifts.get_device_open_shift_payload("DEVICE-1")
+
+        self.assertEqual(
+            result,
+            {
+                "pos_opening_entry": "OPEN-2",
+                "shift_id": "SHIFT-2",
+                "device_id": "DEVICE-1",
+                "staff_id": "john@example.com",
+                "opening_float_sen": 5000,
+                "opened_at": "2026-03-13 10:20:00",
+            },
+        )
+
     # -------------------------------------------------------------------------
     # Phase 1 & 2 Security Tests - Identity and Permission Enforcement
     # -------------------------------------------------------------------------
@@ -349,6 +472,7 @@ class ShiftSyncTests(unittest.TestCase):
         pos_profile = make_doc(
             name="Counter 1",
             company="JiJi",
+            warehouse="Main Warehouse",
             payments=[make_doc(mode_of_payment="Cash", default=1)],
         )
         device_doc = make_doc(
@@ -370,6 +494,7 @@ class ShiftSyncTests(unittest.TestCase):
             custom_kopos_shift_id=None,
             custom_kopos_device_id=None,
         )
+        fb_shift_doc = MutableDoc(name="FB-SHIFT-1")
 
         def fake_get_doc(*args, **kwargs):
             if args and isinstance(args[0], dict):
@@ -395,6 +520,7 @@ class ShiftSyncTests(unittest.TestCase):
             ),
             patch.object(shifts.frappe, "get_cached_doc", return_value=pos_profile),
             patch.object(shifts.frappe, "get_doc", side_effect=fake_get_doc),
+            patch.object(shifts.frappe, "new_doc", return_value=fb_shift_doc),
         ):
             result = shifts.open_shift_payload(
                 {
@@ -415,6 +541,7 @@ class ShiftSyncTests(unittest.TestCase):
         pos_profile = make_doc(
             name="Counter 1",
             company="JiJi",
+            warehouse="Main Warehouse",
             payments=[make_doc(mode_of_payment="Cash", default=1)],
         )
         device_doc = make_doc(
@@ -454,6 +581,7 @@ class ShiftSyncTests(unittest.TestCase):
         pos_profile = make_doc(
             name="Counter 1",
             company="JiJi",
+            warehouse="Main Warehouse",
             payments=[make_doc(mode_of_payment="Cash", default=1)],
         )
         device_doc = make_doc(
@@ -503,6 +631,7 @@ class ShiftSyncTests(unittest.TestCase):
         pos_profile = make_doc(
             name="Counter 1",
             company="JiJi",
+            warehouse="Main Warehouse",
             payments=[make_doc(mode_of_payment="Cash", default=1)],
         )
         device_doc = make_doc(
@@ -553,6 +682,7 @@ class ShiftSyncTests(unittest.TestCase):
         pos_profile = make_doc(
             name="Counter 1",
             company="JiJi",
+            warehouse="Main Warehouse",
             payments=[make_doc(mode_of_payment="Cash", default=1)],
         )
         device_doc = make_doc(
@@ -603,6 +733,7 @@ class ShiftSyncTests(unittest.TestCase):
         pos_profile = make_doc(
             name="Counter 1",
             company="JiJi",
+            warehouse="Main Warehouse",
             payments=[make_doc(mode_of_payment="Cash", default=1)],
         )
         device_doc = make_doc(
@@ -652,6 +783,7 @@ class ShiftSyncTests(unittest.TestCase):
         pos_profile = make_doc(
             name="Counter 1",
             company="JiJi",
+            warehouse="Main Warehouse",
             payments=[make_doc(mode_of_payment="Cash", default=1)],
         )
         device_doc = make_doc(
@@ -720,6 +852,7 @@ class ShiftSyncTests(unittest.TestCase):
         pos_profile = make_doc(
             name="Counter 1",
             company="JiJi",
+            warehouse="Main Warehouse",
             payments=[make_doc(mode_of_payment="Cash", default=1)],
         )
         device_doc = make_doc(
@@ -794,6 +927,7 @@ class ShiftSyncTests(unittest.TestCase):
         pos_profile = make_doc(
             name="Counter 1",
             company="JiJi",
+            warehouse="Main Warehouse",
             payments=[make_doc(mode_of_payment="Cash", default=1)],
         )
         device_doc = make_doc(

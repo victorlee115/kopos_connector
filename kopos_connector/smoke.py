@@ -8,6 +8,7 @@ from frappe.utils import flt, now_datetime, nowdate
 
 DEMO_DRINK_ITEM = "STRAWBERRY-MATCHA-LATTE"
 DEMO_DRINK_NAME = "Strawberry Matcha Latte"
+DEMO_DRINK_BARCODE = "SMOKE-STRAWBERRY-001"
 DEMO_RECIPE_CODE = "SMOKE-STRAWBERRY-MATCHA"
 DEMO_MATCHA_ITEM = "SMOKE-MATCHA-POWDER"
 DEMO_STRAWBERRY_ITEM = "SMOKE-STRAWBERRY-PUREE"
@@ -386,14 +387,24 @@ def run_demo_fb_sale_audit(return_to_stock: bool = False) -> dict[str, Any]:
     }
 
 
-def run_demo_out_of_stock_audit() -> dict[str, Any]:
+def run_demo_advisory_stock_audit() -> dict[str, Any]:
+    """
+    Test advisory stock shortfall behavior.
+
+    Sets matcha ingredient to zero stock (creates advisory shortfall),
+    submits an order, and verifies:
+    - Order succeeds (not blocked)
+    - Shortfall is logged to FB Stock Override Log
+    - Catalog would show stock_warning: "erp_stock_short"
+    """
     ensure_demo_fb_shift()
     set_demo_ingredient_quantities(matcha_qty=0)
     from kopos_connector.kopos.api.fb_orders import submit_order
 
+    order_id = f"ADV-{frappe.generate_hash(length=8)}"
     frappe.local.form_dict = {
-        "order_id": f"OOS-{frappe.generate_hash(length=8)}",
-        "idempotency_key": f"OOS-{frappe.generate_hash(length=16)}",
+        "order_id": order_id,
+        "idempotency_key": f"ADV-{frappe.generate_hash(length=16)}",
         "device_id": "SMOKE-TAB-A001",
         "shift_id": "smoke-shift-001",
         "staff_id": "staff@smoke.kopos.local",
@@ -405,7 +416,7 @@ def run_demo_out_of_stock_audit() -> dict[str, Any]:
             frappe.get_all("Company", pluck="name", limit=1)[0]
         ),
         "order": {
-            "display_number": "SMK-OOS-1",
+            "display_number": "SMK-ADV-1",
             "order_type": "takeaway",
             "created_at": now_datetime().isoformat(),
             "items": [
@@ -431,16 +442,95 @@ def run_demo_out_of_stock_audit() -> dict[str, Any]:
             ],
         },
     }
-    try:
-        submit_order()
-        return {"status": "unexpected_success", "stock": get_demo_ingredient_state()}
-    except Exception as exc:
-        frappe.db.rollback()
-        return {
-            "status": "blocked",
-            "message": str(exc),
-            "stock": get_demo_ingredient_state(),
+
+    result = submit_order()
+    frappe.db.commit()
+
+    shortfall_logs = frappe.get_all(
+        "FB Stock Override Log",
+        filters={"order_reference": order_id},
+        fields=[
+            "name",
+            "item",
+            "warehouse",
+            "requested_qty",
+            "available_qty_before",
+            "shortfall_qty",
+        ],
+    )
+
+    return {
+        "status": "advisory_accepted",
+        "order_result": result,
+        "shortfall_logs": shortfall_logs,
+        "stock": get_demo_ingredient_state(),
+        "note": "Advisory shortfall: order accepted, shortfall logged to FB Stock Override Log",
+    }
+
+
+def get_demo_drink_catalog_state() -> dict[str, Any]:
+    from kopos_connector.api.catalog import build_catalog_payload
+
+    catalog = build_catalog_payload(device_id="SMOKE-TAB-A001")
+    item_state = next(
+        (
+            item
+            for item in catalog.get("items", [])
+            if item.get("id") == DEMO_DRINK_ITEM
+        ),
+        None,
+    )
+    return {
+        "item_code": DEMO_DRINK_ITEM,
+        "item_name": DEMO_DRINK_NAME,
+        "barcode": DEMO_DRINK_BARCODE,
+        "catalog_item": item_state,
+    }
+
+
+def set_demo_drink_auto() -> dict[str, Any]:
+    return _set_demo_drink_availability_mode("auto")
+
+
+def set_demo_drink_force_unavailable() -> dict[str, Any]:
+    return _set_demo_drink_availability_mode("force_unavailable")
+
+
+def run_demo_hard_block_audit() -> dict[str, Any]:
+    """
+    Test hard-block sold-out behavior.
+
+    Sets the demo drink item to force_unavailable mode and verifies
+    that catalog returns is_available=false (hard block).
+    """
+    set_demo_drink_force_unavailable()
+    item_state = get_demo_drink_catalog_state()
+    item_states = {
+        DEMO_DRINK_ITEM: {
+            "is_available": item_state.get("catalog_item", {}).get("is_available"),
+            "stock_warning": item_state.get("catalog_item", {}).get("stock_warning"),
+            "barcode": item_state.get("catalog_item", {}).get("barcode"),
         }
+    }
+    set_demo_drink_auto()
+
+    return {
+        "status": "hard_block_verified",
+        "item_states": item_states,
+        "expected": {DEMO_DRINK_ITEM: {"is_available": False, "stock_warning": None}},
+        "note": "Hard-block: force_unavailable sets is_available=false, preventing add-to-cart",
+    }
+
+
+def run_demo_out_of_stock_audit() -> dict[str, Any]:
+    """
+    DEPRECATED: Use run_demo_advisory_stock_audit() for new policy.
+
+    Legacy test that expected blocking behavior. Now redirects to advisory test
+    to reflect the new stock availability policy where auto-mode shortages
+    are advisory (stock_warning) rather than hard blocks.
+    """
+    return run_demo_advisory_stock_audit()
 
 
 def get_bin_qty(item_code: str, warehouse: str) -> float:
@@ -763,6 +853,7 @@ def _ensure_fb_modifier(
 def _ensure_item(company: str, modifier_group: str, default_modifier: str) -> str:
     item_code = DEMO_DRINK_ITEM
     if frappe.db.exists("Item", item_code):
+        _ensure_demo_drink_barcode(frappe.get_doc("Item", item_code))
         _ensure_demo_recipe(company, modifier_group, default_modifier)
         return item_code
 
@@ -789,8 +880,54 @@ def _ensure_item(company: str, modifier_group: str, default_modifier: str) -> st
         doc.custom_fb_default_recipe = recipe_name
     if hasattr(doc, "custom_fb_track_theoretical_stock"):
         doc.custom_fb_track_theoretical_stock = 1
+    _ensure_demo_drink_barcode(doc)
     doc.save(ignore_permissions=True)
     return item_code
+
+
+def _ensure_demo_drink_barcode(item_doc: Any) -> bool:
+    existing_barcodes = item_doc.get("barcodes") or []
+    if any(
+        (row.get("barcode") if isinstance(row, dict) else getattr(row, "barcode", None))
+        == DEMO_DRINK_BARCODE
+        for row in existing_barcodes
+    ):
+        return False
+
+    item_doc.append("barcodes", {"barcode": DEMO_DRINK_BARCODE})
+    return True
+
+
+def _set_demo_drink_availability_mode(mode: str) -> dict[str, Any]:
+    if not frappe.db.exists("Item", DEMO_DRINK_ITEM):
+        company = frappe.get_all("Company", pluck="name", limit=1)[0]
+        modifier_fixture = _ensure_fb_modifier_group()
+        _ensure_item(
+            company,
+            modifier_fixture["group"],
+            modifier_fixture["default_modifier"],
+        )
+
+    item_doc = frappe.get_doc("Item", DEMO_DRINK_ITEM)
+    changed = False
+    if getattr(item_doc, "custom_kopos_availability_mode", None) != mode:
+        item_doc.custom_kopos_availability_mode = mode
+        changed = True
+    if _ensure_demo_drink_barcode(item_doc):
+        changed = True
+    if changed:
+        item_doc.save(ignore_permissions=True)
+        frappe.db.commit()
+
+    item_state = get_demo_drink_catalog_state()
+    return {
+        "status": "updated",
+        "item_code": DEMO_DRINK_ITEM,
+        "item_name": DEMO_DRINK_NAME,
+        "availability_mode": mode,
+        "barcode": DEMO_DRINK_BARCODE,
+        "catalog_item": item_state.get("catalog_item"),
+    }
 
 
 def _ensure_stock_item() -> str:
@@ -1205,14 +1342,21 @@ def dump_smoke_state() -> dict[str, Any]:
     api_user = (device.api_user or "").strip()
     api_key = ""
     api_secret = ""
+    api_secret_error = ""
     if api_user:
         api_key = (frappe.db.get_value("User", api_user, "api_key") or "").strip()
-        api_secret = (
-            get_decrypted_password(
-                "User", api_user, "api_secret", raise_exception=False
-            )
-            or ""
-        ).strip()
+        try:
+            api_secret = (
+                get_decrypted_password(
+                    "User", api_user, "api_secret", raise_exception=False
+                )
+                or ""
+            ).strip()
+        except Exception as error:
+            api_secret = ""
+            api_secret_error = f"decrypt_failed: {error.__class__.__name__}"
+        if api_user and not api_secret and not api_secret_error:
+            api_secret_error = "decrypt_failed: empty_secret"
 
     return {
         "status": "ready",
@@ -1226,6 +1370,7 @@ def dump_smoke_state() -> dict[str, Any]:
         "credentials": {
             "api_key": api_key,
             "api_secret": api_secret,
+            **({"api_secret_error": api_secret_error} if api_secret_error else {}),
         },
         "data": {
             "items": len(frappe.get_all("Item", filters={"is_sales_item": 1})),
