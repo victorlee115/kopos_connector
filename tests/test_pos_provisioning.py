@@ -13,6 +13,7 @@ catalog = importlib.import_module("kopos_connector.api.catalog")
 devices = importlib.import_module("kopos_connector.api.devices")
 auth = importlib.import_module("kopos_connector.auth")
 provisioning = importlib.import_module("kopos_connector.api.provisioning")
+smoke = importlib.import_module("kopos_connector.smoke")
 kopos_device_module = importlib.import_module(
     "kopos_connector.kopos.doctype.kopos_device.kopos_device"
 )
@@ -129,6 +130,103 @@ class PosProvisioningTests(unittest.TestCase):
 
         self.assertEqual(rows, {"Drinks", "Coffee", "Tea"})
 
+    def test_get_item_availability_auto_stock_short_returns_advisory_warning(self):
+        item = {
+            "item_code": "ITEM-001",
+            "custom_kopos_availability_mode": "auto",
+            "custom_kopos_track_stock": 1,
+            "custom_kopos_min_qty": 3,
+        }
+
+        with (
+            patch.object(catalog.frappe.db, "get_value", return_value=2),
+            patch.object(catalog, "get_pos_reserved_qty", return_value=1),
+        ):
+            availability = catalog.get_item_availability(
+                item, warehouse="Main Warehouse"
+            )
+
+        self.assertEqual(
+            availability,
+            {"is_available": True, "stock_warning": "erp_stock_short"},
+        )
+
+    def test_get_item_availability_force_unavailable_still_blocks(self):
+        availability = catalog.get_item_availability(
+            {
+                "item_code": "ITEM-001",
+                "custom_kopos_availability_mode": "force_unavailable",
+                "custom_kopos_track_stock": 1,
+                "custom_kopos_min_qty": 3,
+            },
+            warehouse="Main Warehouse",
+        )
+
+        self.assertEqual(
+            availability,
+            {"is_available": False, "stock_warning": None},
+        )
+
+    def test_get_items_includes_stock_warning_additively(self):
+        saleable_row = {
+            "id": "item-1",
+            "item_code": "item-1",
+            "name": "Item 1",
+            "category_id": "Drinks",
+            "price": 12,
+            "disabled": 0,
+            "custom_kopos_is_prep_item": 0,
+        }
+
+        with (
+            patch.object(
+                catalog,
+                "get_allowed_item_groups",
+                return_value=None,
+            ),
+            patch.object(
+                catalog,
+                "get_saleable_item_rows",
+                side_effect=[[saleable_row], []],
+            ),
+            patch.object(catalog, "get_recipe_changed_item_codes", return_value=[]),
+            patch.object(catalog, "get_item_modifier_groups_map", return_value={}),
+            patch.object(catalog, "get_item_price", return_value=12),
+            patch.object(catalog, "get_item_barcode", return_value="1234567890"),
+            patch.object(
+                catalog,
+                "get_item_availability",
+                return_value={
+                    "is_available": True,
+                    "stock_warning": "erp_stock_short",
+                },
+            ),
+        ):
+            rows = catalog.get_items(
+                warehouse="Main Warehouse",
+                selling_price_list="Standard",
+                pos_profile={"company": "JiJi"},
+            )
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "id": "item-1",
+                    "item_code": "item-1",
+                    "name": "Item 1",
+                    "category_id": "Drinks",
+                    "price": 12,
+                    "barcode": "1234567890",
+                    "is_available": True,
+                    "stock_warning": "erp_stock_short",
+                    "is_active": 1,
+                    "is_prep_item": 0,
+                    "modifier_group_ids": [],
+                }
+            ],
+        )
+
     def test_ensure_device_api_credentials_reuses_existing_user_credentials(self):
         device_doc = SimpleNamespace(
             name="KOPOS-DEVICE-001", api_user="device@example.com"
@@ -148,13 +246,16 @@ class PosProvisioningTests(unittest.TestCase):
                 provisioning,
                 "get_decrypted_password",
                 return_value="existing-api-secret",
-            ),
+            ) as get_decrypted_password_mock,
         ):
             result = provisioning.ensure_device_api_credentials(device_doc)
 
         self.assertEqual(result["user"], "device@example.com")
         self.assertEqual(result["api_key"], "existing-api-key")
         self.assertEqual(result["api_secret"], "existing-api-secret")
+        get_decrypted_password_mock.assert_called_once_with(
+            "User", "device@example.com", "api_secret", raise_exception=False
+        )
 
     def test_ensure_device_api_credentials_generates_missing_credentials(self):
         device_doc = SimpleNamespace(
@@ -175,7 +276,11 @@ class PosProvisioningTests(unittest.TestCase):
 
         with (
             patch.object(provisioning.frappe.db, "get_value", return_value=None),
-            patch.object(provisioning, "get_decrypted_password", return_value=None),
+            patch.object(
+                provisioning,
+                "get_decrypted_password",
+                side_effect=[None, "generated-api-secret"],
+            ),
             patch.object(
                 provisioning,
                 "_ensure_device_api_user",
@@ -204,6 +309,86 @@ class PosProvisioningTests(unittest.TestCase):
         self.assertEqual(
             encrypted_secret_calls[0][0],
             ("User", "device@example.com", "generated-api-secret", "api_secret"),
+        )
+
+    def test_ensure_device_api_credentials_rotates_on_decrypt_failure(self):
+        device_doc = SimpleNamespace(
+            name="KOPOS-DEVICE-001", api_user="device@example.com"
+        )
+        generated = iter(["rotated-api-key", "rotated-api-secret"])
+        set_value_calls = []
+
+        def fake_generate_hash(length=32):
+            return next(generated)
+
+        def fake_set_value(*args, **kwargs):
+            set_value_calls.append((args, kwargs))
+
+        with (
+            patch.object(
+                provisioning.frappe.db, "get_value", return_value="existing-api-key"
+            ),
+            patch.object(
+                provisioning,
+                "get_decrypted_password",
+                side_effect=[RuntimeError("decrypt failed"), "rotated-api-secret"],
+            ),
+            patch.object(
+                provisioning,
+                "_ensure_device_api_user",
+                return_value="device@example.com",
+            ),
+            patch.object(
+                provisioning.frappe, "generate_hash", side_effect=fake_generate_hash
+            ),
+            patch.object(
+                provisioning.frappe.db, "set_value", side_effect=fake_set_value
+            ),
+            patch.object(provisioning, "set_encrypted_password"),
+        ):
+            result = provisioning.ensure_device_api_credentials(device_doc)
+
+        self.assertEqual(result["api_key"], "rotated-api-key")
+        self.assertEqual(result["api_secret"], "rotated-api-secret")
+        self.assertEqual(
+            set_value_calls[0][0][:4],
+            ("User", "device@example.com", "api_key", "rotated-api-key"),
+        )
+
+    def test_dump_smoke_state_reports_decrypt_failure_explicitly(self):
+        fake_device = SimpleNamespace(
+            device_id="SMOKE-TAB-A001",
+            enabled=1,
+            pos_profile="Counter 1",
+            config_version=3,
+            api_user="device@example.com",
+        )
+
+        with (
+            patch.object(
+                smoke.frappe.db,
+                "get_value",
+                side_effect=["KOPOS-DEVICE-001", "api-key-123"],
+            ),
+            patch.object(smoke.frappe, "get_doc", return_value=fake_device),
+            patch.object(smoke.frappe, "get_all", side_effect=[[], [], [], []]),
+            patch.object(
+                smoke.frappe,
+                "local",
+                SimpleNamespace(site="test-site.local"),
+                create=True,
+            ),
+            patch(
+                "frappe.utils.password.get_decrypted_password",
+                side_effect=RuntimeError("decrypt failed"),
+            ),
+        ):
+            result = smoke.dump_smoke_state()
+
+        self.assertEqual(result["credentials"]["api_key"], "api-key-123")
+        self.assertEqual(result["credentials"]["api_secret"], "")
+        self.assertEqual(
+            result["credentials"]["api_secret_error"], "decrypt_failed: RuntimeError"
         )
 
     def test_require_device_api_access_rejects_wrong_device_user(self):

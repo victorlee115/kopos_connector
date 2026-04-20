@@ -186,6 +186,7 @@ def get_items(
             standard_rate=flt(row.get("price")),
             selling_price_list=selling_price_list,
         )
+        availability = get_item_availability(row, warehouse)
         items.append(
             {
                 "id": item_id,
@@ -194,7 +195,8 @@ def get_items(
                 "category_id": cstr(row.get("category_id")),
                 "price": price,
                 "barcode": get_item_barcode(item_id),
-                "is_available": get_item_availability(row, warehouse),
+                "is_available": availability["is_available"],
+                "stock_warning": availability["stock_warning"],
                 "is_active": 0 if cint(row.get("disabled")) else 1,
                 "is_prep_item": cint(row.get("custom_kopos_is_prep_item") or 0),
                 "modifier_group_ids": modifier_groups_by_item.get(item_id, []),
@@ -483,19 +485,19 @@ def get_item_barcode(item_code: str) -> str | None:
     )
 
 
-def get_item_availability(item: ERPRecord, warehouse: str | None = None) -> bool:
+def get_item_availability(item: ERPRecord, warehouse: str | None = None) -> ERPRecord:
     """Resolve final item availability from override mode and stock."""
     if cint(item.get("disabled")):
-        return False
+        return {"is_available": False, "stock_warning": None}
 
     mode = cstr(item.get("custom_kopos_availability_mode") or "auto")
     if mode == "force_unavailable":
-        return False
+        return {"is_available": False, "stock_warning": None}
     if mode == "force_available":
-        return True
+        return {"is_available": True, "stock_warning": None}
 
     if not cint(item.get("custom_kopos_track_stock")) or not warehouse:
-        return True
+        return {"is_available": True, "stock_warning": None}
 
     bin_qty = flt(
         frappe.db.get_value(
@@ -511,7 +513,9 @@ def get_item_availability(item: ERPRecord, warehouse: str | None = None) -> bool
         item.get("item_code") or item.get("id"), warehouse
     )
     min_qty = flt(item.get("custom_kopos_min_qty") or 1)
-    return (bin_qty - reserved_qty) >= min_qty
+    if (bin_qty - reserved_qty) >= min_qty:
+        return {"is_available": True, "stock_warning": None}
+    return {"is_available": True, "stock_warning": "erp_stock_short"}
 
 
 def get_pos_reserved_qty(item_code: str | None, warehouse: str | None) -> float:
