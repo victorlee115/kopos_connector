@@ -23,6 +23,10 @@ from kopos_connector.kopos.services.accounting.sales_invoice_service import (
 from kopos_connector.kopos.services.inventory.stock_issue_service import (
     create_ingredient_stock_entry,
 )
+from kopos_connector.kopos.services.inventory.warning_service import (
+    detect_stock_shortfall,
+    log_stock_shortfall,
+)
 from kopos_connector.kopos.services.projection.log_service import (
     create_projection_log,
     update_projection_state,
@@ -775,37 +779,19 @@ class FBOrder(BaseDocument):
         return []
 
     def validate_stock_availability(self, line_resolutions: list[dict[str, Any]]):
-        required_stock_by_bin: dict[tuple[str, str], float] = defaultdict(float)
+        components: list[dict[str, Any]] = []
 
         for line_resolution in line_resolutions:
             for component in line_resolution["resolved_components"]:
-                if not int(component.get("affects_stock") or 0):
-                    continue
-                item_code = component.get("item")
-                warehouse = component.get("warehouse") or self.booth_warehouse
-                required_stock_by_bin[(item_code, warehouse)] += flt(
-                    component.get("stock_qty")
+                normalized_component = dict(component)
+                normalized_component["warehouse"] = (
+                    normalized_component.get("warehouse") or self.booth_warehouse
                 )
+                components.append(normalized_component)
 
-        for (item_code, warehouse), required_stock in required_stock_by_bin.items():
-            available_stock = flt(
-                frappe.db.get_value(
-                    "Bin",
-                    {"item_code": item_code, "warehouse": warehouse},
-                    "actual_qty",
-                )
-                or 0
-            )
-            if available_stock + 0.0001 < required_stock:
-                frappe.throw(
-                    "Insufficient stock for item {0} in warehouse {1}. Required {2}, available {3}".format(
-                        item_code,
-                        warehouse,
-                        required_stock,
-                        available_stock,
-                    ),
-                    frappe.ValidationError,
-                )
+        shortfalls = detect_stock_shortfall(components)
+        if shortfalls:
+            log_stock_shortfall(self, shortfalls, timestamp=now_datetime())
 
     def create_resolved_sales(self, line_resolutions: list[dict[str, Any]]):
         for line_resolution in line_resolutions:

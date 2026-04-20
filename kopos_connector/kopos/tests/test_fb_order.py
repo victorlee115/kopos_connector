@@ -1,7 +1,14 @@
 from __future__ import annotations
 
-import frappe
-from frappe.tests.utils import FrappeTestCase
+from importlib import import_module
+from unittest.mock import patch
+
+import pytest
+
+pytest.importorskip("frappe")
+
+frappe = import_module("frappe")
+FrappeTestCase = import_module("frappe.tests.utils").FrappeTestCase
 
 from kopos_connector.kopos.doctype.fb_order.fb_order import FBOrder
 
@@ -35,6 +42,25 @@ class TestFBOrder(FrappeTestCase):
         order.booth_warehouse = self.warehouse
         order.company = self.company
         order.currency = "MYR"
+        return order
+
+    def create_submittable_test_order(self):
+        order = self.create_test_order()
+        order.append(
+            "items",
+            {
+                "line_id": "LINE-1",
+                "item": "TEST-ITEM",
+                "qty": 1.0,
+                "uom": "Nos",
+                "unit_price": 10.0,
+                "line_total": 10.0,
+            },
+        )
+        order.append("payments", {"payment_method": "Cash", "amount": 10.0})
+        order.net_total = 10.0
+        order.grand_total = 10.0
+        order.insert()
         return order
 
     def test_order_validation_required_fields(self):
@@ -254,3 +280,96 @@ class TestFBOrder(FrappeTestCase):
             order.validate()
 
         self.assertIn("amount", str(context.exception).lower())
+
+    def test_submit_logs_advisory_stock_shortfall(self):
+        order = self.create_submittable_test_order()
+        line_resolutions = [
+            {
+                "resolved_components": [
+                    {
+                        "item": "TEST-INGREDIENT",
+                        "warehouse": self.warehouse,
+                        "stock_qty": 1.25,
+                        "affects_stock": 1,
+                    },
+                    {
+                        "item": "TEST-INGREDIENT",
+                        "warehouse": self.warehouse,
+                        "stock_qty": 0.75,
+                        "affects_stock": 1,
+                    },
+                ]
+            }
+        ]
+
+        with (
+            patch.object(
+                FBOrder, "build_line_resolutions", return_value=line_resolutions
+            ),
+            patch.object(FBOrder, "create_resolved_sales", return_value=None),
+            patch.object(FBOrder, "get_resolved_sales", return_value=[]),
+            patch.object(
+                FBOrder, "create_projection_entry", side_effect=["INV-LOG", "STOCK-LOG"]
+            ),
+            patch.object(FBOrder, "update_shift_expected_cash", return_value=None),
+            patch(
+                "kopos_connector.kopos.doctype.fb_order.fb_order.create_sales_invoice",
+                return_value="SINV-TEST-0001",
+            ),
+            patch(
+                "kopos_connector.kopos.doctype.fb_order.fb_order.create_ingredient_stock_entry",
+                return_value=None,
+            ),
+            patch(
+                "kopos_connector.kopos.doctype.fb_order.fb_order.update_projection_state",
+                return_value=None,
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory.warning_service.get_available_stock",
+                return_value=1.0,
+            ),
+        ):
+            order.submit()
+
+        order.reload()
+        self.assertEqual(order.docstatus, 1)
+        self.assertEqual(order.status, "Submitted")
+
+        logs = frappe.get_all(
+            "FB Stock Override Log",
+            filters={"fb_order": order.name},
+            fields=[
+                "item",
+                "warehouse",
+                "requested_qty",
+                "available_qty_before",
+                "shortfall_qty",
+                "order_reference",
+                "logged_at",
+            ],
+        )
+
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0].item, "TEST-INGREDIENT")
+        self.assertEqual(logs[0].warehouse, self.warehouse)
+        self.assertEqual(logs[0].requested_qty, 2.0)
+        self.assertEqual(logs[0].available_qty_before, 1.0)
+        self.assertEqual(logs[0].shortfall_qty, 1.0)
+        self.assertEqual(logs[0].order_reference, order.order_id)
+        self.assertIsNotNone(logs[0].logged_at)
+
+    def test_submit_still_raises_non_stock_failures(self):
+        order = self.create_submittable_test_order()
+
+        with (
+            patch.object(FBOrder, "build_line_resolutions", return_value=[]),
+            patch.object(
+                FBOrder,
+                "create_resolved_sales",
+                side_effect=RuntimeError("resolved sale projection failed"),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "resolved sale projection failed"
+            ):
+                order.submit()
