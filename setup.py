@@ -8,7 +8,7 @@ with open("README.md") as f:
 
 setup(
     name="kopos_connector",
-    version="1.0.6",
+    version="1.0.7",
     description="ERPNext connector for KoPOS mobile POS system with modifier and availability management",
     long_description=long_description,
     long_description_content_type="text/markdown",
