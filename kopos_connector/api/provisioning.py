@@ -34,21 +34,17 @@ def ensure_device_api_credentials(
     should_rotate = bool(cint(rotate))
     resolved_user = _ensure_device_api_user(device_doc)
     api_key_value = cstr(frappe.db.get_value("User", resolved_user, "api_key")).strip()
-    api_secret_value = cstr(
-        get_decrypted_password(
-            "User",
-            resolved_user,
-            "api_secret",
-            raise_exception=False,
-        )
-        or ""
-    ).strip()
+    api_secret_value = _read_device_api_secret(resolved_user)
 
     if should_rotate or not api_key_value or not api_secret_value:
         api_key_value = cstr(frappe.generate_hash(length=15)).strip()
         api_secret_value = cstr(frappe.generate_hash(length=15)).strip()
         frappe.db.set_value("User", resolved_user, "api_key", api_key_value)
         set_encrypted_password("User", resolved_user, api_secret_value, "api_secret")
+        api_secret_value = _read_device_api_secret(resolved_user)
+
+    if not api_key_value or not api_secret_value:
+        frappe.throw(_("Failed to initialize KoPOS device API credentials"))
 
     return {
         "user": resolved_user,
@@ -306,3 +302,18 @@ def _ensure_device_api_user(device_doc) -> str:
         setattr(device_doc, "api_user", user_email)
 
     return user_email
+
+
+def _read_device_api_secret(user_email: str) -> str:
+    try:
+        return cstr(
+            get_decrypted_password(
+                "User",
+                user_email,
+                "api_secret",
+                raise_exception=False,
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return ""

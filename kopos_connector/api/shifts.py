@@ -803,13 +803,20 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     device_doc = get_device_doc(device_id=device_id)
-    if not frappe.db.get_value("KoPOS Device", device_doc.name, "enabled"):
+    if not device_doc:
+        frappe.throw(
+            _("KoPOS Device {0} was not found").format(device_id),
+            frappe.ValidationError,
+        )
+
+    device_name = cstr(getattr(device_doc, "name", "")).strip()
+    if not frappe.db.get_value("KoPOS Device", device_name, "enabled"):
         frappe.throw(
             _("KoPOS Device {0} is disabled").format(device_id),
             frappe.ValidationError,
         )
 
-    pos_profile_name = device_doc.pos_profile
+    pos_profile_name = cstr(getattr(device_doc, "pos_profile", "")).strip()
     if not pos_profile_name:
         frappe.throw(
             _("KoPOS Device {0} has no POS Profile configured").format(device_id),
@@ -989,13 +996,20 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         frappe.throw(_("counted_cash_sen must be non-negative"), frappe.ValidationError)
 
     device_doc = get_device_doc(device_id=device_id)
-    if not frappe.db.get_value("KoPOS Device", device_doc.name, "enabled"):
+    if not device_doc:
+        frappe.throw(
+            _("KoPOS Device {0} was not found").format(device_id),
+            frappe.ValidationError,
+        )
+
+    device_name = cstr(getattr(device_doc, "name", "")).strip()
+    if not frappe.db.get_value("KoPOS Device", device_name, "enabled"):
         frappe.throw(
             _("KoPOS Device {0} is disabled").format(device_id),
             frappe.ValidationError,
         )
 
-    pos_profile_name = device_doc.pos_profile
+    pos_profile_name = cstr(getattr(device_doc, "pos_profile", "")).strip()
     if not pos_profile_name:
         frappe.throw(
             _("KoPOS Device {0} has no POS Profile configured").format(device_id),
@@ -1029,14 +1043,7 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
             device_id=device_id,
             shift_id=shift_id,
             require_open=True,
-        )
-
-    if not pos_opening_entry:
-        pos_opening_entry = _find_opening_entry_name(
-            pos_profile_name=pos_profile_name,
-            staff_id=staff_id,
-            device_id=device_id,
-            require_open=True,
+            allow_device_fallback=False,
         )
 
     if not pos_opening_entry:
@@ -1200,7 +1207,10 @@ def get_device_open_shift_payload(device_id: str) -> dict[str, Any] | None:
         - opened_at: ISO timestamp when shift was opened
     """
     device_doc = get_device_doc(device_id=device_id)
-    pos_profile_name = device_doc.pos_profile
+    if not device_doc:
+        return None
+
+    pos_profile_name = cstr(getattr(device_doc, "pos_profile", "")).strip()
     if not pos_profile_name:
         return None
 
@@ -1250,16 +1260,16 @@ def get_device_open_shift_payload(device_id: str) -> dict[str, Any] | None:
 
 def _get_opening_float_sen(pos_opening_entry: str) -> int:
     """Get the opening float amount in sen from a POS Opening Entry."""
-    try:
-        balance_details = frappe.get_all(
-            "POS Opening Entry Balance Detail",
-            filters={"parent": pos_opening_entry, "parentfield": "balance_details"},
-            fields=["opening_amount"],
-        )
-        total = sum(flt(row.get("opening_amount", 0)) for row in balance_details)
-        return int(round(total * 100))
-    except Exception:
+    if not frappe.db.exists("DocType", "POS Opening Entry Balance Detail"):
         return 0
+
+    balance_details = frappe.get_all(
+        "POS Opening Entry Balance Detail",
+        filters={"parent": pos_opening_entry, "parentfield": "balance_details"},
+        fields=["opening_amount"],
+    )
+    total = sum(flt(row.get("opening_amount", 0)) for row in balance_details)
+    return int(round(total * 100))
 
 
 def _format_datetime_iso(value: Any) -> str | None:
