@@ -357,6 +357,8 @@ def build_pos_invoice(payload: dict[str, Any], pos_profile_doc):
     invoice.set_posting_time = 1
     invoice.custom_kopos_idempotency_key = payload["idempotency_key"]
     invoice.custom_kopos_device_id = payload["device_id"]
+    if hasattr(invoice, "custom_kopos_display_number"):
+        invoice.custom_kopos_display_number = order["display_number"]
     set_invoice_promotion_metadata(invoice, payload)
     invoice.remarks = build_invoice_remarks(payload)
     invoice.ignore_pricing_rule = 1
