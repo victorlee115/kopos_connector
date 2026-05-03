@@ -139,6 +139,30 @@ class TestModifierSnapshot(unittest.TestCase):
         self.assertEqual(snapshot["total"], 0)
         self.assertEqual(snapshot["modifiers"], [])
 
+    def test_build_snapshot_accepts_fb_submit_modifier_shape(self):
+        from kopos_connector.api.modifiers import build_modifiers_snapshot
+
+        raw_item = {
+            "modifier_total": 2,
+            "modifiers": [
+                {
+                    "modifier_group": "grp-size",
+                    "modifier": "mod-large",
+                    "price_adjustment": 2,
+                    "name": "Large",
+                }
+            ],
+        }
+
+        snapshot = build_modifiers_snapshot(raw_item)
+
+        self.assertEqual(snapshot["count"], 1)
+        self.assertEqual(snapshot["total"], 2)
+        self.assertEqual(snapshot["modifiers"][0]["id"], "mod-large")
+        self.assertEqual(snapshot["modifiers"][0]["group_id"], "grp-size")
+        self.assertEqual(snapshot["modifiers"][0]["name"], "Large")
+        self.assertEqual(snapshot["modifiers"][0]["price"], 2)
+
     def test_build_snapshot_includes_schema_version(self):
         from kopos_connector.api.modifiers import build_modifiers_snapshot
 
