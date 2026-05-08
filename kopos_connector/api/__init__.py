@@ -529,6 +529,31 @@ def get_order_history(
 
 
 @frappe.whitelist(methods=["POST"])
+def void_order(**kwargs: Any) -> None:
+    """Public KoPOS endpoint for voiding a submitted POS Invoice."""
+    from .orders import process_void_payload
+
+    try:
+        payload = _get_submit_payload(kwargs)
+        require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
+        result = process_void_payload(payload)
+        _write_response(result)
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception:
+        frappe.db.rollback()
+        frappe.log_error(frappe.get_traceback(), "KoPOS void_order failed")
+        _write_response(
+            {
+                "status": "error",
+                "message": "Unexpected server error while voiding order",
+            },
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
 def process_refund(**kwargs: Any) -> None:
     """Public KoPOS endpoint for processing refunds via Credit Notes."""
     from .orders import process_refund_payload
@@ -729,4 +754,5 @@ __all__ = [
     "request_shift_manager_approval",
     "review_promotion_reconciliation",
     "submit_order",
+    "void_order",
 ]
