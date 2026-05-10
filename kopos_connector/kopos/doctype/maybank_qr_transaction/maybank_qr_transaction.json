@@ -18,11 +18,22 @@
   "qr_data",
    "section_links",
    "fb_order",
-   "sales_invoice",
-   "outlet_id",
-  "device_id",
-   "idempotency_key",
-   "section_timing",
+    "sales_invoice",
+    "outlet_id",
+   "device_id",
+    "idempotency_key",
+    "section_receipt",
+    "receipt_file",
+    "receipt_idempotency_key",
+    "receipt_idempotency_fingerprint",
+    "receipt_payment_id",
+    "receipt_order_id",
+    "receipt_amount_sen",
+    "receipt_file_name",
+    "receipt_file_hash",
+    "receipt_captured_at",
+    "receipt_uploaded_at",
+    "section_timing",
   "round_number",
   "created_at",
   "scanned_at",
@@ -114,13 +125,89 @@
     "fieldtype": "Data",
     "label": "Device ID"
   },
-  {
-    "fieldname": "idempotency_key",
-    "fieldtype": "Data",
-     "label": "Idempotency Key"
-   },
    {
-   "fieldname": "section_timing",
+     "fieldname": "idempotency_key",
+     "fieldtype": "Data",
+      "label": "Idempotency Key"
+    },
+    {
+     "fieldname": "section_receipt",
+     "fieldtype": "Section Break",
+     "label": "Receipt Upload"
+    },
+    {
+     "fieldname": "receipt_file",
+     "fieldtype": "Link",
+     "label": "Receipt File",
+     "options": "File",
+     "read_only": 1
+    },
+    {
+     "fieldname": "receipt_idempotency_key",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Receipt Idempotency Key",
+     "read_only": 1,
+     "unique": 1
+    },
+    {
+     "fieldname": "receipt_idempotency_fingerprint",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Receipt Idempotency Fingerprint",
+     "read_only": 1,
+     "unique": 1
+    },
+    {
+     "fieldname": "receipt_payment_id",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Receipt Payment ID",
+     "read_only": 1
+    },
+    {
+     "fieldname": "receipt_order_id",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Receipt Order ID",
+     "read_only": 1
+    },
+    {
+     "fieldname": "receipt_amount_sen",
+     "fieldtype": "Int",
+     "hidden": 1,
+     "label": "Receipt Amount (sen)",
+     "read_only": 1
+    },
+    {
+     "fieldname": "receipt_file_name",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Receipt File Name",
+     "read_only": 1
+    },
+    {
+     "fieldname": "receipt_file_hash",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Receipt File Hash",
+     "read_only": 1
+    },
+    {
+     "fieldname": "receipt_captured_at",
+     "fieldtype": "Datetime",
+     "hidden": 1,
+     "label": "Receipt Captured At",
+     "read_only": 1
+    },
+    {
+     "fieldname": "receipt_uploaded_at",
+     "fieldtype": "Datetime",
+     "label": "Receipt Uploaded At",
+     "read_only": 1
+    },
+    {
+    "fieldname": "section_timing",
    "fieldtype": "Section Break",
    "label": "Timing"
   },

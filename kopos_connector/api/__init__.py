@@ -732,6 +732,23 @@ def check_maybank_payment(
         )
 
 
+@frappe.whitelist(methods=["POST"])
+def upload_manual_qr_receipt(**kwargs: Any) -> None:
+    """Attach a validated private receipt JPEG to a Maybank QR transaction."""
+    from .manual_qr_receipt import upload_manual_qr_receipt as upload_payload
+
+    try:
+        _write_response(upload_payload(**kwargs))
+    except frappe.ValidationError as exc:
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "KoPOS upload_manual_qr_receipt failed")
+        _write_response(
+            {"status": "error", "message": "Failed to upload manual QR receipt"},
+            http_status_code=500,
+        )
+
+
 __all__ = [
     "check_maybank_payment",
     "close_shift",
@@ -754,5 +771,6 @@ __all__ = [
     "request_shift_manager_approval",
     "review_promotion_reconciliation",
     "submit_order",
+    "upload_manual_qr_receipt",
     "void_order",
 ]
