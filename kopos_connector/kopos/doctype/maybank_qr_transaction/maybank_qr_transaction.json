@@ -21,6 +21,7 @@
     "sales_invoice",
     "outlet_id",
    "device_id",
+    "provider",
     "idempotency_key",
     "section_receipt",
     "receipt_file",
@@ -41,8 +42,9 @@
      "reconciliation_failed_reason",
      "section_timing",
   "round_number",
-  "created_at",
-  "scanned_at",
+   "created_at",
+   "business_date",
+   "scanned_at",
   "paid_at",
   "expires_at",
   "last_polled_at",
@@ -126,13 +128,18 @@
    "fieldtype": "Data",
    "label": "Outlet ID"
   },
-  {
+   {
     "fieldname": "device_id",
     "fieldtype": "Data",
     "label": "Device ID"
-  },
+   },
    {
-     "fieldname": "idempotency_key",
+    "fieldname": "provider",
+    "fieldtype": "Data",
+    "label": "Provider"
+   },
+    {
+      "fieldname": "idempotency_key",
      "fieldtype": "Data",
       "label": "Idempotency Key"
     },
@@ -262,14 +269,20 @@
    "fieldtype": "Int",
    "label": "QR Round"
   },
-  {
-   "fieldname": "created_at",
-   "fieldtype": "Datetime",
-   "label": "Created At",
-   "read_only": 1
-  },
-  {
-   "fieldname": "scanned_at",
+   {
+    "fieldname": "created_at",
+    "fieldtype": "Datetime",
+    "label": "Created At",
+    "read_only": 1
+   },
+   {
+    "fieldname": "business_date",
+    "fieldtype": "Date",
+    "label": "Business Date",
+    "read_only": 1
+   },
+   {
+    "fieldname": "scanned_at",
    "fieldtype": "Datetime",
    "label": "Scanned At",
    "read_only": 1
