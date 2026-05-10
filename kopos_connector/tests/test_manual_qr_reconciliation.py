@@ -236,6 +236,21 @@ def test_non_manager_role_cannot_reconcile(reconciliation_module, monkeypatch):
     assert reconciliation_module.env.comments == []
 
 
+def test_manager_id_must_match_authenticated_user(reconciliation_module):
+    with pytest.raises(reconciliation_module.frappe.ValidationError) as excinfo:
+        reconciliation_module.module.mark_manual_qr_reconciled(
+            transaction_refno="TXN-PENDING-1",
+            manager_id="another-manager@example.com",
+            note="Spoofed manager identity should fail",
+        )
+
+    txn = reconciliation_module.env.transactions["MBQR-PENDING-1"]
+    assert "manager_id must match" in str(excinfo.value)
+    assert txn.manual_reconciliation_status == "pending_reconciliation"
+    assert reconciliation_module.env.updates == []
+    assert reconciliation_module.env.comments == []
+
+
 def test_terminal_status_cannot_be_overwritten_without_audit(reconciliation_module):
     with pytest.raises(reconciliation_module.frappe.ValidationError) as excinfo:
         reconciliation_module.module.mark_manual_qr_reconciliation_failed(

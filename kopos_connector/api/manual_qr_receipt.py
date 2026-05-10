@@ -200,6 +200,12 @@ def _collect_reconciliation_payload(
     for fieldname in required:
         if not payload[fieldname]:
             frappe.throw(_("{0} is required").format(fieldname), frappe.ValidationError)
+    session_user = cstr(getattr(frappe.session, "user", None)).strip()
+    if payload["manager_id"] != session_user:
+        frappe.throw(
+            _("manager_id must match the authenticated ERPNext user"),
+            frappe.ValidationError,
+        )
     return payload
 
 
