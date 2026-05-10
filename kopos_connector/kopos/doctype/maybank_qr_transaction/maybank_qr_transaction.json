@@ -30,10 +30,16 @@
     "receipt_order_id",
     "receipt_amount_sen",
     "receipt_file_name",
-    "receipt_file_hash",
-    "receipt_captured_at",
-    "receipt_uploaded_at",
-    "section_timing",
+     "receipt_file_hash",
+     "receipt_captured_at",
+     "receipt_uploaded_at",
+     "section_reconciliation",
+     "manual_reconciliation_status",
+     "reconciled_by",
+     "reconciled_at",
+     "reconciliation_note",
+     "reconciliation_failed_reason",
+     "section_timing",
   "round_number",
   "created_at",
   "scanned_at",
@@ -207,7 +213,47 @@
      "read_only": 1
     },
     {
-    "fieldname": "section_timing",
+     "fieldname": "section_reconciliation",
+     "fieldtype": "Section Break",
+     "label": "Manual Reconciliation"
+    },
+    {
+     "default": "pending_reconciliation",
+     "fieldname": "manual_reconciliation_status",
+     "fieldtype": "Select",
+     "in_list_view": 1,
+     "label": "Manual Reconciliation Status",
+     "options": "pending_reconciliation\nreconciled\nreconciliation_failed",
+     "read_only": 1,
+     "search_index": 1
+    },
+    {
+     "fieldname": "reconciled_by",
+     "fieldtype": "Data",
+     "label": "Reconciled By",
+     "read_only": 1
+    },
+    {
+     "fieldname": "reconciled_at",
+     "fieldtype": "Datetime",
+     "label": "Reconciled At",
+     "read_only": 1
+    },
+    {
+     "fieldname": "reconciliation_note",
+     "fieldtype": "Small Text",
+     "label": "Reconciliation Note",
+     "read_only": 1
+    },
+    {
+     "fieldname": "reconciliation_failed_reason",
+     "fieldtype": "Select",
+     "label": "Reconciliation Failed Reason",
+     "options": "\nno_bank_transaction\namount_mismatch\nduplicate\nwrong_device\ncustomer_dispute\nother",
+     "read_only": 1
+    },
+    {
+     "fieldname": "section_timing",
    "fieldtype": "Section Break",
    "label": "Timing"
   },
