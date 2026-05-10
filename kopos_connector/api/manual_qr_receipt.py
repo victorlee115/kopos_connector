@@ -63,6 +63,38 @@ def list_pending_manual_qr_reconciliations() -> list[dict[str, Any]]:
 
 
 @frappe.whitelist(methods=["POST"])
+def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> dict[str, list[dict[str, Any]]]:
+    payload = _collect_status_payload(kwargs)
+    requests = _extract_status_requests(payload)
+    if not requests:
+        return {"statuses": []}
+
+    rows = frappe.get_all(
+        "Maybank QR Transaction",
+        filters={"transaction_refno": ["in", [request["transaction_refno"] for request in requests]]},
+        fields=[
+            "transaction_refno",
+            "receipt_payment_id",
+            "manual_reconciliation_status",
+            "reconciled_by",
+            "reconciled_at",
+            "reconciliation_note",
+            "reconciliation_failed_reason",
+        ],
+    )
+    rows_by_refno = {
+        cstr(_row_value(row, "transaction_refno")).strip(): row for row in rows
+    }
+
+    return {
+        "statuses": [
+            _manual_reconciliation_status_row(request, rows_by_refno.get(request["transaction_refno"]))
+            for request in requests
+        ]
+    }
+
+
+@frappe.whitelist(methods=["POST"])
 def mark_manual_qr_reconciled(**kwargs: Any) -> dict[str, str]:
     payload = _collect_reconciliation_payload(kwargs, required_fields=("note",))
     txn = _load_pending_reconciliation_transaction(payload["transaction_refno"])
@@ -207,6 +239,98 @@ def _collect_reconciliation_payload(
             frappe.ValidationError,
         )
     return payload
+
+
+def _collect_status_payload(kwargs: dict[str, Any]) -> dict[str, Any]:
+    source = dict(kwargs)
+    request = getattr(frappe, "request", None)
+    get_json = getattr(request, "get_json", None)
+    if callable(get_json):
+        request_json = get_json(silent=True)
+        if isinstance(request_json, dict):
+            source.update(request_json)
+
+    form_dict = getattr(getattr(frappe, "local", None), "form_dict", None)
+    if isinstance(form_dict, dict):
+        source.update(form_dict)
+
+    if isinstance(source.get("payments"), str):
+        parsed_payments = frappe.parse_json(source["payments"])
+        if isinstance(parsed_payments, list):
+            source["payments"] = parsed_payments
+    if isinstance(source.get("transaction_refnos"), str):
+        parsed_refnos = frappe.parse_json(source["transaction_refnos"])
+        if isinstance(parsed_refnos, list):
+            source["transaction_refnos"] = parsed_refnos
+    return source
+
+
+def _extract_status_requests(payload: dict[str, Any]) -> list[dict[str, str]]:
+    requests: list[dict[str, str]] = []
+    seen_refnos: set[str] = set()
+
+    payments = payload.get("payments")
+    if isinstance(payments, list):
+        for payment in payments:
+            if not isinstance(payment, dict):
+                continue
+            transaction_refno = cstr(
+                payment.get("transaction_refno") or payment.get("provider_session_id")
+            ).strip()
+            if not transaction_refno or transaction_refno in seen_refnos:
+                continue
+            seen_refnos.add(transaction_refno)
+            requests.append(
+                {
+                    "transaction_refno": transaction_refno,
+                    "payment_id": cstr(payment.get("payment_id")).strip(),
+                }
+            )
+
+    refnos = payload.get("transaction_refnos")
+    if isinstance(refnos, list):
+        for refno_value in refnos:
+            transaction_refno = cstr(refno_value).strip()
+            if not transaction_refno or transaction_refno in seen_refnos:
+                continue
+            seen_refnos.add(transaction_refno)
+            requests.append({"transaction_refno": transaction_refno, "payment_id": ""})
+
+    single_refno = cstr(payload.get("transaction_refno")).strip()
+    if single_refno and single_refno not in seen_refnos:
+        requests.append(
+            {
+                "transaction_refno": single_refno,
+                "payment_id": cstr(payload.get("payment_id")).strip(),
+            }
+        )
+
+    return requests
+
+
+def _manual_reconciliation_status_row(
+    request: dict[str, str], row: Any | None
+) -> dict[str, Any]:
+    source = row or {}
+    return {
+        "payment_id": request["payment_id"]
+        or cstr(_row_value(source, "receipt_payment_id")).strip()
+        or None,
+        "provider_session_id": request["transaction_refno"],
+        "transaction_refno": request["transaction_refno"],
+        "reconciliation_status": cstr(
+            _row_value(source, "manual_reconciliation_status")
+        ).strip()
+        or None,
+        "reconciled_by": cstr(_row_value(source, "reconciled_by")).strip() or None,
+        "reconciled_at": cstr(_row_value(source, "reconciled_at")).strip() or None,
+        "reconciliation_note": cstr(_row_value(source, "reconciliation_note")).strip()
+        or None,
+        "reconciliation_failed_reason": cstr(
+            _row_value(source, "reconciliation_failed_reason")
+        ).strip()
+        or None,
+    }
 
 
 def _load_pending_reconciliation_transaction(transaction_refno: str) -> Any:
@@ -564,6 +688,7 @@ def _claim_receipt_idempotency(txn: Any, payload: dict[str, str], file_hash: str
             "receipt_file_name": payload["file_name"],
             "receipt_file_hash": file_hash,
             "receipt_captured_at": _coerce_site_datetime(payload["captured_at"]),
+            "manual_reconciliation_status": PENDING_RECONCILIATION_STATUS,
         },
         update_modified=False,
     )

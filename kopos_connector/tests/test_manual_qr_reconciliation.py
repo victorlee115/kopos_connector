@@ -34,6 +34,7 @@ def reconciliation_module(monkeypatch):
                 transaction_refno="TXN-PENDING-1",
                 device_id="DEVICE-A",
                 amount_sen=1200,
+                manual_reconciliation_status="pending_reconciliation",
                 receipt_file="FILE-1",
                 receipt_uploaded_at=datetime(2026, 3, 13, 18, 6, 0),
                 receipt_idempotency_key="receipt-key-1",
@@ -47,6 +48,13 @@ def reconciliation_module(monkeypatch):
                 transaction_refno="TXN-PENDING-2",
                 device_id="DEVICE-B",
                 amount_sen=2500,
+                manual_reconciliation_status="pending_reconciliation",
+            ),
+            "MBQR-NORMAL": build_transaction(
+                name="MBQR-NORMAL",
+                transaction_refno="TXN-NORMAL",
+                device_id="DEVICE-A",
+                amount_sen=1200,
             ),
             "MBQR-RECONCILED": build_transaction(
                 name="MBQR-RECONCILED",
@@ -77,8 +85,18 @@ def reconciliation_module(monkeypatch):
         assert doctype == "Maybank QR Transaction"
         rows = []
         for txn in env.transactions.values():
-            if filters and any(getattr(txn, key, None) != value for key, value in filters.items()):
-                continue
+            if filters:
+                matches = True
+                for key, value in filters.items():
+                    actual = getattr(txn, key, None)
+                    if isinstance(value, list) and len(value) == 2 and value[0] == "in":
+                        matches = actual in value[1]
+                    else:
+                        matches = actual == value
+                    if not matches:
+                        break
+                if not matches:
+                    continue
             rows.append({field: getattr(txn, field, None) for field in fields or []})
         if order_by == "created_at asc":
             rows.sort(key=lambda row: row.get("created_at") or datetime.min)
@@ -145,6 +163,60 @@ def test_list_returns_only_pending_reconciliation_transactions(reconciliation_mo
     assert rows[0]["receipt_order_id"] == "ORDER-1"
     assert rows[0]["fb_order"] == "FB-ORDER-1"
     assert rows[0]["sales_invoice"] == "SINV-1"
+    assert "TXN-NORMAL" not in {row["transaction_refno"] for row in rows}
+
+
+def test_fetch_manual_qr_reconciliation_status_returns_requested_rows(reconciliation_module):
+    result = reconciliation_module.module.fetch_manual_qr_reconciliation_status(
+        payments=[
+            {"payment_id": "PAY-1", "provider_session_id": "TXN-PENDING-1"},
+            {"payment_id": "PAY-2", "provider_session_id": "TXN-RECONCILED"},
+            {"payment_id": "PAY-3", "provider_session_id": "TXN-NORMAL"},
+        ]
+    )
+
+    assert result["statuses"] == [
+        {
+            "payment_id": "PAY-1",
+            "provider_session_id": "TXN-PENDING-1",
+            "transaction_refno": "TXN-PENDING-1",
+            "reconciliation_status": "pending_reconciliation",
+            "reconciled_by": None,
+            "reconciled_at": None,
+            "reconciliation_note": None,
+            "reconciliation_failed_reason": None,
+        },
+        {
+            "payment_id": "PAY-2",
+            "provider_session_id": "TXN-RECONCILED",
+            "transaction_refno": "TXN-RECONCILED",
+            "reconciliation_status": "reconciled",
+            "reconciled_by": "manager-a",
+            "reconciled_at": None,
+            "reconciliation_note": None,
+            "reconciliation_failed_reason": None,
+        },
+        {
+            "payment_id": "PAY-3",
+            "provider_session_id": "TXN-NORMAL",
+            "transaction_refno": "TXN-NORMAL",
+            "reconciliation_status": None,
+            "reconciled_by": None,
+            "reconciled_at": None,
+            "reconciliation_note": None,
+            "reconciliation_failed_reason": None,
+        },
+    ]
+
+
+def test_fetch_manual_qr_reconciliation_status_accepts_transaction_refnos(reconciliation_module):
+    result = reconciliation_module.module.fetch_manual_qr_reconciliation_status(
+        transaction_refnos=["TXN-FAILED"]
+    )
+
+    assert result["statuses"][0]["transaction_refno"] == "TXN-FAILED"
+    assert result["statuses"][0]["reconciliation_status"] == "reconciliation_failed"
+    assert result["statuses"][0]["reconciliation_failed_reason"] == "amount_mismatch"
 
 
 def test_mark_reconciled_updates_status_and_audit(reconciliation_module):
@@ -285,7 +357,7 @@ def build_transaction(
     transaction_refno: str,
     device_id: str,
     amount_sen: int,
-    manual_reconciliation_status: str = "pending_reconciliation",
+    manual_reconciliation_status: str = "",
     receipt_file: str | None = None,
     receipt_uploaded_at: datetime | None = None,
     receipt_idempotency_key: str | None = None,

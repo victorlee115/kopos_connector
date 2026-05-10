@@ -1333,7 +1333,7 @@ def dump_smoke_state() -> dict[str, Any]:
     )
     openings = frappe.get_all(
         "POS Opening Entry",
-        filters={"custom_kopos_device_id": device_id, "docstatus": 1},
+        filters={"custom_kopos_device_id": device_id, "docstatus": 1, "status": "Open"},
         pluck="name",
     )
 

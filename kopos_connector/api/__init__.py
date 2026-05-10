@@ -749,11 +749,36 @@ def upload_manual_qr_receipt(**kwargs: Any) -> None:
         )
 
 
+@frappe.whitelist(methods=["POST"])
+def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> None:
+    """Return manual Maybank QR reconciliation statuses for POS payments."""
+    from .manual_qr_receipt import (
+        fetch_manual_qr_reconciliation_status as fetch_status_payload,
+    )
+
+    try:
+        _write_response(fetch_status_payload(**kwargs))
+    except frappe.ValidationError as exc:
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception:
+        frappe.log_error(
+            frappe.get_traceback(), "KoPOS fetch_manual_qr_reconciliation_status failed"
+        )
+        _write_response(
+            {
+                "status": "error",
+                "message": "Failed to fetch manual QR reconciliation status",
+            },
+            http_status_code=500,
+        )
+
+
 __all__ = [
     "check_maybank_payment",
     "close_shift",
     "create_device_provisioning_qr",
     "create_pos_provisioning",
+    "fetch_manual_qr_reconciliation_status",
     "generate_maybank_qr",
     "get_catalog",
     "get_device_config",

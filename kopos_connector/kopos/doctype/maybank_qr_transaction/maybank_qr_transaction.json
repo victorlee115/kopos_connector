@@ -218,12 +218,11 @@
      "label": "Manual Reconciliation"
     },
     {
-     "default": "pending_reconciliation",
      "fieldname": "manual_reconciliation_status",
      "fieldtype": "Select",
      "in_list_view": 1,
      "label": "Manual Reconciliation Status",
-     "options": "pending_reconciliation\nreconciled\nreconciliation_failed",
+     "options": "\npending_reconciliation\nreconciled\nreconciliation_failed",
      "read_only": 1,
      "search_index": 1
     },

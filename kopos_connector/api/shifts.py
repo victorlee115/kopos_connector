@@ -1171,6 +1171,7 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
         closing_doc.insert(ignore_permissions=True)
         closing_doc.submit()
+        opening_entry.db_set("status", "Closed", update_modified=False)
 
         _log_shift_audit(
             action="close_shift",

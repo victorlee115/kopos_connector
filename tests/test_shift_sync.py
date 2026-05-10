@@ -48,6 +48,7 @@ class MutableDoc(SimpleNamespace):
         super().__init__(**kwargs)
         self.insert_calls = []
         self.submit_calls = 0
+        self.db_set_calls = []
 
     def get(self, key, default=None):
         return getattr(self, key, default)
@@ -58,6 +59,11 @@ class MutableDoc(SimpleNamespace):
 
     def submit(self):
         self.submit_calls += 1
+        return self
+
+    def db_set(self, fieldname, value, update_modified=True):
+        self.db_set_calls.append((fieldname, value, update_modified))
+        setattr(self, fieldname, value)
         return self
 
 
@@ -219,7 +225,7 @@ class ShiftSyncTests(unittest.TestCase):
                 )
             ],
         )
-        opening_entry = make_doc(
+        opening_entry = MutableDoc(
             name="OPEN-1",
             docstatus=1,
             status="Open",
@@ -285,6 +291,8 @@ class ShiftSyncTests(unittest.TestCase):
         self.assertEqual(closing_doc.custom_kopos_shift_id, "SHIFT-1")
         self.assertEqual(closing_doc.custom_kopos_device_id, "DEVICE-1")
         self.assertEqual(closing_doc.balance_details[0]["closing_amount"], 65.0)
+        self.assertEqual(opening_entry.status, "Closed")
+        self.assertEqual(opening_entry.db_set_calls, [("status", "Closed", False)])
         self.assertEqual(find_open_mock.call_count, 1)
 
     def test_close_shift_rejects_opening_entry_from_another_device(self):

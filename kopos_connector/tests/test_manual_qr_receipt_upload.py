@@ -172,6 +172,7 @@ def test_upload_attaches_private_file_to_matching_transaction(receipt_module):
     assert file_doc.insert_ignore_permissions is True
     assert txn.receipt_file_hash == expected_hash
     assert txn.receipt_idempotency_key == "upload-key-1"
+    assert txn.manual_reconciliation_status == "pending_reconciliation"
     assert len(receipt_module.env.comments) == 1
 
 
@@ -281,6 +282,7 @@ def build_transaction(
         receipt_file_hash=None,
         receipt_captured_at=None,
         receipt_uploaded_at=None,
+        manual_reconciliation_status="",
     )
 
 
