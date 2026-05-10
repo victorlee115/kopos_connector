@@ -357,6 +357,8 @@ def build_pos_invoice(payload: dict[str, Any], pos_profile_doc):
     invoice.set_posting_time = 1
     invoice.custom_kopos_idempotency_key = payload["idempotency_key"]
     invoice.custom_kopos_device_id = payload["device_id"]
+    if hasattr(invoice, "custom_kopos_display_number"):
+        invoice.custom_kopos_display_number = order["display_number"]
     set_invoice_promotion_metadata(invoice, payload)
     invoice.remarks = build_invoice_remarks(payload)
     invoice.ignore_pricing_rule = 1
@@ -814,6 +816,105 @@ def get_refund_reason_choices() -> list[dict[str, str]]:
     return [
         {"code": code, "label": label} for code, label in REFUND_REASON_OPTIONS.items()
     ]
+
+
+def process_void_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Cancel a submitted KoPOS POS Invoice from a trusted tablet request."""
+    validated = validate_void_payload(payload)
+    invoice_name = validated["pos_invoice"]
+
+    invoice = frappe.get_doc("POS Invoice", invoice_name)
+    if cint(getattr(invoice, "is_return", 0)):
+        frappe.throw(_("Cannot void a return invoice"), frappe.ValidationError)
+    if not cstr(getattr(invoice, "custom_kopos_idempotency_key", None)):
+        frappe.throw(
+            _("POS Invoice {0} was not created via KoPOS").format(invoice_name),
+            frappe.ValidationError,
+        )
+
+    invoice_device_id = cstr(getattr(invoice, "custom_kopos_device_id", None)).strip()
+    if invoice_device_id and invoice_device_id != validated["device_id"]:
+        frappe.throw(
+            _("POS Invoice {0} belongs to another KoPOS device").format(invoice_name),
+            frappe.ValidationError,
+        )
+
+    if getattr(invoice, "docstatus", None) == 2:
+        return {
+            "status": "duplicate",
+            "pos_invoice": invoice_name,
+            "idempotency_key": validated["idempotency_key"],
+            "message": _("Order already voided"),
+        }
+
+    if getattr(invoice, "docstatus", None) != 1:
+        frappe.throw(
+            _("POS Invoice {0} is not submitted").format(invoice_name),
+            frappe.ValidationError,
+        )
+
+    try:
+        with elevate_device_api_user():
+            if hasattr(invoice, "add_comment"):
+                invoice.add_comment(
+                    "Comment",
+                    "KoPOS void: {0} (manager: {1}, staff: {2})".format(
+                        validated["reason"],
+                        validated["manager_id"],
+                        validated["staff_id"],
+                    ),
+                )
+            invoice.cancel()
+    except Exception:
+        frappe.db.rollback()
+        refreshed = frappe.get_doc("POS Invoice", invoice_name)
+        if getattr(refreshed, "docstatus", None) == 2:
+            return {
+                "status": "duplicate",
+                "pos_invoice": invoice_name,
+                "idempotency_key": validated["idempotency_key"],
+                "message": _("Order already voided"),
+            }
+        raise
+
+    return {
+        "status": "ok",
+        "pos_invoice": invoice_name,
+        "idempotency_key": validated["idempotency_key"],
+        "order_status": "Voided",
+        "invoice_status": "Cancelled",
+    }
+
+
+def validate_void_payload(payload: dict[str, Any]) -> dict[str, str]:
+    idempotency_key = cstr(payload.get("idempotency_key")).strip()
+    device_id = cstr(payload.get("device_id")).strip()
+    pos_invoice = cstr(payload.get("pos_invoice") or payload.get("original_invoice")).strip()
+    reason = cstr(payload.get("reason")).strip()
+    manager_id = cstr(payload.get("manager_id")).strip()
+    staff_id = cstr(payload.get("staff_id")).strip()
+
+    if not idempotency_key:
+        frappe.throw(_("idempotency_key is required"), frappe.ValidationError)
+    if not device_id:
+        frappe.throw(_("device_id is required"), frappe.ValidationError)
+    if not pos_invoice:
+        frappe.throw(_("pos_invoice is required"), frappe.ValidationError)
+    if not reason:
+        frappe.throw(_("reason is required"), frappe.ValidationError)
+    if not manager_id:
+        frappe.throw(_("manager_id is required"), frappe.ValidationError)
+    if not staff_id:
+        frappe.throw(_("staff_id is required"), frappe.ValidationError)
+
+    return {
+        "idempotency_key": idempotency_key,
+        "device_id": device_id,
+        "pos_invoice": pos_invoice,
+        "reason": reason,
+        "manager_id": manager_id,
+        "staff_id": staff_id,
+    }
 
 
 def process_refund_payload(payload: dict[str, Any]) -> dict[str, Any]:

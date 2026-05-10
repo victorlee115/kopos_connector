@@ -103,6 +103,27 @@ def validate_modifier_data(raw_modifiers: list) -> list[dict]:
     Raises:
         frappe.ValidationError: If validation fails
     """
+    normalized = []
+    for mod in raw_modifiers:
+        if isinstance(mod, dict):
+            modifier_id = cstr(mod.get("id") or mod.get("modifier") or "")
+            group_id = cstr(mod.get("group_id") or mod.get("modifier_group") or "")
+            price = flt(
+                mod.get("price")
+                if mod.get("price") is not None
+                else mod.get("price_adjustment")
+            )
+            normalized.append(
+                {
+                    "id": modifier_id,
+                    "group_id": group_id,
+                    "name": mod.get("name") or mod.get("modifier_name") or modifier_id,
+                    "group_name": mod.get("group_name") or group_id,
+                    "price": price,
+                    "base_price": flt(mod.get("base_price")) or price,
+                    "is_default": bool(mod.get("is_default")),
+                }
+            )
     try:
         import jsonschema
     except ImportError:
@@ -114,26 +135,11 @@ def validate_modifier_data(raw_modifiers: list) -> list[dict]:
         )
 
     try:
-        jsonschema.validate({"modifiers": raw_modifiers}, MODIFIER_SCHEMA)
+        jsonschema.validate({"modifiers": normalized}, MODIFIER_SCHEMA)
     except jsonschema.ValidationError as e:
         frappe.throw(
             _("Invalid modifier data: {0}").format(e.message), frappe.ValidationError
         )
-
-    normalized = []
-    for mod in raw_modifiers:
-        if isinstance(mod, dict):
-            normalized.append(
-                {
-                    "id": cstr(mod.get("id", "")),
-                    "group_id": cstr(mod.get("group_id", "")),
-                    "name": mod.get("name", ""),
-                    "group_name": mod.get("group_name", ""),
-                    "price": flt(mod.get("price")),
-                    "base_price": flt(mod.get("base_price")),
-                    "is_default": bool(mod.get("is_default")),
-                }
-            )
     return normalized
 
 
