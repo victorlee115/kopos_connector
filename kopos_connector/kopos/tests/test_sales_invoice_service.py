@@ -7,6 +7,7 @@ from unittest.mock import patch
 import frappe
 
 from kopos_connector.kopos.services.accounting.sales_invoice_service import (
+    _resolve_customer,
     create_sales_invoice,
 )
 
@@ -138,3 +139,60 @@ class TestSalesInvoiceService(unittest.TestCase):
         self.assertEqual(invoice.write_off_account, "Write Off - WP")
         self.assertEqual(invoice.write_off_cost_center, "Main - WP")
         self.assertEqual(invoice.payments[0].amount, 12.95)
+
+    def test_resolve_customer_falls_back_to_pos_profile_customer(self):
+        order = self.make_fb_order_stub()
+        order.customer = None
+
+        with (
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.get_device_pos_profile_doc",
+                return_value=frappe._dict({"customer": "POS Walk-In Customer"}),
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.frappe.db.exists",
+                return_value=None,
+            ),
+        ):
+            customer = _resolve_customer(order)
+
+        self.assertEqual(customer, "POS Walk-In Customer")
+
+    def test_resolve_customer_falls_back_to_walk_in_customer(self):
+        order = self.make_fb_order_stub()
+        order.customer = None
+
+        with (
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.get_device_pos_profile_doc",
+                return_value=frappe._dict({"customer": None}),
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.frappe.db.exists",
+                return_value="Walk-in Customer",
+            ),
+        ):
+            customer = _resolve_customer(order)
+
+        self.assertEqual(customer, "Walk-in Customer")
+
+    def test_resolve_customer_raises_when_no_customer_source_exists(self):
+        order = self.make_fb_order_stub()
+        order.customer = None
+
+        with (
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.get_device_pos_profile_doc",
+                return_value=frappe._dict({"customer": None}),
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.frappe.db.exists",
+                return_value=None,
+            ),
+        ):
+            with self.assertRaises(ValueError) as error:
+                _resolve_customer(order)
+
+        self.assertEqual(
+            str(error.exception), "customer is required to create Sales Invoice"
+        )
