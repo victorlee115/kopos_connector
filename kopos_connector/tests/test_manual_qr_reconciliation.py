@@ -49,6 +49,18 @@ def reconciliation_module(monkeypatch):
                 device_id="DEVICE-B",
                 amount_sen=2500,
                 manual_reconciliation_status="pending_reconciliation",
+                receipt_file="FILE-2",
+                receipt_uploaded_at=datetime(2026, 3, 13, 18, 6, 30),
+                receipt_idempotency_key="receipt-key-2",
+                receipt_payment_id="PAY-2",
+                receipt_order_id="ORDER-2",
+            ),
+            "MBQR-LEGACY-FALSE-PENDING": build_transaction(
+                name="MBQR-LEGACY-FALSE-PENDING",
+                transaction_refno="TXN-LEGACY-FALSE-PENDING",
+                device_id="DEVICE-A",
+                amount_sen=900,
+                manual_reconciliation_status="pending_reconciliation",
             ),
             "MBQR-NORMAL": build_transaction(
                 name="MBQR-NORMAL",
@@ -164,6 +176,9 @@ def test_list_returns_only_pending_reconciliation_transactions(reconciliation_mo
     assert rows[0]["fb_order"] == "FB-ORDER-1"
     assert rows[0]["sales_invoice"] == "SINV-1"
     assert "TXN-NORMAL" not in {row["transaction_refno"] for row in rows}
+    assert "TXN-LEGACY-FALSE-PENDING" not in {
+        row["transaction_refno"] for row in rows
+    }
 
 
 def test_fetch_manual_qr_reconciliation_status_returns_requested_rows(reconciliation_module):
@@ -219,9 +234,67 @@ def test_fetch_manual_qr_reconciliation_status_accepts_transaction_refnos(reconc
     assert result["statuses"][0]["reconciliation_failed_reason"] == "amount_mismatch"
 
 
+def test_fetch_manual_qr_reconciliation_status_scopes_device_user(reconciliation_module, monkeypatch):
+    monkeypatch.setattr(
+        reconciliation_module.frappe,
+        "session",
+        SimpleNamespace(user="device-a@example.com"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        reconciliation_module.frappe,
+        "get_roles",
+        lambda user=None: ["KoPOS Device API"] if user == "device-a@example.com" else [],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        reconciliation_module.module,
+        "get_authenticated_device_doc",
+        lambda: SimpleNamespace(device_id="DEVICE-A"),
+    )
+
+    result = reconciliation_module.module.fetch_manual_qr_reconciliation_status(
+        payments=[
+            {"payment_id": "PAY-A", "provider_session_id": "TXN-RECONCILED"},
+            {"payment_id": "PAY-B", "provider_session_id": "TXN-PENDING-2"},
+        ]
+    )
+
+    assert result["statuses"][0]["reconciliation_status"] == "reconciled"
+    assert result["statuses"][1]["transaction_refno"] == "TXN-PENDING-2"
+    assert result["statuses"][1]["reconciliation_status"] is None
+    assert result["statuses"][1]["reconciled_by"] is None
+
+
+def test_fetch_manual_qr_reconciliation_status_rejects_non_device_user(reconciliation_module, monkeypatch):
+    monkeypatch.setattr(
+        reconciliation_module.frappe,
+        "session",
+        SimpleNamespace(user="cashier@example.com"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        reconciliation_module.frappe,
+        "get_roles",
+        lambda user=None: ["POS User"] if user == "cashier@example.com" else [],
+        raising=False,
+    )
+
+    with pytest.raises(reconciliation_module.frappe.ValidationError) as excinfo:
+        reconciliation_module.module.fetch_manual_qr_reconciliation_status(
+            transaction_refnos=["TXN-RECONCILED"]
+        )
+
+    assert "not allowed to access KoPOS APIs" in str(excinfo.value)
+
+
 def test_mark_reconciled_updates_status_and_audit(reconciliation_module):
     result = reconciliation_module.module.mark_manual_qr_reconciled(
         transaction_refno="TXN-PENDING-1",
+        amount_sen="1200",
+        business_date="2026-03-13",
+        device_id="DEVICE-A",
+        provider="maybank_qr",
         manager_id="manager@example.com",
         note="Matched Maybank settlement report",
     )
@@ -246,6 +319,10 @@ def test_mark_reconciled_updates_status_and_audit(reconciliation_module):
 def test_mark_failed_updates_status_reason_and_audit(reconciliation_module):
     result = reconciliation_module.module.mark_manual_qr_reconciliation_failed(
         transaction_refno="TXN-PENDING-2",
+        amount_sen="2500",
+        business_date="2026-03-13",
+        device_id="DEVICE-B",
+        provider="maybank_qr",
         manager_id="manager@example.com",
         reason="no_bank_transaction",
         note="Not present in settlement report",
@@ -269,6 +346,10 @@ def test_mark_failed_requires_valid_reason(reconciliation_module):
     with pytest.raises(reconciliation_module.frappe.ValidationError) as excinfo:
         reconciliation_module.module.mark_manual_qr_reconciliation_failed(
             transaction_refno="TXN-PENDING-1",
+            amount_sen="1200",
+            business_date="2026-03-13",
+            device_id="DEVICE-A",
+            provider="maybank_qr",
             manager_id="manager@example.com",
             reason="unsupported_reason",
             note="Invalid reason should fail",
@@ -297,6 +378,10 @@ def test_non_manager_role_cannot_reconcile(reconciliation_module, monkeypatch):
     with pytest.raises(reconciliation_module.frappe.ValidationError) as excinfo:
         reconciliation_module.module.mark_manual_qr_reconciled(
             transaction_refno="TXN-PENDING-1",
+            amount_sen="1200",
+            business_date="2026-03-13",
+            device_id="DEVICE-A",
+            provider="maybank_qr",
             manager_id="cashier@example.com",
             note="Cashier should not reconcile",
         )
@@ -312,6 +397,10 @@ def test_manager_id_must_match_authenticated_user(reconciliation_module):
     with pytest.raises(reconciliation_module.frappe.ValidationError) as excinfo:
         reconciliation_module.module.mark_manual_qr_reconciled(
             transaction_refno="TXN-PENDING-1",
+            amount_sen="1200",
+            business_date="2026-03-13",
+            device_id="DEVICE-A",
+            provider="maybank_qr",
             manager_id="another-manager@example.com",
             note="Spoofed manager identity should fail",
         )
@@ -327,6 +416,10 @@ def test_terminal_status_cannot_be_overwritten_without_audit(reconciliation_modu
     with pytest.raises(reconciliation_module.frappe.ValidationError) as excinfo:
         reconciliation_module.module.mark_manual_qr_reconciliation_failed(
             transaction_refno="TXN-RECONCILED",
+            amount_sen="1200",
+            business_date="2026-03-13",
+            device_id="DEVICE-A",
+            provider="maybank_qr",
             manager_id="manager@example.com",
             reason="amount_mismatch",
             note="Attempt to overwrite terminal status",
@@ -344,10 +437,81 @@ def test_manager_identity_is_required(reconciliation_module):
     with pytest.raises(reconciliation_module.frappe.ValidationError) as excinfo:
         reconciliation_module.module.mark_manual_qr_reconciled(
             transaction_refno="TXN-PENDING-1",
+            amount_sen="1200",
+            business_date="2026-03-13",
+            device_id="DEVICE-A",
+            provider="maybank_qr",
             note="Missing manager identity should fail",
         )
 
     assert "manager_id is required" in str(excinfo.value)
+    assert reconciliation_module.env.comments == []
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"amount_sen": "1199"}, "amount_sen does not match"),
+        ({"business_date": "2026-03-14"}, "business_date does not match"),
+        ({"device_id": "DEVICE-B"}, "device_id does not match"),
+        ({"provider": "other_provider"}, "provider does not match"),
+    ],
+)
+def test_mark_reconciled_rejects_bank_matching_mismatches(
+    reconciliation_module, override, message
+):
+    payload = {
+        "transaction_refno": "TXN-PENDING-1",
+        "amount_sen": "1200",
+        "business_date": "2026-03-13",
+        "device_id": "DEVICE-A",
+        "provider": "maybank_qr",
+        "manager_id": "manager@example.com",
+        "note": "Mismatch should fail",
+    }
+    payload.update(override)
+
+    with pytest.raises(reconciliation_module.frappe.ValidationError) as excinfo:
+        reconciliation_module.module.mark_manual_qr_reconciled(**payload)
+
+    txn = reconciliation_module.env.transactions["MBQR-PENDING-1"]
+    assert message in str(excinfo.value)
+    assert txn.manual_reconciliation_status == "pending_reconciliation"
+    assert reconciliation_module.env.updates == []
+    assert reconciliation_module.env.comments == []
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"amount_sen": "2499"}, "amount_sen does not match"),
+        ({"business_date": "2026-03-14"}, "business_date does not match"),
+        ({"device_id": "DEVICE-A"}, "device_id does not match"),
+        ({"provider": "other_provider"}, "provider does not match"),
+    ],
+)
+def test_mark_failed_rejects_bank_matching_mismatches(
+    reconciliation_module, override, message
+):
+    payload = {
+        "transaction_refno": "TXN-PENDING-2",
+        "amount_sen": "2500",
+        "business_date": "2026-03-13",
+        "device_id": "DEVICE-B",
+        "provider": "maybank_qr",
+        "manager_id": "manager@example.com",
+        "reason": "amount_mismatch",
+        "note": "Mismatch should fail",
+    }
+    payload.update(override)
+
+    with pytest.raises(reconciliation_module.frappe.ValidationError) as excinfo:
+        reconciliation_module.module.mark_manual_qr_reconciliation_failed(**payload)
+
+    txn = reconciliation_module.env.transactions["MBQR-PENDING-2"]
+    assert message in str(excinfo.value)
+    assert txn.manual_reconciliation_status == "pending_reconciliation"
+    assert reconciliation_module.env.updates == []
     assert reconciliation_module.env.comments == []
 
 
@@ -372,7 +536,10 @@ def build_transaction(
         name=name,
         transaction_refno=transaction_refno,
         device_id=device_id,
+        amount_sen=amount_sen,
         sale_amount_sen=amount_sen,
+        business_date="2026-03-13",
+        provider="maybank_qr",
         created_at=datetime(2026, 3, 13, 18, 4, 30),
         manual_reconciliation_status=manual_reconciliation_status,
         receipt_file=receipt_file,

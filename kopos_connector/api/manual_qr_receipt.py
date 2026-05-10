@@ -11,9 +11,22 @@ from zoneinfo import ZoneInfo
 
 import frappe
 from frappe import _
-from frappe.utils import add_to_date, cint, cstr, get_datetime, get_system_timezone, now_datetime
+from frappe.utils import (
+    add_to_date,
+    cint,
+    cstr,
+    get_datetime,
+    get_system_timezone,
+    getdate,
+    now_datetime,
+)
 
-from kopos_connector.api.devices import get_authenticated_device_doc, get_session_roles
+from kopos_connector.api.devices import (
+    get_authenticated_device_doc,
+    get_session_roles,
+    require_device_context,
+    require_kopos_api_access,
+)
 
 
 DEFAULT_MAX_RECEIPT_BYTES = 5 * 1024 * 1024
@@ -59,21 +72,33 @@ def list_pending_manual_qr_reconciliations() -> list[dict[str, Any]]:
         ],
         order_by="created_at asc",
     )
-    return [_manual_reconciliation_row(row) for row in rows]
+    return [
+        _manual_reconciliation_row(row)
+        for row in rows
+        if _has_manual_receipt_evidence(row)
+    ]
 
 
 @frappe.whitelist(methods=["POST"])
 def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> dict[str, list[dict[str, Any]]]:
     payload = _collect_status_payload(kwargs)
+    device_id = _resolve_status_device_id(payload)
     requests = _extract_status_requests(payload)
     if not requests:
         return {"statuses": []}
 
+    filters: dict[str, Any] = {
+        "transaction_refno": ["in", [request["transaction_refno"] for request in requests]]
+    }
+    if device_id:
+        filters["device_id"] = device_id
+
     rows = frappe.get_all(
         "Maybank QR Transaction",
-        filters={"transaction_refno": ["in", [request["transaction_refno"] for request in requests]]},
+        filters=filters,
         fields=[
             "transaction_refno",
+            "device_id",
             "receipt_payment_id",
             "manual_reconciliation_status",
             "reconciled_by",
@@ -98,6 +123,7 @@ def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> dict[str, list[dict[
 def mark_manual_qr_reconciled(**kwargs: Any) -> dict[str, str]:
     payload = _collect_reconciliation_payload(kwargs, required_fields=("note",))
     txn = _load_pending_reconciliation_transaction(payload["transaction_refno"])
+    _validate_reconciliation_bank_match(txn, payload)
     reconciled_at = now_datetime()
 
     frappe.db.set_value(
@@ -130,6 +156,7 @@ def mark_manual_qr_reconciliation_failed(**kwargs: Any) -> dict[str, str]:
         frappe.throw(_("reconciliation_failed_reason is invalid"), frappe.ValidationError)
 
     txn = _load_pending_reconciliation_transaction(payload["transaction_refno"])
+    _validate_reconciliation_bank_match(txn, payload)
     reconciled_at = now_datetime()
 
     frappe.db.set_value(
@@ -224,14 +251,28 @@ def _collect_reconciliation_payload(
 
     payload = {
         "transaction_refno": cstr(source.get("transaction_refno")).strip(),
+        "amount_sen": cstr(source.get("amount_sen")).strip(),
+        "business_date": cstr(source.get("business_date")).strip(),
+        "device_id": cstr(source.get("device_id")).strip(),
+        "provider": cstr(source.get("provider")).strip(),
         "manager_id": cstr(source.get("manager_id")).strip(),
         "reason": cstr(source.get("reason")).strip(),
         "note": cstr(source.get("note")).strip(),
     }
-    required = ("transaction_refno", "manager_id", *required_fields)
+    required = (
+        "transaction_refno",
+        "amount_sen",
+        "business_date",
+        "device_id",
+        "provider",
+        "manager_id",
+        *required_fields,
+    )
     for fieldname in required:
         if not payload[fieldname]:
             frappe.throw(_("{0} is required").format(fieldname), frappe.ValidationError)
+    if cint(payload["amount_sen"]) <= 0:
+        frappe.throw(_("amount_sen must be greater than zero"), frappe.ValidationError)
     session_user = cstr(getattr(frappe.session, "user", None)).strip()
     if payload["manager_id"] != session_user:
         frappe.throw(
@@ -263,6 +304,23 @@ def _collect_status_payload(kwargs: dict[str, Any]) -> dict[str, Any]:
         if isinstance(parsed_refnos, list):
             source["transaction_refnos"] = parsed_refnos
     return source
+
+
+def _resolve_status_device_id(payload: dict[str, Any]) -> str | None:
+    require_kopos_api_access()
+    requested_device_id = cstr(payload.get("device_id")).strip()
+    roles = get_session_roles()
+    if "System Manager" in roles:
+        if requested_device_id:
+            device = require_device_context(device_id=requested_device_id)
+            return cstr(getattr(device, "device_id", requested_device_id)).strip()
+        return None
+
+    device = get_authenticated_device_doc()
+    device_id = cstr(getattr(device, "device_id", None)).strip()
+    if not device_id:
+        frappe.throw(_("Authenticated KoPOS Device has no device_id"), frappe.ValidationError)
+    return device_id
 
 
 def _extract_status_requests(payload: dict[str, Any]) -> list[dict[str, str]]:
@@ -333,6 +391,13 @@ def _manual_reconciliation_status_row(
     }
 
 
+def _has_manual_receipt_evidence(row: Any) -> bool:
+    return bool(
+        cstr(_row_value(row, "receipt_file")).strip()
+        or cstr(_row_value(row, "receipt_idempotency_key")).strip()
+    )
+
+
 def _load_pending_reconciliation_transaction(transaction_refno: str) -> Any:
     txn_name = frappe.db.get_value(
         "Maybank QR Transaction",
@@ -349,7 +414,57 @@ def _load_pending_reconciliation_transaction(transaction_refno: str) -> Any:
             _("Maybank QR Transaction is not pending manual reconciliation"),
             frappe.ValidationError,
         )
+    if not _has_manual_receipt_evidence(txn):
+        frappe.throw(
+            _("Maybank QR Transaction has no manual receipt evidence"),
+            frappe.ValidationError,
+        )
     return txn
+
+
+def _validate_reconciliation_bank_match(txn: Any, payload: dict[str, str]) -> None:
+    if cint(_transaction_amount_sen(txn)) != cint(payload["amount_sen"]):
+        frappe.throw(
+            _("amount_sen does not match Maybank QR Transaction"),
+            frappe.ValidationError,
+        )
+
+    transaction_business_date = _business_date_string(getattr(txn, "business_date", None))
+    request_business_date = _business_date_string(payload["business_date"])
+    if transaction_business_date != request_business_date:
+        frappe.throw(
+            _("business_date does not match Maybank QR Transaction"),
+            frappe.ValidationError,
+        )
+
+    if cstr(getattr(txn, "device_id", None)).strip() != payload["device_id"]:
+        frappe.throw(
+            _("device_id does not match Maybank QR Transaction"),
+            frappe.ValidationError,
+        )
+
+    if cstr(getattr(txn, "provider", None)).strip() != payload["provider"]:
+        frappe.throw(
+            _("provider does not match Maybank QR Transaction"),
+            frappe.ValidationError,
+        )
+
+
+def _transaction_amount_sen(txn: Any) -> Any:
+    amount_sen = getattr(txn, "amount_sen", None)
+    if amount_sen is not None:
+        return amount_sen
+    return getattr(txn, "sale_amount_sen", None)
+
+
+def _business_date_string(value: Any) -> str:
+    if not cstr(value).strip():
+        return ""
+    try:
+        return getdate(value).isoformat()
+    except (TypeError, ValueError):
+        frappe.throw(_("business_date is invalid"), frappe.ValidationError)
+        return ""
 
 
 def _manual_reconciliation_row(row: Any) -> dict[str, Any]:
@@ -688,7 +803,6 @@ def _claim_receipt_idempotency(txn: Any, payload: dict[str, str], file_hash: str
             "receipt_file_name": payload["file_name"],
             "receipt_file_hash": file_hash,
             "receipt_captured_at": _coerce_site_datetime(payload["captured_at"]),
-            "manual_reconciliation_status": PENDING_RECONCILIATION_STATUS,
         },
         update_modified=False,
     )
@@ -726,6 +840,7 @@ def _attach_receipt_file(
             "receipt_file_name": payload["file_name"],
             "receipt_file_hash": file_hash,
             "receipt_captured_at": _coerce_site_datetime(payload["captured_at"]),
+            "manual_reconciliation_status": PENDING_RECONCILIATION_STATUS,
         },
         update_modified=False,
     )
