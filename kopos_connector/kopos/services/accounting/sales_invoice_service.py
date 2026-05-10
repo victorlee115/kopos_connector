@@ -141,11 +141,13 @@ def _coerce_doc(doctype: str, value: Any):
 
 
 def _value(doc: Any, fieldname: str) -> Any:
-    if hasattr(doc, fieldname):
-        return getattr(doc, fieldname)
     getter = getattr(doc, "get", None)
     if callable(getter):
-        return getter(fieldname)
+        value = getter(fieldname)
+        if value is not None or (isinstance(doc, dict) and fieldname in doc):
+            return value
+    if hasattr(doc, fieldname):
+        return getattr(doc, fieldname)
     return None
 
 

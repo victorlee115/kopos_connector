@@ -4,6 +4,10 @@ import unittest
 from contextlib import nullcontext
 from unittest.mock import patch
 
+from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
+
+install_fake_frappe_modules()
+
 import frappe
 
 from kopos_connector.kopos.services.accounting.sales_invoice_service import (
