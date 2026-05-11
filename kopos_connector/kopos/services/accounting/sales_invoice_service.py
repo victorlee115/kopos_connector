@@ -4,7 +4,10 @@ from typing import Any
 
 import frappe
 
-from kopos_connector.api.devices import elevate_device_api_user
+from kopos_connector.api.devices import (
+    elevate_device_api_user,
+    get_device_pos_profile_doc,
+)
 
 
 def create_sales_invoice(fb_order: Any) -> str | None:
@@ -138,11 +141,13 @@ def _coerce_doc(doctype: str, value: Any):
 
 
 def _value(doc: Any, fieldname: str) -> Any:
-    if hasattr(doc, fieldname):
-        return getattr(doc, fieldname)
     getter = getattr(doc, "get", None)
     if callable(getter):
-        return getter(fieldname)
+        value = getter(fieldname)
+        if value is not None or (isinstance(doc, dict) and fieldname in doc):
+            return value
+    if hasattr(doc, fieldname):
+        return getattr(doc, fieldname)
     return None
 
 
@@ -150,6 +155,17 @@ def _resolve_customer(order_doc: Any) -> str:
     customer = _value(order_doc, "customer")
     if customer:
         return customer
+
+    device_id = _value(order_doc, "device_id")
+    if device_id:
+        try:
+            profile_doc = get_device_pos_profile_doc(device_id=str(device_id))
+        except Exception:
+            profile_doc = None
+
+        profile_customer = _value(profile_doc, "customer") if profile_doc else None
+        if profile_customer:
+            return str(profile_customer)
 
     walk_in_customer = frappe.db.exists("Customer", "Walk-in Customer")
     if walk_in_customer:
