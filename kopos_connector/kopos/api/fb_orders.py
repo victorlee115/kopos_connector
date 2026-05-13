@@ -64,6 +64,10 @@ REMAKE_PROJECTION_CONFIG = (
 @frappe.whitelist()
 def submit_order() -> dict[str, Any]:
     payload = _get_request_payload()
+    return submit_order_payload(payload)
+
+
+def submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     validated = _validate_submit_order_payload(payload)
     existing_name = _get_existing_fb_order_name(validated["external_idempotency_key"])
     if existing_name:
@@ -293,6 +297,11 @@ def _validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     shift_name = _resolve_fb_shift_name(shift)
     if not shift_name:
         frappe.throw(f"shift {shift} was not found", frappe.ValidationError)
+    _validate_submit_shift(
+        shift_name=shift_name,
+        device_id=device_id,
+        staff_id=staff_id,
+    )
     _require_doc("Warehouse", booth_warehouse, "booth_warehouse")
     _require_doc("Company", company, "company")
     _require_doc("User", staff_id, "staff_id")
@@ -1087,3 +1096,26 @@ def _resolve_fb_shift_name(value: str) -> str | None:
     if frappe.db.exists("FB Shift", value):
         return value
     return frappe.db.get_value("FB Shift", {"shift_code": value}, "name")
+
+
+def _validate_submit_shift(*, shift_name: str, device_id: str, staff_id: str) -> None:
+    shift_doc = frappe.get_doc("FB Shift", shift_name)
+    shift_device_id = cstr(getattr(shift_doc, "device_id", None))
+    shift_staff_id = cstr(getattr(shift_doc, "staff_id", None))
+    shift_status = cstr(getattr(shift_doc, "status", None))
+
+    if shift_device_id != device_id:
+        frappe.throw(
+            f"shift {shift_name} does not belong to device {device_id}",
+            frappe.ValidationError,
+        )
+    if shift_staff_id != staff_id:
+        frappe.throw(
+            f"shift {shift_name} does not belong to staff {staff_id}",
+            frappe.ValidationError,
+        )
+    if shift_status == "Cancelled":
+        frappe.throw(
+            f"shift {shift_name} is cancelled",
+            frappe.ValidationError,
+        )

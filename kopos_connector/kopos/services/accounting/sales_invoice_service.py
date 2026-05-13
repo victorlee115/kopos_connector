@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import frappe
@@ -99,7 +100,23 @@ def create_sales_invoice(fb_order: Any) -> str | None:
                         order_item
                     ),
                 }
-                invoice.append("items", row)
+                invoice_item = invoice.append("items", row)
+                modifier_snapshot = _build_modifier_snapshot(order_item)
+                _set_if_present(
+                    invoice_item,
+                    ["custom_kopos_modifier_total"],
+                    _value(order_item, "modifier_total"),
+                )
+                _set_if_present(
+                    invoice_item,
+                    ["custom_kopos_has_modifiers"],
+                    1 if modifier_snapshot else 0,
+                )
+                _set_if_present(
+                    invoice_item,
+                    ["custom_kopos_modifiers"],
+                    modifier_snapshot,
+                )
 
             if not invoice.items:
                 raise ValueError("fb_order has no invoiceable items")
@@ -407,6 +424,31 @@ def _build_invoice_remarks(order_doc: Any) -> str:
     if notes:
         parts.append(str(notes))
     return "\n".join(part for part in parts if part and part.split(": ")[-1] != "")
+
+
+def _build_modifier_snapshot(order_item: Any) -> str | None:
+    modifiers = list(_value(order_item, "selected_modifiers") or [])
+    if not modifiers:
+        return None
+
+    rows = []
+    for modifier_row in modifiers:
+        modifier_id = _value(modifier_row, "modifier")
+        if not modifier_id:
+            continue
+        rows.append(
+            {
+                "id": modifier_id,
+                "name": frappe.db.get_value("FB Modifier", modifier_id, "modifier_name")
+                or modifier_id,
+                "group_id": _value(modifier_row, "modifier_group"),
+                "price_adjustment": _value(modifier_row, "price_adjustment") or 0,
+            }
+        )
+
+    if not rows:
+        return None
+    return json.dumps({"modifiers": rows}, separators=(",", ":"))
 
 
 def _get_existing_reference(doc: Any, fieldname: str) -> str | None:
