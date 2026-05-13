@@ -14,6 +14,10 @@ from kopos_connector.kopos.services.operations.return_service import (
 @frappe.whitelist()
 def process_return() -> dict[str, Any]:
     payload = _get_request_payload()
+    return process_return_payload(payload)
+
+
+def process_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
     validated = _validate_payload(payload)
     existing_return = frappe.db.get_value(
         "FB Return Event", {"return_id": validated["return_id"]}, "name"

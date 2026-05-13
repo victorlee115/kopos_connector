@@ -205,29 +205,16 @@ def publish_promotion_snapshot(
 
 @frappe.whitelist()
 def get_promotion_review_queue(limit: int = 20) -> None:
-    """Return POS invoices that need promotion reconciliation review."""
-    from .promotions import get_promotion_review_queue as queue
-
     require_system_manager()
-    _write_response({"items": queue(limit=int(limit))})
+    _write_response({"items": []})
 
 
 @frappe.whitelist(methods=["POST"])
 def review_promotion_reconciliation(**kwargs: Any) -> None:
-    """Resolve a review-required promotion reconciliation item."""
-    from .promotions import review_promotion_reconciliation as review
-
     try:
         require_system_manager()
-        payload = _get_submit_payload(kwargs)
-        _write_response(
-            review(
-                pos_invoice=frappe.utils.cstr(payload.get("pos_invoice")),
-                decision=frappe.utils.cstr(payload.get("decision")),
-                notes=frappe.utils.cstr(payload.get("notes")),
-                reviewed_by=frappe.utils.cstr(payload.get("reviewed_by")),
-            )
-        )
+        _get_submit_payload(kwargs)
+        _write_response({"status": "unavailable", "message": "Promotion reconciliation review is not enabled for Sales Invoice flow"})
     except frappe.ValidationError as exc:
         frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
@@ -247,14 +234,15 @@ def review_promotion_reconciliation(**kwargs: Any) -> None:
 
 @frappe.whitelist(methods=["POST"])
 def submit_order(**kwargs: Any) -> None:
-    """Public KoPOS endpoint for order submission with raw JSON responses."""
-    from kopos_connector.api.orders import submit_order_payload
+    """Public KoPOS endpoint for FB Order submission with raw JSON responses."""
+    from kopos_connector.kopos.api.fb_orders import submit_order_payload
 
     try:
         payload = _get_submit_payload(kwargs)
         require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
-        result = submit_order_payload(_to_pos_invoice_submit_payload(payload))
-        _write_response(_to_public_submit_response(payload, result))
+        fb_payload = _to_public_fb_submit_payload(payload)
+        result = submit_order_payload(fb_payload)
+        _write_response(_to_public_fb_submit_response(fb_payload, result))
     except frappe.ValidationError as exc:
         frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
@@ -270,96 +258,33 @@ def submit_order(**kwargs: Any) -> None:
         )
 
 
-def _to_pos_invoice_submit_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Convert the public mobile submit contract into the POS Invoice contract."""
-    raw_order = payload.get("order")
-    order_payload = _string_keyed_dict(raw_order)
-    raw_items = order_payload.get("items")
-    items = raw_items if isinstance(raw_items, list) else []
-    raw_payments = order_payload.get("payments")
-    payments = (
-        raw_payments if isinstance(raw_payments, list) else []
-    )
-
-    return {
-        "idempotency_key": payload.get("idempotency_key"),
-        "device_id": payload.get("device_id"),
-        "pos_profile": payload.get("pos_profile"),
-        "warehouse": payload.get("warehouse") or payload.get("booth_warehouse"),
-        "company": payload.get("company"),
-        "currency": payload.get("currency"),
-        "order": {
-            "display_number": order_payload.get("display_number")
-            or payload.get("display_number")
-            or payload.get("order_id"),
-            "order_type": order_payload.get("order_type") or "takeaway",
-            "subtotal": order_payload.get("subtotal"),
-            "tax_amount": order_payload.get("tax_amount") or payload.get("tax_total"),
-            "tax_rate": order_payload.get("tax_rate"),
-            "discount_amount": order_payload.get("discount_amount"),
-            "rounding_adj": order_payload.get("rounding_adj")
-            or payload.get("rounding_adjustment"),
-            "total": order_payload.get("total") or payload.get("grand_total"),
-            "created_at": order_payload.get("created_at") or payload.get("created_at"),
-            "items": [_to_pos_invoice_submit_item(item) for item in items],
-            "payments": [_to_pos_invoice_submit_payment(payment) for payment in payments],
-        },
-    }
-
-
-def _to_pos_invoice_submit_item(item: Any) -> dict[str, Any]:
-    row = _string_keyed_dict(item)
-    rate = row.get("rate") or row.get("unit_price")
-    modifier_total = row.get("modifier_total") or 0
-    qty = row.get("qty") or 0
-    amount = row.get("amount") or row.get("line_total")
-    base_amount = row.get("base_amount") or (
-        (frappe.utils.flt(rate) + frappe.utils.flt(modifier_total))
-        * frappe.utils.flt(qty)
-    )
-    modifiers = row.get("modifiers") or row.get("selected_modifiers") or []
-
-    return {
-        "item_code": row.get("item_code") or row.get("item"),
-        "item_name": row.get("item_name"),
-        "qty": qty,
-        "rate": rate,
-        "base_rate": row.get("base_rate") or rate,
-        "modifier_total": modifier_total,
-        "base_amount": base_amount,
-        "discount_amount": row.get("discount_amount"),
-        "amount": amount,
-        "modifiers": modifiers if isinstance(modifiers, list) else [],
-    }
-
-
-def _to_pos_invoice_submit_payment(payment: Any) -> dict[str, Any]:
-    row = _string_keyed_dict(payment)
-    return {
-        "method": row.get("method") or row.get("payment_method"),
-        "amount": row.get("amount"),
-        "tendered": row.get("tendered") or row.get("tendered_amount"),
-        "change": row.get("change") or row.get("change_amount"),
-    }
-
-
-def _to_public_submit_response(
+def _to_public_fb_submit_response(
     payload: dict[str, Any], result: dict[str, Any]
 ) -> dict[str, Any]:
-    pos_invoice = frappe.utils.cstr(result.get("pos_invoice"))
+    sales_invoice = frappe.utils.cstr(result.get("sales_invoice")) or None
+    order_id = frappe.utils.cstr(result.get("order_id") or payload.get("order_id"))
     return {
         "status": result.get("status"),
-        "fb_order": pos_invoice,
-        "order_id": frappe.utils.cstr(payload.get("order_id")) or pos_invoice,
+        "fb_order": result.get("fb_order"),
+        "order_id": order_id or result.get("fb_order"),
         "idempotency_key": result.get("idempotency_key") or payload.get("idempotency_key"),
-        "sales_invoice": pos_invoice,
-        "pos_invoice": pos_invoice,
-        "ingredient_stock_entry": None,
-        "order_status": "Submitted",
-        "invoice_status": "Posted",
-        "stock_status": "Pending",
+        "sales_invoice": sales_invoice,
+        "ingredient_stock_entry": result.get("ingredient_stock_entry"),
+        "order_status": result.get("order_status"),
+        "invoice_status": result.get("invoice_status"),
+        "stock_status": result.get("stock_status"),
+        "projections": result.get("projections"),
         "message": result.get("message"),
     }
+
+
+def _to_public_fb_submit_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    fb_payload = dict(payload)
+    order_payload = _string_keyed_dict(payload.get("order"))
+    display_number = frappe.utils.cstr(order_payload.get("display_number"))
+    if display_number and not frappe.utils.cstr(fb_payload.get("notes")):
+        fb_payload["notes"] = f"KoPOS display number: {display_number}"
+    return fb_payload
 
 
 def _string_keyed_dict(value: Any) -> dict[str, Any]:
@@ -394,7 +319,7 @@ def _get_submit_payload(kwargs: dict[str, Any]) -> dict[str, Any]:
 
 @frappe.whitelist(methods=["POST"])
 def open_shift(**kwargs: Any) -> None:
-    """Public KoPOS endpoint for opening a shift (creates POS Opening Entry)."""
+    """Public KoPOS endpoint for opening an FB Shift."""
     from .shifts import open_shift_payload
 
     try:
@@ -419,7 +344,7 @@ def open_shift(**kwargs: Any) -> None:
 
 @frappe.whitelist(methods=["POST"])
 def close_shift(**kwargs: Any) -> None:
-    """Public KoPOS endpoint for closing a shift (creates POS Closing Entry)."""
+    """Public KoPOS endpoint for closing an FB Shift."""
     from .shifts import close_shift_payload
 
     try:
@@ -488,7 +413,7 @@ def get_order_history(
     cursor: str | int | None = None,
     limit: str | int | None = None,
 ) -> dict[str, Any]:
-    """Public KoPOS endpoint for current-shift POS Invoice history."""
+    """Public KoPOS endpoint for current-shift Sales Invoice history."""
     try:
         resolved_device_id = frappe.utils.cstr(device_id).strip()
         if resolved_device_id:
@@ -530,13 +455,11 @@ def get_order_history(
 
 @frappe.whitelist(methods=["POST"])
 def void_order(**kwargs: Any) -> None:
-    """Public KoPOS endpoint for voiding a submitted POS Invoice."""
-    from .orders import process_void_payload
-
+    """Public KoPOS endpoint for voiding a submitted Sales Invoice."""
     try:
         payload = _get_submit_payload(kwargs)
         require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
-        result = process_void_payload(payload)
+        result = _process_sales_invoice_void_payload(payload)
         _write_response(result)
     except frappe.ValidationError as exc:
         frappe.db.rollback()
@@ -553,15 +476,41 @@ def void_order(**kwargs: Any) -> None:
         )
 
 
+def _process_sales_invoice_void_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    sales_invoice = frappe.utils.cstr(payload.get("sales_invoice")).strip()
+    device_id = frappe.utils.cstr(payload.get("device_id")).strip()
+    idempotency_key = frappe.utils.cstr(payload.get("idempotency_key")).strip()
+    reason = frappe.utils.cstr(payload.get("reason")).strip()
+    if not sales_invoice:
+        frappe.throw(_("sales_invoice is required"), frappe.ValidationError)
+    if not device_id:
+        frappe.throw(_("device_id is required"), frappe.ValidationError)
+    if not idempotency_key:
+        frappe.throw(_("idempotency_key is required"), frappe.ValidationError)
+    invoice = frappe.get_doc("Sales Invoice", sales_invoice)
+    invoice_device_id = frappe.utils.cstr(getattr(invoice, "custom_fb_device_id", ""))
+    if invoice_device_id and invoice_device_id != device_id:
+        frappe.throw(_("Sales Invoice {0} belongs to another device").format(sales_invoice), frappe.ValidationError)
+    if invoice.docstatus == 2:
+        return {"status": "duplicate", "sales_invoice": sales_invoice, "idempotency_key": idempotency_key}
+    if invoice.docstatus != 1:
+        frappe.throw(_("Sales Invoice {0} is not submitted").format(sales_invoice), frappe.ValidationError)
+    with elevate_device_api_user():
+        if reason:
+            invoice.add_comment("Comment", f"KoPOS void reason: {reason}")
+        invoice.cancel()
+    return {"status": "ok", "sales_invoice": sales_invoice, "idempotency_key": idempotency_key}
+
+
 @frappe.whitelist(methods=["POST"])
 def process_refund(**kwargs: Any) -> None:
-    """Public KoPOS endpoint for processing refunds via Credit Notes."""
-    from .orders import process_refund_payload
+    """Public KoPOS endpoint for processing FB returns via Sales Invoice returns."""
+    from .fb_returns import process_return_payload
 
     try:
         payload = _get_submit_payload(kwargs)
         require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
-        result = process_refund_payload(payload)
+        result = process_return_payload(_to_public_fb_return_payload(payload))
         _write_response(result)
     except frappe.ValidationError as exc:
         frappe.db.rollback()
@@ -576,6 +525,26 @@ def process_refund(**kwargs: Any) -> None:
             },
             http_status_code=500,
         )
+
+
+def _to_public_fb_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    original_sales_invoice = frappe.utils.cstr(
+        payload.get("original_sales_invoice") or payload.get("original_invoice")
+    )
+    fb_order = frappe.utils.cstr(payload.get("fb_order"))
+    if original_sales_invoice and not fb_order:
+        fb_order = frappe.utils.cstr(
+            frappe.db.get_value("Sales Invoice", original_sales_invoice, "custom_fb_order")
+        )
+    return {
+        "return_id": payload.get("return_id") or payload.get("idempotency_key"),
+        "fb_order": fb_order or None,
+        "original_sales_invoice": original_sales_invoice or None,
+        "reason_code": payload.get("reason_code") or "Other",
+        "reason_text": payload.get("reason_text") or payload.get("refund_reason"),
+        "return_to_stock": payload.get("return_to_stock"),
+        "lines": payload.get("lines"),
+    }
 
 
 @frappe.whitelist(methods=["POST"])
@@ -751,7 +720,7 @@ def upload_manual_qr_receipt(**kwargs: Any) -> None:
 
 @frappe.whitelist(methods=["POST"])
 def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> None:
-    """Return manual Maybank QR reconciliation statuses for POS payments."""
+    """Return manual Maybank QR reconciliation statuses for submitted payments."""
     from .manual_qr_receipt import (
         fetch_manual_qr_reconciliation_status as fetch_status_payload,
     )

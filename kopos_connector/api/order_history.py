@@ -80,7 +80,7 @@ def get_order_history_payload(
         page_rows = invoice_rows[:resolved_limit]
         invoice_names = [cstr(row.get("name")).strip() for row in page_rows]
         items_by_parent = query_child_rows_by_parent(
-            "POS Invoice Item",
+            "Sales Invoice Item",
             invoice_names,
             get_invoice_item_fields(),
             order_by="parent asc, idx asc",
@@ -98,7 +98,7 @@ def get_order_history_payload(
         )
         refund_names = [cstr(row.get("name")).strip() for row in refund_rows]
         refund_items_by_parent = query_child_rows_by_parent(
-            "POS Invoice Item",
+            "Sales Invoice Item",
             refund_names,
             get_invoice_item_fields(),
             order_by="parent asc, idx asc",
@@ -109,6 +109,7 @@ def get_order_history_payload(
             get_invoice_payment_fields(),
             order_by="parent asc, idx asc",
         )
+        fb_items_by_order = query_fb_order_items_by_order(invoice_rows + refund_rows)
 
     return {
         "status": "ok",
@@ -124,7 +125,8 @@ def get_order_history_payload(
         "orders": [
             serialize_invoice_row(
                 row,
-                items=items_by_parent.get(cstr(row.get("name")).strip(), []),
+                items=fb_items_by_order.get(cstr(row.get("custom_fb_order")).strip())
+                or items_by_parent.get(cstr(row.get("name")).strip(), []),
                 payments=payments_by_parent.get(cstr(row.get("name")).strip(), []),
             )
             for row in page_rows
@@ -132,7 +134,8 @@ def get_order_history_payload(
         "refunds": [
             serialize_refund_row(
                 row,
-                items=refund_items_by_parent.get(cstr(row.get("name")).strip(), []),
+                items=fb_items_by_order.get(cstr(row.get("custom_fb_order")).strip())
+                or refund_items_by_parent.get(cstr(row.get("name")).strip(), []),
                 payments=refund_payments_by_parent.get(cstr(row.get("name")).strip(), []),
             )
             for row in refund_rows
@@ -194,17 +197,12 @@ def resolve_since_date(
 def get_current_shift_since_datetime(
     device_id: str, pos_profile: str
 ) -> datetime | None:
-    filters: dict[str, Any] = {
-        "pos_profile": pos_profile,
-        "docstatus": 1,
-        "status": "Open",
-        "custom_kopos_device_id": device_id,
-    }
+    filters: dict[str, Any] = {"device_id": device_id, "status": "Open"}
     entries = frappe.get_all(
-        "POS Opening Entry",
+        "FB Shift",
         filters=filters,
-        fields=["name", "period_start_date", "posting_date", "creation"],
-        order_by="period_start_date desc, creation desc",
+        fields=["name", "opened_at", "creation"],
+        order_by="opened_at desc, creation desc",
         limit_page_length=1,
     )
     if not entries:
@@ -215,25 +213,18 @@ def get_current_shift_since_datetime(
 
 
 def get_current_shift_since_date(device_id: str, pos_profile: str) -> date | None:
-    filters: dict[str, Any] = {
-        "pos_profile": pos_profile,
-        "docstatus": 1,
-        "status": "Open",
-        "custom_kopos_device_id": device_id,
-    }
+    filters: dict[str, Any] = {"device_id": device_id, "status": "Open"}
     entries = frappe.get_all(
-        "POS Opening Entry",
+        "FB Shift",
         filters=filters,
-        fields=["name", "period_start_date", "posting_date"],
-        order_by="period_start_date desc, creation desc",
+        fields=["name", "opened_at"],
+        order_by="opened_at desc, creation desc",
         limit_page_length=1,
     )
     if not entries:
         return None
     entry = dict(entries[0])
-    return parse_date_value(entry.get("period_start_date")) or parse_date_value(
-        entry.get("posting_date")
-    )
+    return parse_date_value(entry.get("opened_at"))
 
 
 def query_invoice_rows(
@@ -254,14 +245,14 @@ def query_invoice_rows(
         "posting_date": [">=", since_date],
     }
     if device_id:
-        filters["custom_kopos_device_id"] = device_id
+        filters["custom_fb_device_id"] = device_id
 
     rows = [
         dict(row)
         for row in frappe.get_all(
-            "POS Invoice",
+            "Sales Invoice",
             filters=filters,
-            fields=get_invoice_fields(),
+            fields=filter_existing_fields("Sales Invoice", get_invoice_fields()),
             order_by="posting_date desc, posting_time desc, creation desc, name desc",
             limit_start=offset,
             limit_page_length=limit,
@@ -289,7 +280,7 @@ def query_refund_rows(
     return [
         dict(row)
         for row in frappe.get_all(
-            "POS Invoice",
+            "Sales Invoice",
             filters={
                 "docstatus": 1,
                 "is_return": 1,
@@ -297,7 +288,7 @@ def query_refund_rows(
                 "pos_profile": pos_profile,
                 "return_against": ["in", invoice_names],
             },
-            fields=get_invoice_fields() + ["return_against"],
+            fields=filter_existing_fields("Sales Invoice", get_invoice_fields() + ["return_against"]),
             order_by="posting_date desc, posting_time desc, creation desc, name desc",
         )
     ]
@@ -314,8 +305,8 @@ def query_child_rows_by_parent(
         return {}
     rows = frappe.get_all(
         doctype,
-        filters={"parent": ["in", parent_names], "parenttype": "POS Invoice"},
-        fields=fields,
+        filters={"parent": ["in", parent_names], "parenttype": "Sales Invoice"},
+        fields=filter_existing_fields(doctype, fields),
         order_by=order_by,
     )
     grouped: dict[str, list[dict[str, Any]]] = {}
@@ -324,6 +315,126 @@ def query_child_rows_by_parent(
         if parent:
             grouped.setdefault(parent, []).append(dict(row))
     return grouped
+
+
+def query_fb_order_items_by_order(
+    invoice_rows: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    fb_order_names = sorted(
+        {
+            cstr(row.get("custom_fb_order")).strip()
+            for row in invoice_rows
+            if cstr(row.get("custom_fb_order")).strip()
+        }
+    )
+    if not fb_order_names:
+        return {}
+
+    line_rows = [
+        dict(row)
+        for row in frappe.get_all(
+            "FB Order Line",
+            filters={"parent": ["in", fb_order_names], "parenttype": "FB Order"},
+            fields=filter_existing_fields(
+                "FB Order Line",
+                [
+                    "name",
+                    "parent",
+                    "idx",
+                    "item",
+                    "item_name_snapshot",
+                    "qty",
+                    "unit_price",
+                    "modifier_total",
+                    "discount_amount",
+                    "line_total",
+                    "resolved_sale",
+                    "remarks",
+                ],
+            ),
+            order_by="parent asc, idx asc",
+        )
+    ]
+    modifier_parent_names = []
+    for row in line_rows:
+        line_name = cstr(row.get("name")).strip()
+        resolved_sale = cstr(row.get("resolved_sale")).strip()
+        if line_name:
+            modifier_parent_names.append(line_name)
+        if resolved_sale:
+            modifier_parent_names.append(resolved_sale)
+    modifiers_by_parent = query_fb_selected_modifiers_by_parent(modifier_parent_names)
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in line_rows:
+        parent = cstr(row.get("parent")).strip()
+        line_name = cstr(row.get("name")).strip()
+        modifier_parent = cstr(row.get("resolved_sale")).strip() or line_name
+        modifiers = modifiers_by_parent.get(modifier_parent, [])
+        grouped.setdefault(parent, []).append(
+            {
+                "idx": row.get("idx"),
+                "item_code": row.get("item"),
+                "item_name": row.get("item_name_snapshot"),
+                "description": row.get("remarks"),
+                "qty": row.get("qty"),
+                "rate": row.get("unit_price"),
+                "amount": row.get("line_total"),
+                "net_amount": row.get("line_total"),
+                "base_rate": row.get("unit_price"),
+                "base_amount": row.get("line_total"),
+                "discount_amount": row.get("discount_amount"),
+                "warehouse": None,
+                "custom_kopos_modifier_total": row.get("modifier_total"),
+                "custom_kopos_modifiers": serialize_fb_modifiers_snapshot(modifiers),
+            }
+        )
+    return grouped
+
+
+def query_fb_selected_modifiers_by_parent(
+    parent_names: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    if not parent_names:
+        return {}
+    rows = frappe.get_all(
+        "FB Selected Modifier",
+        filters={
+            "parent": ["in", parent_names],
+            "parenttype": ["in", ["FB Order Line", "FB Resolved Sale"]],
+        },
+        fields=filter_existing_fields(
+            "FB Selected Modifier",
+            ["parent", "modifier_group", "modifier", "price_adjustment"],
+        ),
+        order_by="parent asc, idx asc",
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        parent = cstr(row.get("parent")).strip()
+        if parent:
+            grouped.setdefault(parent, []).append(dict(row))
+    return grouped
+
+
+def serialize_fb_modifiers_snapshot(modifiers: list[dict[str, Any]]) -> str | None:
+    rows = []
+    for modifier in modifiers:
+        modifier_id = empty_to_none(modifier.get("modifier"))
+        if not modifier_id:
+            continue
+        rows.append(
+            {
+                "id": modifier_id,
+                "name": frappe.db.get_value("FB Modifier", modifier_id, "modifier_name")
+                or modifier_id,
+                "group_id": empty_to_none(modifier.get("modifier_group")),
+                "price_adjustment": modifier.get("price_adjustment"),
+            }
+        )
+    if not rows:
+        return None
+    return json.dumps({"modifiers": rows}, separators=(",", ":"))
 
 
 def serialize_invoice_row(
@@ -336,8 +447,10 @@ def serialize_invoice_row(
         "name": cstr(row.get("name")),
         "display_number": empty_to_none(row.get("custom_kopos_display_number"))
         or extract_display_number_from_remarks(row.get("remarks")),
-        "idempotency_key": empty_to_none(row.get("custom_kopos_idempotency_key")),
-        "device_id": empty_to_none(row.get("custom_kopos_device_id")),
+        "idempotency_key": empty_to_none(row.get("custom_kopos_idempotency_key"))
+        or empty_to_none(row.get("custom_fb_idempotency_key")),
+        "device_id": empty_to_none(row.get("custom_kopos_device_id"))
+        or empty_to_none(row.get("custom_fb_device_id")),
         "company": cstr(row.get("company")),
         "pos_profile": cstr(row.get("pos_profile")),
         "customer": empty_to_none(row.get("customer")),
@@ -416,6 +529,10 @@ def get_invoice_fields() -> list[str]:
         "custom_kopos_idempotency_key",
         "custom_kopos_device_id",
         "custom_kopos_display_number",
+        "custom_fb_order",
+        "custom_fb_shift",
+        "custom_fb_idempotency_key",
+        "custom_fb_device_id",
         "net_total",
         "total_taxes_and_charges",
         "discount_amount",
@@ -426,6 +543,16 @@ def get_invoice_fields() -> list[str]:
         "custom_kopos_refund_reason_code",
         "custom_kopos_refund_reason",
         "remarks",
+    ]
+
+
+def filter_existing_fields(doctype: str, fields: list[str]) -> list[str]:
+    meta = frappe.get_meta(doctype)
+    document_fields = {"name", "creation", "modified", "parent", "parenttype", "idx"}
+    return [
+        fieldname
+        for fieldname in fields
+        if fieldname in document_fields or meta.has_field(fieldname)
     ]
 
 
