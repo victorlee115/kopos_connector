@@ -29,60 +29,6 @@ _audit_logger = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------
-# Phase 5 - Security-Critical Custom Field Constants
-# -----------------------------------------------------------------------------
-
-# Security-critical custom fields that must never fail silently.
-# These fields are essential for replay protection and ownership verification.
-SECURITY_CRITICAL_FIELDS = frozenset(
-    {
-        "custom_kopos_idempotency_key",
-        "custom_kopos_shift_id",
-        "custom_kopos_device_id",
-    }
-)
-
-# Manager approval custom field for audit trail
-MANAGER_APPROVAL_FIELD = "custom_kopos_approved_by_manager"
-
-# Module logger for deprecation warnings
-_logger = logging.getLogger(__name__)
-
-
-class SecurityFieldError(frappe.ValidationError):
-    """Raised when a security-critical custom field operation fails.
-
-    This error indicates that the KoPOS custom fields may not be properly
-    installed or that a security-critical metadata field is unavailable.
-    """
-
-    pass
-
-
-def _log_deprecation_warning(message: str) -> None:
-    """Log a deprecation warning for legacy remarks-based lookups.
-
-    This should only be called when falling back to the legacy remarks-based
-    path, which is being phased out in favor of direct custom field lookups.
-
-    The remarks-based fallback exists ONLY for compatibility with legacy
-    records created before custom fields were installed. It should NEVER
-    be used as the primary lookup path for new records.
-    """
-    _logger.warning(
-        "[DEPRECATION] %s - Remarks-based lookup is deprecated and will be "
-        "removed in a future version. Ensure KoPOS custom fields are properly "
-        "installed by running the install hooks.",
-        message,
-    )
-    # Also log to frappe's logger if available (for production visibility)
-    try:
-        frappe.logger("kopos_connector.security").warning("[DEPRECATION] %s", message)
-    except Exception:
-        pass  # Don't fail if frappe logger is unavailable
-
-
-# -----------------------------------------------------------------------------
 # Security Helpers for Phase 1 & 2 - Server-Side Identity & Permission Enforcement
 # -----------------------------------------------------------------------------
 
@@ -362,7 +308,7 @@ def _log_shift_audit(
         device_id: The KoPOS device ID
         staff_id: The requesting staff user ID
         result: "success" or "failure"
-        erp_doc_type: The ERP document type created (e.g., "POS Opening Entry")
+        erp_doc_type: The ERP document type created (for example, "FB Shift")
         erp_doc_name: The ERP document name/reference
         error_message: Error message if result is "failure"
         manager_id: The manager who approved the action (if applicable)
@@ -418,114 +364,6 @@ def _log_shift_audit(
         pass
 
 
-def _set_custom_field_value(doc: Any, fieldname: str, value: str) -> None:
-    """Set a custom field value on a document.
-
-    For security-critical fields (idempotency_key, shift_id, device_id),
-    this function fails closed - raising SecurityFieldError if the field
-    cannot be set. For non-critical fields, it silently ignores failures
-    for backward compatibility.
-
-    Args:
-        doc: The ERPNext document to modify
-        fieldname: The custom field name to set
-        value: The value to set
-
-    Raises:
-        SecurityFieldError: If a security-critical field cannot be set
-    """
-    is_security_critical = fieldname in SECURITY_CRITICAL_FIELDS
-
-    if not hasattr(doc, fieldname):
-        if is_security_critical:
-            frappe.throw(
-                _(
-                    "Security-critical field {0} is not available on document. "
-                    "Ensure KoPOS custom fields are installed correctly."
-                ).format(fieldname),
-                SecurityFieldError,
-            )
-        # Non-critical field: silently skip
-        return
-
-    try:
-        setattr(doc, fieldname, value)
-    except Exception as e:
-        if is_security_critical:
-            frappe.throw(
-                _("Failed to set security-critical field {0}: {1}").format(
-                    fieldname, str(e)
-                ),
-                SecurityFieldError,
-            )
-        # Non-critical field: silently ignore
-        pass
-
-
-def _find_by_idempotency(doctype: str, idempotency_key: str) -> str | None:
-    """Find an existing document by idempotency key.
-
-    PRIMARY PATH: Uses custom_kopos_idempotency_key custom field.
-    FALLBACK PATH (DEPRECATED): Uses remarks field for legacy records.
-
-    The remarks fallback exists ONLY for compatibility with records created
-    before custom fields were installed. It logs a deprecation warning and
-    should not be relied upon for new records.
-
-    Args:
-        doctype: The ERPNext DocType to search
-        idempotency_key: The idempotency key to search for
-
-    Returns:
-        The document name if found, None otherwise
-    """
-    # PRIMARY: Try custom field lookup first
-    custom_field_failed = False
-    for fieldname in ("custom_kopos_idempotency_key",):
-        try:
-            existing = frappe.db.get_value(
-                doctype, {fieldname: idempotency_key, "docstatus": 1}, "name"
-            )
-            if existing:
-                return existing
-        except Exception:
-            custom_field_failed = True
-            continue
-
-    # FALLBACK (DEPRECATED): Only for legacy records without custom fields
-    # This path should rarely be hit for properly installed systems
-    if custom_field_failed:
-        _log_deprecation_warning(
-            f"Custom field lookup failed for {doctype} idempotency check. "
-            f"Falling back to remarks-based lookup for idempotency_key={idempotency_key}. "
-            f"Please ensure KoPOS custom fields are installed."
-        )
-
-    try:
-        if not frappe.db.has_column(doctype, "remarks"):
-            return None
-        matches = frappe.get_all(
-            doctype,
-            filters={
-                "remarks": ["like", f"KoPOS idempotency_key: {idempotency_key}%"],
-                "docstatus": 1,
-            },
-            pluck="name",
-            limit=1,
-        )
-        if matches:
-            # Log when we find a legacy record via remarks
-            _log_deprecation_warning(
-                f"Found {doctype} {matches[0]} via legacy remarks-based lookup. "
-                f"This record may have been created before custom fields were installed."
-            )
-            return matches[0]
-    except Exception:
-        pass
-
-    return None
-
-
 def _get_cash_mode_of_payment(pos_profile: Any) -> str:
     payments = pos_profile.get("payments") or []
     for payment in payments:
@@ -573,78 +411,6 @@ def _doc_value(doc: Any, fieldname: str) -> Any:
     return None
 
 
-def _find_opening_entry_name(
-    pos_profile_name: str,
-    staff_id: str,
-    device_id: str,
-    shift_id: str | None = None,
-    require_open: bool = False,
-    allow_device_fallback: bool = True,
-) -> str | None:
-    filters: dict[str, Any] = {
-        "pos_profile": pos_profile_name,
-        "user": staff_id,
-        "docstatus": 1,
-    }
-    if require_open:
-        filters["status"] = "Open"
-
-    if shift_id:
-        try:
-            existing = frappe.db.get_value(
-                "POS Opening Entry",
-                {**filters, "custom_kopos_shift_id": shift_id},
-                "name",
-            )
-            if existing:
-                return existing
-        except Exception:
-            pass
-
-    if allow_device_fallback:
-        try:
-            existing = frappe.db.get_value(
-                "POS Opening Entry",
-                {**filters, "custom_kopos_device_id": device_id},
-                "name",
-            )
-            if existing:
-                return existing
-        except Exception:
-            pass
-
-    if not shift_id:
-        return None
-
-    if not frappe.db.has_column("POS Opening Entry", "remarks"):
-        return None
-
-    matches = frappe.get_all(
-        "POS Opening Entry",
-        filters=filters,
-        fields=["name", "remarks"],
-        limit=20,
-    )
-    shift_marker = f"KoPOS shift_id: {shift_id}"
-    device_marker = f"KoPOS device_id: {device_id}"
-    for row in matches:
-        remarks = frappe.utils.cstr(row.get("remarks"))
-        if shift_marker in remarks and device_marker in remarks:
-            return row.get("name")
-    return None
-
-
-def _find_closing_entry_name(shift_id: str) -> str | None:
-    try:
-        return frappe.db.get_value(
-            "POS Closing Entry",
-            {"custom_kopos_shift_id": shift_id, "docstatus": 1},
-            "name",
-        )
-    except Exception:
-        return None
-
-
 def _ensure_fb_shift_for_kopos_shift(
     *,
     shift_id: str,
@@ -654,6 +420,8 @@ def _ensure_fb_shift_for_kopos_shift(
     warehouse: str,
     opening_float: float,
     opened_at: Any | None,
+    remarks: str | None = None,
+    manager_id: str | None = None,
 ) -> str:
     shift_code = cstr(shift_id).strip()
     if not shift_code:
@@ -682,6 +450,10 @@ def _ensure_fb_shift_for_kopos_shift(
     shift_doc.warehouse = booth_warehouse
     shift_doc.status = "Open"
     shift_doc.opening_float = flt(opening_float)
+    if remarks:
+        shift_doc.remarks = _append_remarks(getattr(shift_doc, "remarks", None), remarks)
+    if manager_id:
+        shift_doc.manager_approved_by = manager_id
     if opened_at:
         shift_doc.opened_at = opened_at
 
@@ -691,6 +463,43 @@ def _ensure_fb_shift_for_kopos_shift(
         shift_doc.insert(ignore_permissions=True)
 
     return cstr(shift_doc.name)
+
+
+def _find_fb_shift_name(shift_id: str) -> str | None:
+    shift_code = cstr(shift_id).strip()
+    if not shift_code:
+        return None
+    try:
+        return frappe.db.get_value("FB Shift", {"shift_code": shift_code}, "name")
+    except Exception:
+        return None
+
+
+def _resolve_fb_shift_reference(value: str | None) -> str | None:
+    reference = cstr(value).strip()
+    if not reference:
+        return None
+    try:
+        if frappe.db.exists("FB Shift", reference):
+            return reference
+        return frappe.db.get_value("FB Shift", {"shift_code": reference}, "name")
+    except Exception:
+        return None
+
+
+def _append_remarks(existing: str | None, extra: str) -> str:
+    current = cstr(existing).strip()
+    if not current:
+        return extra
+    if extra in current:
+        return current
+    return f"{current}\n{extra}"
+
+
+def _save_doc(doc: Any) -> None:
+    save = getattr(doc, "save", None)
+    if callable(save):
+        save(ignore_permissions=True)
 
 
 # -----------------------------------------------------------------------------
@@ -762,7 +571,7 @@ def _record_manager_approval(doc: Any, manager_id: str) -> None:
 
 
 def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Create a POS Opening Entry for a KoPOS shift.
+    """Open a KoPOS F&B shift in ERP.
 
     This function supports an optional manager_approval_token parameter
     for enhanced security. When provided, the token is verified before
@@ -779,7 +588,7 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
             - manager_approval_token: Manager approval token (optional, recommended)
 
     Returns:
-        Dict with status and pos_opening_entry name
+        Dict with status and FB Shift name
     """
     idempotency_key = frappe.utils.cstr(payload.get("idempotency_key"))
     device_id = frappe.utils.cstr(payload.get("device_id"))
@@ -853,52 +662,19 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         shift_id=shift_id,
     )
 
-    existing_by_idempotency = _find_by_idempotency("POS Opening Entry", idempotency_key)
-    if existing_by_idempotency:
-        _ensure_fb_shift_for_kopos_shift(
-            shift_id=shift_id,
-            device_id=device_id,
-            staff_id=staff_id,
-            company=company,
-            warehouse=warehouse,
-            opening_float=opening_amount,
-            opened_at=opened_at or None,
-        )
+    existing_shift = _find_fb_shift_name(shift_id)
+    if existing_shift:
         return {
             "status": "duplicate",
-            "pos_opening_entry": existing_by_idempotency,
+            "fb_shift": existing_shift,
+            "shift_id": shift_id,
             "message": _("Shift already opened"),
         }
 
-    existing_by_shift = _find_opening_entry_name(
-        pos_profile_name=pos_profile_name,
-        staff_id=staff_id,
-        device_id=device_id,
-        shift_id=shift_id,
-        require_open=False,
-        allow_device_fallback=False,
-    )
-    if existing_by_shift:
-        _ensure_fb_shift_for_kopos_shift(
-            shift_id=shift_id,
-            device_id=device_id,
-            staff_id=staff_id,
-            company=company,
-            warehouse=warehouse,
-            opening_float=opening_amount,
-            opened_at=opened_at or None,
-        )
-        return {
-            "status": "duplicate",
-            "pos_opening_entry": existing_by_shift,
-            "message": _("Shift already opened"),
-        }
-
-    existing_open = _find_opening_entry_name(
-        pos_profile_name=pos_profile_name,
-        staff_id=staff_id,
-        device_id=device_id,
-        require_open=True,
+    existing_open = frappe.db.get_value(
+        "FB Shift",
+        {"device_id": device_id, "staff_id": staff_id, "status": "Open"},
+        "name",
     )
     if existing_open:
         frappe.throw(
@@ -919,34 +695,7 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         f"KoPOS device_id: {device_id}"
     )
 
-    cash_mode = _get_cash_mode_of_payment(pos_profile)
-
-    doc = frappe.get_doc(
-        {
-            "doctype": "POS Opening Entry",
-            "pos_profile": pos_profile_name,
-            "company": company,
-            "user": staff_id,
-            "period_start_date": period_start,
-            "posting_date": posting_date,
-            "remarks": remarks,
-            "balance_details": [
-                {"mode_of_payment": cash_mode, "opening_amount": opening_amount}
-            ],
-        }
-    )
-
-    _set_custom_field_value(doc, "custom_kopos_idempotency_key", idempotency_key)
-    _set_custom_field_value(doc, "custom_kopos_shift_id", shift_id)
-    _set_custom_field_value(doc, "custom_kopos_device_id", device_id)
-
-    # Phase 5: Record manager approval if provided
-    if manager_approval:
-        _record_manager_approval(doc, manager_approval["manager_id"])
-
-    doc.insert(ignore_permissions=True)
-    doc.submit()
-    _ensure_fb_shift_for_kopos_shift(
+    fb_shift = _ensure_fb_shift_for_kopos_shift(
         shift_id=shift_id,
         device_id=device_id,
         staff_id=staff_id,
@@ -954,6 +703,8 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         warehouse=warehouse,
         opening_float=opening_amount,
         opened_at=period_start,
+        remarks=remarks,
+        manager_id=manager_approval["manager_id"] if manager_approval else None,
     )
 
     # Phase 7: Audit logging for successful shift open
@@ -962,24 +713,25 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         device_id=device_id,
         staff_id=staff_id,
         result="success",
-        erp_doc_type="POS Opening Entry",
-        erp_doc_name=doc.name,
+        erp_doc_type="FB Shift",
+        erp_doc_name=fb_shift,
         manager_id=manager_approval.get("manager_id") if manager_approval else None,
     )
 
     return {
         "status": "ok",
-        "pos_opening_entry": doc.name,
+        "fb_shift": fb_shift,
+        "shift_id": shift_id,
     }
 
 
 def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Create a POS Closing Entry for a KoPOS shift."""
+    """Close a KoPOS F&B shift in ERP."""
     idempotency_key = frappe.utils.cstr(payload.get("idempotency_key"))
     device_id = frappe.utils.cstr(payload.get("device_id"))
     staff_id = frappe.utils.cstr(payload.get("staff_id"))
     shift_id = frappe.utils.cstr(payload.get("shift_id"))
-    pos_opening_entry = frappe.utils.cstr(payload.get("pos_opening_entry")) or None
+    fb_shift = frappe.utils.cstr(payload.get("fb_shift")) or None
     counted_cash_sen = flt(payload.get("counted_cash_sen", 0))
     discrepancy_note = frappe.utils.cstr(payload.get("discrepancy_note") or "")
     closed_at = frappe.utils.cstr(payload.get("closed_at"))
@@ -1020,126 +772,53 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
     # and can_close_shift permission
     resolve_and_validate_device_user(device_doc, staff_id, require_close_shift=True)
 
-    existing_by_idempotency = _find_by_idempotency("POS Closing Entry", idempotency_key)
-    if existing_by_idempotency:
-        return {
-            "status": "duplicate",
-            "pos_closing_entry": existing_by_idempotency,
-            "message": _("Shift already closed"),
-        }
-
-    existing_by_shift = _find_closing_entry_name(shift_id)
-    if existing_by_shift:
-        return {
-            "status": "duplicate",
-            "pos_closing_entry": existing_by_shift,
-            "message": _("Shift already closed"),
-        }
-
-    if not pos_opening_entry:
-        pos_opening_entry = _find_opening_entry_name(
-            pos_profile_name=pos_profile_name,
-            staff_id=staff_id,
-            device_id=device_id,
-            shift_id=shift_id,
-            require_open=True,
-            allow_device_fallback=False,
-        )
-
-    if not pos_opening_entry:
+    fb_shift = _resolve_fb_shift_reference(fb_shift) or _find_fb_shift_name(shift_id)
+    if not fb_shift:
         frappe.throw(
-            _("No open POS Opening Entry found for device {0}").format(device_id),
+            _("No open FB Shift found for device {0}").format(device_id),
             frappe.ValidationError,
         )
 
     with elevate_device_api_user():
-        opening_entry = frappe.get_doc("POS Opening Entry", pos_opening_entry)
-        if opening_entry.docstatus != 1:
-            frappe.throw(
-                _("POS Opening Entry {0} is not submitted").format(pos_opening_entry),
-                frappe.ValidationError,
-            )
-        if opening_entry.status != "Open":
-            frappe.throw(
-                _("POS Opening Entry {0} is not open").format(pos_opening_entry),
-                frappe.ValidationError,
-            )
-        if frappe.utils.cstr(opening_entry.pos_profile) != pos_profile_name:
-            frappe.throw(
-                _("POS Opening Entry {0} does not belong to POS Profile {1}").format(
-                    pos_opening_entry, pos_profile_name
-                ),
-                frappe.ValidationError,
-            )
-        if staff_id and frappe.utils.cstr(opening_entry.user) != staff_id:
-            frappe.throw(
-                _("POS Opening Entry {0} does not belong to user {1}").format(
-                    pos_opening_entry, staff_id
-                ),
-                frappe.ValidationError,
-            )
-        opening_device_id = frappe.utils.cstr(
-            _doc_value(opening_entry, "custom_kopos_device_id")
-        )
-        if opening_device_id and opening_device_id != device_id:
-            frappe.throw(
-                _("POS Opening Entry {0} does not belong to device {1}").format(
-                    pos_opening_entry, device_id
-                ),
-                frappe.ValidationError,
-            )
-        opening_shift_id = frappe.utils.cstr(
-            _doc_value(opening_entry, "custom_kopos_shift_id")
-        )
-        if opening_shift_id and opening_shift_id != shift_id:
-            frappe.throw(
-                _("POS Opening Entry {0} does not belong to shift {1}").format(
-                    pos_opening_entry, shift_id
-                ),
-                frappe.ValidationError,
-            )
-
-        existing_close = frappe.db.exists(
-            "POS Closing Entry",
-            {"pos_opening_entry": pos_opening_entry, "docstatus": 1},
-        )
-        if existing_close:
+        shift_doc = frappe.get_doc("FB Shift", fb_shift)
+        if getattr(shift_doc, "status", None) == "Closed":
             return {
                 "status": "duplicate",
-                "pos_closing_entry": existing_close,
+                "fb_shift": fb_shift,
                 "message": _("Shift already closed"),
             }
+        if getattr(shift_doc, "status", None) != "Open":
+            frappe.throw(
+                _("FB Shift {0} is not open").format(fb_shift),
+                frappe.ValidationError,
+            )
+        if frappe.utils.cstr(getattr(shift_doc, "device_id", "")) != device_id:
+            frappe.throw(
+                _("FB Shift {0} does not belong to device {1}").format(
+                    fb_shift, device_id
+                ),
+                frappe.ValidationError,
+            )
+        if staff_id and frappe.utils.cstr(getattr(shift_doc, "staff_id", "")) != staff_id:
+            frappe.throw(
+                _("FB Shift {0} does not belong to user {1}").format(
+                    fb_shift, staff_id
+                ),
+                frappe.ValidationError,
+            )
+        if frappe.utils.cstr(getattr(shift_doc, "shift_code", "")) != shift_id:
+            frappe.throw(
+                _("FB Shift {0} does not belong to shift {1}").format(
+                    fb_shift, shift_id
+                ),
+                frappe.ValidationError,
+            )
 
         period_end = _coerce_to_site_local_naive(
             _validate_timestamp_skew(closed_at, "closed_at")
         )
-        posting_date = period_end.date() if hasattr(period_end, "date") else nowdate()
 
         counted_amount = flt(counted_cash_sen) / 100
-        cash_mode = _get_cash_mode_of_payment(
-            frappe.get_cached_doc("POS Profile", opening_entry.pos_profile)
-        )
-
-        balance_details = []
-        for row in opening_entry.balance_details:
-            mode = row.mode_of_payment
-            opening_amt = flt(row.opening_amount)
-            if frappe.utils.cstr(mode) == cash_mode:
-                balance_details.append(
-                    {
-                        "mode_of_payment": mode,
-                        "opening_amount": opening_amt,
-                        "closing_amount": counted_amount,
-                    }
-                )
-            else:
-                balance_details.append(
-                    {
-                        "mode_of_payment": mode,
-                        "opening_amount": opening_amt,
-                        "closing_amount": opening_amt,
-                    }
-                )
 
         remarks = (
             f"KoPOS idempotency_key: {idempotency_key}\n"
@@ -1149,48 +828,35 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if discrepancy_note:
             remarks = f"{remarks}\n{discrepancy_note}"
 
-        closing_doc = frappe.get_doc(
-            {
-                "doctype": "POS Closing Entry",
-                "pos_opening_entry": pos_opening_entry,
-                "pos_profile": opening_entry.pos_profile,
-                "company": opening_entry.company,
-                "user": opening_entry.user,
-                "period_end_date": period_end,
-                "posting_date": posting_date,
-                "remarks": remarks,
-                "balance_details": balance_details,
-            }
-        )
+        shift_doc.closed_at = period_end
+        shift_doc.counted_cash = counted_amount
+        shift_doc.remarks = _append_remarks(getattr(shift_doc, "remarks", None), remarks)
+        expected_cash = flt(getattr(shift_doc, "expected_cash", 0))
+        shift_doc.cash_variance = counted_amount - expected_cash
+        shift_doc.status = "Closing"
+        _save_doc(shift_doc)
 
-        _set_custom_field_value(
-            closing_doc, "custom_kopos_idempotency_key", idempotency_key
-        )
-        _set_custom_field_value(closing_doc, "custom_kopos_shift_id", shift_id)
-        _set_custom_field_value(closing_doc, "custom_kopos_device_id", device_id)
-
-        closing_doc.insert(ignore_permissions=True)
-        closing_doc.submit()
-        opening_entry.db_set("status", "Closed", update_modified=False)
+        shift_doc.status = "Closed"
+        _save_doc(shift_doc)
 
         _log_shift_audit(
             action="close_shift",
             device_id=device_id,
             staff_id=staff_id,
             result="success",
-            erp_doc_type="POS Closing Entry",
-            erp_doc_name=closing_doc.name,
+            erp_doc_type="FB Shift",
+            erp_doc_name=fb_shift,
         )
 
         return {
             "status": "ok",
-            "pos_closing_entry": closing_doc.name,
-            "pos_opening_entry": pos_opening_entry,
+            "fb_shift": fb_shift,
+            "shift_id": shift_id,
         }
 
 
 def get_device_open_shift_payload(device_id: str) -> dict[str, Any] | None:
-    """Get the current open shift for a KoPOS device.
+    """Get the current open FB Shift for a KoPOS device.
 
     This endpoint allows KoPOS to discover and adopt an existing open shift
     that was created from another device or from ERPNext directly.
@@ -1200,7 +866,7 @@ def get_device_open_shift_payload(device_id: str) -> dict[str, Any] | None:
 
     Returns:
         Dict with shift data if an open shift exists, None otherwise:
-        - pos_opening_entry: The ERPNext document name
+        - fb_shift: The ERPNext FB Shift document name
         - shift_id: The KoPOS shift ID (if stored)
         - device_id: The device ID
         - staff_id: The ERP user who opened the shift
@@ -1211,27 +877,12 @@ def get_device_open_shift_payload(device_id: str) -> dict[str, Any] | None:
     if not device_doc:
         return None
 
-    pos_profile_name = cstr(getattr(device_doc, "pos_profile", "")).strip()
-    if not pos_profile_name:
-        return None
-
-    filters: dict[str, Any] = {
-        "pos_profile": pos_profile_name,
-        "docstatus": 1,
-        "status": "Open",
-    }
-
-    fields = [
-        "name",
-        "user",
-        "period_start_date",
-        "custom_kopos_shift_id",
-        "custom_kopos_device_id",
-    ]
+    filters: dict[str, Any] = {"device_id": device_id, "status": "Open"}
+    fields = ["name", "shift_code", "device_id", "staff_id", "opening_float", "opened_at"]
 
     try:
         entries = frappe.get_all(
-            "POS Opening Entry",
+            "FB Shift",
             filters=filters,
             fields=fields,
             order_by="creation desc",
@@ -1244,33 +895,19 @@ def get_device_open_shift_payload(device_id: str) -> dict[str, Any] | None:
         return None
 
     for entry in entries:
-        custom_device_id = cstr(entry.get("custom_kopos_device_id"))
-        if custom_device_id == device_id:
-            opening_float_sen = _get_opening_float_sen(entry["name"])
-            return {
-                "pos_opening_entry": entry["name"],
-                "shift_id": cstr(entry.get("custom_kopos_shift_id")) or None,
-                "device_id": device_id,
-                "staff_id": cstr(entry.get("user")),
-                "opening_float_sen": opening_float_sen,
-                "opened_at": _format_datetime_iso(entry.get("period_start_date")),
-            }
+        custom_device_id = cstr(entry.get("device_id"))
+        if custom_device_id != device_id:
+            continue
+        return {
+            "fb_shift": entry["name"],
+            "shift_id": cstr(entry.get("shift_code")) or None,
+            "device_id": device_id,
+            "staff_id": cstr(entry.get("staff_id")),
+            "opening_float_sen": int(round(flt(entry.get("opening_float", 0)) * 100)),
+            "opened_at": _format_datetime_iso(entry.get("opened_at")),
+        }
 
     return None
-
-
-def _get_opening_float_sen(pos_opening_entry: str) -> int:
-    """Get the opening float amount in sen from a POS Opening Entry."""
-    if not frappe.db.exists("DocType", "POS Opening Entry Balance Detail"):
-        return 0
-
-    balance_details = frappe.get_all(
-        "POS Opening Entry Balance Detail",
-        filters={"parent": pos_opening_entry, "parentfield": "balance_details"},
-        fields=["opening_amount"],
-    )
-    total = sum(flt(row.get("opening_amount", 0)) for row in balance_details)
-    return int(round(total * 100))
 
 
 def _format_datetime_iso(value: Any) -> str | None:
