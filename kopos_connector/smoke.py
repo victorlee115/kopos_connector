@@ -1878,6 +1878,9 @@ def _cancel_submitted_smoke_stock_entries(stock_entries: list[str]) -> None:
         if docstatus != 1:
             continue
         stock_entry = frappe.get_doc("Stock Entry", stock_entry_name)
+        flags = getattr(stock_entry, "flags", None)
+        if flags is not None:
+            flags.ignore_links = True
         try:
             stock_entry.cancel()
         except Exception as error:

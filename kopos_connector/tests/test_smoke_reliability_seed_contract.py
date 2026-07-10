@@ -607,3 +607,62 @@ def test_smoke_reset_fails_loud_if_voucher_gl_rows_survive(monkeypatch) -> None:
             settlement_journal_entries=[],
             stock_entries=[],
         )
+
+
+def test_smoke_stock_cancel_ignores_links_for_proven_smoke_voucher(
+    monkeypatch,
+) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    stock_entry = SimpleNamespace(
+        name="STE-SMOKE-LINKED",
+        docstatus=1,
+        flags=SimpleNamespace(ignore_links=False),
+    )
+
+    def cancel() -> None:
+        if not stock_entry.flags.ignore_links:
+            raise RuntimeError("linked FB Order blocks cancellation")
+        stock_entry.docstatus = 2
+
+    stock_entry.cancel = cancel
+    monkeypatch.setattr(frappe.db, "exists", lambda doctype, name: True)
+    monkeypatch.setattr(frappe.db, "get_value", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(frappe, "get_doc", lambda doctype, name: stock_entry)
+
+    smoke._cancel_submitted_smoke_stock_entries([stock_entry.name])
+
+    assert stock_entry.flags.ignore_links is True
+    assert stock_entry.docstatus == 2
+
+
+def test_smoke_stock_cancel_still_fails_loudly_on_real_cancel_error(
+    monkeypatch,
+) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    stock_entry = SimpleNamespace(
+        name="STE-SMOKE-BROKEN",
+        docstatus=1,
+        flags=SimpleNamespace(ignore_links=False),
+        cancel=lambda: (_ for _ in ()).throw(RuntimeError("ledger failure")),
+    )
+    monkeypatch.setattr(frappe.db, "exists", lambda doctype, name: True)
+    monkeypatch.setattr(frappe.db, "get_value", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(frappe, "get_doc", lambda doctype, name: stock_entry)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Failed to cancel smoke-owned Stock Entry STE-SMOKE-BROKEN",
+    ):
+        smoke._cancel_submitted_smoke_stock_entries([stock_entry.name])
+
+    assert stock_entry.flags.ignore_links is True
