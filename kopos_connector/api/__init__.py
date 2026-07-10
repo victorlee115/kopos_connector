@@ -18,6 +18,7 @@ from .devices import (
     get_authenticated_device_doc,
     mark_device_seen,
     require_device_context,
+    require_device_operational_scope,
     require_kopos_api_access,
     require_system_manager,
 )
@@ -255,7 +256,14 @@ def submit_order(**kwargs: Any) -> None:
 
     try:
         payload = _get_submit_payload(kwargs)
-        require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
+        require_device_operational_scope(
+            frappe.utils.cstr(payload.get("device_id")),
+            company=frappe.utils.cstr(payload.get("company")),
+            warehouse=frappe.utils.cstr(
+                payload.get("booth_warehouse") or payload.get("warehouse")
+            ),
+            currency=frappe.utils.cstr(payload.get("currency")),
+        )
         fb_payload = _to_public_fb_submit_payload(payload)
         result = submit_order_payload(fb_payload)
         _write_response(_to_public_fb_submit_response(fb_payload, result))

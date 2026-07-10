@@ -118,6 +118,70 @@ def require_device_context(device_id: str | None = None, name: str | None = None
     return device_doc
 
 
+def require_device_operational_scope(
+    device_id: str | None,
+    *,
+    company: str | None = None,
+    warehouse: str | None = None,
+    currency: str | None = None,
+) -> tuple[Any, Any]:
+    """Authorize a device and bind operational values to its POS Profile."""
+    device_doc = require_device_context(device_id=device_id)
+    if device_doc is None:
+        frappe.throw(_("KoPOS Device is required"), frappe.ValidationError)
+
+    resolved_device_id = cstr(getattr(device_doc, "device_id", None)).strip()
+    if not cint(getattr(device_doc, "enabled", 0)):
+        frappe.throw(
+            _("KoPOS Device {0} is disabled").format(resolved_device_id),
+            frappe.ValidationError,
+        )
+
+    profile_name = cstr(getattr(device_doc, "pos_profile", None)).strip()
+    if not profile_name:
+        frappe.throw(
+            _("KoPOS Device {0} has no POS Profile configured").format(
+                resolved_device_id
+            ),
+            frappe.ValidationError,
+        )
+    profile_doc = frappe.get_cached_doc("POS Profile", profile_name)
+    profile_company = cstr(getattr(profile_doc, "company", None)).strip()
+    profile_warehouse = cstr(getattr(profile_doc, "warehouse", None)).strip()
+    profile_currency = cstr(getattr(profile_doc, "currency", None)).strip()
+    if not profile_currency and profile_company:
+        profile_currency = cstr(
+            frappe.db.get_value("Company", profile_company, "default_currency")
+        ).strip()
+
+    submitted_company = cstr(company).strip()
+    if submitted_company and submitted_company != profile_company:
+        frappe.throw(
+            _("Company {0} is outside KoPOS Device {1} scope").format(
+                submitted_company, resolved_device_id
+            ),
+            frappe.ValidationError,
+        )
+    submitted_warehouse = cstr(warehouse).strip()
+    if submitted_warehouse and submitted_warehouse != profile_warehouse:
+        frappe.throw(
+            _("Warehouse {0} is outside KoPOS Device {1} scope").format(
+                submitted_warehouse, resolved_device_id
+            ),
+            frappe.ValidationError,
+        )
+    submitted_currency = cstr(currency).strip()
+    if submitted_currency and profile_currency and submitted_currency != profile_currency:
+        frappe.throw(
+            _("Currency {0} is outside KoPOS Device {1} scope").format(
+                submitted_currency, resolved_device_id
+            ),
+            frappe.ValidationError,
+        )
+
+    return device_doc, profile_doc
+
+
 @contextmanager
 def elevate_device_api_user():
     """Temporarily elevate device API requests for server-side ERP document work."""

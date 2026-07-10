@@ -8,15 +8,28 @@ from typing import Any
 import frappe
 from frappe.utils import cstr
 
-from kopos_connector.kopos.services.operations.remake_service import (
-    create_remake_stock_entry,
+from kopos_connector.api.devices import (
+    require_device_context,
+    require_device_operational_scope,
 )
 
 
 @frappe.whitelist(methods=["POST"])
 def process_remake() -> dict[str, Any]:
     payload = _get_request_payload()
+    require_device_context(device_id=cstr(payload.get("device_id")))
     validated = _validate_payload(payload)
+    order_doc = frappe.get_doc("FB Order", validated["original_order"])
+    if cstr(getattr(order_doc, "device_id", None)) != validated["device_id"]:
+        frappe.throw(
+            f"FB Order {validated['original_order']} belongs to another device",
+            frappe.ValidationError,
+        )
+    require_device_operational_scope(
+        validated["device_id"],
+        company=cstr(getattr(order_doc, "company", None)),
+        warehouse=cstr(getattr(order_doc, "booth_warehouse", None)),
+    )
     doc = _build_remake_event(validated)
     doc.insert(ignore_permissions=True)
     doc.submit()
@@ -27,30 +40,6 @@ def process_remake() -> dict[str, Any]:
         "replacement_stock_entry": cstr(getattr(doc, "replacement_stock_entry", None))
         or None,
     }
-
-
-def validate_fb_remake_event(doc=None, method=None):
-    if not doc:
-        return
-    if not cstr(getattr(doc, "remake_id", None)):
-        frappe.throw("FB Remake Event requires remake_id", frappe.ValidationError)
-    if not cstr(getattr(doc, "original_order", None)):
-        frappe.throw("FB Remake Event requires original_order", frappe.ValidationError)
-    if not cstr(getattr(doc, "original_resolved_sale", None)):
-        frappe.throw(
-            "FB Remake Event requires original_resolved_sale", frappe.ValidationError
-        )
-
-
-def on_submit_fb_remake_event(doc=None, method=None):
-    if not doc:
-        return
-    replacement_stock_entry = create_remake_stock_entry(doc)
-    if replacement_stock_entry:
-        doc.db_set(
-            "replacement_stock_entry", replacement_stock_entry, update_modified=False
-        )
-    doc.db_set("status", "Submitted", update_modified=False)
 
 
 def _get_request_payload() -> dict[str, Any]:
@@ -64,6 +53,7 @@ def _get_request_payload() -> dict[str, Any]:
 
 def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     remake_id = cstr(payload.get("remake_id") or payload.get("idempotency_key"))
+    device_id = cstr(payload.get("device_id")).strip()
     original_order = cstr(payload.get("original_order"))
     original_order_line = cstr(payload.get("original_order_line")) or None
     original_resolved_sale = cstr(
@@ -74,6 +64,8 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     if not remake_id:
         frappe.throw("remake_id is required", frappe.ValidationError)
+    if not device_id:
+        frappe.throw("device_id is required", frappe.ValidationError)
     if not original_order:
         if original_resolved_sale and frappe.db.exists(
             "FB Resolved Sale", original_resolved_sale
@@ -91,9 +83,16 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             f"FB Resolved Sale {original_resolved_sale} was not found",
             frappe.ValidationError,
         )
+    resolved_sale = frappe.get_doc("FB Resolved Sale", original_resolved_sale)
+    if cstr(getattr(resolved_sale, "fb_order", None)) != original_order:
+        frappe.throw(
+            f"FB Resolved Sale {original_resolved_sale} does not belong to FB Order {original_order}",
+            frappe.ValidationError,
+        )
 
     return {
         "remake_id": remake_id,
+        "device_id": device_id,
         "original_order": original_order,
         "original_order_line": original_order_line,
         "original_resolved_sale": original_resolved_sale,

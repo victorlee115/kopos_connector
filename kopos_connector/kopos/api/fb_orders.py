@@ -70,7 +70,6 @@ PROJECTION_SUBSYSTEMS = {
 }
 
 
-@frappe.whitelist()
 def submit_order() -> dict[str, Any]:
     payload = _get_request_payload()
     return submit_order_payload(payload)
@@ -100,7 +99,6 @@ def submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return _build_submit_response("ok", order_doc)
 
 
-@frappe.whitelist()
 def get_order_status(fb_order_name: str) -> dict[str, Any]:
     if not cstr(fb_order_name):
         frappe.throw("fb_order_name is required", frappe.ValidationError)
@@ -124,7 +122,6 @@ def get_order_status(fb_order_name: str) -> dict[str, Any]:
     }
 
 
-@frappe.whitelist()
 def retry_failed_projections(fb_order_name: str) -> dict[str, Any]:
     if not cstr(fb_order_name):
         frappe.throw("fb_order_name is required", frappe.ValidationError)

@@ -112,7 +112,11 @@ def test_submit_order_wrapper_executes_fb_target(monkeypatch: Any) -> None:
             "order": {"display_number": "A001"},
         },
     )
-    monkeypatch.setattr(api, "require_device_context", lambda device_id: None)
+    monkeypatch.setattr(
+        api,
+        "require_device_operational_scope",
+        lambda device_id, **scope: None,
+    )
     monkeypatch.setattr(
         fb_orders,
         "submit_order_payload",

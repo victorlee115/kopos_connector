@@ -4,9 +4,7 @@ import unittest
 from pathlib import Path
 
 
-ERP_ROOT = Path(
-    "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext/kopos_connector"
-)
+ERP_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestFBAPIValidationContract(unittest.TestCase):

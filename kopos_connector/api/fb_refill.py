@@ -8,15 +8,30 @@ from typing import Any
 import frappe
 from frappe.utils import cstr, flt
 
-from kopos_connector.kopos.services.operations.refill_service import (
-    fulfill_refill_request,
+from kopos_connector.api.devices import (
+    require_device_context,
+    require_device_operational_scope,
 )
 
 
 @frappe.whitelist(methods=["POST"])
 def process_refill() -> dict[str, Any]:
     payload = _get_request_payload()
+    require_device_context(device_id=cstr(payload.get("device_id")))
     validated = _validate_payload(payload)
+    require_device_operational_scope(
+        validated["device_id"],
+        company=validated["company"],
+        warehouse=validated["to_warehouse"],
+    )
+    source_company = cstr(
+        frappe.db.get_value("Warehouse", validated["from_warehouse"], "company")
+    ).strip()
+    if source_company != validated["company"]:
+        frappe.throw(
+            f"Source warehouse {validated['from_warehouse']} is outside company {validated['company']} scope",
+            frappe.ValidationError,
+        )
     doc = _build_refill_request(validated)
     doc.insert(ignore_permissions=True)
     doc.submit()
@@ -27,36 +42,6 @@ def process_refill() -> dict[str, Any]:
         "fulfilled_stock_entry": cstr(getattr(doc, "fulfilled_stock_entry", None))
         or None,
     }
-
-
-def validate_fb_refill_request(doc=None, method=None):
-    if not doc:
-        return
-    if not cstr(getattr(doc, "request_id", None)):
-        frappe.throw(
-            "FB Booth Refill Request requires request_id", frappe.ValidationError
-        )
-    if not cstr(getattr(doc, "company", None)):
-        frappe.throw("FB Booth Refill Request requires company", frappe.ValidationError)
-    if not cstr(getattr(doc, "from_warehouse", None)) or not cstr(
-        getattr(doc, "to_warehouse", None)
-    ):
-        frappe.throw(
-            "FB Booth Refill Request requires from_warehouse and to_warehouse",
-            frappe.ValidationError,
-        )
-    if not (doc.get("lines") or []):
-        frappe.throw(
-            "FB Booth Refill Request requires at least one line", frappe.ValidationError
-        )
-
-
-def on_submit_fb_refill_request(doc=None, method=None):
-    if not doc:
-        return
-    fulfilled_stock_entry = fulfill_refill_request(doc)
-    doc.db_set("fulfilled_stock_entry", fulfilled_stock_entry, update_modified=False)
-    doc.db_set("status", "Fulfilled", update_modified=False)
 
 
 def _get_request_payload() -> dict[str, Any]:
@@ -70,6 +55,7 @@ def _get_request_payload() -> dict[str, Any]:
 
 def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     request_id = cstr(payload.get("request_id") or payload.get("idempotency_key"))
+    device_id = cstr(payload.get("device_id")).strip()
     company = cstr(payload.get("company"))
     event_project = cstr(payload.get("event_project")) or None
     from_warehouse = cstr(payload.get("from_warehouse"))
@@ -79,6 +65,8 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     lines = payload.get("lines")
     if not request_id:
         frappe.throw("request_id is required", frappe.ValidationError)
+    if not device_id:
+        frappe.throw("device_id is required", frappe.ValidationError)
     if not company:
         frappe.throw("company is required", frappe.ValidationError)
     if not from_warehouse or not to_warehouse:
@@ -116,6 +104,7 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "request_id": request_id,
+        "device_id": device_id,
         "company": company,
         "event_project": event_project,
         "from_warehouse": from_warehouse,

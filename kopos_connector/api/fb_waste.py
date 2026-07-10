@@ -8,15 +8,29 @@ from typing import Any
 import frappe
 from frappe.utils import cstr, flt
 
-from kopos_connector.kopos.services.inventory.waste_service import (
-    create_waste_stock_entry,
+from kopos_connector.api.devices import (
+    require_device_context,
+    require_device_operational_scope,
 )
 
 
 @frappe.whitelist(methods=["POST"])
 def process_waste() -> dict[str, Any]:
     payload = _get_request_payload()
+    require_device_context(device_id=cstr(payload.get("device_id")))
     validated = _validate_payload(payload)
+    require_device_operational_scope(
+        validated["device_id"],
+        company=validated["company"],
+        warehouse=validated["warehouse"],
+    )
+    if validated["shift"]:
+        shift_doc = frappe.get_doc("FB Shift", validated["shift"])
+        if cstr(getattr(shift_doc, "device_id", None)) != validated["device_id"]:
+            frappe.throw(
+                f"FB Shift {validated['shift']} belongs to another device",
+                frappe.ValidationError,
+            )
     doc = _build_waste_event(validated)
     doc.insert(ignore_permissions=True)
     doc.submit()
@@ -26,37 +40,6 @@ def process_waste() -> dict[str, Any]:
         "waste_event": doc.name,
         "stock_entry": cstr(getattr(doc, "stock_entry", None)) or None,
     }
-
-
-def validate_fb_waste_event(doc=None, method=None):
-    if not doc:
-        return
-    if not cstr(getattr(doc, "waste_id", None)):
-        frappe.throw("FB Waste Event requires waste_id", frappe.ValidationError)
-    if not cstr(getattr(doc, "warehouse", None)):
-        frappe.throw("FB Waste Event requires warehouse", frappe.ValidationError)
-    if not (doc.get("lines") or []):
-        frappe.throw(
-            "FB Waste Event requires at least one line", frappe.ValidationError
-        )
-
-
-def on_submit_fb_waste_event(doc=None, method=None):
-    if not doc:
-        return
-    items = []
-    for line in doc.get("lines") or []:
-        items.append(
-            {
-                "item_code": line.item,
-                "qty": line.qty,
-                "uom": line.uom,
-                "cost_center": getattr(line, "cost_center", None),
-            }
-        )
-    stock_entry = create_waste_stock_entry(doc.company, doc.warehouse, items)
-    doc.db_set("stock_entry", stock_entry, update_modified=False)
-    doc.db_set("status", "Submitted", update_modified=False)
 
 
 def _get_request_payload() -> dict[str, Any]:
@@ -70,6 +53,7 @@ def _get_request_payload() -> dict[str, Any]:
 
 def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     waste_id = cstr(payload.get("waste_id") or payload.get("idempotency_key"))
+    device_id = cstr(payload.get("device_id")).strip()
     company = cstr(payload.get("company"))
     warehouse = cstr(payload.get("warehouse"))
     event_project = cstr(payload.get("event_project")) or None
@@ -79,6 +63,8 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     lines = payload.get("lines")
     if not waste_id:
         frappe.throw("waste_id is required", frappe.ValidationError)
+    if not device_id:
+        frappe.throw("device_id is required", frappe.ValidationError)
     if not company:
         frappe.throw("company is required", frappe.ValidationError)
     if not warehouse:
@@ -107,6 +93,7 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "waste_id": waste_id,
+        "device_id": device_id,
         "company": company,
         "warehouse": warehouse,
         "event_project": event_project,

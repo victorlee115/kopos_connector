@@ -9,9 +9,6 @@ import frappe
 from frappe.utils import cint, cstr, flt
 
 from kopos_connector.api.devices import require_device_context
-from kopos_connector.kopos.services.operations.return_service import (
-    process_return_event,
-)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -59,35 +56,6 @@ def process_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
             if cstr(getattr(line, "reversal_stock_entry", None))
         ],
     }
-
-
-def validate_fb_return_event(doc=None, method=None):
-    if not doc:
-        return
-    if not cstr(getattr(doc, "return_id", None)):
-        frappe.throw("FB Return Event requires return_id", frappe.ValidationError)
-    if not (doc.get("lines") or []):
-        frappe.throw(
-            "FB Return Event requires at least one line", frappe.ValidationError
-        )
-    for index, line in enumerate(doc.get("lines") or [], start=1):
-        if not cstr(getattr(line, "original_resolved_sale", None)):
-            frappe.throw(
-                f"Return line {index} requires original_resolved_sale",
-                frappe.ValidationError,
-            )
-        if flt(getattr(line, "qty_returned", 0)) <= 0:
-            frappe.throw(
-                f"Return line {index} requires qty_returned greater than 0",
-                frappe.ValidationError,
-            )
-
-
-def on_submit_fb_return_event(doc=None, method=None):
-    if not doc:
-        return
-    process_return_event(doc)
-    doc.db_set("status", "Submitted", update_modified=False)
 
 
 def _get_request_payload() -> dict[str, Any]:

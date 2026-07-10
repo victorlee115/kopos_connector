@@ -13,15 +13,21 @@ from kopos_connector.utils.diagnostics import (
 )
 
 
+class ProjectionLogError(RuntimeError):
+    """Raised when projection log state cannot be persisted or read."""
+
+
 def create_projection_log(
     source_doctype: str,
     source_name: str,
     projection_type: str,
     idempotency_key: str,
     payload_hash: str,
-) -> str | None:
+) -> str:
     if not source_doctype or not source_name or not projection_type:
-        return None
+        raise ValueError(
+            "source_doctype, source_name, and projection_type are required to create a projection log"
+        )
 
     existing_log = _find_existing_projection(
         source_doctype=source_doctype,
@@ -48,7 +54,7 @@ def create_projection_log(
         log_doc.last_attempt_at = None
         log_doc.insert(ignore_permissions=True)
         return log_doc.name
-    except Exception:
+    except Exception as error:
         _rollback_savepoint(savepoint)
         duplicate_log = _find_existing_projection(
             source_doctype=source_doctype,
@@ -59,7 +65,9 @@ def create_projection_log(
         if duplicate_log:
             return duplicate_log
         _log_error("Projection log creation failed")
-        return None
+        raise ProjectionLogError(
+            f"Projection log creation failed for {source_doctype} {source_name} {projection_type}: {error}"
+        ) from error
 
 
 def update_projection_state(
@@ -68,9 +76,9 @@ def update_projection_state(
     target_doctype: str | None = None,
     target_name: str | None = None,
     error: Any = None,
-) -> str | None:
+) -> str:
     if not log_name or not state:
-        return None
+        raise ValueError("log_name and state are required to update a projection log")
 
     savepoint = _make_savepoint("fb_projection_update")
 
@@ -85,10 +93,12 @@ def update_projection_state(
             log_doc.retry_count = int(log_doc.retry_count or 0) + 1
         log_doc.save(ignore_permissions=True)
         return log_doc.name
-    except Exception:
+    except Exception as error:
         _rollback_savepoint(savepoint)
         _log_error("Projection log update failed")
-        return None
+        raise ProjectionLogError(
+            f"Projection log update failed for {log_name} to {state}: {error}"
+        ) from error
 
 
 def get_pending_projections() -> list[dict[str, Any]]:
@@ -109,9 +119,11 @@ def get_pending_projections() -> list[dict[str, Any]]:
             ],
             order_by="created_at asc",
         )
-    except Exception:
+    except Exception as error:
         _log_error("Fetching pending projections failed")
-        return []
+        raise ProjectionLogError(
+            f"Fetching pending projections failed: {error}"
+        ) from error
 
 
 def retry_failed_projections() -> list[dict[str, Any]]:
@@ -122,9 +134,11 @@ def retry_failed_projections() -> list[dict[str, Any]]:
             fields=["name"],
             order_by="modified asc",
         )
-    except Exception:
+    except Exception as error:
         _log_error("Fetching failed projections failed")
-        return []
+        raise ProjectionLogError(
+            f"Fetching failed projections failed: {error}"
+        ) from error
 
     retried: list[dict[str, Any]] = []
     for row in failed_logs:

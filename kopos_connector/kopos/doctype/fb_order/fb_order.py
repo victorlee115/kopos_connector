@@ -165,15 +165,12 @@ class FBOrder(BaseDocument):
             )
 
     def create_projection_entry(self, projection_type: str) -> str:
-        return (
-            create_projection_log(
-                source_doctype="FB Order",
-                source_name=self.name,
-                projection_type=projection_type,
-                idempotency_key=f"{self.external_idempotency_key}:{projection_type}",
-                payload_hash=self.build_projection_hash(projection_type),
-            )
-            or ""
+        return create_projection_log(
+            source_doctype="FB Order",
+            source_name=self.name,
+            projection_type=projection_type,
+            idempotency_key=f"{self.external_idempotency_key}:{projection_type}",
+            payload_hash=self.build_projection_hash(projection_type),
         )
 
     def build_projection_hash(self, projection_type: str) -> str:
