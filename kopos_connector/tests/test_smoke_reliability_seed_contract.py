@@ -609,6 +609,180 @@ def test_smoke_reset_fails_loud_if_voucher_gl_rows_survive(monkeypatch) -> None:
         )
 
 
+def test_smoke_reset_purges_proven_orphan_ledgers_before_names_are_reused(
+    monkeypatch,
+) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    smoke_remarks = (
+        "FB Order: FB-ORDER-2026-07-10-00028\n"
+        "Shift: FB-SHIFT-2026-07-10-00027\n"
+        f"Device ID: {smoke.SMOKE_DEVICE_ID}"
+    )
+    merchant_remarks = (
+        "FB Order: FB-ORDER-MERCHANT\n"
+        "Shift: FB-SHIFT-MERCHANT\n"
+        "Device ID: MERCHANT-TAB-001"
+    )
+    tables: dict[str, list[dict[str, Any]]] = {
+        "GL Entry": [
+            {
+                "name": "GL-SMOKE-SI-DEBIT",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-ORPHAN-SMOKE",
+                "remarks": smoke_remarks,
+            },
+            {
+                "name": "GL-SMOKE-SI-CREDIT",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-ORPHAN-SMOKE",
+                "remarks": smoke_remarks,
+            },
+            {
+                "name": "GL-SMOKE-STOCK",
+                "voucher_type": "Stock Entry",
+                "voucher_no": "STE-ORPHAN-SMOKE",
+                "remarks": smoke_remarks,
+            },
+            {
+                "name": "GL-OLD-SMOKE-REUSED",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-REUSED-BY-MERCHANT",
+                "remarks": smoke_remarks,
+            },
+            {
+                "name": "GL-CURRENT-MERCHANT-REUSED",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-REUSED-BY-MERCHANT",
+                "remarks": merchant_remarks,
+            },
+            {
+                "name": "GL-LIVE",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-LIVE",
+                "remarks": merchant_remarks,
+            },
+        ],
+        "Payment Ledger Entry": [
+            {
+                "name": "PLE-SMOKE-DEBIT",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-ORPHAN-SMOKE",
+                "against_voucher_type": "Sales Invoice",
+                "against_voucher_no": "SI-ORPHAN-SMOKE",
+            },
+            {
+                "name": "PLE-REUSED-MERCHANT",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-REUSED-BY-MERCHANT",
+                "against_voucher_type": "Sales Invoice",
+                "against_voucher_no": "SI-REUSED-BY-MERCHANT",
+            },
+            {
+                "name": "PLE-LIVE",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-LIVE",
+                "against_voucher_type": "Sales Invoice",
+                "against_voucher_no": "SI-LIVE",
+            },
+        ],
+        "Stock Ledger Entry": [
+            {
+                "name": "SLE-SMOKE",
+                "voucher_type": "Stock Entry",
+                "voucher_no": "STE-ORPHAN-SMOKE",
+            },
+            {
+                "name": "SLE-LIVE",
+                "voucher_type": "Stock Entry",
+                "voucher_no": "STE-LIVE",
+            },
+        ],
+    }
+    existing_vouchers = {
+        ("Sales Invoice", "SI-REUSED-BY-MERCHANT"),
+        ("Sales Invoice", "SI-LIVE"),
+        ("Stock Entry", "STE-LIVE"),
+    }
+
+    def row_matches(row: dict[str, Any], filters: dict[str, Any]) -> bool:
+        for fieldname, expected in filters.items():
+            actual = row.get(fieldname)
+            if isinstance(expected, list) and expected[:1] == ["in"]:
+                if actual not in expected[1]:
+                    return False
+            elif isinstance(expected, list) and expected[:1] == ["like"]:
+                needle = str(expected[1]).strip("%")
+                if needle not in str(actual or ""):
+                    return False
+            elif actual != expected:
+                return False
+        return True
+
+    def fake_get_all(
+        doctype: str,
+        filters: dict[str, Any] | None = None,
+        fields: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        rows = [
+            row
+            for row in tables.get(doctype, [])
+            if not filters or row_matches(row, filters)
+        ]
+        if not fields:
+            return [dict(row) for row in rows]
+        return [
+            {fieldname: row.get(fieldname) for fieldname in fields}
+            for row in rows
+        ]
+
+    def fake_db_delete(doctype: str, filters: dict[str, Any]) -> None:
+        tables[doctype] = [
+            row
+            for row in tables.get(doctype, [])
+            if not row_matches(row, filters)
+        ]
+
+    monkeypatch.setattr(frappe, "get_all", fake_get_all)
+    monkeypatch.setattr(
+        frappe.db,
+        "exists",
+        lambda doctype, name: (doctype, name) in existing_vouchers,
+    )
+    monkeypatch.setattr(
+        frappe.db,
+        "get_value",
+        lambda doctype, name, fieldname: (
+            "MERCHANT-TAB-001"
+            if (doctype, name, fieldname)
+            == (
+                "Sales Invoice",
+                "SI-REUSED-BY-MERCHANT",
+                "custom_fb_device_id",
+            )
+            else None
+        ),
+    )
+    monkeypatch.setattr(frappe.db, "delete", fake_db_delete)
+
+    smoke._delete_orphan_smoke_ledger_artifacts(smoke.SMOKE_DEVICE_ID)
+
+    assert [row["name"] for row in tables["GL Entry"]] == [
+        "GL-CURRENT-MERCHANT-REUSED",
+        "GL-LIVE",
+    ]
+    assert [row["name"] for row in tables["Payment Ledger Entry"]] == [
+        "PLE-REUSED-MERCHANT",
+        "PLE-LIVE",
+    ]
+    assert [row["name"] for row in tables["Stock Ledger Entry"]] == ["SLE-LIVE"]
+
+
 def test_smoke_stock_cancel_ignores_links_for_proven_smoke_voucher(
     monkeypatch,
 ) -> None:

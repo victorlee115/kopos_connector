@@ -1586,6 +1586,7 @@ def reset_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
 def _delete_smoke_business_rows(device_id: str) -> None:
     """Delete only smoke-owned business rows so reset isolates later smoke runs."""
 
+    _delete_orphan_smoke_ledger_artifacts(device_id)
     fb_orders = _get_smoke_fb_order_names(device_id)
     fb_shifts = _get_smoke_fb_shift_names(device_id)
     return_events = _get_smoke_return_event_names(fb_orders)
@@ -1864,6 +1865,117 @@ def _delete_smoke_ledger_artifacts(
         },
         stock_entries,
     )
+
+
+def _delete_orphan_smoke_ledger_artifacts(device_id: str) -> None:
+    """Purge ledger-only smoke vouchers without trusting a reusable voucher name.
+
+    GL remarks carry the device identifier written by the projection service.  They
+    are therefore the only durable ownership evidence after a smoke voucher and
+    its FB source documents have already been deleted.  Opaque payment and stock
+    ledger rows are removed only when the parent is absent and every GL row for
+    that exact voucher carries the same smoke-device marker.
+    """
+
+    candidate_rows = frappe.get_all(
+        "GL Entry",
+        filters={"remarks": ["like", f"%Device ID: {device_id}%"]},
+        fields=["name", "voucher_type", "voucher_no", "remarks"],
+    )
+    candidates_by_voucher: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in candidate_rows or []:
+        voucher_type = str(row.get("voucher_type") or "").strip()
+        voucher_no = str(row.get("voucher_no") or "").strip()
+        if voucher_type not in {"Sales Invoice", "Journal Entry", "Stock Entry"}:
+            continue
+        if not voucher_no or not _remarks_prove_smoke_device(
+            row.get("remarks"), device_id
+        ):
+            continue
+        candidates_by_voucher.setdefault((voucher_type, voucher_no), []).append(row)
+
+    orphan_sales_invoices: list[str] = []
+    orphan_journal_entries: list[str] = []
+    orphan_stock_entries: list[str] = []
+    exact_gl_rows: list[str] = []
+
+    for voucher_key, candidate_voucher_rows in candidates_by_voucher.items():
+        voucher_type, voucher_no = voucher_key
+        if frappe.db.exists(voucher_type, voucher_no):
+            if not _existing_voucher_is_smoke_owned(
+                voucher_type, voucher_no, device_id
+            ):
+                exact_gl_rows.extend(
+                    str(row.get("name") or "") for row in candidate_voucher_rows
+                )
+            continue
+
+        voucher_gl_rows = frappe.get_all(
+            "GL Entry",
+            filters={"voucher_type": voucher_type, "voucher_no": voucher_no},
+            fields=["name", "remarks"],
+        )
+        if not voucher_gl_rows or not all(
+            _remarks_prove_smoke_device(row.get("remarks"), device_id)
+            for row in voucher_gl_rows
+        ):
+            exact_gl_rows.extend(
+                str(row.get("name") or "") for row in candidate_voucher_rows
+            )
+            continue
+
+        if voucher_type == "Sales Invoice":
+            orphan_sales_invoices.append(voucher_no)
+        elif voucher_type == "Journal Entry":
+            orphan_journal_entries.append(voucher_no)
+        else:
+            orphan_stock_entries.append(voucher_no)
+
+    _delete_and_verify_named_ledger_rows("GL Entry", exact_gl_rows)
+    _delete_smoke_ledger_artifacts(
+        sales_invoices=_unique_names(orphan_sales_invoices),
+        settlement_journal_entries=_unique_names(orphan_journal_entries),
+        stock_entries=_unique_names(orphan_stock_entries),
+    )
+
+
+def _remarks_prove_smoke_device(remarks: Any, device_id: str) -> bool:
+    device_lines = [
+        line.strip()
+        for line in str(remarks or "").splitlines()
+        if line.strip().startswith("Device ID:")
+    ]
+    return device_lines == [f"Device ID: {device_id}"]
+
+
+def _existing_voucher_is_smoke_owned(
+    voucher_type: str,
+    voucher_no: str,
+    device_id: str,
+) -> bool:
+    if voucher_type == "Sales Invoice":
+        current_device_id = frappe.db.get_value(
+            voucher_type, voucher_no, "custom_fb_device_id"
+        )
+        return str(current_device_id or "").strip() == device_id
+    if voucher_type in {"Journal Entry", "Stock Entry"}:
+        remarks = frappe.db.get_value(voucher_type, voucher_no, "remarks")
+        return _remarks_prove_smoke_device(remarks, device_id)
+    return False
+
+
+def _delete_and_verify_named_ledger_rows(
+    doctype: str,
+    row_names: list[str],
+) -> None:
+    names = _unique_names(row_names)
+    if not names:
+        return
+    filters = {"name": ["in", names]}
+    frappe.db.delete(doctype, filters)
+    remaining = frappe.get_all(doctype, filters=filters, fields=["name"], limit=1)
+    if remaining:
+        raise RuntimeError(f"Smoke reset left proven smoke-owned {doctype} rows")
 
 
 def _cancel_submitted_smoke_stock_entries(stock_entries: list[str]) -> None:
