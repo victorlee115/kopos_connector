@@ -158,6 +158,7 @@ def test_process_refund_wrapper_executes_fb_return_target(monkeypatch: Any) -> N
             "device_id": "DEVICE-1",
             "original_sales_invoice": "SINV-1",
             "reason_text": "Customer changed mind",
+            "refund_method": "cash",
             "lines": [],
         },
     )
@@ -192,6 +193,7 @@ def test_process_refund_wrapper_executes_fb_return_target(monkeypatch: Any) -> N
         "original_sales_invoice": "SINV-1",
         "reason_code": "Other",
         "reason_text": "Customer changed mind",
+        "refund_method": "cash",
         "return_to_stock": None,
         "lines": [],
     }

@@ -23,8 +23,7 @@
   {"hidden": 0, "is_query_report": 0, "label": "KoPOS Device Health", "link_count": 0, "link_to": "KoPOS Device Health", "link_type": "Report", "onboard": 0, "type": "Link"},
   {"hidden": 0, "is_query_report": 0, "label": "Projection Support Queue", "link_count": 0, "link_to": "KoPOS Projection Support Queue", "link_type": "Report", "onboard": 0, "type": "Link"},
    {"hidden": 0, "is_query_report": 0, "label": "Shift Reconciliation", "link_count": 0, "link_to": "KoPOS Shift Reconciliation", "link_type": "Report", "onboard": 0, "type": "Link"},
-   {"hidden": 0, "is_query_report": 0, "label": "KoPOS Support Report", "link_count": 0, "link_to": "KoPOS Support Report", "link_type": "Report", "onboard": 0, "type": "Link"},
-   {"hidden": 0, "is_query_report": 0, "label": "Modifier Sales Analytics", "link_count": 0, "link_to": "Modifier Sales Analytics", "link_type": "Report", "onboard": 0, "type": "Link"}
+   {"hidden": 0, "is_query_report": 0, "label": "KoPOS Support Report", "link_count": 0, "link_to": "KoPOS Support Report", "link_type": "Report", "onboard": 0, "type": "Link"}
  ],
  "modified": "2026-06-24 00:00:00.000000",
  "modified_by": "Administrator",

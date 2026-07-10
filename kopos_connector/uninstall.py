@@ -67,6 +67,10 @@ def remove_custom_fields():
         # Sales Invoice fields
         "Sales Invoice-custom_kopos_refund_idempotency_key",
         "Sales Invoice-custom_kopos_device_id",
+        # Sales Invoice Item fields (canonical modifier evidence)
+        "Sales Invoice Item-custom_kopos_modifiers",
+        "Sales Invoice Item-custom_kopos_modifier_total",
+        "Sales Invoice Item-custom_kopos_has_modifiers",
     ]
 
     for field_name in custom_field_names:

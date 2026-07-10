@@ -87,7 +87,7 @@ class ShiftSyncTests(unittest.TestCase):
         self.assertEqual(converted.tzinfo, None)
         self.assertEqual(converted, datetime(2026, 3, 13, 20, 15, 15, 88000))
 
-    def test_create_kopos_custom_fields_includes_shift_tracking_fields(self):
+    def test_create_kopos_custom_fields_excludes_legacy_shift_documents(self):
         captured = {}
 
         def fake_create_custom_fields(custom_fields, update=False):
@@ -107,29 +107,22 @@ class ShiftSyncTests(unittest.TestCase):
         ):
             install_module.create_kopos_custom_fields()
 
-        opening_fields = {
-            field["fieldname"]
-            for field in captured["custom_fields"]["POS Opening Entry"]
-        }
-        closing_fields = {
-            field["fieldname"]
-            for field in captured["custom_fields"]["POS Closing Entry"]
-        }
-
         self.assertTrue(captured["update"])
-        self.assertTrue(
-            {
-                "custom_kopos_idempotency_key",
-                "custom_kopos_shift_id",
-                "custom_kopos_device_id",
-            }.issubset(opening_fields)
+        self.assertEqual(
+            set(captured["custom_fields"]),
+            {"Item", "POS Profile", "Sales Invoice", "Sales Invoice Item"},
         )
-        self.assertTrue(
+        invoice_item_fields = {
+            field["fieldname"]
+            for field in captured["custom_fields"]["Sales Invoice Item"]
+        }
+        self.assertEqual(
+            invoice_item_fields,
             {
-                "custom_kopos_idempotency_key",
-                "custom_kopos_shift_id",
-                "custom_kopos_device_id",
-            }.issubset(closing_fields)
+                "custom_kopos_modifiers",
+                "custom_kopos_modifier_total",
+                "custom_kopos_has_modifiers",
+            },
         )
 
     def test_open_shift_stores_custom_identity_fields(self):
@@ -198,12 +191,12 @@ class ShiftSyncTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["pos_opening_entry"], "OPEN-1")
-        self.assertEqual(opening_doc.custom_kopos_idempotency_key, "shift-open-SHIFT-1")
-        self.assertEqual(opening_doc.custom_kopos_shift_id, "SHIFT-1")
-        self.assertEqual(opening_doc.custom_kopos_device_id, "DEVICE-1")
-        self.assertEqual(opening_doc.balance_details[0]["mode_of_payment"], "Cash")
-        self.assertIn("KoPOS shift_id: SHIFT-1", opening_doc.remarks)
+        self.assertEqual(result["fb_shift"], "FB-SHIFT-1")
+        self.assertEqual(fb_shift_doc.shift_code, "SHIFT-1")
+        self.assertEqual(fb_shift_doc.device_id, "DEVICE-1")
+        self.assertEqual(fb_shift_doc.staff_id, "john@example.com")
+        self.assertEqual(fb_shift_doc.opening_float, 50.0)
+        self.assertIn("KoPOS shift_id: SHIFT-1", fb_shift_doc.remarks)
 
     def test_close_shift_resolves_opening_entry_by_shift_id_and_device(self):
         pos_profile = make_doc(
@@ -226,15 +219,15 @@ class ShiftSyncTests(unittest.TestCase):
             ],
         )
         opening_entry = MutableDoc(
-            name="OPEN-1",
+            name="FB-SHIFT-1",
             docstatus=1,
             status="Open",
-            pos_profile="Counter 1",
             company="JiJi",
-            user="john@example.com",
-            balance_details=[make_doc(mode_of_payment="Cash", opening_amount=50.0)],
-            custom_kopos_device_id="DEVICE-1",
-            custom_kopos_shift_id="SHIFT-1",
+            device_id="DEVICE-1",
+            staff_id="john@example.com",
+            shift_code="SHIFT-1",
+            expected_cash=50.0,
+            remarks="",
         )
         closing_doc = MutableDoc(
             name="CLOSE-1",
@@ -244,7 +237,7 @@ class ShiftSyncTests(unittest.TestCase):
         )
 
         def fake_get_doc(*args, **kwargs):
-            if args[:2] == ("POS Opening Entry", "OPEN-1"):
+            if args[:2] == ("FB Shift", "FB-SHIFT-1"):
                 return opening_entry
             if args and isinstance(args[0], dict):
                 for key, value in args[0].items():
@@ -270,9 +263,8 @@ class ShiftSyncTests(unittest.TestCase):
             patch.object(shifts.frappe, "get_cached_doc", return_value=pos_profile),
             patch.object(shifts.frappe, "get_doc", side_effect=fake_get_doc),
             patch.object(
-                shifts, "_find_opening_entry_name", return_value="OPEN-1"
+                shifts, "_find_fb_shift_name", return_value="FB-SHIFT-1"
             ) as find_open_mock,
-            patch.object(shifts, "_find_closing_entry_name", return_value=None),
         ):
             result = shifts.close_shift_payload(
                 {
@@ -286,13 +278,10 @@ class ShiftSyncTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["pos_opening_entry"], "OPEN-1")
-        self.assertEqual(result["pos_closing_entry"], "CLOSE-1")
-        self.assertEqual(closing_doc.custom_kopos_shift_id, "SHIFT-1")
-        self.assertEqual(closing_doc.custom_kopos_device_id, "DEVICE-1")
-        self.assertEqual(closing_doc.balance_details[0]["closing_amount"], 65.0)
+        self.assertEqual(result["fb_shift"], "FB-SHIFT-1")
         self.assertEqual(opening_entry.status, "Closed")
-        self.assertEqual(opening_entry.db_set_calls, [("status", "Closed", False)])
+        self.assertEqual(opening_entry.counted_cash, 65.0)
+        self.assertEqual(opening_entry.cash_variance, 15.0)
         self.assertEqual(find_open_mock.call_count, 1)
 
     def test_close_shift_rejects_opening_entry_from_another_device(self):
@@ -310,15 +299,14 @@ class ShiftSyncTests(unittest.TestCase):
             ],
         )
         opening_entry = make_doc(
-            name="OPEN-1",
+            name="FB-SHIFT-1",
             docstatus=1,
             status="Open",
-            pos_profile="Counter 1",
             company="JiJi",
-            user="john@example.com",
-            balance_details=[make_doc(mode_of_payment="Cash", opening_amount=50.0)],
-            custom_kopos_device_id="DEVICE-2",
-            custom_kopos_shift_id="SHIFT-1",
+            device_id="DEVICE-2",
+            staff_id="john@example.com",
+            shift_code="SHIFT-1",
+            expected_cash=50.0,
         )
 
         def fake_get_value(doctype, filters=None, fieldname=None, *args, **kwargs):
@@ -336,7 +324,7 @@ class ShiftSyncTests(unittest.TestCase):
                 "exists",
                 side_effect=lambda doctype, *_args, **_kwargs: doctype == "User",
             ),
-            patch.object(shifts, "_find_closing_entry_name", return_value=None),
+            patch.object(shifts, "_find_fb_shift_name", return_value="FB-SHIFT-1"),
             patch.object(shifts.frappe, "get_doc", return_value=opening_entry),
         ):
             with self.assertRaises(shifts.frappe.ValidationError):
@@ -346,7 +334,7 @@ class ShiftSyncTests(unittest.TestCase):
                         "device_id": "DEVICE-1",
                         "staff_id": "john@example.com",
                         "shift_id": "SHIFT-1",
-                        "pos_opening_entry": "OPEN-1",
+                        "fb_shift": "FB-SHIFT-1",
                         "counted_cash_sen": 6500,
                         "closed_at": "2026-03-13T10:10:00Z",
                     }
@@ -388,10 +376,8 @@ class ShiftSyncTests(unittest.TestCase):
                 "exists",
                 side_effect=lambda doctype, *_args, **_kwargs: doctype == "User",
             ),
-            patch.object(shifts.frappe, "get_cached_doc", return_value=pos_profile),
-            patch.object(shifts, "_find_closing_entry_name", return_value=None),
             patch.object(
-                shifts, "_find_opening_entry_name", return_value=None
+                shifts, "_find_fb_shift_name", return_value=None
             ) as find_open_mock,
         ):
             with self.assertRaises(shifts.frappe.ValidationError) as ctx:
@@ -407,16 +393,9 @@ class ShiftSyncTests(unittest.TestCase):
                 )
 
         self.assertIn(
-            "No open POS Opening Entry found for device DEVICE-1", str(ctx.exception)
+            "No open FB Shift found for device DEVICE-1", str(ctx.exception)
         )
-        find_open_mock.assert_called_once_with(
-            pos_profile_name="Counter 1",
-            staff_id="john@example.com",
-            device_id="DEVICE-1",
-            shift_id="SHIFT-OLD",
-            require_open=True,
-            allow_device_fallback=False,
-        )
+        find_open_mock.assert_called_once_with("SHIFT-OLD")
 
     def test_get_device_open_shift_returns_none_after_close_only(self):
         device_doc = make_doc(
@@ -447,22 +426,22 @@ class ShiftSyncTests(unittest.TestCase):
                 "get_all",
                 return_value=[
                     {
-                        "name": "OPEN-2",
-                        "user": "john@example.com",
-                        "period_start_date": "2026-03-13 10:20:00",
-                        "custom_kopos_shift_id": "SHIFT-2",
-                        "custom_kopos_device_id": "DEVICE-1",
+                        "name": "FB-SHIFT-2",
+                        "staff_id": "john@example.com",
+                        "opened_at": "2026-03-13 10:20:00",
+                        "shift_code": "SHIFT-2",
+                        "device_id": "DEVICE-1",
+                        "opening_float": 50.0,
                     }
                 ],
             ),
-            patch.object(shifts, "_get_opening_float_sen", return_value=5000),
         ):
             result = shifts.get_device_open_shift_payload("DEVICE-1")
 
         self.assertEqual(
             result,
             {
-                "pos_opening_entry": "OPEN-2",
+                "fb_shift": "FB-SHIFT-2",
                 "shift_id": "SHIFT-2",
                 "device_id": "DEVICE-1",
                 "staff_id": "john@example.com",
@@ -542,7 +521,7 @@ class ShiftSyncTests(unittest.TestCase):
             )
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["pos_opening_entry"], "OPEN-1")
+        self.assertEqual(result["fb_shift"], "FB-SHIFT-1")
 
     def test_open_shift_fails_for_unassigned_user(self):
         """Open shift should fail if the user is not assigned to the device."""
@@ -808,15 +787,14 @@ class ShiftSyncTests(unittest.TestCase):
             ],
         )
         opening_doc = MutableDoc(
-            name="OPEN-1",
-            custom_kopos_shift_id="CORRECT-SHIFT",
-            custom_kopos_device_id="DEVICE-1",
-            pos_profile="Counter 1",
-            user="john@example.com",
+            name="FB-SHIFT-1",
+            shift_code="CORRECT-SHIFT",
+            device_id="DEVICE-1",
+            staff_id="john@example.com",
             company="JiJi",
             status="Open",
             docstatus=1,
-            balance_details=[make_doc(mode_of_payment="Cash", opening_amount=50)],
+            expected_cash=50.0,
         )
 
         def fake_get_value(doctype, filters=None, fieldname=None, *args, **kwargs):
@@ -834,9 +812,7 @@ class ShiftSyncTests(unittest.TestCase):
                 "exists",
                 side_effect=lambda doctype, *_args, **_kwargs: doctype == "User",
             ),
-            patch.object(shifts.frappe, "get_cached_doc", return_value=pos_profile),
-            patch.object(shifts, "_find_opening_entry_name", return_value="OPEN-1"),
-            patch.object(shifts, "_find_closing_entry_name", return_value=None),
+            patch.object(shifts, "_find_fb_shift_name", return_value="FB-SHIFT-1"),
             patch.object(shifts.frappe, "get_doc", return_value=opening_doc),
         ):
             with self.assertRaises(shifts.frappe.ValidationError) as ctx:

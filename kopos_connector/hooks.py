@@ -107,9 +107,6 @@ before_uninstall = "kopos_connector.uninstall.before_uninstall"
 # ---------------
 
 scheduler_events = {
-    "daily": [
-        "kopos_connector.api.modifiers.aggregate_modifier_stats",
-    ],
     "all": [
         "kopos_connector.tasks.poll_maybank.poll_pending_maybank_transactions",
     ],

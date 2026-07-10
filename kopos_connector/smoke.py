@@ -76,8 +76,6 @@ def setup_refund_smoke_data() -> dict[str, Any]:
         write_off_account=expense_account,
         write_off_cost_center=cost_center,
     )
-    _ensure_pos_settings()
-    opening_entry = _ensure_pos_opening_entry(company, pos_profile)
     modifier_fixture = _ensure_fb_modifier_group()
     item = _ensure_item(
         company,
@@ -94,7 +92,6 @@ def setup_refund_smoke_data() -> dict[str, Any]:
         "cash_account": cash_account,
         "expense_account": expense_account,
         "pos_profile": pos_profile,
-        "pos_opening_entry": opening_entry,
         "item_code": item,
     }
 
@@ -104,53 +101,6 @@ def _get_demo_currency(company: str) -> str:
         frappe.db.get_value("Company", company, "default_currency")
         or DEMO_CURRENCY_FALLBACK
     )
-
-
-def inspect_refund_draft(invoice_name: str = "ACC-PSINV-2026-00001") -> dict[str, Any]:
-    from kopos_connector.api.orders import (
-        build_credit_note,
-        get_default_pos_profile,
-        validate_refund_payload,
-    )
-
-    original = frappe.get_doc("POS Invoice", invoice_name)
-    payload = validate_refund_payload(
-        {
-            "idempotency_key": "inspect-refund-draft",
-            "device_id": "TEST-DEVICE-001",
-            "original_invoice": invoice_name,
-            "refund_type": "full",
-            "refund_reason": "Customer changed mind",
-            "return_to_stock": False,
-            "payment_mode": "cash",
-        }
-    )
-    profile = get_default_pos_profile()
-    draft = build_credit_note(payload, original, profile)
-    return {
-        "doctype": draft.doctype,
-        "is_return": draft.is_return,
-        "return_against": draft.return_against,
-        "grand_total": draft.grand_total,
-        "paid_amount": draft.paid_amount,
-        "write_off_amount": getattr(draft, "write_off_amount", None),
-        "payments": [
-            {
-                "mode_of_payment": row.mode_of_payment,
-                "amount": row.amount,
-            }
-            for row in (draft.get("payments") or [])
-        ],
-        "items": [
-            {
-                "item_code": row.item_code,
-                "qty": row.qty,
-                "rate": row.rate,
-                "amount": row.amount,
-            }
-            for row in draft.items
-        ],
-    }
 
 
 def setup_stock_item_smoke_data(target_qty: float = 5) -> dict[str, Any]:
@@ -384,21 +334,25 @@ def run_demo_fb_sale_audit(return_to_stock: bool = False) -> dict[str, Any]:
         resolved_sales = frappe.get_all(
             "FB Resolved Sale",
             filters={"fb_order": order_doc.name},
-            pluck="name",
+            fields=["name", "qty"],
+            order_by="name asc",
         )
         if resolved_sales:
             frappe.local.form_dict = {
                 "return_id": f"RETURN-{frappe.generate_hash(length=8)}",
+                "device_id": order_doc.device_id,
                 "fb_order": order_doc.name,
                 "original_sales_invoice": order_doc.sales_invoice,
                 "reason_code": "Other",
                 "reason_text": "Smoke audit return",
+                "refund_method": "cash",
                 "return_to_stock": 1,
                 "lines": [
                     {
-                        "original_resolved_sale": resolved_sales[0],
-                        "qty_returned": 1,
+                        "original_resolved_sale": row["name"],
+                        "qty_returned": row["qty"],
                     }
+                    for row in resolved_sales
                 ],
             }
             refund_result = process_fb_return()
@@ -755,43 +709,6 @@ def _ensure_pos_profile(
         }
     )
     doc.insert(ignore_permissions=True)
-    return doc.name
-
-
-def _ensure_pos_settings() -> None:
-    settings = frappe.get_single("POS Settings")
-    if settings.invoice_type != "POS Invoice":
-        settings.invoice_type = "POS Invoice"
-        settings.save(ignore_permissions=True)
-
-
-def _ensure_pos_opening_entry(company: str, pos_profile: str) -> str:
-    existing = frappe.get_all(
-        "POS Opening Entry",
-        filters={
-            "pos_profile": pos_profile,
-            "status": ["in", ["Open", "Submitted"]],
-            "docstatus": 1,
-        },
-        pluck="name",
-        limit=1,
-    )
-    if existing:
-        return existing[0]
-
-    doc = frappe.get_doc(
-        {
-            "doctype": "POS Opening Entry",
-            "period_start_date": now_datetime(),
-            "posting_date": nowdate(),
-            "company": company,
-            "pos_profile": pos_profile,
-            "user": "Administrator",
-            "balance_details": [{"mode_of_payment": "Cash", "opening_amount": 100}],
-        }
-    )
-    doc.insert(ignore_permissions=True)
-    doc.submit()
     return doc.name
 
 
@@ -1578,18 +1495,6 @@ def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
     base = setup_refund_smoke_data()
     company = base["company"]
 
-    pos_opening = base.get("pos_opening_entry")
-    if pos_opening:
-        docstatus = frappe.db.get_value("POS Opening Entry", pos_opening, "docstatus")
-        if docstatus == 1:
-            frappe.db.set_value(
-                "POS Opening Entry", pos_opening, "docstatus", 2, update_modified=False
-            )
-        frappe.delete_doc(
-            "POS Opening Entry", pos_opening, force=True, ignore_permissions=True
-        )
-        frappe.db.commit()
-
     device_id = SMOKE_DEVICE_ID
     device_doc = _ensure_kopos_device(
         device_id=device_id,
@@ -2111,6 +2016,11 @@ def build_smoke_business_assertions(
     submitted_return_invoices = [
         row for row in invoices if row.get("docstatus") == 1 and row.get("is_return")
     ]
+    submitted_returns = [
+        row
+        for row in returns
+        if row.get("docstatus") == 1 or row.get("status") == "Submitted"
+    ]
     closed_shifts = [row for row in fb_shifts if row.get("status") == "Closed"]
     open_shifts = [row for row in fb_shifts if row.get("status") == "Open"]
     duplicate_keys = _list(idempotency.get("duplicate_sales_invoice_keys"))
@@ -2137,6 +2047,33 @@ def build_smoke_business_assertions(
     )
     expect("refund_return_record_proven", bool(returns), returns)
     expect("refund_return_sales_invoice_proven", bool(submitted_return_invoices), invoices)
+    expect(
+        "refund_settlement_document_posted",
+        bool(submitted_returns)
+        and all(
+            row.get("settlement_doctype") in {"Payment Entry", "Journal Entry"}
+            and bool(row.get("settlement_document"))
+            and row.get("settlement_status") == "Posted"
+            and row.get("settlement_docstatus") == 1
+            for row in submitted_returns
+        ),
+        submitted_returns,
+    )
+    expect(
+        "refund_credit_note_outstanding_zero",
+        bool(submitted_returns)
+        and all(
+            _money(row.get("return_outstanding_amount")) == 0
+            for row in submitted_returns
+        ),
+        submitted_returns,
+    )
+    expect(
+        "refund_customer_and_tender_gl_settled",
+        bool(submitted_returns)
+        and all(_return_settlement_gl_proven(row) for row in submitted_returns),
+        submitted_returns,
+    )
     expect("void_effects_proven", bool(voids), voids)
     expect(
         "order_history_sales_invoice_source",
@@ -2161,6 +2098,15 @@ def build_smoke_business_assertions(
             for shift in closed_shifts
         ),
         closed_shifts,
+    )
+    expect(
+        "shift_cash_matches_posted_refund_settlements",
+        bool(closed_shifts)
+        and all(
+            _shift_expected_cash_matches_state(shift, invoices, submitted_returns)
+            for shift in closed_shifts
+        ),
+        {"shifts": closed_shifts, "returns": submitted_returns},
     )
 
     return {
@@ -2265,6 +2211,12 @@ def _collect_return_records(fb_orders: list[dict[str, Any]]) -> list[dict[str, A
             "fb_order",
             "original_sales_invoice",
             "return_sales_invoice",
+            "refund_method",
+            "settlement_doctype",
+            "settlement_document",
+            "settlement_status",
+            "settlement_amount",
+            "settlement_tenders_json",
             "return_to_stock",
             "status",
             "docstatus",
@@ -2273,7 +2225,147 @@ def _collect_return_records(fb_orders: list[dict[str, Any]]) -> list[dict[str, A
     )
     for row in rows:
         row["return_to_stock"] = bool(row.get("return_to_stock"))
+        row["settlement_amount"] = _money(row.get("settlement_amount"))
+        return_invoice = str(row.get("return_sales_invoice") or "")
+        row["return_outstanding_amount"] = (
+            _money(
+                frappe.db.get_value(
+                    "Sales Invoice", return_invoice, "outstanding_amount"
+                )
+            )
+            if return_invoice
+            else None
+        )
+        settlement_doctype = str(row.get("settlement_doctype") or "")
+        settlement_document = str(row.get("settlement_document") or "")
+        row["settlement_docstatus"] = (
+            int(
+                frappe.db.get_value(
+                    settlement_doctype, settlement_document, "docstatus"
+                )
+                or 0
+            )
+            if settlement_doctype in {"Payment Entry", "Journal Entry"}
+            and settlement_document
+            else 0
+        )
+        row["settlement_gl_entries"] = _collect_settlement_gl_entries(
+            settlement_doctype, settlement_document
+        )
     return rows
+
+
+def _collect_settlement_gl_entries(
+    settlement_doctype: str,
+    settlement_document: str,
+) -> list[dict[str, Any]]:
+    if settlement_doctype not in {"Payment Entry", "Journal Entry"} or not settlement_document:
+        return []
+    rows = _get_rows(
+        "GL Entry",
+        filters={
+            "voucher_type": settlement_doctype,
+            "voucher_no": settlement_document,
+            "is_cancelled": 0,
+        },
+        fields=[
+            "account",
+            "party_type",
+            "party",
+            "debit",
+            "credit",
+            "against_voucher_type",
+            "against_voucher",
+        ],
+        order_by="account asc, name asc",
+    )
+    for row in rows:
+        row["debit"] = _money(row.get("debit"))
+        row["credit"] = _money(row.get("credit"))
+        account = str(row.get("account") or "")
+        row["account_type"] = (
+            frappe.db.get_value("Account", account, "account_type") if account else None
+        )
+    return rows
+
+
+def _return_settlement_gl_proven(return_row: dict[str, Any]) -> bool:
+    amount_sen = abs(_money_sen(return_row.get("settlement_amount")) or 0)
+    return_invoice = str(return_row.get("return_sales_invoice") or "")
+    refund_method = str(return_row.get("refund_method") or "")
+    gl_rows = _list(return_row.get("settlement_gl_entries"))
+    customer_debit_sen = sum(
+        (_money_sen(row.get("debit")) or 0)
+        - (_money_sen(row.get("credit")) or 0)
+        for row in gl_rows
+        if row.get("party_type") == "Customer"
+        and row.get("against_voucher_type") == "Sales Invoice"
+        and row.get("against_voucher") == return_invoice
+    )
+    tender_rows = [
+        row
+        for row in gl_rows
+        if not row.get("party_type")
+        and (_money_sen(row.get("credit")) or 0)
+        > (_money_sen(row.get("debit")) or 0)
+    ]
+    tender_credit_sen = sum(
+        (_money_sen(row.get("credit")) or 0)
+        - (_money_sen(row.get("debit")) or 0)
+        for row in tender_rows
+    )
+    if refund_method == "cash":
+        account_types_proven = bool(tender_rows) and all(
+            row.get("account_type") == "Cash" for row in tender_rows
+        )
+    elif refund_method in {"qr", "card"}:
+        account_types_proven = bool(tender_rows) and all(
+            row.get("account_type") == "Bank" for row in tender_rows
+        )
+    else:
+        account_types_proven = bool(tender_rows)
+    return (
+        amount_sen > 0
+        and customer_debit_sen == amount_sen
+        and tender_credit_sen == amount_sen
+        and account_types_proven
+    )
+
+
+def _shift_expected_cash_matches_state(
+    shift: dict[str, Any],
+    invoices: list[dict[str, Any]],
+    returns: list[dict[str, Any]],
+) -> bool:
+    shift_name = str(shift.get("name") or "")
+    sale_invoices = [
+        invoice
+        for invoice in invoices
+        if invoice.get("docstatus") == 1
+        and not invoice.get("is_return")
+        and str(invoice.get("custom_fb_shift") or "") == shift_name
+    ]
+    invoice_by_name = {
+        str(invoice.get("name") or ""): invoice for invoice in sale_invoices
+    }
+    cash_sales_sen = sum(
+        _money_sen(payment.get("amount")) or 0
+        for invoice in sale_invoices
+        for payment in _list(invoice.get("payments"))
+        if payment.get("mode_of_payment") == "Cash"
+    )
+    cash_refunds_sen = sum(
+        abs(_money_sen(row.get("settlement_amount")) or 0)
+        for row in returns
+        if row.get("refund_method") == "cash"
+        and str(row.get("original_sales_invoice") or "") in invoice_by_name
+    )
+    calculated_sen = (
+        (_money_sen(shift.get("opening_float")) or 0)
+        + cash_sales_sen
+        - cash_refunds_sen
+    )
+    return calculated_sen == (_money_sen(shift.get("expected_cash")) or 0)
 
 
 def _collect_projection_state(
@@ -2554,6 +2646,13 @@ def _money(value: Any) -> float | None:
     if value is None:
         return None
     return round(flt(value), 2)
+
+
+def _money_sen(value: Any) -> int | None:
+    amount = _money(value)
+    if amount is None:
+        return None
+    return int(round(amount * 100))
 
 
 def _list(value: Any) -> list[Any]:

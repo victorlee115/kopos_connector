@@ -132,6 +132,18 @@ def create_fb_custom_fields():
                 "translatable": 0,
             },
         ],
+        "Journal Entry": [
+            {
+                "fieldname": "custom_fb_return_event",
+                "label": "F&B Return Event",
+                "fieldtype": "Link",
+                "options": "FB Return Event",
+                "insert_after": "user_remark",
+                "read_only": 1,
+                "unique": 1,
+                "translatable": 0,
+            },
+        ],
         "Stock Entry": [
             {
                 "fieldname": "custom_fb_order",
@@ -199,6 +211,7 @@ def remove_fb_custom_fields():
         ("Sales Invoice Item", "custom_fb_resolved_sale"),
         ("Sales Invoice Item", "custom_fb_recipe_snapshot_json"),
         ("Sales Invoice Item", "custom_fb_resolution_hash"),
+        ("Journal Entry", "custom_fb_return_event"),
         ("Stock Entry", "custom_fb_order"),
         ("Stock Entry", "custom_fb_resolved_sale"),
         ("Stock Entry", "custom_fb_event_project"),

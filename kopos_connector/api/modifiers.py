@@ -499,7 +499,7 @@ def copy_modifiers_to_refund(
 
 def aggregate_modifier_stats(date: str | None = None) -> dict:
     """
-    Aggregate modifier stats for a given date.
+    Aggregate legacy modifier stats for an explicit migration/support run.
 
     Uses DELETE + bulk INSERT for idempotency.
     Uses Query Builder instead of raw SQL for maintainability.
@@ -638,7 +638,6 @@ def _notify_aggregation_failure(date: str, error: str) -> None:
     )
 
 
-@frappe.whitelist()
 def get_modifier_sales_report(
     from_date: str,
     to_date: str,
@@ -697,7 +696,6 @@ def get_modifier_sales_report(
     )
 
 
-@frappe.whitelist()
 def aggregate_modifier_stats_range(from_date: str, to_date: str) -> int:
     """
     Aggregate modifier stats for a date range.
@@ -732,7 +730,6 @@ def aggregate_modifier_stats_range(from_date: str, to_date: str) -> int:
     return total_processed
 
 
-@frappe.whitelist()
 def retry_failed_aggregations(from_date: str, to_date: str) -> dict:
     """
     Admin endpoint to retry failed aggregation dates.

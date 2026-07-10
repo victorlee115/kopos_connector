@@ -14,11 +14,19 @@
         "fb_order",
         "original_sales_invoice",
         "return_sales_invoice",
+        "refund_method",
         "column_break_1",
         "reason_code",
         "reason_text",
         "return_to_stock",
         "status",
+        "settlement_section",
+        "settlement_doctype",
+        "settlement_document",
+        "column_break_settlement",
+        "settlement_status",
+        "settlement_amount",
+        "settlement_tenders_json",
         "lines_section",
         "lines"
     ],
@@ -55,6 +63,14 @@
             "options": "Sales Invoice"
         },
         {
+            "fieldname": "refund_method",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Refund Method",
+            "options": "cash\nqr\ncard\nvoucher",
+            "reqd": 1
+        },
+        {
             "fieldname": "column_break_1",
             "fieldtype": "Column Break"
         },
@@ -84,6 +100,51 @@
             "in_list_view": 1,
             "label": "Status",
             "options": "Draft\nSubmitted\nCancelled"
+        },
+        {
+            "fieldname": "settlement_section",
+            "fieldtype": "Section Break",
+            "label": "Accounting Settlement"
+        },
+        {
+            "fieldname": "settlement_doctype",
+            "fieldtype": "Link",
+            "label": "Settlement DocType",
+            "options": "DocType",
+            "read_only": 1
+        },
+        {
+            "fieldname": "settlement_document",
+            "fieldtype": "Dynamic Link",
+            "label": "Settlement Document",
+            "options": "settlement_doctype",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_settlement",
+            "fieldtype": "Column Break"
+        },
+        {
+            "default": "Pending",
+            "fieldname": "settlement_status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Settlement Status",
+            "options": "Pending\nPosted\nFailed",
+            "read_only": 1
+        },
+        {
+            "fieldname": "settlement_amount",
+            "fieldtype": "Currency",
+            "label": "Settlement Amount",
+            "read_only": 1
+        },
+        {
+            "fieldname": "settlement_tenders_json",
+            "fieldtype": "Code",
+            "label": "Settlement Tenders",
+            "options": "JSON",
+            "read_only": 1
         },
         {
             "fieldname": "lines_section",

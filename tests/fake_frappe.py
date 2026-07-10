@@ -141,6 +141,7 @@ def install_fake_frappe_modules() -> None:
         else (value or datetime(2026, 3, 13, 18, 5, 0)),
     )
     setattr(utils_module, "now_datetime", lambda: datetime(2026, 3, 13, 18, 5, 0))
+    setattr(utils_module, "now", lambda: "2026-03-13 18:05:00")
     setattr(utils_module, "nowdate", lambda: "2026-03-13")
     setattr(utils_module, "get_system_timezone", lambda: "Asia/Kuala_Lumpur")
     setattr(utils_module, "get_url", lambda: "https://erp.example.com")
@@ -160,6 +161,7 @@ def install_fake_frappe_modules() -> None:
     )
     setattr(frappe_module, "parse_json", lambda value: json.loads(value))
     setattr(frappe_module, "as_json", lambda value: json.dumps(value, sort_keys=True))
+    setattr(frappe_module, "get_traceback", lambda: "fake traceback")
     setattr(frappe_module, "session", SimpleNamespace(user="Administrator"))
     setattr(
         frappe_module,
@@ -198,6 +200,11 @@ def install_fake_frappe_modules() -> None:
     setattr(frappe_module, "get_doc", lambda *args, **kwargs: SimpleNamespace())
     setattr(frappe_module, "new_doc", lambda *args, **kwargs: SimpleNamespace())
     setattr(frappe_module, "get_all", lambda *args, **kwargs: [])
+    setattr(
+        frappe_module,
+        "get_meta",
+        lambda *args, **kwargs: SimpleNamespace(has_field=lambda fieldname: True),
+    )
     setattr(
         frappe_module,
         "logger",

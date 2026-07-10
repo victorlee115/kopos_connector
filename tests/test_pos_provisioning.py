@@ -1,6 +1,5 @@
 import importlib
 import json
-import pickle
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
@@ -26,17 +25,32 @@ normalize_duplicate_device_api_users = importlib.import_module(
 class _FakeCache:
     def __init__(self):
         self.values = {}
+        self.ttls = {}
         self.deleted = []
+        self.set_calls = []
 
-    def set_value(self, key, value, expires_in_sec=None):
-        self.values[key] = value
+    @staticmethod
+    def _normalize_key(key):
+        return key.decode() if isinstance(key, bytes) else key
 
-    def get_value(self, key):
-        return self.values.get(key)
+    def set(self, key, value, ex=None):
+        normalized_key = self._normalize_key(key)
+        self.set_calls.append((key, value, ex))
+        self.values[normalized_key] = value
+        self.ttls[normalized_key] = ex
+        return True
 
-    def delete_value(self, key):
-        self.deleted.append(key)
-        self.values.pop(key, None)
+    def get(self, key):
+        return self.values.get(self._normalize_key(key))
+
+    def ttl(self, key):
+        return self.ttls.get(self._normalize_key(key), -2)
+
+    def delete(self, key):
+        normalized_key = self._normalize_key(key)
+        self.deleted.append(normalized_key)
+        self.values.pop(normalized_key, None)
+        self.ttls.pop(normalized_key, None)
 
     def make_key(self, key):
         return key.encode()
@@ -46,10 +60,11 @@ class _FakeCache:
         self.eval_calls.append((script, numkeys, storage_key))
         key = storage_key.decode()
         value = self.values.pop(key, None)
+        self.ttls.pop(key, None)
         if value is None:
             return None
         self.deleted.append(key)
-        return pickle.dumps(value)
+        return value
 
 
 class PosProvisioningTests(unittest.TestCase):
@@ -329,13 +344,13 @@ class PosProvisioningTests(unittest.TestCase):
             encrypted_secret_calls[0][0],
             ("User", "device@example.com", "generated-api-secret", "api_secret"),
         )
-        self.assertEqual(len(commit_calls), 3)
+        self.assertEqual(len(commit_calls), 2)
 
     def test_ensure_device_api_credentials_rotates_on_decrypt_failure(self):
         device_doc = SimpleNamespace(
             name="KOPOS-DEVICE-001", api_user="device@example.com"
         )
-        generated = iter(["rotated-api-secret"])
+        generated = iter(["rotated-api-key", "rotated-api-secret"])
         set_value_calls = []
         commit_calls = []
 
@@ -373,9 +388,12 @@ class PosProvisioningTests(unittest.TestCase):
         ):
             result = provisioning.ensure_device_api_credentials(device_doc)
 
-        self.assertEqual(result["api_key"], "existing-api-key")
+        self.assertEqual(result["api_key"], "rotated-api-key")
         self.assertEqual(result["api_secret"], "rotated-api-secret")
-        self.assertEqual(set_value_calls, [])
+        self.assertEqual(
+            set_value_calls[0][0][:4],
+            ("User", "device@example.com", "api_key", "rotated-api-key"),
+        )
         self.assertEqual(len(commit_calls), 2)
 
     def test_ensure_device_api_credentials_raises_when_secret_cannot_be_verified(self):
@@ -424,7 +442,7 @@ class PosProvisioningTests(unittest.TestCase):
                 side_effect=["KOPOS-DEVICE-001", "api-key-123"],
             ),
             patch.object(smoke.frappe, "get_doc", return_value=fake_device),
-            patch.object(smoke.frappe, "get_all", side_effect=[[], [], [], []]),
+            patch.object(smoke.frappe, "get_all", return_value=[]),
             patch.object(
                 smoke.frappe,
                 "local",
@@ -438,8 +456,10 @@ class PosProvisioningTests(unittest.TestCase):
         ):
             result = smoke.dump_smoke_state()
 
-        self.assertEqual(result["credentials"]["api_key"], "api-key-123")
-        self.assertEqual(result["credentials"]["api_secret"], "")
+        self.assertTrue(result["credentials"]["api_key_present"])
+        self.assertFalse(result["credentials"]["api_secret_present"])
+        self.assertNotIn("api_key", result["credentials"])
+        self.assertNotIn("api_secret", result["credentials"])
         self.assertEqual(
             result["credentials"]["api_secret_error"], "decrypt_failed: RuntimeError"
         )
@@ -569,7 +589,9 @@ class PosProvisioningTests(unittest.TestCase):
         self.assertIn("token=token-123", result["provisioning_url"])
         self.assertEqual(result["provisioning_qr_svg"], "svg-data")
         self.assertIn("devices.example.com%3A8080", result["provisioning_link"])
-        cached = json.loads(cache.values["kopos:provisioning:token-123"])
+        raw_cached = cache.values["kopos:provisioning:token-123"]
+        self.assertIsInstance(raw_cached, bytes)
+        cached = json.loads(raw_cached.decode())
         self.assertEqual(cached["setup"]["pos_profile"], "Counter 1")
         self.assertEqual(cached["setup"]["device_prefix"], "A")
         self.assertEqual(cached["setup"]["static_qr_payload"], "000201STATICERP")
@@ -577,6 +599,20 @@ class PosProvisioningTests(unittest.TestCase):
         self.assertEqual(cached["setup"]["api_key"], "api-key")
         self.assertEqual(
             cached["setup"]["erpnext_url"], "https://devices.example.com:8080"
+        )
+        self.assertEqual(
+            cache.ttls["kopos:provisioning:token-123"],
+            provisioning.DEFAULT_TTL_SECONDS,
+        )
+        self.assertEqual(
+            cache.set_calls,
+            [
+                (
+                    b"kopos:provisioning:token-123",
+                    raw_cached,
+                    provisioning.DEFAULT_TTL_SECONDS,
+                )
+            ],
         )
 
     def test_redeem_pos_provisioning_returns_setup_and_invalidates_token(self):
@@ -594,7 +630,8 @@ class PosProvisioningTests(unittest.TestCase):
                     "api_secret": "api-secret",
                 },
             }
-        )
+        ).encode()
+        cache.ttls["kopos:provisioning:token-123"] = 900
 
         with patch.object(provisioning.frappe, "cache", return_value=cache):
             result = provisioning.redeem_pos_provisioning("token-123")
@@ -625,6 +662,116 @@ class PosProvisioningTests(unittest.TestCase):
             self.assertRaisesRegex(RuntimeError, "does not support atomic token consumption"),
         ):
             provisioning.redeem_pos_provisioning("token-123")
+
+    def test_create_pos_provisioning_fails_when_redis_is_unavailable(self):
+        cache = _FakeCache()
+        fake_device = SimpleNamespace(
+            name="KOPOS-DEVICE-001",
+            device_id="tab-a-001",
+            pos_profile="Counter 1",
+        )
+
+        def fail_set(*args, **kwargs):
+            raise ConnectionError("redis unavailable")
+
+        cache.set = fail_set
+        with (
+            patch.object(provisioning, "require_system_manager", return_value=None),
+            patch.object(provisioning, "get_device_doc", return_value=fake_device),
+            patch.object(
+                provisioning,
+                "serialize_device_config",
+                return_value={"device_id": "tab-a-001", "pos_profile": "Counter 1"},
+            ),
+            patch.object(
+                provisioning.frappe,
+                "get_cached_doc",
+                return_value=SimpleNamespace(
+                    company="KoPOS Demo Sdn Bhd",
+                    warehouse="Main Warehouse",
+                    currency="MYR",
+                ),
+            ),
+            patch.object(provisioning.frappe, "generate_hash", return_value="token-123"),
+            patch.object(provisioning.frappe, "cache", return_value=cache),
+            patch.object(
+                provisioning.frappe.utils,
+                "get_url",
+                return_value="https://erp.example.com",
+            ),
+            self.assertRaisesRegex(RuntimeError, "could not be persisted to Redis"),
+        ):
+            provisioning.create_pos_provisioning(
+                device="KOPOS-DEVICE-001",
+                api_key="api-key",
+                api_secret="api-secret",
+            )
+
+    def test_create_pos_provisioning_clamps_and_confirms_token_ttl(self):
+        cache = _FakeCache()
+        fake_device = SimpleNamespace(
+            name="KOPOS-DEVICE-001",
+            device_id="tab-a-001",
+            pos_profile="Counter 1",
+        )
+        with (
+            patch.object(provisioning, "require_system_manager", return_value=None),
+            patch.object(provisioning, "get_device_doc", return_value=fake_device),
+            patch.object(
+                provisioning,
+                "serialize_device_config",
+                return_value={"device_id": "tab-a-001", "pos_profile": "Counter 1"},
+            ),
+            patch.object(
+                provisioning.frappe,
+                "get_cached_doc",
+                return_value=SimpleNamespace(
+                    company=None,
+                    warehouse=None,
+                    currency="MYR",
+                ),
+            ),
+            patch.object(
+                provisioning.frappe,
+                "generate_hash",
+                return_value="token-ttl",
+            ),
+            patch.object(provisioning.frappe, "cache", return_value=cache),
+            patch.object(
+                provisioning.frappe.utils,
+                "get_url",
+                return_value="https://erp.example.com",
+            ),
+            patch.object(provisioning, "get_qr_svg_code", return_value=b"svg-data"),
+        ):
+            provisioning.create_pos_provisioning(
+                device="KOPOS-DEVICE-001",
+                api_key="api-key",
+                api_secret="api-secret",
+                expires_in_seconds=1,
+            )
+
+        self.assertEqual(
+            cache.ttls["kopos:provisioning:token-ttl"],
+            provisioning.MIN_TTL_SECONDS,
+        )
+
+    def test_token_persistence_fails_closed_when_redis_drops_the_ttl(self):
+        cache = _FakeCache()
+        cache.ttl = lambda key: -1
+
+        with (
+            patch.object(provisioning.frappe, "cache", return_value=cache),
+            self.assertRaisesRegex(RuntimeError, "could not be confirmed"),
+        ):
+            provisioning._persist_cached_value(
+                "kopos:provisioning:token-no-ttl",
+                '{"status":"ok"}',
+                900,
+            )
+
+        self.assertIn("kopos:provisioning:token-no-ttl", cache.deleted)
+        self.assertNotIn("kopos:provisioning:token-no-ttl", cache.values)
 
     def test_get_device_config_returns_serialized_device_payload(self):
         fake_device = SimpleNamespace(device_id="tab-a-001", enabled=1)

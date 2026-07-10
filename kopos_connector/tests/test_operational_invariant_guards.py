@@ -16,6 +16,14 @@ from kopos_connector.api import devices, fb_orders
 
 
 CONNECTOR_ROOT = Path(__file__).resolve().parents[1]
+FORBIDDEN_ACTIVE_LEGACY_TERMS = {
+    "POS Invoice",
+    "POS Opening Entry",
+    "POS Closing Entry",
+    "pos_invoice",
+    "pos_opening_entry",
+    "pos_closing_entry",
+}
 
 
 def test_operational_doctypes_have_one_controller_owned_lifecycle() -> None:
@@ -37,6 +45,73 @@ def test_operational_doctypes_have_one_controller_owned_lifecycle() -> None:
     ):
         content = (CONNECTOR_ROOT / module).read_text()
         assert "def on_submit_" not in content
+
+
+def test_active_hook_install_report_and_workspace_surfaces_are_legacy_free() -> None:
+    report_sources = sorted(
+        path
+        for path in (CONNECTOR_ROOT / "kopos" / "report").rglob("*")
+        if path.suffix in {".json", ".py", ".js"}
+    )
+    active_sources = [
+        CONNECTOR_ROOT / "hooks.py",
+        CONNECTOR_ROOT / "install" / "install.py",
+        *report_sources,
+        *sorted((CONNECTOR_ROOT / "kopos" / "workspace").glob("*/*.json")),
+    ]
+
+    for source_path in active_sources:
+        content = source_path.read_text()
+        for forbidden in FORBIDDEN_ACTIVE_LEGACY_TERMS:
+            assert forbidden not in content, f"{source_path}: {forbidden}"
+
+
+def test_legacy_modifier_analytics_are_migration_only() -> None:
+    hooks_source = (CONNECTOR_ROOT / "hooks.py").read_text()
+    install_source = (CONNECTOR_ROOT / "install" / "install.py").read_text()
+    modifiers_tree = ast.parse((CONNECTOR_ROOT / "api" / "modifiers.py").read_text())
+    analytics_names = {
+        "aggregate_modifier_stats",
+        "get_modifier_sales_report",
+        "aggregate_modifier_stats_range",
+        "retry_failed_aggregations",
+    }
+    analytics_functions = {
+        node.name: node
+        for node in modifiers_tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in analytics_names
+    }
+
+    assert analytics_functions.keys() == analytics_names
+    assert all(not node.decorator_list for node in analytics_functions.values())
+    assert "aggregate_modifier_stats" not in hooks_source
+    assert "backfill_kopos_modifiers_to_fb" not in install_source
+    legacy_report_dir = (
+        CONNECTOR_ROOT / "kopos" / "report" / "modifier_sales_analytics"
+    )
+    assert not legacy_report_dir.exists() or not any(
+        path.suffix in {".json", ".py", ".js"}
+        for path in legacy_report_dir.iterdir()
+    )
+
+    patch_entries = (CONNECTOR_ROOT.parent / "patches.txt").read_text().splitlines()
+    assert "kopos_connector.patches.backfill_fb_modifiers_from_kopos" in patch_entries
+    assert "kopos_connector.patches.quarantine_legacy_modifier_report" in patch_entries
+
+
+def test_nested_orphan_hooks_module_is_absent() -> None:
+    assert not (CONNECTOR_ROOT / "kopos" / "hooks.py").exists()
+    assert not (CONNECTOR_ROOT / "install" / "install.py.bak").exists()
+
+
+def test_active_smoke_setup_never_creates_legacy_pos_documents() -> None:
+    smoke_source = (CONNECTOR_ROOT / "smoke.py").read_text()
+
+    assert "def _ensure_pos_opening_entry" not in smoke_source
+    assert "def inspect_refund_draft" not in smoke_source
+    assert 'settings.invoice_type = "POS Invoice"' not in smoke_source
+    assert 'frappe.get_doc("POS Invoice"' not in smoke_source
 
 
 def test_internal_fb_order_implementation_is_not_whitelisted() -> None:

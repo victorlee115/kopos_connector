@@ -23,8 +23,9 @@ def _passing_state() -> dict[str, Any]:
                     "name": "SHIFT-1",
                     "shift_code": "shift-1",
                     "status": "Closed",
-                    "expected_cash": 312.0,
-                    "counted_cash": 312.0,
+                    "opening_float": 300.0,
+                    "expected_cash": 300.0,
+                    "counted_cash": 300.0,
                     "cash_variance": 0.0,
                 }
             ],
@@ -52,6 +53,7 @@ def _passing_state() -> dict[str, Any]:
                     "docstatus": 1,
                     "is_return": False,
                     "custom_fb_idempotency_key": "idem-1",
+                    "custom_fb_shift": "SHIFT-1",
                     "items": [{"item_code": "ITEM-1"}],
                     "payments": [{"mode_of_payment": "Cash", "amount": 12.0}],
                 },
@@ -60,7 +62,9 @@ def _passing_state() -> dict[str, Any]:
                     "docstatus": 1,
                     "is_return": True,
                     "return_against": "SINV-1",
-                    "payments": [{"mode_of_payment": "Cash", "amount": -12.0}],
+                    "outstanding_amount": 0.0,
+                    "custom_fb_shift": "SHIFT-1",
+                    "payments": [],
                 },
                 {
                     "name": "SINV-VOID",
@@ -75,8 +79,36 @@ def _passing_state() -> dict[str, Any]:
                 {
                     "name": "FB-RETURN-1",
                     "return_id": "refund-1",
+                    "original_sales_invoice": "SINV-1",
                     "return_sales_invoice": "SINV-RETURN-1",
+                    "refund_method": "cash",
+                    "settlement_doctype": "Journal Entry",
+                    "settlement_document": "JV-REFUND-1",
+                    "settlement_status": "Posted",
+                    "settlement_docstatus": 1,
+                    "settlement_amount": 12.0,
+                    "return_outstanding_amount": 0.0,
+                    "settlement_gl_entries": [
+                        {
+                            "account": "Cash - CO",
+                            "account_type": "Cash",
+                            "party_type": None,
+                            "debit": 0.0,
+                            "credit": 12.0,
+                        },
+                        {
+                            "account": "Debtors - CO",
+                            "account_type": "Receivable",
+                            "party_type": "Customer",
+                            "party": "Walk-in Customer",
+                            "debit": 12.0,
+                            "credit": 0.0,
+                            "against_voucher_type": "Sales Invoice",
+                            "against_voucher": "SINV-RETURN-1",
+                        },
+                    ],
                     "status": "Submitted",
+                    "docstatus": 1,
                 }
             ],
             "void_records": [
@@ -179,6 +211,23 @@ def test_smoke_business_assertions_fail_on_active_legacy_path() -> None:
         failure["assertion"] == "no_active_legacy_pos_paths"
         for failure in result["failures"]
     )
+
+
+def test_smoke_business_assertions_fail_without_posted_refund_settlement() -> None:
+    state = _passing_state()
+    return_row = state["data"]["return_records"][0]
+    return_row["settlement_status"] = "Pending"
+    return_row["settlement_docstatus"] = 0
+    return_row["return_outstanding_amount"] = -12.0
+    return_row["settlement_gl_entries"] = []
+
+    result = smoke.build_smoke_business_assertions(state)
+
+    assert result["pass"] is False
+    failed = {failure["assertion"] for failure in result["failures"]}
+    assert "refund_settlement_document_posted" in failed
+    assert "refund_credit_note_outstanding_zero" in failed
+    assert "refund_customer_and_tender_gl_settled" in failed
 
 
 def test_closed_shift_rejection_absence_passes_when_no_docs_exist(monkeypatch) -> None:

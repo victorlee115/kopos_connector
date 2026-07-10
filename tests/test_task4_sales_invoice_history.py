@@ -121,8 +121,8 @@ def install_sales_invoice_fakes(monkeypatch: pytest.MonkeyPatch) -> MutableDoc:
     )
     monkeypatch.setattr(
         sales_invoice_service,
-        "elevate_device_api_user",
-        lambda: nullcontext(),
+        "privileged_device_api_operation",
+        lambda reason: nullcontext(),
     )
     monkeypatch.setattr(
         sales_invoice_service.frappe,

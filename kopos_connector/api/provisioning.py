@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import pickle
 from datetime import timedelta
 from typing import Any
 from urllib.parse import quote
@@ -202,10 +201,10 @@ def create_pos_provisioning(
         "setup": setup_payload,
     }
 
-    frappe.cache().set_value(
+    _persist_cached_value(
         _cache_key(token),
-        json.dumps(cache_payload, sort_keys=True),
-        expires_in_sec=ttl_seconds,
+        json.dumps(cache_payload, sort_keys=True, separators=(",", ":")),
+        ttl_seconds,
     )
 
     return {
@@ -241,7 +240,12 @@ def redeem_pos_provisioning(token: str | None = None) -> dict[str, Any]:
     if not cached:
         frappe.throw(_("Provisioning token is invalid or expired"))
 
-    payload = json.loads(cached)
+    try:
+        payload = json.loads(cached)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise RuntimeError("Provisioning token cache payload is invalid") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError("Provisioning token cache payload is invalid")
     return {
         "status": "ok",
         "issued_at": payload.get("issued_at"),
@@ -275,8 +279,57 @@ def _cache_key(token: str) -> str:
     return f"{PROVISIONING_CACHE_PREFIX}{token}"
 
 
-def _consume_cached_value(key: str) -> Any:
-    """Atomically fetch and delete a Frappe cache value from Redis."""
+def _persist_cached_value(key: str, value: str, ttl_seconds: int) -> None:
+    """Persist raw JSON directly in Redis and verify its value and expiry."""
+    cache = frappe.cache()
+    make_key = getattr(cache, "make_key", None)
+    set_direct = getattr(cache, "set", None)
+    get_direct = getattr(cache, "get", None)
+    get_ttl = getattr(cache, "ttl", None)
+    if (
+        not callable(make_key)
+        or not callable(set_direct)
+        or not callable(get_direct)
+        or not callable(get_ttl)
+    ):
+        raise RuntimeError(
+            "Frappe Redis cache does not support confirmed token persistence"
+        )
+
+    storage_key = make_key(key)
+    encoded_value = value.encode("utf-8")
+    try:
+        stored = set_direct(storage_key, encoded_value, ex=ttl_seconds)
+        persisted_value = get_direct(storage_key)
+        persisted_ttl = get_ttl(storage_key)
+    except Exception as error:
+        _delete_unconfirmed_cached_value(cache, storage_key)
+        raise RuntimeError(
+            "Provisioning token could not be persisted to Redis"
+        ) from error
+
+    persisted_matches = persisted_value in (value, encoded_value)
+    if not stored or not persisted_matches or not _has_positive_ttl(persisted_ttl):
+        _delete_unconfirmed_cached_value(cache, storage_key)
+        raise RuntimeError("Provisioning token persistence could not be confirmed")
+
+
+def _has_positive_ttl(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _delete_unconfirmed_cached_value(cache: Any, storage_key: Any) -> None:
+    delete_direct = getattr(cache, "delete", None)
+    if not callable(delete_direct):
+        return
+    try:
+        delete_direct(storage_key)
+    except Exception as error:
+        log_sanitized_error("KoPOS unconfirmed provisioning token cleanup failed", error)
+
+
+def _consume_cached_value(key: str) -> str | None:
+    """Atomically fetch and delete a raw JSON token payload from Redis."""
     cache = frappe.cache()
     make_key = getattr(cache, "make_key", None)
     eval_script = getattr(cache, "eval", None)
@@ -290,10 +343,14 @@ def _consume_cached_value(key: str) -> Any:
         local_cache.pop(storage_key, None)
     if raw_value is None:
         return None
-    try:
-        return pickle.loads(raw_value)
-    except Exception as error:
-        raise RuntimeError("Provisioning token cache payload is invalid") from error
+    if isinstance(raw_value, str):
+        return raw_value
+    if isinstance(raw_value, (bytes, bytearray, memoryview)):
+        try:
+            return bytes(raw_value).decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise RuntimeError("Provisioning token cache payload is invalid") from error
+    raise RuntimeError("Provisioning token cache payload is invalid")
 
 
 def _device_api_user_email(device_doc) -> str:

@@ -247,8 +247,9 @@ def build_sample_smoke_state() -> dict[str, object]:
                     "name": "SHIFT-001",
                     "shift_code": "smoke-shift-001",
                     "status": "Closed",
-                    "expected_cash": 12.0,
-                    "counted_cash": 12.0,
+                    "opening_float": 0.0,
+                    "expected_cash": 0.0,
+                    "counted_cash": 0.0,
                     "cash_variance": 0.0,
                 }
             ],
@@ -288,19 +289,55 @@ def build_sample_smoke_state() -> dict[str, object]:
                     "is_return": True,
                     "return_against": "SI-001",
                     "grand_total": -12.0,
-                    "paid_amount": -12.0,
+                    "paid_amount": 0.0,
                     "outstanding_amount": 0.0,
                     "custom_fb_order": "ORDER-001",
                     "custom_fb_shift": "SHIFT-001",
                     "custom_fb_idempotency_key": "idem-001:return",
                     "items": [{"item_code": "ITEM-COFFEE"}],
-                    "payments": [{"mode_of_payment": "Cash", "amount": -12.0}],
+                    "payments": [],
                 }
             ],
             "sales_invoice_payments": [
                 {"sales_invoice": "SI-001", "mode_of_payment": "Cash", "amount": 12.0}
             ],
-            "return_records": [{"name": "RET-001", "fb_order": "ORDER-001"}],
+            "return_records": [
+                {
+                    "name": "RET-001",
+                    "return_id": "refund-001",
+                    "fb_order": "ORDER-001",
+                    "original_sales_invoice": "SI-001",
+                    "return_sales_invoice": "SI-RET-001",
+                    "refund_method": "cash",
+                    "settlement_doctype": "Journal Entry",
+                    "settlement_document": "JV-REFUND-001",
+                    "settlement_status": "Posted",
+                    "settlement_docstatus": 1,
+                    "settlement_amount": 12.0,
+                    "return_outstanding_amount": 0.0,
+                    "settlement_gl_entries": [
+                        {
+                            "account": "Cash - CO",
+                            "account_type": "Cash",
+                            "party_type": None,
+                            "debit": 0.0,
+                            "credit": 12.0,
+                        },
+                        {
+                            "account": "Debtors - CO",
+                            "account_type": "Receivable",
+                            "party_type": "Customer",
+                            "party": "Walk-in Customer",
+                            "debit": 12.0,
+                            "credit": 0.0,
+                            "against_voucher_type": "Sales Invoice",
+                            "against_voucher": "SI-RET-001",
+                        },
+                    ],
+                    "status": "Submitted",
+                    "docstatus": 1,
+                }
+            ],
             "void_records": [{"sales_invoice": "SI-VOID-001", "fb_order": "ORDER-001"}],
             "projection_statuses": {
                 "rows": [
@@ -325,8 +362,8 @@ def build_sample_smoke_state() -> dict[str, object]:
                     "shift_code": "smoke-shift-001",
                     "status": "Closed",
                     "opening_float": 0.0,
-                    "expected_cash": 12.0,
-                    "counted_cash": 12.0,
+                    "expected_cash": 0.0,
+                    "counted_cash": 0.0,
                     "cash_variance": 0.0,
                 }
             ],

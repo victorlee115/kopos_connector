@@ -10,8 +10,12 @@ from frappe.utils import cint, cstr, flt
 
 from kopos_connector.api.devices import require_device_context
 from kopos_connector.kopos.services.operations.return_guard_service import (
+    aggregate_return_lines,
     lock_and_validate_return_quantities,
 )
+
+
+REFUND_METHODS = {"cash", "qr", "card", "voucher"}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -24,44 +28,26 @@ def process_return() -> dict[str, Any]:
 def process_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
     validated = _validate_payload(payload)
     lock_and_validate_return_quantities(
-        validated["return_id"], validated["lines"]
+        validated["return_id"],
+        validated["lines"],
+        validated["original_sales_invoice"],
     )
-    existing_return = frappe.db.get_value(
-        "FB Return Event", {"return_id": validated["return_id"]}, "name"
-    )
+    existing_return = _get_existing_return_name_current(validated["return_id"])
     if existing_return:
         return_doc = frappe.get_doc("FB Return Event", existing_return)
         _validate_existing_return_matches(validated, return_doc)
-        return {
-            "status": "duplicate",
-            "return_event": return_doc.name,
-            "return_sales_invoice": cstr(
-                getattr(return_doc, "return_sales_invoice", None)
-            )
-            or None,
-            "return_to_stock": cint(getattr(return_doc, "return_to_stock", 0)),
-            "reversal_stock_entries": [
-                cstr(getattr(line, "reversal_stock_entry", None))
-                for line in (return_doc.get("lines") or [])
-                if cstr(getattr(line, "reversal_stock_entry", None))
-            ],
-        }
+        from kopos_connector.kopos.services.operations.return_service import (
+            ensure_existing_return_event_settlement,
+        )
+
+        ensure_existing_return_event_settlement(return_doc)
+        return_doc.reload()
+        return _serialize_return_response("duplicate", return_doc)
     return_doc = _build_return_event(validated)
     return_doc.insert(ignore_permissions=True)
     return_doc.submit()
     return_doc.reload()
-    return {
-        "status": "ok",
-        "return_event": return_doc.name,
-        "return_sales_invoice": cstr(getattr(return_doc, "return_sales_invoice", None))
-        or None,
-        "return_to_stock": cint(getattr(return_doc, "return_to_stock", 0)),
-        "reversal_stock_entries": [
-            cstr(getattr(line, "reversal_stock_entry", None))
-            for line in (return_doc.get("lines") or [])
-            if cstr(getattr(line, "reversal_stock_entry", None))
-        ],
-    }
+    return _serialize_return_response("ok", return_doc)
 
 
 def _get_request_payload() -> dict[str, Any]:
@@ -73,6 +59,25 @@ def _get_request_payload() -> dict[str, Any]:
     return dict(frappe.form_dict or {})
 
 
+def _get_existing_return_name_current(return_id: str) -> str | None:
+    """Read idempotency state after sale locking without an older RR snapshot."""
+    rows = frappe.db.sql(
+        """
+        SELECT name
+        FROM `tabFB Return Event`
+        WHERE return_id = %s
+        ORDER BY name
+        LIMIT 1
+        FOR UPDATE
+        """,
+        (return_id,),
+        as_dict=True,
+    )
+    if not rows:
+        return None
+    return cstr(_row_value(rows[0], "name")).strip() or None
+
+
 def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return_id = cstr(payload.get("return_id") or payload.get("idempotency_key"))
     device_id = cstr(payload.get("device_id")).strip() or None
@@ -80,6 +85,7 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     original_sales_invoice = cstr(payload.get("original_sales_invoice")) or None
     reason_code = cstr(payload.get("reason_code")) or "Other"
     reason_text = cstr(payload.get("reason_text")) or None
+    refund_method = cstr(payload.get("refund_method")).strip().lower()
     return_to_stock = 1 if cint(payload.get("return_to_stock")) else 0
     lines = payload.get("lines")
 
@@ -87,6 +93,11 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         frappe.throw("return_id is required", frappe.ValidationError)
     if not device_id:
         frappe.throw("device_id is required", frappe.ValidationError)
+    if refund_method not in REFUND_METHODS:
+        frappe.throw(
+            "refund_method must be one of: cash, qr, card, voucher",
+            frappe.ValidationError,
+        )
     if not isinstance(lines, list) or not lines:
         if not fb_order:
             frappe.throw("lines must contain at least one row", frappe.ValidationError)
@@ -142,6 +153,7 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "qty_returned": qty_returned,
             }
         )
+    validated_lines = aggregate_return_lines(validated_lines)
 
     if not original_sales_invoice:
         resolved_sale = frappe.get_doc(
@@ -172,6 +184,11 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         original_sales_invoice,
         fb_order,
     )
+    _validate_full_return_lines(
+        validated_lines,
+        original_sales_invoice,
+        fb_order,
+    )
     return {
         "return_id": return_id,
         "device_id": device_id,
@@ -179,6 +196,7 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "original_sales_invoice": original_sales_invoice,
         "reason_code": reason_code,
         "reason_text": reason_text,
+        "refund_method": refund_method,
         "return_to_stock": return_to_stock,
         "lines": validated_lines,
     }
@@ -191,6 +209,7 @@ def _build_return_event(validated: dict[str, Any]):
     doc.original_sales_invoice = validated["original_sales_invoice"]
     doc.reason_code = validated["reason_code"]
     doc.reason_text = validated["reason_text"]
+    doc.refund_method = validated["refund_method"]
     doc.return_to_stock = validated["return_to_stock"]
     doc.status = "Draft"
     for line in validated["lines"]:
@@ -268,11 +287,33 @@ def _validate_existing_return_matches(validated: dict[str, Any], return_doc: Any
             "return_id was already used with different return_to_stock intent",
             frappe.ValidationError,
         )
-    existing_lines = {
-        cstr(getattr(line, "original_resolved_sale", "")).strip(): flt(
-            getattr(line, "qty_returned", 0)
+    existing_refund_method = cstr(
+        getattr(return_doc, "refund_method", "")
+    ).strip().lower()
+    if existing_refund_method and existing_refund_method != validated["refund_method"]:
+        frappe.throw(
+            "return_id was already used with a different refund_method",
+            frappe.ValidationError,
         )
-        for line in (return_doc.get("lines") or [])
+    if not existing_refund_method:
+        db_set = getattr(return_doc, "db_set", None)
+        if callable(db_set):
+            db_set("refund_method", validated["refund_method"], update_modified=False)
+        else:
+            return_doc.refund_method = validated["refund_method"]
+    existing_lines = {
+        cstr(line["original_resolved_sale"]).strip(): flt(line["qty_returned"])
+        for line in aggregate_return_lines(
+            [
+                {
+                    "original_resolved_sale": getattr(
+                        line, "original_resolved_sale", ""
+                    ),
+                    "qty_returned": getattr(line, "qty_returned", 0),
+                }
+                for line in (return_doc.get("lines") or [])
+            ]
+        )
     }
     requested_lines = {
         cstr(line["original_resolved_sale"]).strip(): flt(line["qty_returned"])
@@ -283,3 +324,87 @@ def _validate_existing_return_matches(validated: dict[str, Any], return_doc: Any
             "return_id was already used with different return lines",
             frappe.ValidationError,
         )
+
+
+def _validate_full_return_lines(
+    lines: list[dict[str, Any]],
+    original_sales_invoice: str,
+    fb_order: str | None,
+) -> None:
+    filters: dict[str, Any] = {"sales_invoice": original_sales_invoice}
+    if fb_order:
+        filters["fb_order"] = fb_order
+    resolved_sales = frappe.get_all(
+        "FB Resolved Sale",
+        filters=filters,
+        fields=["name", "qty"],
+        order_by="name asc",
+    )
+    expected = {
+        cstr(_row_value(row, "name")).strip(): flt(_row_value(row, "qty"))
+        for row in resolved_sales or []
+        if cstr(_row_value(row, "name")).strip()
+    }
+    requested = {
+        cstr(line.get("original_resolved_sale")).strip(): flt(
+            line.get("qty_returned")
+        )
+        for line in lines
+        if cstr(line.get("original_resolved_sale")).strip()
+    }
+    if not expected or requested != expected:
+        frappe.throw(
+            "Partial ERP returns are not supported; refund lines must exactly match the full Sales Invoice",
+            frappe.ValidationError,
+        )
+
+
+def _serialize_return_response(status: str, return_doc: Any) -> dict[str, Any]:
+    from kopos_connector.kopos.services.accounting.return_settlement_service import (
+        assert_return_settlement_posted,
+    )
+
+    assert_return_settlement_posted(return_doc)
+    return_sales_invoice = cstr(
+        getattr(return_doc, "return_sales_invoice", None)
+    ).strip()
+    settlement_doctype = cstr(
+        getattr(return_doc, "settlement_doctype", None)
+    ).strip()
+    settlement_document = cstr(
+        getattr(return_doc, "settlement_document", None)
+    ).strip()
+    settlement_status = cstr(
+        getattr(return_doc, "settlement_status", None)
+    ).strip()
+    if (
+        not return_sales_invoice
+        or settlement_doctype not in {"Payment Entry", "Journal Entry"}
+        or not settlement_document
+        or settlement_status != "Posted"
+    ):
+        frappe.throw(
+            f"FB Return Event {return_doc.name} has no posted accounting settlement proof",
+            frappe.ValidationError,
+        )
+
+    return {
+        "status": status,
+        "return_event": return_doc.name,
+        "return_sales_invoice": return_sales_invoice,
+        "settlement_doctype": settlement_doctype,
+        "settlement_document": settlement_document,
+        "settlement_status": settlement_status,
+        "return_to_stock": cint(getattr(return_doc, "return_to_stock", 0)),
+        "reversal_stock_entries": [
+            cstr(getattr(line, "reversal_stock_entry", None))
+            for line in (return_doc.get("lines") or [])
+            if cstr(getattr(line, "reversal_stock_entry", None))
+        ],
+    }
+
+
+def _row_value(row: Any, fieldname: str) -> Any:
+    if isinstance(row, Mapping):
+        return row.get(fieldname)
+    return getattr(row, fieldname, None)

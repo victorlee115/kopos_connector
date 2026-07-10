@@ -15,6 +15,11 @@ class FBReturnEvent(Document):
             frappe.throw("FB Return Event requires return_id")
         if not self.get("lines"):
             frappe.throw("FB Return Event requires at least one line")
+        if self.refund_method not in {"cash", "qr", "card", "voucher"}:
+            frappe.throw(
+                "FB Return Event refund_method must be cash, qr, card, or voucher",
+                frappe.ValidationError,
+            )
 
     def before_submit(self):
         lock_and_validate_return_quantities(
@@ -26,6 +31,7 @@ class FBReturnEvent(Document):
                 }
                 for line in self.get("lines") or []
             ],
+            self.original_sales_invoice,
         )
 
     def on_submit(self):

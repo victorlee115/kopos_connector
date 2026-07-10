@@ -1,0 +1,590 @@
+from __future__ import annotations
+
+import importlib
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Callable
+
+import pytest
+
+from .fake_frappe import install_fake_frappe_modules
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+install_fake_frappe_modules()
+
+
+class FakeDoc(SimpleNamespace):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.insert_count = 0
+        self.submit_count = 0
+        self.db_updates: list[tuple[str, Any]] = []
+        self._submit_hook: Callable[[], None] | None = None
+
+    def get(self, key: str) -> Any:
+        return getattr(self, key, None)
+
+    def set(self, key: str, value: Any) -> None:
+        setattr(self, key, value)
+
+    def append(self, key: str, row: dict[str, Any]) -> FakeDoc:
+        child = FakeDoc(**row)
+        rows = list(getattr(self, key, []) or [])
+        rows.append(child)
+        setattr(self, key, rows)
+        return child
+
+    def insert(self, ignore_permissions: bool = False) -> FakeDoc:
+        self.insert_count += 1
+        return self
+
+    def submit(self) -> FakeDoc:
+        self.submit_count += 1
+        self.docstatus = 1
+        if self._submit_hook:
+            self._submit_hook()
+        return self
+
+    def db_set(
+        self,
+        fieldname: str,
+        value: Any,
+        update_modified: bool = True,
+    ) -> None:
+        setattr(self, fieldname, value)
+        self.db_updates.append((fieldname, value))
+
+    def reload(self) -> FakeDoc:
+        return self
+
+
+def _settlement_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    include_settlement_gl: bool = True,
+    payment_rows: list[FakeDoc] | None = None,
+) -> tuple[Any, FakeDoc, FakeDoc, FakeDoc, FakeDoc]:
+    service = importlib.import_module(
+        "kopos_connector.kopos.services.accounting.return_settlement_service"
+    )
+    original_invoice = FakeDoc(
+        doctype="Sales Invoice",
+        name="SINV-1",
+        docstatus=1,
+        is_return=0,
+        grand_total="12.00",
+        outstanding_amount="0.00",
+        company="Company A",
+        currency="MYR",
+        conversion_rate=1,
+        customer="Walk-in Customer",
+        debit_to="Debtors - CO",
+        payments=payment_rows
+        or [
+            FakeDoc(
+                mode_of_payment="Cash",
+                type="Cash",
+                account="Cash - CO",
+                amount="12.00",
+            )
+        ],
+    )
+    return_invoice = FakeDoc(
+        doctype="Sales Invoice",
+        name="SINV-RETURN-1",
+        docstatus=1,
+        is_return=1,
+        return_against="SINV-1",
+        grand_total="-12.00",
+        outstanding_amount="-12.00",
+        company="Company A",
+        currency="MYR",
+        conversion_rate=1,
+        customer="Walk-in Customer",
+        debit_to="Debtors - CO",
+        posting_date="2026-07-10",
+    )
+    return_event = FakeDoc(
+        doctype="FB Return Event",
+        name="FB-RETURN-1",
+        original_sales_invoice="SINV-1",
+        return_sales_invoice="SINV-RETURN-1",
+        refund_method="cash",
+        settlement_doctype=None,
+        settlement_document=None,
+        settlement_status="Pending",
+    )
+    journal = FakeDoc(
+        doctype="Journal Entry",
+        name="JV-REFUND-1",
+        docstatus=0,
+        accounts=[],
+    )
+    journal._submit_hook = lambda: setattr(
+        return_invoice, "outstanding_amount", "0.00"
+    )
+
+    class FakeDB:
+        def get_value(self, doctype: str, name_or_filters: Any, fieldname: str) -> Any:
+            if (doctype, name_or_filters, fieldname) == (
+                "Company",
+                "Company A",
+                "default_currency",
+            ):
+                return "MYR"
+            if (doctype, name_or_filters, fieldname) == (
+                "Account",
+                "Cash - CO",
+                "account_type",
+            ):
+                return "Cash"
+            if doctype == "Journal Entry":
+                return None
+            raise AssertionError(
+                f"unexpected get_value({doctype!r}, {name_or_filters!r}, {fieldname!r})"
+            )
+
+    def get_doc(doctype: str, name: str) -> FakeDoc:
+        docs = {
+            ("Sales Invoice", "SINV-1"): original_invoice,
+            ("Sales Invoice", "SINV-RETURN-1"): return_invoice,
+            ("FB Return Event", "FB-RETURN-1"): return_event,
+            ("Journal Entry", "JV-REFUND-1"): journal,
+        }
+        return docs[(doctype, name)]
+
+    def get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        if doctype != "GL Entry":
+            return []
+        filters = kwargs["filters"]
+        if filters["voucher_type"] == "Sales Invoice":
+            return [
+                {
+                    "account": "Cash - CO",
+                    "debit_in_account_currency": "12.00",
+                    "credit_in_account_currency": "0.00",
+                }
+            ]
+        if not include_settlement_gl or journal.docstatus != 1:
+            return []
+        return [
+            {
+                "account": "Cash - CO",
+                "party_type": None,
+                "party": None,
+                "debit_in_account_currency": "0.00",
+                "credit_in_account_currency": "12.00",
+                "against_voucher_type": None,
+                "against_voucher": None,
+            },
+            {
+                "account": "Debtors - CO",
+                "party_type": "Customer",
+                "party": "Walk-in Customer",
+                "debit_in_account_currency": "12.00",
+                "credit_in_account_currency": "0.00",
+                "against_voucher_type": "Sales Invoice",
+                "against_voucher": "SINV-RETURN-1",
+            },
+        ]
+
+    monkeypatch.setattr(service.frappe, "db", FakeDB())
+    monkeypatch.setattr(service.frappe, "get_doc", get_doc)
+    monkeypatch.setattr(service.frappe, "get_all", get_all)
+    monkeypatch.setattr(service.frappe, "new_doc", lambda doctype: journal)
+    monkeypatch.setattr(
+        service.frappe,
+        "get_meta",
+        lambda doctype: SimpleNamespace(has_field=lambda fieldname: True),
+    )
+    return service, original_invoice, return_invoice, return_event, journal
+
+
+def test_full_cash_refund_posts_one_idempotent_journal_with_exact_gl_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, return_invoice, return_event, journal = _settlement_fixture(monkeypatch)
+
+    first = service.ensure_return_settlement(return_event, return_invoice.name)
+    second = service.ensure_return_settlement(return_event, return_invoice.name)
+    evidence = service.assert_return_settlement_posted(return_event)
+
+    assert first == "JV-REFUND-1"
+    assert second == first
+    assert journal.insert_count == 1
+    assert journal.submit_count == 1
+    assert return_event.settlement_doctype == "Journal Entry"
+    assert return_event.settlement_document == "JV-REFUND-1"
+    assert return_event.settlement_status == "Posted"
+    assert evidence["settlement_amount_sen"] == 1200
+    assert evidence["tender_credit_sen"] == 1200
+    assert evidence["customer_debit_sen"] == 1200
+    assert evidence["return_outstanding_sen"] == 0
+    assert service.get_settlement_cash_adjustment_sen(return_event) == -1200
+
+    receivable, tender = journal.accounts
+    assert receivable.account == "Debtors - CO"
+    assert receivable.party_type == "Customer"
+    assert receivable.reference_type == "Sales Invoice"
+    assert receivable.reference_name == "SINV-RETURN-1"
+    assert receivable.debit_in_account_currency == service.Decimal("12")
+    assert tender.account == "Cash - CO"
+    assert tender.credit_in_account_currency == service.Decimal("12")
+    provenance = json.loads(return_event.settlement_tenders_json)
+    assert provenance["settlement_amount_sen"] == 1200
+    assert provenance["tenders"] == [
+        {"account": "Cash - CO", "amount_sen": 1200, "refund_method": "cash"}
+    ]
+
+
+def test_settlement_fails_closed_without_submitted_gl_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, return_invoice, return_event, journal = _settlement_fixture(
+        monkeypatch, include_settlement_gl=False
+    )
+
+    with pytest.raises(
+        service.frappe.ValidationError, match="has no submitted GL evidence"
+    ):
+        service.ensure_return_settlement(return_event, return_invoice.name)
+
+    assert journal.submit_count == 1
+    assert return_event.settlement_status == "Pending"
+    assert return_event.settlement_document is None
+
+
+def test_settlement_rejects_extra_or_gross_gl_postings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, return_invoice, return_event, _ = _settlement_fixture(monkeypatch)
+    original_get_all = service.frappe.get_all
+
+    def get_all_with_unrelated_posting(
+        doctype: str, **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        rows = original_get_all(doctype, **kwargs)
+        if doctype == "GL Entry" and kwargs["filters"]["voucher_type"] == "Journal Entry":
+            rows.append(
+                {
+                    "account": "Suspense - CO",
+                    "debit_in_account_currency": "1.00",
+                    "credit_in_account_currency": "0.00",
+                }
+            )
+        return rows
+
+    monkeypatch.setattr(service.frappe, "get_all", get_all_with_unrelated_posting)
+    with pytest.raises(service.frappe.ValidationError, match="unexpected GL posting"):
+        service.ensure_return_settlement(return_event, return_invoice.name)
+
+    service, _, return_invoice, return_event, _ = _settlement_fixture(monkeypatch)
+    original_get_all = service.frappe.get_all
+
+    def get_all_with_tender_churn(
+        doctype: str, **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        rows = original_get_all(doctype, **kwargs)
+        if doctype == "GL Entry" and kwargs["filters"]["voucher_type"] == "Journal Entry":
+            rows[0]["debit_in_account_currency"] = "1.00"
+            rows[0]["credit_in_account_currency"] = "13.00"
+        return rows
+
+    monkeypatch.setattr(service.frappe, "get_all", get_all_with_tender_churn)
+    with pytest.raises(service.frappe.ValidationError, match="pure credit"):
+        service.ensure_return_settlement(return_event, return_invoice.name)
+
+
+def test_mixed_tender_and_fractional_sen_refunds_are_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, original, _, _, _ = _settlement_fixture(
+        monkeypatch,
+        payment_rows=[
+            FakeDoc(
+                mode_of_payment="Cash",
+                type="Cash",
+                account="Cash - CO",
+                amount="6.00",
+            ),
+            FakeDoc(
+                mode_of_payment="Credit Card",
+                type="Bank",
+                account="Card Clearing - CO",
+                amount="6.00",
+            ),
+        ],
+    )
+
+    with pytest.raises(
+        service.frappe.ValidationError,
+        match="does not exactly match the original tender mix",
+    ):
+        service._resolve_original_tenders(original, "cash", 1200)
+    with pytest.raises(service.frappe.ValidationError, match="fractional sen"):
+        service._money_to_sen("0.001", "refund amount")
+
+
+def test_settlement_rejects_mismatched_credit_note_context_and_tender_account_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, original, return_invoice, _, _ = _settlement_fixture(monkeypatch)
+    return_invoice.company = "Company B"
+    with pytest.raises(service.frappe.ValidationError, match="mismatched company"):
+        service._validate_full_return_invoice(original, return_invoice)
+
+    return_invoice.company = "Company A"
+    existing_get_value = service.frappe.db.get_value
+
+    def get_value(doctype: str, name_or_filters: Any, fieldname: str) -> Any:
+        if (doctype, name_or_filters, fieldname) == (
+            "Account",
+            "Cash - CO",
+            "account_type",
+        ):
+            return "Bank"
+        return existing_get_value(doctype, name_or_filters, fieldname)
+
+    monkeypatch.setattr(service.frappe.db, "get_value", get_value)
+    with pytest.raises(service.frappe.ValidationError, match="must use a Cash account"):
+        service._resolve_original_tenders(original, "cash", 1200)
+
+
+def test_settlement_uses_rounded_payable_total_without_losing_grand_total_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, original, return_invoice, _, _ = _settlement_fixture(monkeypatch)
+    original.grand_total = "12.03"
+    original.rounded_total = "12.05"
+    return_invoice.grand_total = "-12.03"
+    return_invoice.rounded_total = "-12.05"
+
+    assert service._validate_full_return_invoice(original, return_invoice) == 1205
+
+    return_invoice.grand_total = "-12.02"
+    with pytest.raises(
+        service.frappe.ValidationError,
+        match="must exactly reverse the original invoice",
+    ):
+        service._validate_full_return_invoice(original, return_invoice)
+
+
+def test_return_guard_uses_two_current_locks_and_aggregates_duplicate_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    guard = importlib.import_module(
+        "kopos_connector.kopos.services.operations.return_guard_service"
+    )
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    class FakeDB:
+        submitted_rows: list[dict[str, Any]] = []
+
+        def sql(
+            self,
+            query: str,
+            values: tuple[str, ...],
+            as_dict: bool = False,
+        ) -> list[dict[str, Any]]:
+            assert as_dict is True
+            calls.append((query, values))
+            if "FROM `tabFB Resolved Sale`" in query:
+                return [{"name": "RS-1", "qty": "2"}]
+            return list(self.submitted_rows)
+
+    db = FakeDB()
+    monkeypatch.setattr(guard.frappe, "db", db)
+    duplicate_lines = [
+        {"original_resolved_sale": "RS-1", "qty_returned": "0.75"},
+        {"original_resolved_sale": "RS-1", "qty_returned": "1.25"},
+    ]
+
+    guard.lock_and_validate_return_quantities(
+        "return-1", duplicate_lines, "SINV-1"
+    )
+
+    assert len(calls) == 2
+    assert "sales_invoice = %s" in calls[0][0]
+    assert calls[0][1] == ("SINV-1",)
+    assert "return_event.docstatus = 1" in calls[1][0]
+    assert "FOR UPDATE" in calls[1][0]
+    assert guard.aggregate_return_lines(duplicate_lines) == [
+        {"original_resolved_sale": "RS-1", "qty_returned": 2.0}
+    ]
+
+    db.submitted_rows = [
+        {
+            "original_resolved_sale": "RS-1",
+            "qty_returned": "0.01",
+            "return_id": "another-return",
+        }
+    ]
+    with pytest.raises(guard.frappe.ValidationError, match="exceeds purchased"):
+        guard.lock_and_validate_return_quantities(
+            "return-2", duplicate_lines, "SINV-1"
+        )
+
+
+def test_duplicate_return_children_mark_the_resolved_sale_fully_returned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = importlib.import_module(
+        "kopos_connector.kopos.services.operations.return_service"
+    )
+    resolved_sale = FakeDoc(name="RS-1", qty="1.00", status="Open")
+    monkeypatch.setattr(
+        service.frappe,
+        "get_doc",
+        lambda doctype, name: resolved_sale,
+    )
+    return_event = FakeDoc(
+        lines=[
+            FakeDoc(original_resolved_sale="RS-1", qty_returned="0.50"),
+            FakeDoc(original_resolved_sale="RS-1", qty_returned="0.50"),
+        ]
+    )
+
+    service._update_resolved_sale_statuses(return_event)
+
+    assert resolved_sale.status == "Returned"
+
+
+def test_duplicate_persisted_children_match_an_aggregated_idempotent_retry() -> None:
+    api = importlib.import_module("kopos_connector.api.fb_returns")
+    return_event = FakeDoc(
+        original_sales_invoice="SINV-1",
+        fb_order="FB-ORDER-1",
+        return_to_stock=0,
+        refund_method="cash",
+        lines=[
+            FakeDoc(original_resolved_sale="RS-1", qty_returned="0.50"),
+            FakeDoc(original_resolved_sale="RS-1", qty_returned="0.50"),
+        ],
+    )
+    validated = {
+        "original_sales_invoice": "SINV-1",
+        "fb_order": "FB-ORDER-1",
+        "return_to_stock": 0,
+        "refund_method": "cash",
+        "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 1.0}],
+    }
+
+    api._validate_existing_return_matches(validated, return_event)
+
+
+def test_return_idempotency_lookup_is_a_post_lock_current_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = importlib.import_module("kopos_connector.api.fb_returns")
+    captured: dict[str, Any] = {}
+
+    class FakeDB:
+        def sql(
+            self,
+            query: str,
+            values: tuple[str, ...],
+            as_dict: bool = False,
+        ) -> list[dict[str, str]]:
+            captured.update({"query": query, "values": values, "as_dict": as_dict})
+            return [{"name": "FB-RETURN-1"}]
+
+    monkeypatch.setattr(api.frappe, "db", FakeDB())
+
+    result = api._get_existing_return_name_current("return-idem-1")
+
+    assert result == "FB-RETURN-1"
+    assert "WHERE return_id = %s" in captured["query"]
+    assert "FOR UPDATE" in captured["query"]
+    assert captured["values"] == ("return-idem-1",)
+    assert captured["as_dict"] is True
+
+
+def test_shift_cash_uses_posted_settlement_cash_outflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = importlib.import_module(
+        "kopos_connector.kopos.services.accounting.return_invoice_service"
+    )
+    shift = FakeDoc(
+        doctype="FB Shift",
+        name="SHIFT-1",
+        opening_float="100.00",
+        counted_cash="100.00",
+    )
+    sale = FakeDoc(
+        doctype="Sales Invoice",
+        name="SINV-1",
+        docstatus=1,
+        payments=[FakeDoc(mode_of_payment="Cash", amount="12.00")],
+    )
+    return_event = FakeDoc(
+        doctype="FB Return Event",
+        name="FB-RETURN-1",
+        refund_method="cash",
+        settlement_status="Posted",
+    )
+
+    def get_doc(doctype: str, name: str) -> FakeDoc:
+        return {
+            ("FB Shift", "SHIFT-1"): shift,
+            ("Sales Invoice", "SINV-1"): sale,
+            ("FB Return Event", "FB-RETURN-1"): return_event,
+        }[(doctype, name)]
+
+    def get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        if doctype == "FB Order":
+            return [{"sales_invoice": "SINV-1"}]
+        if doctype == "FB Return Event":
+            return [{"name": "FB-RETURN-1"}]
+        return []
+
+    monkeypatch.setattr(service.frappe, "get_doc", get_doc)
+    monkeypatch.setattr(service.frappe, "get_all", get_all)
+    monkeypatch.setattr(
+        service,
+        "get_settlement_cash_adjustment_sen",
+        lambda event: -1200,
+    )
+
+    service.refresh_fb_shift_cash("SHIFT-1")
+
+    assert shift.expected_cash == service.Decimal("100")
+    assert shift.cash_variance == service.Decimal("0")
+
+
+def test_success_and_duplicate_api_responses_expose_same_settlement_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = importlib.import_module("kopos_connector.api.fb_returns")
+    settlement = importlib.import_module(
+        "kopos_connector.kopos.services.accounting.return_settlement_service"
+    )
+    return_event = FakeDoc(
+        name="FB-RETURN-1",
+        return_sales_invoice="SINV-RETURN-1",
+        settlement_doctype="Journal Entry",
+        settlement_document="JV-REFUND-1",
+        settlement_status="Posted",
+        return_to_stock=0,
+        lines=[],
+    )
+    verified: list[str] = []
+    monkeypatch.setattr(
+        settlement,
+        "assert_return_settlement_posted",
+        lambda doc: verified.append(doc.name) or {},
+    )
+
+    success = api._serialize_return_response("ok", return_event)
+    duplicate = api._serialize_return_response("duplicate", return_event)
+
+    for response in (success, duplicate):
+        assert response["return_sales_invoice"] == "SINV-RETURN-1"
+        assert response["settlement_doctype"] == "Journal Entry"
+        assert response["settlement_document"] == "JV-REFUND-1"
+        assert response["settlement_status"] == "Posted"
+    assert verified == ["FB-RETURN-1", "FB-RETURN-1"]

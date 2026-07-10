@@ -6,7 +6,6 @@ import frappe
 from frappe import _
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
 
-from kopos_connector.api.modifier_migration import backfill_kopos_modifiers_to_fb
 from kopos_connector.kopos.install.fb_custom_fields import create_fb_custom_fields
 from kopos_connector.patches.normalize_duplicate_device_api_users import (
     execute as normalize_duplicate_device_api_users,
@@ -65,11 +64,10 @@ def after_install():
 
 
 def after_migrate():
-    """Ensure KoPOS custom fields exist after DocTypes are synced."""
+    """Ensure active KoPOS custom fields exist after DocTypes are synced."""
     ensure_kopos_module_defs()
     ensure_kopos_custom_fields(skip_if_missing_doctypes=False)
     create_fb_custom_fields()
-    backfill_kopos_modifiers_to_fb(dry_run=False)
 
 
 def ensure_kopos_module_defs() -> None:
@@ -104,7 +102,10 @@ def ensure_kopos_custom_fields(skip_if_missing_doctypes: bool) -> None:
 
 def create_kopos_custom_fields():
     """
-    Create custom fields for Item and POS Profile DocTypes
+    Create custom fields for active Item, POS Profile, and Sales Invoice flows.
+
+    Legacy ERP point-of-sale document fields are intentionally not installed.
+    Existing fields remain untouched for explicit migration tooling.
     """
     custom_fields = {
         "Item": [
@@ -196,252 +197,6 @@ def create_kopos_custom_fields():
                 "precision": 2,
             },
         ],
-        "POS Invoice": [
-            {
-                "fieldname": "custom_kopos_idempotency_key",
-                "label": "KoPOS Idempotency Key",
-                "fieldtype": "Data",
-                "insert_after": "remarks",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-                "unique": 1,
-                "search_index": 1,
-            },
-            {
-                "fieldname": "custom_kopos_device_id",
-                "label": "KoPOS Device ID",
-                "fieldtype": "Data",
-                "insert_after": "custom_kopos_idempotency_key",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-            {
-                "fieldname": "custom_kopos_display_number",
-                "label": "KoPOS Display Number",
-                "fieldtype": "Data",
-                "insert_after": "custom_kopos_device_id",
-                "read_only": 1,
-                "no_copy": 1,
-                "search_index": 1,
-            },
-            {
-                "fieldname": "custom_kopos_refund_reason_code",
-                "label": "KoPOS Refund Reason Code",
-                "fieldtype": "Data",
-                "insert_after": "custom_kopos_display_number",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-            {
-                "fieldname": "custom_kopos_refund_reason",
-                "label": "KoPOS Refund Reason",
-                "fieldtype": "Small Text",
-                "insert_after": "custom_kopos_refund_reason_code",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-            {
-                "fieldname": "custom_kopos_promotion_snapshot_version",
-                "label": "KoPOS Promotion Snapshot Version",
-                "fieldtype": "Data",
-                "insert_after": "custom_kopos_refund_reason",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-            {
-                "fieldname": "custom_kopos_pricing_mode",
-                "label": "KoPOS Pricing Mode",
-                "fieldtype": "Select",
-                "options": "legacy_client\nmanual_only\nonline_snapshot\noffline_snapshot\nserver_validated",
-                "insert_after": "custom_kopos_promotion_snapshot_version",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-            {
-                "fieldname": "custom_kopos_promotion_reconciliation_status",
-                "label": "KoPOS Promotion Reconciliation Status",
-                "fieldtype": "Select",
-                "options": "not_applicable\npending\nmatched\nreview_required",
-                "insert_after": "custom_kopos_pricing_mode",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-            {
-                "fieldname": "custom_kopos_promotion_payload",
-                "label": "KoPOS Promotion Payload",
-                "fieldtype": "Long Text",
-                "insert_after": "custom_kopos_promotion_reconciliation_status",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-            {
-                "fieldname": "custom_kopos_promotion_review_status",
-                "label": "KoPOS Promotion Review Status",
-                "fieldtype": "Select",
-                "options": "not_required\npending_review\napproved_override\nrejected",
-                "insert_after": "custom_kopos_promotion_payload",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-            {
-                "fieldname": "custom_kopos_promotion_review_decision",
-                "label": "KoPOS Promotion Review Decision",
-                "fieldtype": "Select",
-                "options": "\napproved_override\nrejected",
-                "insert_after": "custom_kopos_promotion_review_status",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-            {
-                "fieldname": "custom_kopos_promotion_reviewed_by",
-                "label": "KoPOS Promotion Reviewed By",
-                "fieldtype": "Link",
-                "options": "User",
-                "insert_after": "custom_kopos_promotion_review_decision",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-            {
-                "fieldname": "custom_kopos_promotion_reviewed_at",
-                "label": "KoPOS Promotion Reviewed At",
-                "fieldtype": "Datetime",
-                "insert_after": "custom_kopos_promotion_reviewed_by",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-            {
-                "fieldname": "custom_kopos_promotion_review_notes",
-                "label": "KoPOS Promotion Review Notes",
-                "fieldtype": "Small Text",
-                "insert_after": "custom_kopos_promotion_reviewed_at",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-        ],
-        "POS Opening Entry": [
-            {
-                "fieldname": "custom_kopos_idempotency_key",
-                "label": "KoPOS Idempotency Key",
-                "fieldtype": "Data",
-                "insert_after": "remarks",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-                "unique": 1,
-                "search_index": 1,
-            },
-            {
-                "fieldname": "custom_kopos_shift_id",
-                "label": "KoPOS Shift ID",
-                "fieldtype": "Data",
-                "insert_after": "custom_kopos_idempotency_key",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-                "unique": 1,
-                "search_index": 1,
-            },
-            {
-                "fieldname": "custom_kopos_device_id",
-                "label": "KoPOS Device ID",
-                "fieldtype": "Data",
-                "insert_after": "custom_kopos_shift_id",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-                "search_index": 1,
-            },
-        ],
-        "POS Closing Entry": [
-            {
-                "fieldname": "custom_kopos_idempotency_key",
-                "label": "KoPOS Idempotency Key",
-                "fieldtype": "Data",
-                "insert_after": "remarks",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-                "unique": 1,
-                "search_index": 1,
-            },
-            {
-                "fieldname": "custom_kopos_shift_id",
-                "label": "KoPOS Shift ID",
-                "fieldtype": "Data",
-                "insert_after": "custom_kopos_idempotency_key",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-                "unique": 1,
-                "search_index": 1,
-            },
-            {
-                "fieldname": "custom_kopos_device_id",
-                "label": "KoPOS Device ID",
-                "fieldtype": "Data",
-                "insert_after": "custom_kopos_shift_id",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-                "search_index": 1,
-            },
-        ],
-        "POS Invoice Item": [
-            {
-                "fieldname": "custom_kopos_promotion_allocation",
-                "label": "KoPOS Promotion Allocation",
-                "fieldtype": "Long Text",
-                "insert_after": "pricing_rules",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 1,
-            },
-            {
-                "fieldname": "custom_kopos_modifiers",
-                "label": "KoPOS Modifiers JSON",
-                "fieldtype": "Long Text",
-                "insert_after": "custom_kopos_promotion_allocation",
-                "read_only": 1,
-                "hidden": 1,
-                "no_copy": 0,
-            },
-            {
-                "fieldname": "custom_kopos_modifier_total",
-                "label": "KoPOS Modifier Total",
-                "fieldtype": "Currency",
-                "insert_after": "custom_kopos_modifiers",
-                "read_only": 1,
-                "precision": "2",
-            },
-            {
-                "fieldname": "custom_kopos_has_modifiers",
-                "label": "Has Modifiers",
-                "fieldtype": "Check",
-                "insert_after": "custom_kopos_modifier_total",
-                "read_only": 1,
-                "search_index": 1,
-            },
-            {
-                "fieldname": "custom_kopos_modifiers_table",
-                "label": "KoPOS Modifiers",
-                "fieldtype": "Table",
-                "options": "KoPOS Invoice Item Modifier",
-                "insert_after": "custom_kopos_has_modifiers",
-            },
-        ],
         "Sales Invoice": [
             {
                 "fieldname": "custom_kopos_refund_idempotency_key",
@@ -462,6 +217,33 @@ def create_kopos_custom_fields():
                 "read_only": 1,
                 "hidden": 1,
                 "no_copy": 1,
+            },
+        ],
+        "Sales Invoice Item": [
+            {
+                "fieldname": "custom_kopos_modifiers",
+                "label": "KoPOS Modifiers JSON",
+                "fieldtype": "Long Text",
+                "insert_after": "pricing_rules",
+                "read_only": 1,
+                "hidden": 1,
+                "no_copy": 0,
+            },
+            {
+                "fieldname": "custom_kopos_modifier_total",
+                "label": "KoPOS Modifier Total",
+                "fieldtype": "Currency",
+                "insert_after": "custom_kopos_modifiers",
+                "read_only": 1,
+                "precision": "2",
+            },
+            {
+                "fieldname": "custom_kopos_has_modifiers",
+                "label": "Has Modifiers",
+                "fieldtype": "Check",
+                "insert_after": "custom_kopos_modifier_total",
+                "read_only": 1,
+                "search_index": 1,
             },
         ],
     }

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import frappe
+
+from kopos_connector.kopos.services.accounting.return_settlement_service import (
+    get_settlement_cash_adjustment_sen,
+)
 
 from kopos_connector.utils.diagnostics import (
     log_sanitized_error,
@@ -30,12 +35,7 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
 
     try:
         original_invoice = frappe.get_doc("Sales Invoice", original_invoice_name)
-        return_invoice = frappe.new_doc("Sales Invoice")
-        return_invoice.customer = original_invoice.customer
-        return_invoice.company = original_invoice.company
-        return_invoice.currency = original_invoice.currency
-        return_invoice.is_return = 1
-        return_invoice.return_against = original_invoice_name
+        return_invoice = _make_standard_return_invoice(original_invoice_name)
         return_invoice.set_posting_time = 1
         posting_dt = _resolve_posting_datetime(return_doc)
         return_invoice.posting_date = posting_dt.date().isoformat()
@@ -48,12 +48,14 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
         )
 
         _copy_invoice_dimensions(original_invoice, return_invoice)
+        if hasattr(return_invoice, "custom_fb_idempotency_key"):
+            return_invoice.custom_fb_idempotency_key = None
         return_invoice.is_pos = 0
         if hasattr(return_invoice, "set"):
             return_invoice.set("payments", [])
         else:
             return_invoice.payments = []
-        _append_return_items(return_doc, original_invoice, return_invoice)
+        _validate_full_standard_return_items(return_doc, return_invoice)
         if hasattr(return_invoice, "set_missing_values"):
             return_invoice.set_missing_values()
         if hasattr(return_invoice, "calculate_taxes_and_totals"):
@@ -68,13 +70,52 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
         return_invoice.submit()
 
         _set_source_reference(return_doc, "return_sales_invoice", return_invoice.name)
-        refresh_fb_shift_cash(_value(original_invoice, "custom_fb_shift"))
 
         return return_invoice.name
     except Exception:
         _rollback_savepoint(savepoint)
         _log_error("Return sales invoice creation failed")
         raise
+
+
+def _make_standard_return_invoice(original_invoice_name: str):
+    from erpnext.controllers.sales_and_purchase_return import make_return_doc
+
+    return make_return_doc("Sales Invoice", original_invoice_name)
+
+
+def _validate_full_standard_return_items(return_doc: Any, return_invoice: Any) -> None:
+    requested: dict[str, Decimal] = {}
+    for line in _value(return_doc, "lines") or []:
+        resolved_sale = cstr(_value(line, "original_resolved_sale")).strip()
+        if resolved_sale:
+            requested[resolved_sale] = requested.get(
+                resolved_sale, Decimal("0")
+            ) + _quantity_decimal(
+                _value(line, "qty_returned"), "requested return quantity"
+            )
+    returned: dict[str, Decimal] = {}
+    for item in _value(return_invoice, "items") or []:
+        resolved_sale = cstr(_value(item, "custom_fb_resolved_sale")).strip()
+        if resolved_sale:
+            returned[resolved_sale] = returned.get(
+                resolved_sale, Decimal("0")
+            ) + abs(
+                _quantity_decimal(_value(item, "qty"), "standard return quantity")
+            )
+    if not returned or returned != requested:
+        frappe.throw(
+            "Standard Sales Invoice return does not exactly match the requested full resolved-sale quantities",
+            frappe.ValidationError,
+        )
+
+
+def _quantity_decimal(value: Any, label: str) -> Decimal:
+    try:
+        return Decimal(cstr(value or 0).strip() or "0")
+    except (InvalidOperation, ValueError) as error:
+        frappe.throw(f"Invalid {label}: {value}", frappe.ValidationError)
+        raise ValueError(f"Invalid {label}: {value}") from error
 
 
 def _coerce_doc(doctype: str, value: Any):
@@ -166,60 +207,6 @@ def _copy_invoice_dimensions(original_invoice: Any, return_invoice: Any) -> None
             setattr(return_invoice, fieldname, getattr(original_invoice, fieldname))
 
 
-def _append_return_items(
-    return_doc: Any, original_invoice: Any, return_invoice: Any
-) -> None:
-    lines = _value(return_doc, "lines") or []
-    if not lines:
-        return
-    for line in lines:
-        resolved_sale_name = _value(line, "original_resolved_sale")
-        qty_returned = abs(flt(_value(line, "qty_returned")))
-        if not resolved_sale_name or qty_returned <= 0:
-            continue
-        original_row = _find_invoice_item(original_invoice, resolved_sale_name)
-        if not original_row:
-            frappe.throw(
-                f"Original invoice row for resolved sale {resolved_sale_name} was not found"
-            )
-            continue
-        return_invoice.append(
-            "items",
-            {
-                "item_code": original_row.item_code,
-                "item_name": original_row.item_name,
-                "description": original_row.description,
-                "qty": -qty_returned,
-                "uom": original_row.uom,
-                "conversion_factor": original_row.conversion_factor,
-                "rate": original_row.rate,
-                "amount": -(qty_returned * flt(original_row.rate)),
-                "warehouse": getattr(original_row, "warehouse", None),
-                "cost_center": getattr(original_row, "cost_center", None),
-                "project": getattr(original_row, "project", None),
-                "custom_fb_order_line_ref": getattr(
-                    original_row, "custom_fb_order_line_ref", None
-                ),
-                "custom_fb_resolved_sale": resolved_sale_name,
-                "custom_fb_recipe_snapshot_json": getattr(
-                    original_row, "custom_fb_recipe_snapshot_json", None
-                ),
-                "custom_fb_resolution_hash": getattr(
-                    original_row, "custom_fb_resolution_hash", None
-                ),
-            },
-        )
-
-
-def _find_invoice_item(original_invoice: Any, resolved_sale_name: str):
-    for item in getattr(original_invoice, "items", []) or []:
-        if cstr(getattr(item, "custom_fb_resolved_sale", None)) == cstr(
-            resolved_sale_name
-        ):
-            return item
-    return None
-
-
 def refresh_fb_shift_cash(shift_name: Any) -> None:
     shift = cstr(shift_name).strip()
     if not shift:
@@ -227,25 +214,28 @@ def refresh_fb_shift_cash(shift_name: Any) -> None:
 
     shift_doc = frappe.get_doc("FB Shift", shift)
     sales_invoice_names = _get_shift_sales_invoice_names(shift)
-    total_cash = 0.0
+    total_cash_sen = 0
 
     for invoice_name in sales_invoice_names:
         invoice = _coerce_doc("Sales Invoice", invoice_name)
         if invoice and flt(_value(invoice, "docstatus")) == 1:
-            total_cash += _get_cash_payment_total(invoice)
+            total_cash_sen += _get_cash_payment_total_sen(invoice)
 
-    for return_invoice_name in _get_shift_return_invoice_names(sales_invoice_names):
-        return_invoice = _coerce_doc("Sales Invoice", return_invoice_name)
-        if return_invoice and flt(_value(return_invoice, "docstatus")) == 1:
-            total_cash += _get_return_cash_adjustment(return_invoice)
+    for return_event in _get_shift_return_events(sales_invoice_names):
+        total_cash_sen += get_settlement_cash_adjustment_sen(return_event)
 
-    expected_cash = flt(_value(shift_doc, "opening_float")) + total_cash
-    _set_doc_field(shift_doc, "expected_cash", expected_cash)
+    expected_cash_sen = _money_to_sen(
+        _value(shift_doc, "opening_float"), "FB Shift opening_float"
+    ) + total_cash_sen
+    _set_doc_field(shift_doc, "expected_cash", _sen_to_amount(expected_cash_sen))
     if _value(shift_doc, "counted_cash") is not None:
+        counted_cash_sen = _money_to_sen(
+            _value(shift_doc, "counted_cash"), "FB Shift counted_cash"
+        )
         _set_doc_field(
             shift_doc,
             "cash_variance",
-            flt(_value(shift_doc, "counted_cash")) - expected_cash,
+            _sen_to_amount(counted_cash_sen - expected_cash_sen),
         )
 
 
@@ -263,53 +253,50 @@ def _get_shift_sales_invoice_names(shift: str) -> list[str]:
     return invoice_names
 
 
-def _get_shift_return_invoice_names(sales_invoice_names: list[str]) -> list[str]:
+def _get_shift_return_events(sales_invoice_names: list[str]) -> list[Any]:
     if not sales_invoice_names:
         return []
     rows = frappe.get_all(
-        "Sales Invoice",
+        "FB Return Event",
         filters={
-            "return_against": ["in", sales_invoice_names],
-            "is_return": 1,
+            "original_sales_invoice": ["in", sales_invoice_names],
             "docstatus": 1,
+            "settlement_status": "Posted",
         },
         fields=["name"],
     )
     return [
-        cstr(_value(row, "name")).strip()
+        frappe.get_doc("FB Return Event", cstr(_value(row, "name")).strip())
         for row in rows or []
         if cstr(_value(row, "name")).strip()
     ]
 
 
-def _get_cash_payment_total(invoice: Any) -> float:
-    total = 0.0
+def _get_cash_payment_total_sen(invoice: Any) -> int:
+    total_sen = 0
     for payment in _value(invoice, "payments") or []:
         if cstr(_value(payment, "mode_of_payment")).strip() == "Cash":
-            total += flt(_value(payment, "amount"))
-    return total
+            total_sen += _money_to_sen(
+                _value(payment, "amount"), "Sales Invoice cash payment"
+            )
+    return total_sen
 
 
-def _get_return_cash_adjustment(return_invoice: Any) -> float:
-    return_payments = list(_value(return_invoice, "payments") or [])
-    if return_payments:
-        return _get_cash_payment_total(return_invoice)
+def _money_to_sen(value: Any, label: str) -> int:
+    try:
+        amount = Decimal(cstr(value or 0).strip() or "0")
+    except (InvalidOperation, ValueError) as error:
+        frappe.throw(f"Invalid {label}: {value}", frappe.ValidationError)
+        raise ValueError(f"Invalid {label}: {value}") from error
+    sen = amount * Decimal("100")
+    integral_sen = sen.to_integral_value()
+    if sen != integral_sen:
+        frappe.throw(f"{label} contains fractional sen", frappe.ValidationError)
+    return int(integral_sen)
 
-    original_invoice_name = cstr(_value(return_invoice, "return_against")).strip()
-    original_invoice = _coerce_doc("Sales Invoice", original_invoice_name)
-    if not original_invoice:
-        return 0.0
 
-    original_payments = list(_value(original_invoice, "payments") or [])
-    total_paid = sum(abs(flt(_value(row, "amount"))) for row in original_payments)
-    if total_paid <= 0:
-        return 0.0
-    cash_paid = sum(
-        abs(flt(_value(row, "amount")))
-        for row in original_payments
-        if cstr(_value(row, "mode_of_payment")).strip() == "Cash"
-    )
-    return flt(_value(return_invoice, "grand_total")) * (cash_paid / total_paid)
+def _sen_to_amount(value_sen: int) -> Decimal:
+    return Decimal(value_sen) / Decimal("100")
 
 
 def _set_doc_field(doc: Any, fieldname: str, value: Any) -> None:

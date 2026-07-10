@@ -127,6 +127,7 @@ def test_public_process_refund_rejects_cross_device_before_return_event(monkeypa
             "original_sales_invoice": "SINV-1",
             "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 1}],
             "refund_reason": "Customer return",
+            "refund_method": "cash",
             "return_to_stock": False,
         },
     )
@@ -147,7 +148,54 @@ def test_public_process_refund_rejects_cross_device_before_return_event(monkeypa
     assert captured["rolled_back"] is True
 
 
-def test_cash_refund_reduces_shift_expected_cash_and_duplicate_reuses_invoice(
+def test_public_refund_rolls_back_when_settlement_proof_fails(monkeypatch):
+    api = importlib.import_module("kopos_connector.api")
+    fb_returns = importlib.import_module("kopos_connector.api.fb_returns")
+    captured: dict[str, Any] = {}
+
+    class FakeDB:
+        def rollback(self) -> None:
+            captured["rolled_back"] = True
+
+        def get_value(self, doctype: str, name: str, fieldname: str) -> Any:
+            return "FB-ORDER-1"
+
+    monkeypatch.setattr(api.frappe, "db", FakeDB())
+    monkeypatch.setattr(
+        api,
+        "_get_submit_payload",
+        lambda kwargs: {
+            "idempotency_key": "refund-idem-1",
+            "device_id": "DEVICE-A",
+            "original_sales_invoice": "SINV-1",
+            "refund_method": "cash",
+            "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 1}],
+        },
+    )
+    monkeypatch.setattr(api, "require_device_context", lambda device_id: None)
+    monkeypatch.setattr(
+        fb_returns,
+        "process_return_payload",
+        lambda payload: (_ for _ in ()).throw(
+            api.frappe.ValidationError("posted accounting settlement proof is missing")
+        ),
+    )
+    monkeypatch.setattr(
+        api,
+        "_write_response",
+        lambda payload, http_status_code=200: captured.update(
+            {"payload": payload, "http_status_code": http_status_code}
+        ),
+    )
+
+    api.process_refund()
+
+    assert captured["http_status_code"] == 400
+    assert captured["rolled_back"] is True
+    assert "settlement proof" in captured["payload"]["message"]
+
+
+def test_standard_credit_note_is_non_pos_and_duplicate_reuses_invoice(
     monkeypatch,
 ):
     service = importlib.import_module(
@@ -192,9 +240,12 @@ def test_cash_refund_reduces_shift_expected_cash_and_duplicate_reuses_invoice(
         doctype="Sales Invoice",
         name="SINV-RETURN-1",
         docstatus=0,
-        items=[],
+        is_return=1,
+        return_against="SINV-1",
+        items=[MutableDoc(custom_fb_resolved_sale="RS-1", qty=-1, amount=-12.0)],
         payments=[],
-        grand_total=0.0,
+        grand_total=-12.0,
+        outstanding_amount=-12.0,
     )
     return_doc = MutableDoc(
         doctype="FB Return Event",
@@ -204,13 +255,8 @@ def test_cash_refund_reduces_shift_expected_cash_and_duplicate_reuses_invoice(
         lines=[MutableDoc(original_resolved_sale="RS-1", qty_returned=1)],
     )
 
-    def calculate_taxes_and_totals() -> None:
-        return_invoice.grand_total = sum(
-            float(getattr(item, "amount", 0) or 0) for item in return_invoice.items
-        )
-
     return_invoice.set_missing_values = lambda: None
-    return_invoice.calculate_taxes_and_totals = calculate_taxes_and_totals
+    return_invoice.calculate_taxes_and_totals = lambda: None
 
     def get_doc(doctype: str, name: str) -> MutableDoc:
         if doctype == "Sales Invoice" and name == "SINV-1":
@@ -221,16 +267,10 @@ def test_cash_refund_reduces_shift_expected_cash_and_duplicate_reuses_invoice(
             return shift
         raise AssertionError(f"unexpected get_doc({doctype!r}, {name!r})")
 
-    def get_all(doctype: str, **kwargs: Any) -> list[MutableDoc]:
-        if doctype == "FB Order":
-            return [MutableDoc(sales_invoice="SINV-1")]
-        if doctype == "Sales Invoice":
-            return [MutableDoc(name="SINV-RETURN-1")]
-        return []
-
     monkeypatch.setattr(service.frappe, "get_doc", get_doc)
-    monkeypatch.setattr(service.frappe, "new_doc", lambda doctype: return_invoice)
-    monkeypatch.setattr(service.frappe, "get_all", get_all)
+    monkeypatch.setattr(
+        service, "_make_standard_return_invoice", lambda invoice_name: return_invoice
+    )
     monkeypatch.setattr(
         service.frappe,
         "get_meta",
@@ -247,8 +287,7 @@ def test_cash_refund_reduces_shift_expected_cash_and_duplicate_reuses_invoice(
     assert return_invoice.is_pos == 0
     assert return_invoice.payments == []
     assert return_doc.return_sales_invoice == "SINV-RETURN-1"
-    assert shift.expected_cash == 100.0
-    assert shift.cash_variance == 0.0
+    assert shift.expected_cash == 112.0
 
 
 def test_direct_return_route_requires_device_before_return_event(monkeypatch):
@@ -305,6 +344,7 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
         fb_order="FB-ORDER-1",
         original_sales_invoice="SINV-1",
         return_to_stock=0,
+        refund_method="cash",
         status="Submitted",
         lines=[MutableDoc(original_resolved_sale="RS-1", qty_returned=1)],
     )
@@ -316,11 +356,20 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
         original_sales_invoice="SINV-1",
         return_sales_invoice="SINV-RETURN-1",
         return_to_stock=0,
+        refund_method="cash",
         status="Submitted",
         lines=[MutableDoc(original_resolved_sale="RS-1", qty_returned=1)],
     )
 
     class FakeDB:
+        submitted_rows = [
+            {
+                "original_resolved_sale": "RS-1",
+                "qty_returned": 1,
+                "return_id": "other-return-id",
+            }
+        ]
+
         def sql(
             self,
             query: str,
@@ -328,9 +377,13 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
             as_dict: bool = False,
         ) -> list[dict[str, str]]:
             assert "FOR UPDATE" in query
-            assert values == ("RS-1",)
             assert as_dict is True
-            return [{"name": "RS-1"}]
+            if "FROM `tabFB Resolved Sale`" in query:
+                assert values == ("SINV-1",)
+                return [{"name": "RS-1", "qty": 1}]
+            assert "return_event.docstatus = 1" in query
+            assert values == ("RS-1",)
+            return list(self.submitted_rows)
 
         def get_value(self, doctype: str, filters: Any, fieldname: str) -> Any:
             if doctype == "FB Return Event" and filters == {"return_id": "refund-idem-1"}:
@@ -354,10 +407,8 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
     monkeypatch.setattr(
         fb_returns.frappe,
         "get_all",
-        lambda doctype, **kwargs: [
-            MutableDoc(parent="FB-RETURN-EXISTING", qty_returned=1)
-        ]
-        if doctype == "FB Return Event Line"
+        lambda doctype, **kwargs: [MutableDoc(name="RS-1", qty=1)]
+        if doctype == "FB Resolved Sale"
         else [],
     )
 
@@ -367,18 +418,22 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
                 "return_id": "new-return-id",
                 "device_id": "DEVICE-A",
                 "original_sales_invoice": "SINV-1",
+                "refund_method": "cash",
                 "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 1}],
             }
         )
 
-    monkeypatch.setattr(fb_returns.frappe, "get_all", lambda *args, **kwargs: [])
+    fb_returns.frappe.db.submitted_rows = []
 
-    with pytest.raises(fb_returns.frappe.ValidationError, match="different return lines"):
+    with pytest.raises(
+        fb_returns.frappe.ValidationError, match="Partial ERP returns are not supported"
+    ):
         fb_returns.process_return_payload(
             {
                 "return_id": "refund-idem-1",
                 "device_id": "DEVICE-A",
                 "original_sales_invoice": "SINV-1",
+                "refund_method": "cash",
                 "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 0.5}],
             }
         )

@@ -766,6 +766,7 @@ def _to_public_fb_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "original_sales_invoice": original_sales_invoice or None,
         "reason_code": payload.get("reason_code") or "Other",
         "reason_text": payload.get("reason_text") or payload.get("refund_reason"),
+        "refund_method": payload.get("refund_method"),
         "return_to_stock": payload.get("return_to_stock"),
         "lines": payload.get("lines"),
     }

@@ -32,13 +32,14 @@ class TestFBServiceContracts(unittest.TestCase):
         ]:
             self.assertIn(token, content)
 
-    def test_return_invoice_service_builds_credit_note_without_payment_rows(self):
+    def test_return_invoice_service_uses_standard_credit_note_without_pos_payments(self):
         content = (
             ERP_ROOT / "kopos" / "services" / "accounting" / "return_invoice_service.py"
         ).read_text()
-        self.assertIn("return_invoice.is_return = 1", content)
-        self.assertIn("return_against = original_invoice_name", content)
-        self.assertNotIn("_append_return_payments", content)
+        self.assertIn("make_return_doc(\"Sales Invoice\"", content)
+        self.assertIn("return_invoice.is_pos = 0", content)
+        self.assertIn('return_invoice.set("payments", [])', content)
+        self.assertIn("_validate_full_standard_return_items", content)
 
     def test_return_service_updates_resolved_sale_status(self):
         content = (
@@ -64,6 +65,8 @@ class TestFBServiceContracts(unittest.TestCase):
             / "fb_return_event.py"
         ).read_text()
         self.assertIn("FOR UPDATE", content)
+        self.assertIn("return_event.docstatus = 1", content)
+        self.assertIn("Partial ERP returns are not supported", content)
         self.assertIn("ORDER BY name", content)
         self.assertIn("lock_and_validate_return_quantities", controller)
 
