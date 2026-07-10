@@ -368,3 +368,28 @@ def test_close_shift_payload_all_posted_transitions_open_to_closing_to_closed(
     assert shift_doc.save_calls == [("Closing", True), ("Closed", True)]
     assert shift_doc.counted_cash == 12.5
     assert shift_doc.cash_variance == 2.5
+
+
+def test_no_order_shift_closes_at_opening_float_without_variance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shift_doc = _patch_close_dependencies(
+        monkeypatch,
+        order_rows=[],
+        projection_rows=[],
+    )
+    payload = _close_payload()
+    payload["counted_cash_sen"] = 1000
+
+    result = shifts.close_shift_payload(payload)
+
+    assert result == {
+        "status": "ok",
+        "fb_shift": "FB-SHIFT-1",
+        "shift_id": "SHIFT-1",
+    }
+    assert shift_doc.status == "Closed"
+    assert shift_doc.opening_float == 10.0
+    assert shift_doc.expected_cash == 10.0
+    assert shift_doc.counted_cash == 10.0
+    assert shift_doc.cash_variance == 0.0

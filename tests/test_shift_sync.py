@@ -2,6 +2,7 @@ import importlib
 import sys
 import unittest
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -195,8 +196,23 @@ class ShiftSyncTests(unittest.TestCase):
         self.assertEqual(fb_shift_doc.shift_code, "SHIFT-1")
         self.assertEqual(fb_shift_doc.device_id, "DEVICE-1")
         self.assertEqual(fb_shift_doc.staff_id, "john@example.com")
-        self.assertEqual(fb_shift_doc.opening_float, 50.0)
+        self.assertEqual(fb_shift_doc.opening_float, Decimal("50"))
+        self.assertEqual(fb_shift_doc.expected_cash, Decimal("50"))
         self.assertIn("KoPOS shift_id: SHIFT-1", fb_shift_doc.remarks)
+
+    def test_open_shift_rejects_fractional_opening_float_sen(self):
+        with self.assertRaises(shifts.frappe.ValidationError) as error:
+            shifts.open_shift_payload(
+                {
+                    "idempotency_key": "shift-open-SHIFT-1",
+                    "device_id": "DEVICE-1",
+                    "staff_id": "john@example.com",
+                    "shift_id": "SHIFT-1",
+                    "opening_float_sen": "5000.5",
+                }
+            )
+
+        self.assertIn("must be an integer number of sen", str(error.exception))
 
     def test_close_shift_resolves_opening_entry_by_shift_id_and_device(self):
         pos_profile = make_doc(

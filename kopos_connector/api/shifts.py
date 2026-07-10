@@ -8,6 +8,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from zoneinfo import ZoneInfo
@@ -441,7 +442,7 @@ def _ensure_fb_shift_for_kopos_shift(
     staff_id: str,
     company: str,
     warehouse: str,
-    opening_float: float,
+    opening_amount: Decimal,
     opened_at: Any | None,
     remarks: str | None = None,
     manager_id: str | None = None,
@@ -472,7 +473,8 @@ def _ensure_fb_shift_for_kopos_shift(
     shift_doc.company = cstr(company).strip()
     shift_doc.warehouse = booth_warehouse
     shift_doc.status = "Open"
-    shift_doc.opening_float = flt(opening_float)
+    shift_doc.opening_float = opening_amount
+    shift_doc.expected_cash = opening_amount
     if remarks:
         shift_doc.remarks = _append_remarks(getattr(shift_doc, "remarks", None), remarks)
     if manager_id:
@@ -617,7 +619,9 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
     device_id = frappe.utils.cstr(payload.get("device_id"))
     staff_id = frappe.utils.cstr(payload.get("staff_id"))
     shift_id = frappe.utils.cstr(payload.get("shift_id"))
-    opening_float_sen = flt(payload.get("opening_float_sen", 0))
+    opening_float_sen = _parse_non_negative_sen(
+        payload.get("opening_float_sen", 0), "opening_float_sen"
+    )
     opened_at = frappe.utils.cstr(payload.get("opened_at"))
     manager_approval_token = payload.get("manager_approval_token")  # Optional
 
@@ -629,11 +633,6 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         frappe.throw(_("staff_id is required"), frappe.ValidationError)
     if not shift_id:
         frappe.throw(_("shift_id is required"), frappe.ValidationError)
-    if opening_float_sen < 0:
-        frappe.throw(
-            _("opening_float_sen must be non-negative"), frappe.ValidationError
-        )
-
     device_doc = get_device_doc(device_id=device_id)
     if not device_doc:
         frappe.throw(
@@ -669,7 +668,7 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
             frappe.ValidationError,
         )
 
-    opening_amount = flt(opening_float_sen) / 100
+    opening_amount = Decimal(opening_float_sen) / Decimal(100)
 
     # Phase 1 & 2: Validate device user assignment, active status, ERP user enabled,
     # and can_open_shift permission
@@ -724,7 +723,7 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         staff_id=staff_id,
         company=company,
         warehouse=warehouse,
-        opening_float=opening_amount,
+        opening_amount=opening_amount,
         opened_at=period_start,
         remarks=remarks,
         manager_id=manager_approval["manager_id"] if manager_approval else None,
@@ -746,6 +745,31 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "fb_shift": fb_shift,
         "shift_id": shift_id,
     }
+
+
+def _parse_non_negative_sen(value: Any, fieldname: str) -> int:
+    raw_value = cstr(value if value is not None else 0).strip() or "0"
+    try:
+        amount = Decimal(raw_value)
+    except (InvalidOperation, ValueError) as error:
+        frappe.throw(
+            _("{0} must be an integer number of sen").format(fieldname),
+            frappe.ValidationError,
+        )
+        raise ValueError(f"Invalid {fieldname}") from error
+
+    if not amount.is_finite() or amount != amount.to_integral_value():
+        frappe.throw(
+            _("{0} must be an integer number of sen").format(fieldname),
+            frappe.ValidationError,
+        )
+    amount_sen = int(amount)
+    if amount_sen < 0:
+        frappe.throw(
+            _("{0} must be non-negative").format(fieldname),
+            frappe.ValidationError,
+        )
+    return amount_sen
 
 
 def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
