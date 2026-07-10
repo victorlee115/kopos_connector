@@ -296,7 +296,7 @@ def _update_backfill_counts(
     results[key] = cint(results.get(key) or 0) + 1
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def backfill_kopos_modifiers_to_fb(dry_run: bool = False) -> dict[str, object]:
     enforce_permissions = not cint(getattr(frappe.flags, "in_migrate", 0))
     if enforce_permissions and not frappe.has_permission("FB Modifier Group", "write"):
@@ -367,7 +367,7 @@ def backfill_kopos_modifiers_to_fb(dry_run: bool = False) -> dict[str, object]:
         raise
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def backfill_modifier_stats(
     from_date: str | None = None,
     to_date: str | None = None,

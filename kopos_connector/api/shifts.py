@@ -1,6 +1,9 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import logging
 import time
@@ -9,11 +12,21 @@ from typing import Any
 
 from zoneinfo import ZoneInfo
 
-import frappe
-from frappe import _
-from frappe.utils import cint, cstr, flt, now_datetime, nowdate
+frappe = importlib.import_module("frappe")
+frappe_utils = importlib.import_module("frappe.utils")
+
+_ = getattr(frappe, "_")
+cint = frappe_utils.cint
+cstr = frappe_utils.cstr
+flt = frappe_utils.flt
+now_datetime = frappe_utils.now_datetime
+nowdate = frappe_utils.nowdate
 
 from kopos_connector.api.devices import elevate_device_api_user, get_device_doc
+from kopos_connector.utils.diagnostics import log_sanitized_error, sanitized_error_message
+
+
+MANAGER_APPROVAL_FIELD = "custom_kopos_approved_by_manager"
 
 
 # -----------------------------------------------------------------------------
@@ -324,8 +337,8 @@ def _log_shift_audit(
                     ip = getattr(request, "client_addr", None) or getattr(
                         request, "remote_addr", None
                     )
-            except Exception:
-                pass
+            except Exception as error:
+                log_sanitized_error("KoPOS shift audit IP lookup failed", error)
 
         audit_entry = {
             "timestamp": now_datetime().isoformat(),
@@ -356,12 +369,14 @@ def _log_shift_audit(
                 result,
                 f"{erp_doc_type}:{erp_doc_name}" if erp_doc_type else None,
             )
-        except Exception:
-            pass  # Don't fail if frappe logger is unavailable
+        except Exception as error:
+            log_sanitized_error("KoPOS shift audit logger failed", error)
 
-    except Exception:
+    except Exception as error:
         # Audit logging should never cause the operation to fail
-        pass
+        logging.getLogger(__name__).warning(
+            "KoPOS shift audit failed: %s", sanitized_error_message(error)
+        )
 
 
 def _get_cash_mode_of_payment(pos_profile: Any) -> str:
@@ -409,6 +424,14 @@ def _doc_value(doc: Any, fieldname: str) -> Any:
     if callable(getter):
         return getter(fieldname)
     return None
+
+
+def _set_custom_field_value(doc: Any, fieldname: str, value: Any) -> None:
+    setter = getattr(doc, "set", None)
+    if callable(setter):
+        setter(fieldname, value)
+        return
+    setattr(doc, fieldname, value)
 
 
 def _ensure_fb_shift_for_kopos_shift(
@@ -813,6 +836,12 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 ),
                 frappe.ValidationError,
             )
+
+        from kopos_connector.kopos.doctype.fb_shift.fb_shift import (
+            validate_shift_can_close,
+        )
+
+        validate_shift_can_close(fb_shift)
 
         period_end = _coerce_to_site_local_naive(
             _validate_timestamp_skew(closed_at, "closed_at")

@@ -30,7 +30,7 @@ def get_order_history_payload(
     cursor: str | int | None = None,
     limit: str | int | None = None,
 ) -> dict[str, Any]:
-    """Return current-shift submitted POS Invoice history for one KoPOS device."""
+    """Return current-shift submitted Sales Invoice history for one KoPOS device."""
     device_doc = resolve_history_device(device_id=device_id)
     device_id_value = cstr(getattr(device_doc, "device_id", None)).strip()
     if not device_id_value:

@@ -154,7 +154,7 @@ def test_get_order_history_blocks_cross_profile_leakage(
             "pos_profile": "Counter 1",
             "posting_date": "2026-03-13",
             "posting_time": "10:00:00",
-            "custom_kopos_device_id": "DEVICE-1",
+            "custom_fb_device_id": "DEVICE-1",
             "grand_total": 10,
             "paid_amount": 10,
         },
@@ -166,7 +166,7 @@ def test_get_order_history_blocks_cross_profile_leakage(
             "pos_profile": "Counter 2",
             "posting_date": "2026-03-13",
             "posting_time": "10:05:00",
-            "custom_kopos_device_id": "DEVICE-1",
+            "custom_fb_device_id": "DEVICE-1",
             "grand_total": 20,
             "paid_amount": 20,
         },
@@ -179,15 +179,15 @@ def test_get_order_history_blocks_cross_profile_leakage(
 
     def fake_get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
         filters = kwargs.get("filters") or {}
-        if doctype == "POS Opening Entry":
+        if doctype == "FB Shift":
             return []
-        if doctype == "POS Invoice" and filters.get("is_return") == 0:
+        if doctype == "Sales Invoice" and filters.get("is_return") == 0:
             captured_invoice_filters.append(filters)
             rows = [row for row in invoices if matches_filters(row, filters)]
             start = kwargs.get("limit_start") or 0
             limit = kwargs.get("limit_page_length")
             return rows[start : start + limit] if limit else rows[start:]
-        if doctype in ("POS Invoice", "POS Invoice Item", "Sales Invoice Payment"):
+        if doctype in ("Sales Invoice", "Sales Invoice Item", "Sales Invoice Payment"):
             return []
         return []
 
@@ -206,7 +206,7 @@ def test_get_order_history_blocks_cross_profile_leakage(
             "company": "KoPOS Cafe",
             "pos_profile": "Counter 1",
             "posting_date": [">=", "2026-03-01"],
-            "custom_kopos_device_id": "DEVICE-1",
+            "custom_fb_device_id": "DEVICE-1",
         }
     ]
     assert result["status"] == "ok"
@@ -287,8 +287,8 @@ def test_get_order_history_filters_by_server_device_context_and_paginates(
             "posting_time": "10:00:00",
             "creation": datetime(2026, 3, 13, 10, 0),
             "modified": datetime(2026, 3, 13, 10, 1),
-            "custom_kopos_idempotency_key": "idem-001",
-            "custom_kopos_device_id": "DEVICE-1",
+            "custom_fb_idempotency_key": "idem-001",
+            "custom_fb_device_id": "DEVICE-1",
             "grand_total": 12.345,
             "rounded_total": 12.35,
             "paid_amount": 12.35,
@@ -303,8 +303,8 @@ def test_get_order_history_filters_by_server_device_context_and_paginates(
             "posting_time": "09:30:00",
             "creation": datetime(2026, 3, 13, 9, 30),
             "modified": datetime(2026, 3, 13, 9, 31),
-            "custom_kopos_idempotency_key": "idem-002",
-            "custom_kopos_device_id": "DEVICE-1",
+            "custom_fb_idempotency_key": "idem-002",
+            "custom_fb_device_id": "DEVICE-1",
             "grand_total": 8,
             "rounded_total": 8,
             "paid_amount": 8,
@@ -337,15 +337,15 @@ def test_get_order_history_filters_by_server_device_context_and_paginates(
 
     def fake_get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
         filters = kwargs.get("filters") or {}
-        if doctype == "POS Opening Entry":
+        if doctype == "FB Shift":
             return [
                 {
-                    "name": "OPEN-001",
-                    "period_start_date": datetime(2026, 3, 13, 8, 0),
-                    "posting_date": "2026-03-13",
+                    "name": "FB-SHIFT-001",
+                    "opened_at": datetime(2026, 3, 13, 8, 0),
+                    "creation": datetime(2026, 3, 13, 8, 0),
                 }
             ]
-        if doctype == "POS Invoice":
+        if doctype == "Sales Invoice":
             if filters.get("is_return") == 0:
                 captured_filters.append(filters)
                 rows = [row for row in invoices if matches_filters(row, filters)]
@@ -370,7 +370,7 @@ def test_get_order_history_filters_by_server_device_context_and_paginates(
             "company": "KoPOS Cafe",
             "pos_profile": "POS-MAIN",
             "posting_date": [">=", "2026-03-13"],
-            "custom_kopos_device_id": "DEVICE-1",
+            "custom_fb_device_id": "DEVICE-1",
         }
     ]
     assert [order["name"] for order in result["orders"]] == ["PINV-001"]
@@ -446,7 +446,7 @@ def test_get_order_history_excludes_same_day_before_shift_open(
             "posting_date": "2026-03-13",
             "posting_time": "10:00:00",
             "creation": datetime(2026, 3, 13, 10, 0),
-            "custom_kopos_device_id": "DEVICE-1",
+            "custom_fb_device_id": "DEVICE-1",
             "grand_total": 10,
             "paid_amount": 10,
         },
@@ -459,7 +459,7 @@ def test_get_order_history_excludes_same_day_before_shift_open(
             "posting_date": "2026-03-13",
             "posting_time": "15:00:00",
             "creation": datetime(2026, 3, 13, 15, 0),
-            "custom_kopos_device_id": "DEVICE-1",
+            "custom_fb_device_id": "DEVICE-1",
             "grand_total": 15,
             "paid_amount": 15,
         },
@@ -467,21 +467,20 @@ def test_get_order_history_excludes_same_day_before_shift_open(
 
     def fake_get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
         filters = kwargs.get("filters") or {}
-        if doctype == "POS Opening Entry":
+        if doctype == "FB Shift":
             return [
                 {
-                    "name": "OPEN-001",
-                    "period_start_date": datetime(2026, 3, 13, 14, 0),
-                    "posting_date": "2026-03-13",
+                    "name": "FB-SHIFT-001",
+                    "opened_at": datetime(2026, 3, 13, 14, 0),
                     "creation": datetime(2026, 3, 13, 14, 0),
                 }
             ]
-        if doctype == "POS Invoice" and filters.get("is_return") == 0:
+        if doctype == "Sales Invoice" and filters.get("is_return") == 0:
             rows = [row for row in invoices if matches_filters(row, filters)]
             start = kwargs.get("limit_start") or 0
             limit = kwargs.get("limit_page_length")
             return rows[start : start + limit] if limit else rows[start:]
-        if doctype in ("POS Invoice", "POS Invoice Item", "Sales Invoice Payment"):
+        if doctype in ("Sales Invoice", "Sales Invoice Item", "Sales Invoice Payment"):
             return []
         return []
 
@@ -499,15 +498,15 @@ def test_get_order_history_returns_refunds_separately_with_decimal_strings(
 ):
     def fake_get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
         filters = kwargs.get("filters") or {}
-        if doctype == "POS Opening Entry":
+        if doctype == "FB Shift":
             return [
                 {
-                    "name": "OPEN-001",
-                    "period_start_date": datetime(2026, 3, 13, 8, 0),
-                    "posting_date": "2026-03-13",
+                    "name": "FB-SHIFT-001",
+                    "opened_at": datetime(2026, 3, 13, 8, 0),
+                    "creation": datetime(2026, 3, 13, 8, 0),
                 }
             ]
-        if doctype == "POS Invoice" and filters.get("is_return") == 0:
+        if doctype == "Sales Invoice" and filters.get("is_return") == 0:
             return [
                 {
                     "name": "PINV-001",
@@ -521,7 +520,7 @@ def test_get_order_history_returns_refunds_separately_with_decimal_strings(
                     "paid_amount": "12.00",
                 }
             ]
-        if doctype == "POS Invoice" and filters.get("is_return") == 1:
+        if doctype == "Sales Invoice" and filters.get("is_return") == 1:
             return [
                 {
                     "name": "CN-001",
@@ -538,7 +537,7 @@ def test_get_order_history_returns_refunds_separately_with_decimal_strings(
                     "custom_kopos_refund_reason": "Wrong order",
                 }
             ]
-        if doctype == "POS Invoice Item":
+        if doctype == "Sales Invoice Item":
             return [
                 {
                     "parent": "PINV-001",

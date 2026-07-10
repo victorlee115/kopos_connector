@@ -60,6 +60,15 @@ REMAKE_PROJECTION_CONFIG = (
     },
 )
 
+ACCEPTABLE_STOCK_STATUSES = {"Pending", "Posted"}
+
+PROJECTION_SUBSYSTEMS = {
+    "Sales Invoice": "sales_invoice",
+    "Stock Issue": "stock",
+    "Stock Entry": "stock",
+    "FB Shift": "shift",
+}
+
 
 @frappe.whitelist()
 def submit_order() -> dict[str, Any]:
@@ -162,6 +171,11 @@ def validate_fb_order(doc, method: str | None = None) -> None:
 
 def before_submit_fb_order(doc, method: str | None = None) -> None:
     _validate_fb_order_doc(doc)
+    _validate_submit_shift(
+        shift_name=cstr(doc.shift),
+        device_id=cstr(doc.device_id),
+        staff_id=cstr(doc.staff_id),
+    )
     doc.status = "Submitted"
     _set_default_order_statuses(doc)
 
@@ -297,6 +311,7 @@ def _validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     shift_name = _resolve_fb_shift_name(shift)
     if not shift_name:
         frappe.throw(f"shift {shift} was not found", frappe.ValidationError)
+    assert shift_name is not None
     _validate_submit_shift(
         shift_name=shift_name,
         device_id=device_id,
@@ -668,8 +683,19 @@ def _get_existing_fb_order_name(idempotency_key: str) -> str | None:
 
 
 def _build_submit_response(result_status: str, order_doc) -> dict[str, Any]:
+    projections = _get_projection_statuses("FB Order", order_doc.name)
+    projection_status = _get_submit_projection_status(order_doc, projections)
+    response_status = (
+        "partial_failure" if projection_status["diagnostics"] else result_status
+    )
+    first_diagnostic = (
+        projection_status["diagnostics"][0]
+        if projection_status["diagnostics"]
+        else None
+    )
     return {
-        "status": result_status,
+        "status": response_status,
+        "partial_failure": bool(projection_status["diagnostics"]),
         "fb_order": order_doc.name,
         "order_id": cstr(order_doc.order_id),
         "idempotency_key": cstr(order_doc.external_idempotency_key),
@@ -678,8 +704,119 @@ def _build_submit_response(result_status: str, order_doc) -> dict[str, Any]:
         "order_status": cstr(order_doc.status),
         "invoice_status": cstr(order_doc.invoice_status),
         "stock_status": cstr(order_doc.stock_status),
-        "projections": _get_projection_statuses("FB Order", order_doc.name),
+        "projection_status": projection_status["projection_status"],
+        "failed_subsystem": first_diagnostic["failed_subsystem"]
+        if first_diagnostic
+        else None,
+        "diagnostics": projection_status["diagnostics"],
+        "message": first_diagnostic["error_message"] if first_diagnostic else None,
+        "projections": projections,
     }
+
+
+def _get_submit_projection_status(
+    order_doc,
+    projections: list[dict[str, Any]],
+) -> dict[str, Any]:
+    diagnostics: list[dict[str, Any]] = []
+    fb_order = cstr(order_doc.name)
+    idempotency_key = cstr(getattr(order_doc, "external_idempotency_key", None))
+    order_status = cstr(getattr(order_doc, "status", None))
+    invoice_status = cstr(getattr(order_doc, "invoice_status", None))
+    stock_status = cstr(getattr(order_doc, "stock_status", None))
+
+    if order_status != "Submitted":
+        diagnostics.append(
+            _build_projection_diagnostic(
+                fb_order=fb_order,
+                idempotency_key=idempotency_key,
+                projection_status="failed",
+                failed_subsystem="fb_order",
+                error_message=f"FB Order status is {order_status or 'missing'}; expected Submitted",
+            )
+        )
+
+    if invoice_status != "Posted":
+        diagnostics.append(
+            _build_projection_diagnostic(
+                fb_order=fb_order,
+                idempotency_key=idempotency_key,
+                projection_status="failed",
+                failed_subsystem="sales_invoice",
+                error_message=f"Sales Invoice projection status is {invoice_status or 'missing'}; expected Posted",
+            )
+        )
+
+    if stock_status not in ACCEPTABLE_STOCK_STATUSES:
+        diagnostics.append(
+            _build_projection_diagnostic(
+                fb_order=fb_order,
+                idempotency_key=idempotency_key,
+                projection_status="failed",
+                failed_subsystem="stock",
+                error_message=f"Stock projection status is {stock_status or 'missing'}; expected Pending or Posted",
+            )
+        )
+
+    for projection in projections:
+        if cstr(projection.get("state")) != "Failed":
+            continue
+        projection_type = cstr(projection.get("projection_type"))
+        failed_subsystem = PROJECTION_SUBSYSTEMS.get(
+            projection_type,
+            projection_type.lower().replace(" ", "_") or "projection",
+        )
+        diagnostics.append(
+            _build_projection_diagnostic(
+                fb_order=fb_order,
+                idempotency_key=idempotency_key,
+                projection_status="failed",
+                failed_subsystem=failed_subsystem,
+                error_message=cstr(projection.get("last_error"))
+                or f"{projection_type or 'Projection'} failed",
+            )
+        )
+
+    return {
+        "projection_status": "failed" if diagnostics else "posted",
+        "diagnostics": _dedupe_projection_diagnostics(diagnostics),
+    }
+
+
+def _build_projection_diagnostic(
+    *,
+    fb_order: str,
+    idempotency_key: str,
+    projection_status: str,
+    failed_subsystem: str,
+    error_message: str,
+) -> dict[str, Any]:
+    return {
+        "fb_order": fb_order,
+        "projection_status": projection_status,
+        "failed_subsystem": failed_subsystem,
+        "error_message": error_message,
+        "idempotency_key": idempotency_key,
+    }
+
+
+def _dedupe_projection_diagnostics(
+    diagnostics: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    deduped = []
+    seen = set()
+    for diagnostic in diagnostics:
+        key = (
+            diagnostic["fb_order"],
+            diagnostic["failed_subsystem"],
+            diagnostic["error_message"],
+            diagnostic["idempotency_key"],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(diagnostic)
+    return deduped
 
 
 def _validate_fb_order_doc(doc) -> None:
@@ -942,8 +1079,10 @@ def _retry_projection_log(log_name: str) -> dict[str, Any]:
     log.last_attempt_at = now_datetime()
     log.save(ignore_permissions=True)
 
-    result = _sync_projection(source_doc, cstr(log.source_doctype), config)
-    source_doc.reload()
+    result = _retry_projection_target(source_doc, cstr(log.source_doctype), config, log)
+    reload_doc = getattr(source_doc, "reload", None)
+    if callable(reload_doc):
+        reload_doc()
     if cstr(log.source_doctype) == "FB Order":
         source_doc.invoice_status = _derive_projection_field_status(
             source_doc, "Sales Invoice"
@@ -964,6 +1103,166 @@ def _retry_projection_log(log_name: str) -> dict[str, Any]:
         "state": result["state"],
         "target_name": result["target_name"],
     }
+
+
+def _retry_projection_target(
+    source_doc,
+    source_doctype: str,
+    config: dict[str, str],
+    log,
+) -> dict[str, Any]:
+    projection_type = config["projection_type"]
+    try:
+        target_name = _run_projection_handler(source_doc, source_doctype, projection_type)
+    except Exception as error:
+        _update_projection_log(log, "Failed", None, str(error))
+        return {
+            "projection_type": projection_type,
+            "state": "Failed",
+            "target_name": None,
+            "log": log.name,
+        }
+
+    if target_name:
+        _update_projection_log(log, "Succeeded", target_name, None)
+        return {
+            "projection_type": projection_type,
+            "state": "Succeeded",
+            "target_name": target_name,
+            "log": log.name,
+        }
+
+    if _projection_can_remain_pending(source_doc, source_doctype, projection_type):
+        _update_projection_log(log, "Pending", None, None)
+        return {
+            "projection_type": projection_type,
+            "state": "Pending",
+            "target_name": None,
+            "log": log.name,
+        }
+
+    error_message = f"{projection_type} projection retry did not create a target document"
+    _update_projection_log(log, "Failed", None, error_message)
+    return {
+        "projection_type": projection_type,
+        "state": "Failed",
+        "target_name": None,
+        "log": log.name,
+    }
+
+
+def _run_projection_handler(
+    source_doc,
+    source_doctype: str,
+    projection_type: str,
+) -> str | None:
+    if source_doctype == "FB Order" and projection_type == "Sales Invoice":
+        return _create_sales_invoice_projection(source_doc)
+    if source_doctype == "FB Order" and projection_type == "Stock Issue":
+        resolved_sales = _get_order_resolved_sales(source_doc)
+        if not _order_requires_stock_projection(source_doc, resolved_sales):
+            return None
+        return _create_stock_issue_projection(source_doc, resolved_sales)
+    if source_doctype == "FB Order" and projection_type == "FB Shift":
+        _refresh_order_shift_projection(source_doc)
+        return cstr(getattr(source_doc, "shift", None)) or None
+    return _get_existing_projection_target(source_doc, projection_type)
+
+
+def _create_sales_invoice_projection(source_doc) -> str | None:
+    service_module = importlib.import_module(
+        "kopos_connector.kopos.services.accounting.sales_invoice_service"
+    )
+
+    return cstr(service_module.create_sales_invoice(source_doc)) or None
+
+
+def _create_stock_issue_projection(source_doc, resolved_sales: list[Any]) -> str | None:
+    service_module = importlib.import_module(
+        "kopos_connector.kopos.services.inventory.stock_issue_service"
+    )
+
+    return cstr(
+        service_module.create_ingredient_stock_entry(source_doc, resolved_sales)
+    ) or None
+
+
+def _get_order_resolved_sales(source_doc) -> list[Any]:
+    get_resolved_sales = getattr(source_doc, "get_resolved_sales", None)
+    if callable(get_resolved_sales):
+        resolved_sales = get_resolved_sales()
+        if isinstance(resolved_sales, list):
+            return resolved_sales
+        return []
+
+    resolved_sales = []
+    for line in list(getattr(source_doc, "items", None) or []):
+        resolved_sale_name = cstr(getattr(line, "resolved_sale", None))
+        if not resolved_sale_name:
+            continue
+        resolved_sales.append(frappe.get_doc("FB Resolved Sale", resolved_sale_name))
+    return resolved_sales
+
+
+def _order_requires_stock_projection(source_doc, resolved_sales: list[Any]) -> bool:
+    requires_stock_projection = getattr(source_doc, "requires_stock_projection", None)
+    if callable(requires_stock_projection):
+        return bool(requires_stock_projection(resolved_sales))
+    return any(
+        _resolved_sale_affects_stock(resolved_sale) for resolved_sale in resolved_sales
+    )
+
+
+def _resolved_sale_affects_stock(resolved_sale: Any) -> bool:
+    for component in list(getattr(resolved_sale, "resolved_components", None) or []):
+        if not cint(getattr(component, "affects_stock", 0)):
+            continue
+        item = cstr(getattr(component, "item", None))
+        warehouse = cstr(
+            getattr(component, "warehouse", None)
+            or getattr(resolved_sale, "booth_warehouse", None)
+        )
+        qty = flt(
+            getattr(component, "stock_qty", None) or getattr(component, "qty", None)
+        )
+        if item and warehouse and qty > 0:
+            return True
+    return False
+
+
+def _refresh_order_shift_projection(source_doc) -> None:
+    update_shift_expected_cash = getattr(source_doc, "update_shift_expected_cash", None)
+    if callable(update_shift_expected_cash):
+        update_shift_expected_cash()
+        return
+    shift = cstr(getattr(source_doc, "shift", None))
+    if not shift:
+        frappe.throw("FB Order has no shift to refresh", frappe.ValidationError)
+    frappe.get_doc("FB Shift", shift)
+
+
+def _get_existing_projection_target(source_doc, projection_type: str) -> str | None:
+    config = _get_projection_config(
+        cstr(getattr(source_doc, "doctype", None)), projection_type
+    )
+    if not config:
+        return None
+    target_name = cstr(getattr(source_doc, config["target_field"], None))
+    if target_name and frappe.db.exists(config["target_doctype"], target_name):
+        return target_name
+    return None
+
+
+def _projection_can_remain_pending(
+    source_doc,
+    source_doctype: str,
+    projection_type: str,
+) -> bool:
+    if source_doctype != "FB Order" or projection_type != "Stock Issue":
+        return False
+    return not _order_requires_stock_projection(
+        source_doc, _get_order_resolved_sales(source_doc)
+    )
 
 
 def _get_projection_config(
@@ -992,6 +1291,7 @@ def _get_projection_statuses(
             "state",
             "target_doctype",
             "target_name",
+            "idempotency_key",
             "retry_count",
             "last_error",
             "last_attempt_at",
@@ -1005,6 +1305,7 @@ def _get_projection_statuses(
             "state": cstr(row.state),
             "target_doctype": cstr(row.target_doctype) or None,
             "target_name": cstr(row.target_name) or None,
+            "idempotency_key": cstr(row.idempotency_key) or None,
             "retry_count": cint(row.retry_count),
             "last_error": cstr(row.last_error) or None,
             "last_attempt_at": row.last_attempt_at.isoformat()
@@ -1114,8 +1415,8 @@ def _validate_submit_shift(*, shift_name: str, device_id: str, staff_id: str) ->
             f"shift {shift_name} does not belong to staff {staff_id}",
             frappe.ValidationError,
         )
-    if shift_status == "Cancelled":
+    if shift_status != "Open":
         frappe.throw(
-            f"shift {shift_name} is cancelled",
+            f"shift {shift_name} is {shift_status or 'missing'}; new FB Orders require an Open FB Shift",
             frappe.ValidationError,
         )

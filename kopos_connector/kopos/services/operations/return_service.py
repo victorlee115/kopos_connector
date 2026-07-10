@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 from typing import Any
@@ -17,6 +19,20 @@ def process_return_event(doc: Any) -> tuple[str | None, str | None]:
     with elevate_device_api_user():
         return_invoice = create_return_sales_invoice(doc)
         reversal_entry = create_reversal_stock_entry(doc)
+    if not return_invoice:
+        frappe.throw(
+            "Return Sales Invoice projection failed for FB Return Event {0}".format(
+                getattr(doc, "name", "")
+            ),
+            frappe.ValidationError,
+        )
+    if int(getattr(doc, "return_to_stock", 0) or 0) and not reversal_entry:
+        frappe.throw(
+            "Stock reversal projection failed for FB Return Event {0}".format(
+                getattr(doc, "name", "")
+            ),
+            frappe.ValidationError,
+        )
     _update_resolved_sale_statuses(doc)
     return return_invoice, reversal_entry
 

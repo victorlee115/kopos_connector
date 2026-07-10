@@ -1,8 +1,16 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 from typing import Any
 
 import frappe
+
+from kopos_connector.utils.diagnostics import (
+    log_sanitized_error,
+    make_savepoint,
+    rollback_to_savepoint,
+)
 
 
 def create_return_sales_invoice(fb_return_event: Any) -> str | None:
@@ -46,17 +54,19 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
         if hasattr(return_invoice, "calculate_taxes_and_totals"):
             return_invoice.calculate_taxes_and_totals()
         return_invoice.update_stock = 0
+        _append_return_payments(original_invoice, return_invoice)
 
         return_invoice.insert(ignore_permissions=True)
         return_invoice.submit()
 
         _set_source_reference(return_doc, "return_sales_invoice", return_invoice.name)
+        refresh_fb_shift_cash(_value(original_invoice, "custom_fb_shift"))
 
         return return_invoice.name
     except Exception:
         _rollback_savepoint(savepoint)
         _log_error("Return sales invoice creation failed")
-        return None
+        raise
 
 
 def _coerce_doc(doctype: str, value: Any):
@@ -95,29 +105,15 @@ def _set_source_reference(doc: Any, fieldname: str, value: Any) -> None:
 
 
 def _make_savepoint(prefix: str) -> str:
-    name = f"{prefix}_{frappe.generate_hash(length=8)}"
-    try:
-        frappe.db.savepoint(name)
-    except Exception:
-        return ""
-    return name
+    return make_savepoint(prefix)
 
 
 def _rollback_savepoint(savepoint: str) -> None:
-    try:
-        if savepoint:
-            frappe.db.rollback(save_point=savepoint)
-        else:
-            frappe.db.rollback()
-    except Exception:
-        pass
+    rollback_to_savepoint(savepoint, title="Return sales invoice rollback failed")
 
 
 def _log_error(title: str) -> None:
-    try:
-        frappe.log_error(frappe.get_traceback(), title)
-    except Exception:
-        pass
+    log_sanitized_error(title)
 
 
 def _resolve_posting_datetime(doc: Any):
@@ -179,6 +175,7 @@ def _append_return_items(
             frappe.throw(
                 f"Original invoice row for resolved sale {resolved_sale_name} was not found"
             )
+            continue
         return_invoice.append(
             "items",
             {
@@ -214,3 +211,121 @@ def _find_invoice_item(original_invoice: Any, resolved_sale_name: str):
         ):
             return item
     return None
+
+
+def _append_return_payments(original_invoice: Any, return_invoice: Any) -> None:
+    original_payments = list(_value(original_invoice, "payments") or [])
+    if not original_payments:
+        return
+
+    return_total = flt(_value(return_invoice, "grand_total"))
+    if return_total == 0:
+        return_total = sum(flt(_value(row, "amount")) for row in _value(return_invoice, "items") or [])
+    if return_total == 0:
+        return
+
+    sale_payment_total = sum(abs(flt(_value(row, "amount"))) for row in original_payments)
+    if sale_payment_total <= 0:
+        return
+
+    if hasattr(return_invoice, "set"):
+        return_invoice.set("payments", [])
+    else:
+        return_invoice.payments = []
+
+    for payment in original_payments:
+        original_amount = abs(flt(_value(payment, "amount")))
+        if original_amount <= 0:
+            continue
+        amount = return_total * (original_amount / sale_payment_total)
+        row = {
+            "mode_of_payment": _value(payment, "mode_of_payment"),
+            "amount": amount,
+            "reference_no": _value(payment, "reference_no") or None,
+            "account": _value(payment, "account") or None,
+        }
+        return_invoice.append("payments", row)
+
+    paid_amount = sum(flt(_value(row, "amount")) for row in _value(return_invoice, "payments") or [])
+    if hasattr(return_invoice, "paid_amount"):
+        return_invoice.paid_amount = paid_amount
+    if hasattr(return_invoice, "change_amount"):
+        return_invoice.change_amount = 0
+
+
+def refresh_fb_shift_cash(shift_name: Any) -> None:
+    shift = cstr(shift_name).strip()
+    if not shift:
+        return
+
+    shift_doc = frappe.get_doc("FB Shift", shift)
+    sales_invoice_names = _get_shift_sales_invoice_names(shift)
+    total_cash = 0.0
+
+    for invoice_name in sales_invoice_names:
+        invoice = _coerce_doc("Sales Invoice", invoice_name)
+        if invoice and flt(_value(invoice, "docstatus")) == 1:
+            total_cash += _get_cash_payment_total(invoice)
+
+    for return_invoice_name in _get_shift_return_invoice_names(sales_invoice_names):
+        return_invoice = _coerce_doc("Sales Invoice", return_invoice_name)
+        if return_invoice and flt(_value(return_invoice, "docstatus")) == 1:
+            total_cash += _get_cash_payment_total(return_invoice)
+
+    expected_cash = flt(_value(shift_doc, "opening_float")) + total_cash
+    _set_doc_field(shift_doc, "expected_cash", expected_cash)
+    if _value(shift_doc, "counted_cash") is not None:
+        _set_doc_field(
+            shift_doc,
+            "cash_variance",
+            flt(_value(shift_doc, "counted_cash")) - expected_cash,
+        )
+
+
+def _get_shift_sales_invoice_names(shift: str) -> list[str]:
+    rows = frappe.get_all(
+        "FB Order",
+        filters={"shift": shift, "status": "Submitted"},
+        fields=["sales_invoice"],
+    )
+    invoice_names: list[str] = []
+    for row in rows or []:
+        invoice_name = cstr(_value(row, "sales_invoice")).strip()
+        if invoice_name:
+            invoice_names.append(invoice_name)
+    return invoice_names
+
+
+def _get_shift_return_invoice_names(sales_invoice_names: list[str]) -> list[str]:
+    if not sales_invoice_names:
+        return []
+    rows = frappe.get_all(
+        "Sales Invoice",
+        filters={
+            "return_against": ["in", sales_invoice_names],
+            "is_return": 1,
+            "docstatus": 1,
+        },
+        fields=["name"],
+    )
+    return [
+        cstr(_value(row, "name")).strip()
+        for row in rows or []
+        if cstr(_value(row, "name")).strip()
+    ]
+
+
+def _get_cash_payment_total(invoice: Any) -> float:
+    total = 0.0
+    for payment in _value(invoice, "payments") or []:
+        if cstr(_value(payment, "mode_of_payment")).strip() == "Cash":
+            total += flt(_value(payment, "amount"))
+    return total
+
+
+def _set_doc_field(doc: Any, fieldname: str, value: Any) -> None:
+    db_set = getattr(doc, "db_set", None)
+    if callable(db_set):
+        db_set(fieldname, value, update_modified=False)
+        return
+    setattr(doc, fieldname, value)

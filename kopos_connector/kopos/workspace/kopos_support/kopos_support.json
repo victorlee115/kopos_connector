@@ -1,0 +1,53 @@
+{
+ "charts": [],
+ "content": "[{\"type\":\"header\",\"data\":{\"text\":\"KoPOS support cockpit\",\"level\":4,\"col\":12}},{\"type\":\"paragraph\",\"data\":{\"text\":\"Minimum admin/support entry point for device health, active FB Shifts, FB Orders, Sales Invoices, projection_status review, reconciliation, and smoke/support reports. Provisioning remains System Manager-only.\",\"col\":12}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"KoPOS Device Health\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Projection Support Queue\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Shift Reconciliation\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"KoPOS Support Report\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"KoPOS Provisioning\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Trading Day Review\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Support Reports\",\"col\":4}}]",
+ "creation": "2026-06-24 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "device-mobile",
+ "idx": 0,
+ "is_hidden": 0,
+ "label": "KoPOS Support",
+ "links": [
+  {"hidden": 0, "is_query_report": 0, "label": "Setup", "link_count": 0, "onboard": 0, "type": "Card Break"},
+  {"hidden": 0, "is_query_report": 0, "label": "KoPOS Devices", "link_count": 0, "link_to": "KoPOS Device", "link_type": "DocType", "onboard": 0, "type": "Link"},
+  {"hidden": 0, "is_query_report": 0, "label": "KoPOS Provisioning", "link_count": 0, "link_to": "kopos_provisioning", "link_type": "Page", "onboard": 0, "type": "Link"},
+  {"hidden": 0, "is_query_report": 0, "label": "Trading Day Review", "link_count": 0, "onboard": 0, "type": "Card Break"},
+  {"hidden": 0, "is_query_report": 0, "label": "Active FB Shifts", "link_count": 0, "link_to": "FB Shift", "link_type": "DocType", "onboard": 0, "type": "Link"},
+  {"hidden": 0, "is_query_report": 0, "label": "FB Orders", "link_count": 0, "link_to": "FB Order", "link_type": "DocType", "onboard": 0, "type": "Link"},
+  {"hidden": 0, "is_query_report": 0, "label": "Sales Invoices", "link_count": 0, "link_to": "Sales Invoice", "link_type": "DocType", "onboard": 0, "type": "Link"},
+  {"hidden": 0, "is_query_report": 0, "label": "Projection Logs", "link_count": 0, "link_to": "FB Projection Log", "link_type": "DocType", "onboard": 0, "type": "Link"},
+  {"hidden": 0, "is_query_report": 0, "label": "Support Reports", "link_count": 0, "onboard": 0, "type": "Card Break"},
+  {"hidden": 0, "is_query_report": 0, "label": "KoPOS Device Health", "link_count": 0, "link_to": "KoPOS Device Health", "link_type": "Report", "onboard": 0, "type": "Link"},
+  {"hidden": 0, "is_query_report": 0, "label": "Projection Support Queue", "link_count": 0, "link_to": "KoPOS Projection Support Queue", "link_type": "Report", "onboard": 0, "type": "Link"},
+   {"hidden": 0, "is_query_report": 0, "label": "Shift Reconciliation", "link_count": 0, "link_to": "KoPOS Shift Reconciliation", "link_type": "Report", "onboard": 0, "type": "Link"},
+   {"hidden": 0, "is_query_report": 0, "label": "KoPOS Support Report", "link_count": 0, "link_to": "KoPOS Support Report", "link_type": "Report", "onboard": 0, "type": "Link"},
+   {"hidden": 0, "is_query_report": 0, "label": "Modifier Sales Analytics", "link_count": 0, "link_to": "Modifier Sales Analytics", "link_type": "Report", "onboard": 0, "type": "Link"}
+ ],
+ "modified": "2026-06-24 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "KoPOS",
+ "name": "KoPOS Support",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "restrict_to_domain": "",
+ "roles": [
+  {"role": "System Manager"},
+  {"role": "KoPOS Manager"},
+  {"role": "POS Manager"}
+ ],
+ "sequence_id": 30,
+ "shortcuts": [
+  {"color": "Orange", "doc_view": "Report", "format": "", "label": "KoPOS Device Health", "link_to": "KoPOS Device Health", "stats_filter": "[]", "type": "Report"},
+   {"color": "Red", "doc_view": "Report", "format": "", "label": "Projection Support Queue", "link_to": "KoPOS Projection Support Queue", "stats_filter": "[]", "type": "Report"},
+   {"color": "Green", "doc_view": "Report", "format": "", "label": "Shift Reconciliation", "link_to": "KoPOS Shift Reconciliation", "stats_filter": "[]", "type": "Report"},
+   {"color": "Purple", "doc_view": "Report", "format": "", "label": "KoPOS Support Report", "link_to": "KoPOS Support Report", "stats_filter": "[]", "type": "Report"},
+  {"color": "Blue", "doc_view": "", "format": "", "label": "KoPOS Provisioning", "link_to": "kopos_provisioning", "stats_filter": "[]", "type": "Page"}
+ ],
+ "title": "KoPOS Support"
+}

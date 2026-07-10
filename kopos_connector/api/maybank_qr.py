@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 from typing import Any
@@ -15,6 +17,7 @@ from frappe.utils import (
 )
 
 from kopos_connector.services.maybank.client import MaybankClient
+from kopos_connector.utils.diagnostics import redacted_json
 
 STATUS_MAP = {
     "0": "failed",
@@ -168,7 +171,7 @@ def _poll_txn_status(txn: Any) -> None:
 
     frappe.db.sql(
         "UPDATE `tabMaybank QR Transaction` SET last_polled_at = %s, poll_count = poll_count + 1, raw_response = %s WHERE name = %s",
-        (now_datetime(), frappe.as_json(result), txn.name),
+        (now_datetime(), redacted_json(result), txn.name),
     )
     frappe.db.commit()
 
@@ -270,7 +273,7 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "round_number": 1,
                 "created_at": current_now,
                 "expires_at": expires_at,
-                "raw_response": frappe.as_json(result),
+                "raw_response": redacted_json(result),
             }
         )
         try:
@@ -348,7 +351,7 @@ def _update_txn_status(
             frappe.db.get_value("Maybank QR Transaction", name, "poll_count")
         )
         + 1,
-        "raw_response": frappe.as_json(raw_response),
+        "raw_response": redacted_json(raw_response),
     }
     if status == "scanned" and not frappe.db.get_value(
         "Maybank QR Transaction", name, "scanned_at"

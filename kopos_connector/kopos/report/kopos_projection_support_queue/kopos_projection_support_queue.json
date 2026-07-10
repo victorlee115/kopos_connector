@@ -1,0 +1,18 @@
+{
+ "add_total_row": 0,
+ "disabled": 0,
+ "doctype": "Report",
+ "is_standard": "Yes",
+ "module": "KoPOS",
+ "name": "KoPOS Projection Support Queue",
+ "prepared_report": 0,
+ "ref_doctype": "FB Projection Log",
+ "report_name": "KoPOS Projection Support Queue",
+ "report_type": "Script Report",
+ "roles": [
+  {"role": "System Manager"},
+  {"role": "KoPOS Manager"},
+  {"role": "POS Manager"}
+ ],
+ "timeout": 300
+}

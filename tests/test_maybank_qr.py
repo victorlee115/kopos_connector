@@ -15,6 +15,7 @@ api_module = importlib.import_module("kopos_connector.api")
 devices_module = importlib.import_module("kopos_connector.api.devices")
 maybank_qr = importlib.import_module("kopos_connector.api.maybank_qr")
 poll_maybank = importlib.import_module("kopos_connector.tasks.poll_maybank")
+diagnostics = importlib.import_module("kopos_connector.utils.diagnostics")
 
 
 class MaybankQrStatusTests(unittest.TestCase):
@@ -34,6 +35,12 @@ class MaybankQrStatusTests(unittest.TestCase):
 
         txn_doc = Mock()
         txn_doc.insert.return_value = None
+        inserted_docs: list[dict] = []
+
+        def capture_get_doc(doc):
+            if isinstance(doc, dict):
+                inserted_docs.append(doc)
+            return txn_doc
 
         with (
             patch.object(maybank_qr, "_check_rate_limit"),
@@ -41,7 +48,7 @@ class MaybankQrStatusTests(unittest.TestCase):
             patch.object(
                 maybank_qr.frappe,
                 "get_doc",
-                return_value=txn_doc,
+                side_effect=capture_get_doc,
             ),
             patch.object(
                 maybank_qr.MaybankClient, "from_settings", return_value=client
@@ -64,6 +71,11 @@ class MaybankQrStatusTests(unittest.TestCase):
         self.assertEqual(result["qr_data"], "0002010102110011BR123QDSAMR01")
         client.generate_qr.assert_called_once_with("10.00")
 
+        self.assertEqual(len(inserted_docs), 1)
+        raw_response = inserted_docs[0]["raw_response"]
+        self.assertIn("[redacted]", raw_response)
+        self.assertNotIn("0002010102110011BR123QDSAMR01", raw_response)
+
     def test_generate_qr_rejects_excessive_amount(self):
         with self.assertRaises(maybank_qr.frappe.ValidationError):
             maybank_qr.generate_maybank_qr_payload(
@@ -73,6 +85,35 @@ class MaybankQrStatusTests(unittest.TestCase):
                     "idempotency_key": "key-1",
                 }
             )
+
+    def test_diagnostics_redacts_tokens_pins_qr_and_provider_payloads(self):
+        payload = {
+            "api_key": "api-key-secret",
+            "api_secret": "api-secret-value",
+            "authorization": "Bearer live-token",
+            "pin_hash": "pin-hash-value",
+            "data": [
+                {
+                    "qr_data": "0002010102110011BR123QDSAMR01",
+                    "transaction_refno": "ref-1",
+                }
+            ],
+            "nested": {"raw_response": {"token": "provider-token"}},
+        }
+
+        redacted = diagnostics.redacted_json(payload)
+
+        self.assertIn("[redacted]", redacted)
+        for secret in [
+            "api-key-secret",
+            "api-secret-value",
+            "Bearer live-token",
+            "pin-hash-value",
+            "0002010102110011BR123QDSAMR01",
+            "provider-token",
+        ]:
+            self.assertNotIn(secret, redacted)
+        self.assertIn("ref-1", redacted)
 
     def test_generate_qr_rejects_zero_amount(self):
         with self.assertRaises(maybank_qr.frappe.ValidationError):

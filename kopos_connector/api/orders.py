@@ -1,3 +1,10 @@
+"""Legacy POS Invoice helpers retained for migration and historical support only.
+
+Active public KoPOS routes must not import submit/refund/void handlers from this
+module. Use FB Order, Sales Invoice, and FB Shift implementations wired through
+``kopos_connector.api`` instead.
+"""
+
 from __future__ import annotations
 
 import json

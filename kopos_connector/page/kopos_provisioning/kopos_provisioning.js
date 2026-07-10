@@ -22,7 +22,7 @@ class KoPOSProvisioningPage {
 			<div class="kopos-provisioning-page">
 				<div class="kopos-provisioning-card kopos-provisioning-intro">
 					<h3>${__("Generate setup QR for a POS device")}</h3>
-					<p>${__("Create a short-lived QR that opens KoPOS and auto-configures the assigned device, linked POS profile, printers, users, credentials, catalog, and promotions. Use the Device ERP URL that the tablet can actually reach.")}</p>
+						<p>${__("Create a short-lived QR that opens KoPOS and auto-configures the assigned device, linked POS profile, printers, users, credentials, catalog, and promotions. Use the Device ERP URL that the tablet can actually reach. The one-time setup link is hidden after creation; scan the QR or copy it only while this page is open.")}</p>
 				</div>
 				<div class="kopos-provisioning-grid">
 					<div class="kopos-provisioning-card">
@@ -87,8 +87,7 @@ class KoPOSProvisioningPage {
 			.kopos-preview-icon { width:64px; height:64px; margin:0 auto 12px; border-radius:18px; display:flex; align-items:center; justify-content:center; background:rgba(245,158,11,0.12); color:#f59e0b; font-size:28px; }
 			.kopos-qr-image { width:280px; height:280px; max-width:100%; border-radius:16px; border:1px solid var(--border-color); background:#fff; padding:12px; }
 			.kopos-meta { margin-top:16px; color: var(--text-muted); line-height:1.6; }
-			.kopos-link { margin-top:12px; word-break:break-all; font-size:12px; color: var(--text-muted); }
-			.kopos-link code { white-space:pre-wrap; }
+			.kopos-link { margin-top:12px; font-size:12px; color: var(--text-muted); }
 			@media (max-width: 991px) { .kopos-provisioning-grid { grid-template-columns:1fr; } .kopos-provisioning-preview { position:static; min-height:auto; } }
 		`;
 		document.head.appendChild(style);
@@ -218,7 +217,7 @@ class KoPOSProvisioningPage {
 			<div><strong>${__("Warehouse")}:</strong> ${this.escape_html(preview.warehouse || "-")}</div>
 			<div><strong>${__("Expires At")}:</strong> ${frappe.datetime.str_to_user(payload.expires_at)}</div>
 		`);
-		this.page.body.find(".kopos-link").html(`<code>${this.escape_html(payload.provisioning_link)}</code>`);
+		this.page.body.find(".kopos-link").text(__("The one-time setup link is hidden after creation. Scan the QR or use Copy Link only while this page is open."));
 	}
 
 	escape_html(value) {
@@ -236,7 +235,7 @@ class KoPOSProvisioningPage {
 			await navigator.clipboard.writeText(this.current_link);
 			frappe.show_alert({ message: __("Provisioning link copied"), indicator: "green" });
 		} catch (error) {
-			frappe.msgprint(this.current_link);
+			frappe.msgprint(__("Copy failed. Scan the QR while this page is open."));
 		}
 	}
 }

@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 import json
@@ -19,6 +21,7 @@ from kopos_connector.api.devices import (
     require_system_manager,
     serialize_device_config,
 )
+from kopos_connector.utils.diagnostics import log_sanitized_error
 
 
 PROVISIONING_CACHE_PREFIX = "kopos:provisioning:"
@@ -37,17 +40,17 @@ def ensure_device_api_credentials(
     api_key_value = cstr(frappe.db.get_value("User", resolved_user, "api_key")).strip()
     api_secret_value = _read_device_api_secret(resolved_user)
 
-    if should_rotate or not api_key_value:
+    if should_rotate or not api_key_value or not api_secret_value:
+        if should_rotate:
+            _delete_stale_device_api_secret(resolved_user)
         api_key_value = cstr(frappe.generate_hash(length=15)).strip()
+        api_secret_value = cstr(frappe.generate_hash(length=32)).strip()
         frappe.db.set_value("User", resolved_user, "api_key", api_key_value)
+        set_encrypted_password("User", resolved_user, api_secret_value, "api_secret")
         frappe.db.commit()
 
-    if should_rotate or not api_secret_value:
-        next_secret = cstr(frappe.generate_hash(length=32)).strip()
-        set_encrypted_password("User", resolved_user, next_secret, "api_secret")
-        frappe.db.commit()
-        api_secret_value = _read_device_api_secret(resolved_user)
-        if api_secret_value != next_secret:
+        persisted_secret = _read_device_api_secret(resolved_user)
+        if persisted_secret != api_secret_value:
             frappe.throw(
                 _("Failed to persist a usable API secret for device user {0}").format(
                     resolved_user
@@ -65,6 +68,21 @@ def ensure_device_api_credentials(
     }
 
 
+def _delete_stale_device_api_secret(user_email: str) -> None:
+    try:
+        frappe.db.delete(
+            "__Auth",
+            {
+                "doctype": "User",
+                "name": user_email,
+                "fieldname": "api_secret",
+            },
+        )
+    except Exception as error:
+        log_sanitized_error("KoPOS stale device API secret cleanup failed", error)
+        return
+
+
 def create_device_provisioning_qr(
     device: str | None = None,
     erpnext_url: str | None = None,
@@ -73,6 +91,9 @@ def create_device_provisioning_qr(
 ) -> dict[str, Any]:
     require_system_manager()
     device_doc = get_device_doc(name=device)
+    if device_doc is None:
+        frappe.throw(_("KoPOS Device is required"), frappe.ValidationError)
+        raise ValueError("KoPOS Device is required")
     credentials = ensure_device_api_credentials(device_doc, rotate=rotate_credentials)
     payload = create_pos_provisioning(
         device=device_doc.name,
@@ -119,6 +140,9 @@ def create_pos_provisioning(
             frappe.throw(_("KoPOS Device is required"))
     else:
         frappe.throw(_("KoPOS Device is required"))
+    if device_doc is None:
+        frappe.throw(_("KoPOS Device is required"), frappe.ValidationError)
+        raise ValueError("KoPOS Device is required")
 
     profile_doc = frappe.get_cached_doc("POS Profile", device_doc.pos_profile)
     resolved_company = (
@@ -221,6 +245,9 @@ def redeem_pos_provisioning(token: str | None = None) -> dict[str, Any]:
 
 def get_device_config(device_id: str | None = None) -> dict[str, Any]:
     device_doc = get_device_doc(device_id=device_id)
+    if device_doc is None:
+        frappe.throw(_("KoPOS Device is required"), frappe.ValidationError)
+        raise ValueError("KoPOS Device is required")
     require_device_api_access(device_doc)
     if not cint(device_doc.enabled):
         frappe.throw(
@@ -327,5 +354,6 @@ def _read_device_api_secret(user_email: str) -> str:
             )
             or ""
         ).strip()
-    except Exception:
+    except Exception as error:
+        log_sanitized_error("KoPOS device API secret read failed", error)
         return ""

@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -9,6 +11,15 @@ from frappe.utils import cint, cstr, now_datetime
 
 
 KOPOS_DEVICE_API_ROLE = "KoPOS Device API"
+
+PRIVILEGED_OPERATION_REASONS = {
+    "device_config_read",
+    "manual_qr_receipt_file",
+    "projection_retry",
+    "sales_invoice_projection",
+    "shift_lifecycle",
+    "stock_projection",
+}
 
 
 def get_session_roles(user: str | None = None) -> set[str]:
@@ -132,6 +143,18 @@ def elevate_device_api_user():
         set_user(session_user)
 
 
+@contextmanager
+def privileged_device_api_operation(reason: str):
+    """Named boundary for server-side writes done on behalf of a device API user."""
+    if reason not in PRIVILEGED_OPERATION_REASONS:
+        frappe.throw(
+            _("Unknown KoPOS privileged operation reason: {0}").format(reason),
+            frappe.ValidationError,
+        )
+    with elevate_device_api_user():
+        yield
+
+
 def get_device_doc(device_id: str | None = None, name: str | None = None):
     device_id_value = cstr(device_id).strip()
     name_value = cstr(name).strip()
@@ -238,7 +261,10 @@ def ensure_unique_device_api_user(
 
 def get_device_pos_profile_doc(device_id: str | None = None, name: str | None = None):
     device = get_device_doc(device_id=device_id, name=name)
-    return frappe.get_cached_doc("POS Profile", device.pos_profile)
+    pos_profile = cstr(getattr(device, "pos_profile", None)).strip()
+    if not pos_profile:
+        frappe.throw(_("KoPOS Device has no POS Profile configured"), frappe.ValidationError)
+    return frappe.get_cached_doc("POS Profile", pos_profile)
 
 
 def serialize_device_config(
@@ -325,10 +351,13 @@ def serialize_device_config(
 
 def mark_device_seen(device_id: str | None = None, name: str | None = None) -> None:
     device = get_device_doc(device_id=device_id, name=name)
+    device_name = cstr(getattr(device, "name", None)).strip()
+    if not device_name:
+        frappe.throw(_("KoPOS Device is required"), frappe.ValidationError)
     now_iso = now_datetime().isoformat()
     frappe.db.set_value(
         "KoPOS Device",
-        device.name,
+        device_name,
         {"last_seen_at": now_iso, "last_sync_at": now_iso},
         update_modified=False,
     )

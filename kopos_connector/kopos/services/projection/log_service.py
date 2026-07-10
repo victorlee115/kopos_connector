@@ -1,8 +1,16 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 from typing import Any
 
 import frappe
+
+from kopos_connector.utils.diagnostics import (
+    log_sanitized_error,
+    make_savepoint,
+    rollback_to_savepoint,
+)
 
 
 def create_projection_log(
@@ -155,26 +163,12 @@ def _stringify_error(error: Any) -> str | None:
 
 
 def _make_savepoint(prefix: str) -> str:
-    name = f"{prefix}_{frappe.generate_hash(length=8)}"
-    try:
-        frappe.db.savepoint(name)
-    except Exception:
-        return ""
-    return name
+    return make_savepoint(prefix)
 
 
 def _rollback_savepoint(savepoint: str) -> None:
-    try:
-        if savepoint:
-            frappe.db.rollback(save_point=savepoint)
-        else:
-            frappe.db.rollback()
-    except Exception:
-        pass
+    rollback_to_savepoint(savepoint, title="Projection log rollback failed")
 
 
 def _log_error(title: str) -> None:
-    try:
-        frappe.log_error(frappe.get_traceback(), title)
-    except Exception:
-        pass
+    log_sanitized_error(title)

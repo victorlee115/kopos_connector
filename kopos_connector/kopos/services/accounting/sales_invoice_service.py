@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 import json
@@ -6,8 +8,14 @@ from typing import Any
 import frappe
 
 from kopos_connector.api.devices import (
-    elevate_device_api_user,
+    get_device_doc,
     get_device_pos_profile_doc,
+    privileged_device_api_operation,
+)
+from kopos_connector.utils.diagnostics import (
+    log_sanitized_error,
+    make_savepoint,
+    rollback_to_savepoint,
 )
 
 
@@ -16,19 +24,24 @@ def create_sales_invoice(fb_order: Any) -> str | None:
     if not order_doc:
         return None
 
-    existing_invoice = _get_existing_reference(order_doc, "sales_invoice")
+    existing_invoice = _get_existing_sales_invoice(order_doc)
     if existing_invoice:
+        _set_source_reference(order_doc, "sales_invoice", existing_invoice)
+        _set_source_reference(order_doc, "invoice_status", "Posted")
+        _link_resolved_sales(order_doc, existing_invoice)
         return existing_invoice
 
+    pos_profile_context = _resolve_pos_profile_context(order_doc)
     savepoint = _make_savepoint("fb_sales_invoice")
 
     try:
-        with elevate_device_api_user():
+        with privileged_device_api_operation("sales_invoice_projection"):
             invoice = frappe.new_doc("Sales Invoice")
             invoice.customer = _resolve_customer(order_doc)
-            invoice.company = _value(order_doc, "company")
+            invoice.company = pos_profile_context["company"]
             invoice.currency = _resolve_currency(order_doc)
             invoice.is_pos = 1
+            invoice.pos_profile = pos_profile_context["pos_profile"]
             invoice.update_stock = 0
             invoice.set_posting_time = 1
             posting_dt = _resolve_posting_datetime(order_doc)
@@ -142,6 +155,12 @@ def create_sales_invoice(fb_order: Any) -> str | None:
         return invoice.name
     except Exception:
         _rollback_savepoint(savepoint)
+        recovered_invoice = _get_existing_sales_invoice(order_doc)
+        if recovered_invoice:
+            _set_source_reference(order_doc, "sales_invoice", recovered_invoice)
+            _set_source_reference(order_doc, "invoice_status", "Posted")
+            _link_resolved_sales(order_doc, recovered_invoice)
+            return recovered_invoice
         _log_error("Sales invoice projection failed")
         return None
 
@@ -191,6 +210,37 @@ def _resolve_customer(order_doc: Any) -> str:
     raise ValueError("customer is required to create Sales Invoice")
 
 
+def _resolve_pos_profile_context(order_doc: Any) -> dict[str, str]:
+    device_id = str(_value(order_doc, "device_id") or "").strip()
+    if not device_id:
+        frappe.throw("FB Order device_id is required to resolve POS Profile", frappe.ValidationError)
+
+    device_doc = get_device_doc(device_id=device_id)
+    pos_profile = str(_value(device_doc, "pos_profile") or "").strip()
+    if not pos_profile:
+        frappe.throw(
+            f"KoPOS Device {device_id} has no POS Profile configured",
+            frappe.ValidationError,
+        )
+
+    profile_doc = frappe.get_cached_doc("POS Profile", pos_profile)
+    profile_company = str(_value(profile_doc, "company") or "").strip()
+    if not profile_company:
+        frappe.throw(
+            f"POS Profile {pos_profile} has no company configured",
+            frappe.ValidationError,
+        )
+
+    order_company = str(_value(order_doc, "company") or "").strip()
+    if order_company and order_company != profile_company:
+        frappe.throw(
+            f"FB Order company {order_company} does not match POS Profile {pos_profile} company {profile_company}",
+            frappe.ValidationError,
+        )
+
+    return {"pos_profile": pos_profile, "company": profile_company}
+
+
 def _resolve_currency(order_doc: Any) -> str:
     currency = _value(order_doc, "currency")
     if currency:
@@ -202,6 +252,65 @@ def _resolve_currency(order_doc: Any) -> str:
         return default_currency
 
     raise ValueError("currency is required to create Sales Invoice")
+
+
+def _get_existing_sales_invoice(order_doc: Any) -> str | None:
+    source_reference = _get_existing_reference(order_doc, "sales_invoice")
+    if source_reference:
+        return source_reference
+
+    idempotency_key = str(_value(order_doc, "external_idempotency_key") or "").strip()
+    if not idempotency_key:
+        return None
+
+    invoice_name = frappe.db.get_value(
+        "Sales Invoice",
+        {"custom_fb_idempotency_key": idempotency_key},
+        "name",
+    )
+    if not invoice_name:
+        return None
+
+    resolved_invoice_name = str(invoice_name)
+    _validate_recovered_sales_invoice(order_doc, resolved_invoice_name)
+    return resolved_invoice_name
+
+
+def _validate_recovered_sales_invoice(order_doc: Any, invoice_name: str) -> None:
+    invoice = _coerce_doc("Sales Invoice", invoice_name)
+    if not invoice:
+        return
+
+    _validate_recovered_field(
+        invoice,
+        "custom_fb_order",
+        order_doc.name,
+        f"Sales Invoice {invoice_name} belongs to another FB Order",
+    )
+    _validate_recovered_field(
+        invoice,
+        "custom_fb_shift",
+        _value(order_doc, "shift"),
+        f"Sales Invoice {invoice_name} belongs to another FB Shift",
+    )
+    _validate_recovered_field(
+        invoice,
+        "custom_fb_device_id",
+        _value(order_doc, "device_id"),
+        f"Sales Invoice {invoice_name} belongs to another KoPOS device",
+    )
+
+
+def _validate_recovered_field(
+    invoice: Any,
+    fieldname: str,
+    expected_value: Any,
+    message: str,
+) -> None:
+    actual_value = str(_value(invoice, fieldname) or "").strip()
+    expected = str(expected_value or "").strip()
+    if actual_value and expected and actual_value != expected:
+        frappe.throw(message, frappe.ValidationError)
 
 
 def _resolve_posting_datetime(order_doc: Any):
@@ -467,26 +576,12 @@ def _set_source_reference(doc: Any, fieldname: str, value: Any) -> None:
 
 
 def _make_savepoint(prefix: str) -> str:
-    name = f"{prefix}_{frappe.generate_hash(length=8)}"
-    try:
-        frappe.db.savepoint(name)
-    except Exception:
-        return ""
-    return name
+    return make_savepoint(prefix)
 
 
 def _rollback_savepoint(savepoint: str) -> None:
-    try:
-        if savepoint:
-            frappe.db.rollback(save_point=savepoint)
-        else:
-            frappe.db.rollback()
-    except Exception:
-        pass
+    rollback_to_savepoint(savepoint, title="Sales invoice projection rollback failed")
 
 
 def _log_error(title: str) -> None:
-    try:
-        frappe.log_error(frappe.get_traceback(), title)
-    except Exception:
-        pass
+    log_sanitized_error(title)

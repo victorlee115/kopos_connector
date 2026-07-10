@@ -64,8 +64,14 @@ class FBOrder(BaseDocument):
         resolved_sales = self.get_resolved_sales()
         invoice_log = self.create_projection_entry("Sales Invoice")
         stock_log = self.create_projection_entry("Stock Issue")
+        shift_log = self.create_projection_entry("FB Shift")
 
-        self.sales_invoice = create_sales_invoice(self)
+        invoice_error = None
+        try:
+            self.sales_invoice = create_sales_invoice(self)
+        except Exception as error:
+            self.sales_invoice = None
+            invoice_error = error
         if self.sales_invoice:
             self.invoice_status = "Posted"
             update_projection_state(
@@ -82,12 +88,21 @@ class FBOrder(BaseDocument):
                 "Failed",
                 "Sales Invoice",
                 None,
-                "Sales Invoice projection failed",
+                str(invoice_error) if invoice_error else "Sales Invoice projection failed",
             )
 
-        self.ingredient_stock_entry = create_ingredient_stock_entry(
-            self, resolved_sales
-        )
+        stock_error = None
+        stock_projection_required = self.requires_stock_projection(resolved_sales)
+        if stock_projection_required:
+            try:
+                self.ingredient_stock_entry = create_ingredient_stock_entry(
+                    self, resolved_sales
+                )
+            except Exception as error:
+                self.ingredient_stock_entry = None
+                stock_error = error
+        else:
+            self.ingredient_stock_entry = None
         if self.ingredient_stock_entry:
             self.stock_status = "Posted"
             update_projection_state(
@@ -97,6 +112,15 @@ class FBOrder(BaseDocument):
                 self.ingredient_stock_entry,
                 None,
             )
+        elif not stock_projection_required:
+            self.stock_status = "Pending"
+            update_projection_state(
+                stock_log,
+                "Pending",
+                "Stock Entry",
+                None,
+                None,
+            )
         else:
             self.stock_status = "Failed"
             update_projection_state(
@@ -104,7 +128,7 @@ class FBOrder(BaseDocument):
                 "Failed",
                 "Stock Entry",
                 None,
-                "Stock issue projection failed",
+                str(stock_error) if stock_error else "Stock issue projection failed",
             )
 
         self.status = "Submitted"
@@ -119,7 +143,26 @@ class FBOrder(BaseDocument):
                 self.ingredient_stock_entry,
                 update_modified=False,
             )
-        self.update_shift_expected_cash()
+        try:
+            self.update_shift_expected_cash()
+            update_projection_state(
+                shift_log,
+                "Succeeded",
+                "FB Shift",
+                self.shift,
+                None,
+            )
+        except Exception as error:
+            update_projection_state(
+                shift_log,
+                "Failed",
+                "FB Shift",
+                self.shift,
+                "FB Shift projection failed for FB Order {0}: {1}".format(
+                    self.name,
+                    error,
+                ),
+            )
 
     def create_projection_entry(self, projection_type: str) -> str:
         return (
@@ -150,9 +193,29 @@ class FBOrder(BaseDocument):
         for line in self.items:
             if getattr(line, "resolved_sale", None):
                 resolved_sales.append(
-                    frappe.get_doc("FB Resolved Sale", line.resolved_sale)
+                frappe.get_doc("FB Resolved Sale", line.resolved_sale)
                 )
         return resolved_sales
+
+    def requires_stock_projection(self, resolved_sales: list[DocumentLike]) -> bool:
+        for resolved_sale in resolved_sales:
+            for component in list(getattr(resolved_sale, "resolved_components", None) or []):
+                if not int(getattr(component, "affects_stock", 0) or 0):
+                    continue
+                item = getattr(component, "item", None)
+                warehouse = getattr(component, "warehouse", None) or getattr(
+                    resolved_sale,
+                    "booth_warehouse",
+                    None,
+                )
+                qty = flt(
+                    getattr(component, "stock_qty", None)
+                    or getattr(component, "qty", None)
+                    or 0
+                )
+                if item and warehouse and qty > 0:
+                    return True
+        return False
 
     def update_shift_expected_cash(self):
         if not self.shift:

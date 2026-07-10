@@ -1,9 +1,19 @@
 # Copyright (c) 2026, KoPOS
 # For license information, please see license.txt
 
-import frappe
-from frappe.model.document import Document
-from frappe.utils import now
+from importlib import import_module
+
+frappe = import_module("frappe")
+Document = import_module("frappe.model.document").Document
+frappe_utils = import_module("frappe.utils")
+
+cstr = frappe_utils.cstr
+flt = frappe_utils.flt
+now = frappe_utils.now
+
+
+BLOCKING_PROJECTION_STATUSES = {"Pending", "Failed"}
+BLOCKING_PROJECTION_TYPES = {"Sales Invoice", "Stock Issue", "Stock Entry", "FB Shift"}
 
 
 class FBShift(Document):
@@ -48,22 +58,7 @@ class FBShift(Document):
     def before_update_after_submit(self):
         """Validate updates after submit"""
         if self.status == "Closed":
-            # Check for any pending projections
-            pending_orders = frappe.get_all(
-                "FB Order",
-                filters={
-                    "shift": self.name,
-                    "status": "Submitted",
-                    "invoice_status": ["in", ["Pending", "Failed"]],
-                },
-                limit=1,
-            )
-            if pending_orders:
-                self.status = "Exception"
-                self.close_blocked_reason = "Pending order projections exist"
-                frappe.msgprint(
-                    "Shift moved to Exception: Pending order projections exist"
-                )
+            validate_shift_can_close(self.name)
 
     def on_update(self):
         """Handle shift updates"""
@@ -98,3 +93,178 @@ def get_shift_expected_cash(shift_name):
         "cash_sales": total_cash,
         "expected_cash": shift.opening_float + total_cash,
     }
+
+
+def get_shift_close_projection_blockers(shift_name):
+    orders = frappe.get_all(
+        "FB Order",
+        filters={"shift": shift_name, "status": "Submitted"},
+        fields=["name", "invoice_status", "stock_status"],
+        order_by="creation asc",
+    )
+    blockers = []
+    order_names = []
+    stock_required_by_order = {}
+
+    for order in orders:
+        order_name = _row_value(order, "name")
+        if order_name:
+            order_names.append(order_name)
+            stock_required_by_order[order_name] = _order_requires_stock_projection(
+                order_name
+            )
+
+        invoice_status = cstr(_row_value(order, "invoice_status"))
+        if invoice_status in BLOCKING_PROJECTION_STATUSES:
+            blockers.append(
+                {
+                    "fb_order": order_name,
+                    "projection_type": "Sales Invoice",
+                    "state": invoice_status,
+                    "reason": "invoice_status",
+                }
+            )
+
+        stock_status = cstr(_row_value(order, "stock_status"))
+        if stock_status == "Failed" or (
+            stock_status == "Pending" and stock_required_by_order.get(order_name, True)
+        ):
+            blockers.append(
+                {
+                    "fb_order": order_name,
+                    "projection_type": "Stock Issue",
+                    "state": stock_status,
+                    "reason": "stock_status",
+                }
+            )
+
+    if order_names:
+        projection_logs = frappe.get_all(
+            "FB Projection Log",
+            filters={
+                "source_doctype": "FB Order",
+                "source_name": ["in", order_names],
+                "projection_type": ["in", sorted(BLOCKING_PROJECTION_TYPES)],
+                "state": ["in", sorted(BLOCKING_PROJECTION_STATUSES)],
+            },
+            fields=["source_name", "projection_type", "state", "last_error"],
+            order_by="creation asc",
+        )
+        for projection in projection_logs:
+            projection_type = cstr(_row_value(projection, "projection_type"))
+            projection_state = cstr(_row_value(projection, "state"))
+            projection_order = cstr(_row_value(projection, "source_name")) or None
+            if _is_noop_stock_projection(
+                projection_type,
+                projection_state,
+                projection_order,
+                stock_required_by_order,
+            ):
+                continue
+            blockers.append(
+                {
+                    "fb_order": projection_order,
+                    "projection_type": projection_type,
+                    "state": projection_state,
+                    "reason": "projection_log",
+                    "last_error": cstr(_row_value(projection, "last_error")) or None,
+                }
+            )
+
+    return _dedupe_close_blockers(blockers)
+
+
+def validate_shift_can_close(shift_name):
+    blockers = get_shift_close_projection_blockers(shift_name)
+    if blockers:
+        first = blockers[0]
+        projection_type = first.get("projection_type") or "projection"
+        state = first.get("state") or "unknown"
+        fb_order = first.get("fb_order") or "unknown FB Order"
+        frappe.throw(
+            "FB Shift {0} cannot close while {1} projection for {2} is {3}".format(
+                shift_name,
+                projection_type,
+                fb_order,
+                state,
+            ),
+            frappe.ValidationError,
+        )
+
+
+def _row_value(row, fieldname):
+    if isinstance(row, dict):
+        return row.get(fieldname)
+    getter = getattr(row, "get", None)
+    if callable(getter):
+        return getter(fieldname)
+    return getattr(row, fieldname, None)
+
+
+def _order_requires_stock_projection(order_name):
+    if not order_name:
+        return True
+
+    resolved_sales = frappe.get_all(
+        "FB Resolved Sale",
+        filters={"fb_order": order_name},
+        fields=["name"],
+        order_by="creation asc",
+    )
+    if not resolved_sales:
+        return True
+
+    for resolved_sale_row in resolved_sales:
+        resolved_sale_name = _row_value(resolved_sale_row, "name")
+        if not resolved_sale_name:
+            continue
+        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
+        for component in list(getattr(resolved_sale, "resolved_components", None) or []):
+            if not int(getattr(component, "affects_stock", 0) or 0):
+                continue
+            item = getattr(component, "item", None)
+            warehouse = getattr(component, "warehouse", None) or getattr(
+                resolved_sale,
+                "booth_warehouse",
+                None,
+            )
+            qty = flt(
+                getattr(component, "stock_qty", None)
+                or getattr(component, "qty", None)
+                or 0
+            )
+            if item and warehouse and qty > 0:
+                return True
+    return False
+
+
+def _is_noop_stock_projection(
+    projection_type,
+    projection_state,
+    projection_order,
+    stock_required_by_order,
+):
+    if projection_type not in {"Stock Issue", "Stock Entry"}:
+        return False
+    if projection_state != "Pending":
+        return False
+    if not projection_order:
+        return False
+    return not stock_required_by_order.get(projection_order, True)
+
+
+def _dedupe_close_blockers(blockers):
+    deduped = []
+    seen = set()
+    for blocker in blockers:
+        key = (
+            blocker.get("fb_order"),
+            blocker.get("projection_type"),
+            blocker.get("state"),
+            blocker.get("reason"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(blocker)
+    return deduped

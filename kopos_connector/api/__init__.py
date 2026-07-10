@@ -31,6 +31,17 @@ from .provisioning import (
 )
 
 
+_REFUND_REASON_OPTIONS = {
+    "customer_changed_mind": "Customer changed mind",
+    "wrong_order": "Wrong order",
+    "quality_issue": "Quality issue",
+    "item_damaged": "Item damaged",
+    "service_issue": "Service issue",
+    "pricing_error": "Pricing error",
+    "other": "Other",
+}
+
+
 def _write_response(payload: dict[str, Any], http_status_code: int = 200) -> None:
     frappe.local.response.update(payload)
     frappe.local.response["http_status_code"] = http_status_code
@@ -83,9 +94,14 @@ def get_item_modifiers(item_code: str) -> None:
 def get_refund_reasons() -> None:
     """Return supported refund reason presets for KoPOS clients."""
     require_kopos_api_access()
-    from .orders import get_refund_reason_choices
-
-    _write_response({"refund_reasons": get_refund_reason_choices()})
+    _write_response(
+        {
+            "refund_reasons": [
+                {"code": code, "label": label}
+                for code, label in _REFUND_REASON_OPTIONS.items()
+            ]
+        }
+    )
 
 
 @frappe.whitelist()
@@ -273,9 +289,73 @@ def _to_public_fb_submit_response(
         "order_status": result.get("order_status"),
         "invoice_status": result.get("invoice_status"),
         "stock_status": result.get("stock_status"),
-        "projections": result.get("projections"),
-        "message": result.get("message"),
+        "partial_failure": result.get("partial_failure") or False,
+        "projection_status": result.get("projection_status"),
+        "failed_subsystem": result.get("failed_subsystem"),
+        "diagnostics": _sanitize_public_projection_diagnostics(
+            result.get("diagnostics")
+        ),
+        "projections": _sanitize_public_projection_rows(result.get("projections")),
+        "message": _sanitize_public_projection_message(result),
     }
+
+
+def _sanitize_public_projection_message(result: Mapping[str, Any]) -> str | None:
+    if not result.get("partial_failure") and not result.get("failed_subsystem"):
+        return frappe.utils.cstr(result.get("message")) or None
+    failed_subsystem = frappe.utils.cstr(result.get("failed_subsystem")).strip()
+    if failed_subsystem:
+        return f"{failed_subsystem} projection failed"
+    return "Projection failed"
+
+
+def _sanitize_public_projection_diagnostics(value: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(value, list):
+        return None
+    diagnostics = []
+    for row in value:
+        if not isinstance(row, Mapping):
+            continue
+        failed_subsystem = frappe.utils.cstr(row.get("failed_subsystem")).strip()
+        diagnostics.append(
+            {
+                "fb_order": row.get("fb_order"),
+                "projection_status": row.get("projection_status"),
+                "failed_subsystem": failed_subsystem or None,
+                "error_message": f"{failed_subsystem} projection failed"
+                if failed_subsystem
+                else "Projection failed",
+                "idempotency_key": row.get("idempotency_key"),
+            }
+        )
+    return diagnostics
+
+
+def _sanitize_public_projection_rows(value: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(value, list):
+        return None
+    rows = []
+    for row in value:
+        if not isinstance(row, Mapping):
+            continue
+        state = frappe.utils.cstr(row.get("state")).strip()
+        projection_type = frappe.utils.cstr(row.get("projection_type")).strip()
+        rows.append(
+            {
+                "projection_log": row.get("projection_log"),
+                "projection_type": projection_type or None,
+                "state": state or None,
+                "target_doctype": row.get("target_doctype"),
+                "target_name": row.get("target_name"),
+                "idempotency_key": row.get("idempotency_key"),
+                "retry_count": row.get("retry_count"),
+                "last_error": f"{projection_type} projection failed"
+                if state == "Failed" and projection_type
+                else None,
+                "last_attempt_at": row.get("last_attempt_at"),
+            }
+        )
+    return rows
 
 
 def _to_public_fb_submit_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -488,18 +568,153 @@ def _process_sales_invoice_void_payload(payload: dict[str, Any]) -> dict[str, An
     if not idempotency_key:
         frappe.throw(_("idempotency_key is required"), frappe.ValidationError)
     invoice = frappe.get_doc("Sales Invoice", sales_invoice)
+    if getattr(invoice, "is_return", 0):
+        frappe.throw(_("Cannot void a return Sales Invoice"), frappe.ValidationError)
+    if not _is_fb_sales_invoice(invoice):
+        frappe.throw(
+            _("Sales Invoice {0} was not created via KoPOS").format(sales_invoice),
+            frappe.ValidationError,
+        )
     invoice_device_id = frappe.utils.cstr(getattr(invoice, "custom_fb_device_id", ""))
-    if invoice_device_id and invoice_device_id != device_id:
+    if not invoice_device_id:
+        frappe.throw(_("Sales Invoice {0} has no device ownership context").format(sales_invoice), frappe.ValidationError)
+    if invoice_device_id != device_id:
         frappe.throw(_("Sales Invoice {0} belongs to another device").format(sales_invoice), frappe.ValidationError)
     if invoice.docstatus == 2:
-        return {"status": "duplicate", "sales_invoice": sales_invoice, "idempotency_key": idempotency_key}
+        _apply_fb_void_side_effects(invoice)
+        return {
+            "status": "duplicate",
+            "sales_invoice": sales_invoice,
+            "idempotency_key": idempotency_key,
+            "order_status": "Cancelled",
+            "invoice_status": "Cancelled",
+        }
     if invoice.docstatus != 1:
         frappe.throw(_("Sales Invoice {0} is not submitted").format(sales_invoice), frappe.ValidationError)
     with elevate_device_api_user():
         if reason:
             invoice.add_comment("Comment", f"KoPOS void reason: {reason}")
+        flags = getattr(invoice, "flags", None)
+        if flags is not None:
+            flags.ignore_links = True
         invoice.cancel()
-    return {"status": "ok", "sales_invoice": sales_invoice, "idempotency_key": idempotency_key}
+        _apply_fb_void_side_effects(invoice)
+    return {
+        "status": "ok",
+        "sales_invoice": sales_invoice,
+        "idempotency_key": idempotency_key,
+        "order_status": "Cancelled",
+        "invoice_status": "Cancelled",
+    }
+
+
+def _is_fb_sales_invoice(invoice: Any) -> bool:
+    return bool(
+        frappe.utils.cstr(getattr(invoice, "custom_fb_order", "")).strip()
+        or frappe.utils.cstr(getattr(invoice, "custom_fb_idempotency_key", "")).strip()
+    )
+
+
+def _apply_fb_void_side_effects(invoice: Any) -> None:
+    from kopos_connector.kopos.services.accounting.return_invoice_service import (
+        refresh_fb_shift_cash,
+    )
+
+    fb_order_name = frappe.utils.cstr(getattr(invoice, "custom_fb_order", "")).strip()
+    shift_name = frappe.utils.cstr(getattr(invoice, "custom_fb_shift", "")).strip()
+    order_doc = None
+    if fb_order_name:
+        order_doc = frappe.get_doc("FB Order", fb_order_name)
+        shift_name = frappe.utils.cstr(getattr(order_doc, "shift", shift_name)).strip() or shift_name
+        _cancel_fb_order_stock_entry(order_doc)
+        _set_doc_field(order_doc, "status", "Cancelled")
+        _set_doc_field(order_doc, "invoice_status", "Reversed")
+        _set_doc_field(order_doc, "stock_status", "Reversed")
+        _mark_fb_resolved_sales_cancelled(fb_order_name)
+        _mark_fb_order_projections_reversed(order_doc)
+    if shift_name:
+        refresh_fb_shift_cash(shift_name)
+
+
+def _cancel_fb_order_stock_entry(order_doc: Any) -> None:
+    stock_entry_name = frappe.utils.cstr(
+        getattr(order_doc, "ingredient_stock_entry", "")
+    ).strip()
+    if not stock_entry_name:
+        if frappe.utils.cstr(getattr(order_doc, "stock_status", "")) == "Posted":
+            frappe.throw(
+                _("FB Order {0} has posted stock status but no Stock Entry").format(
+                    order_doc.name
+                ),
+                frappe.ValidationError,
+            )
+        return
+    stock_entry = frappe.get_doc("Stock Entry", stock_entry_name)
+    if getattr(stock_entry, "docstatus", 0) == 1:
+        flags = getattr(stock_entry, "flags", None)
+        if flags is not None:
+            flags.ignore_links = True
+        stock_entry.cancel()
+    elif getattr(stock_entry, "docstatus", 0) != 2:
+        frappe.throw(
+            _("Stock Entry {0} is not submitted or cancelled").format(stock_entry_name),
+            frappe.ValidationError,
+        )
+
+
+def _mark_fb_resolved_sales_cancelled(fb_order_name: str) -> None:
+    rows = frappe.get_all(
+        "FB Resolved Sale",
+        filters={"fb_order": fb_order_name},
+        fields=["name"],
+    )
+    for row in rows or []:
+        resolved_sale_name = frappe.utils.cstr(_row_value(row, "name")).strip()
+        if not resolved_sale_name:
+            continue
+        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
+        _set_doc_field(resolved_sale, "status", "Cancelled")
+
+
+def _mark_fb_order_projections_reversed(order_doc: Any) -> None:
+    rows = frappe.get_all(
+        "FB Projection Log",
+        filters={"source_doctype": "FB Order", "source_name": order_doc.name},
+        fields=["name", "projection_type"],
+    )
+    for row in rows or []:
+        log_name = frappe.utils.cstr(_row_value(row, "name")).strip()
+        if not log_name:
+            continue
+        projection_type = frappe.utils.cstr(_row_value(row, "projection_type")).strip()
+        log_doc = frappe.get_doc("FB Projection Log", log_name)
+        _set_doc_field(log_doc, "state", "Reversed")
+        if projection_type == "Sales Invoice":
+            _set_doc_field(log_doc, "target_doctype", "Sales Invoice")
+            _set_doc_field(log_doc, "target_name", getattr(order_doc, "sales_invoice", None))
+        elif projection_type == "Stock Issue":
+            _set_doc_field(log_doc, "target_doctype", "Stock Entry")
+            _set_doc_field(log_doc, "target_name", getattr(order_doc, "ingredient_stock_entry", None))
+        elif projection_type == "FB Shift":
+            _set_doc_field(log_doc, "target_doctype", "FB Shift")
+            _set_doc_field(log_doc, "target_name", getattr(order_doc, "shift", None))
+
+
+def _row_value(row: Any, fieldname: str) -> Any:
+    if isinstance(row, Mapping):
+        return row.get(fieldname)
+    return getattr(row, fieldname, None)
+
+
+def _set_doc_field(doc: Any, fieldname: str, value: Any) -> None:
+    db_set = getattr(doc, "db_set", None)
+    if callable(db_set):
+        db_set(fieldname, value, update_modified=False)
+        return
+    setattr(doc, fieldname, value)
+    save = getattr(doc, "save", None)
+    if callable(save):
+        save(ignore_permissions=True)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -538,6 +753,7 @@ def _to_public_fb_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     return {
         "return_id": payload.get("return_id") or payload.get("idempotency_key"),
+        "device_id": payload.get("device_id"),
         "fb_order": fb_order or None,
         "original_sales_invoice": original_sales_invoice or None,
         "reason_code": payload.get("reason_code") or "Other",

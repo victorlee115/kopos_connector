@@ -8,8 +8,11 @@ from pathlib import Path
 ERP_ROOT = Path(
     "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext/kopos_connector"
 )
+POS_ROOT = Path(
+    "/Users/victor/dev/jiji/JiJiPOS-Everything/.worktrees/jijipos-mobile-sync-health/kopos"
+)
 TS_ROOT = Path(
-    "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-jijipos/kopos/src"
+    "/Users/victor/dev/jiji/JiJiPOS-Everything/.worktrees/jijipos-mobile-sync-health/kopos/src"
 )
 
 
@@ -28,19 +31,26 @@ class TestFBPublicContracts(unittest.TestCase):
     def test_public_api_methods_are_whitelisted(self):
         expected = {
             "api/fb_orders.py": [
-                "submit_order",
-                "get_order_status",
-                "retry_failed_projections",
+                ("submit_order", "POST"),
+                ("get_order_status", "GET"),
+                ("retry_failed_projections", "POST"),
             ],
-            "api/fb_returns.py": ["process_return"],
-            "api/fb_remakes.py": ["process_remake"],
-            "api/fb_waste.py": ["process_waste"],
-            "api/fb_refill.py": ["process_refill"],
+            "api/fb_returns.py": [("process_return", "POST")],
+            "api/fb_remakes.py": [("process_remake", "POST")],
+            "api/fb_waste.py": [("process_waste", "POST")],
+            "api/fb_refill.py": [("process_refill", "POST")],
         }
         for relative, methods in expected.items():
             content = (ERP_ROOT / relative).read_text()
-            self.assertIn("@frappe.whitelist()", content, relative)
-            for method in methods:
+            for method, expected_method in methods:
+                if expected_method == "POST":
+                    self.assertIn(
+                        "@frappe.whitelist(methods=[\"POST\"])",
+                        content,
+                        f"{relative}:{method}",
+                    )
+                else:
+                    self.assertIn("@frappe.whitelist()", content, f"{relative}:{method}")
                 self.assertIn(f"def {method}", content, f"{relative}:{method}")
 
     def test_hooks_register_new_operational_events(self):
@@ -106,3 +116,27 @@ class TestFBPublicContracts(unittest.TestCase):
         self.assertIn("fb_order", names)
         self.assertIn("sales_invoice", names)
         self.assertNotIn("pos_invoice", names)
+
+    def test_shared_response_fixture_uses_canonical_vocabulary(self):
+        fixture = json.loads(
+            (POS_ROOT / "tests" / "fixtures" / "erpnext-responses.json").read_text()
+        )
+        fixture_text = json.dumps(fixture, sort_keys=True)
+
+        for token in [
+            "fb_shift",
+            "fb_order",
+            "sales_invoice",
+            "idempotency_key",
+            "projection_status",
+        ]:
+            self.assertIn(token, fixture_text)
+        for forbidden in [
+            "POS Invoice",
+            "POS Opening Entry",
+            "POS Closing Entry",
+            "pos_invoice",
+            "pos_opening_entry",
+            "pos_closing_entry",
+        ]:
+            self.assertNotIn(forbidden, fixture_text)

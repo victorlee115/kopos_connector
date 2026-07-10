@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false, reportAttributeAccessIssue=false
+
 from __future__ import annotations
 
 from uuid import uuid4
@@ -12,6 +14,7 @@ from kopos_connector.api.maybank_qr import (
     _update_txn_status,
 )
 from kopos_connector.services.maybank.client import MaybankClient
+from kopos_connector.utils.diagnostics import redacted_json
 
 MIN_POLL_INTERVAL_SECONDS = 2
 MAX_POLL_INTERVAL_SECONDS = 15
@@ -156,7 +159,7 @@ def _is_poll_due(txn: dict, now) -> bool:
 def _touch_poll_attempt(txn_name: str, now, payload: object) -> None:
     frappe.db.sql(
         "UPDATE `tabMaybank QR Transaction` SET last_polled_at = %s, poll_count = poll_count + 1, raw_response = %s WHERE name = %s",
-        (now, frappe.as_json(payload), txn_name),
+        (now, redacted_json(payload), txn_name),
     )
     frappe.db.commit()
 

@@ -1,8 +1,17 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 from typing import Any
 
 import frappe
+
+from kopos_connector.api.devices import privileged_device_api_operation
+from kopos_connector.utils.diagnostics import (
+    log_sanitized_error,
+    make_savepoint,
+    rollback_to_savepoint,
+)
 
 
 def create_reversal_stock_entry(fb_return_event: Any) -> str | None:
@@ -63,26 +72,27 @@ def create_reversal_stock_entry(fb_return_event: Any) -> str | None:
     savepoint = _make_savepoint("fb_reversal_stock")
 
     try:
-        stock_entry = frappe.new_doc("Stock Entry")
-        stock_entry.stock_entry_type = "Material Receipt"
-        stock_entry.purpose = "Material Receipt"
-        stock_entry.company = _resolve_company(return_doc)
-        posting_dt = _resolve_posting_datetime(return_doc)
-        stock_entry.posting_date = posting_dt.date().isoformat()
-        stock_entry.posting_time = posting_dt.time().strftime("%H:%M:%S")
-        stock_entry.set_posting_time = 1
+        with privileged_device_api_operation("stock_projection"):
+            stock_entry = frappe.new_doc("Stock Entry")
+            stock_entry.stock_entry_type = "Material Receipt"
+            stock_entry.purpose = "Material Receipt"
+            stock_entry.company = _resolve_company(return_doc)
+            posting_dt = _resolve_posting_datetime(return_doc)
+            stock_entry.posting_date = posting_dt.date().isoformat()
+            stock_entry.posting_time = posting_dt.time().strftime("%H:%M:%S")
+            stock_entry.set_posting_time = 1
 
-        _set_if_present(
-            stock_entry,
-            ["fb_return_event", "custom_fb_return_event"],
-            return_doc.name,
-        )
+            _set_if_present(
+                stock_entry,
+                ["fb_return_event", "custom_fb_return_event"],
+                return_doc.name,
+            )
 
-        for item_row in items_to_receive:
-            stock_entry.append("items", item_row)
+            for item_row in items_to_receive:
+                stock_entry.append("items", item_row)
 
-        stock_entry.insert(ignore_permissions=True)
-        stock_entry.submit()
+            stock_entry.insert(ignore_permissions=True)
+            stock_entry.submit()
 
         for line in lines:
             line.reversal_stock_entry = stock_entry.name
@@ -142,29 +152,15 @@ def _resolve_posting_datetime(doc: Any):
 
 
 def _make_savepoint(prefix: str) -> str:
-    name = f"{prefix}_{frappe.generate_hash(length=8)}"
-    try:
-        frappe.db.savepoint(name)
-    except Exception:
-        return ""
-    return name
+    return make_savepoint(prefix)
 
 
 def _rollback_savepoint(savepoint: str) -> None:
-    try:
-        if savepoint:
-            frappe.db.rollback(save_point=savepoint)
-        else:
-            frappe.db.rollback()
-    except Exception:
-        pass
+    rollback_to_savepoint(savepoint, title="Stock reversal rollback failed")
 
 
 def _log_error(title: str) -> None:
-    try:
-        frappe.log_error(frappe.get_traceback(), title)
-    except Exception:
-        pass
+    log_sanitized_error(title)
 
 
 def _set_if_present(doc: Any, fieldnames: list[str], value: Any) -> None:

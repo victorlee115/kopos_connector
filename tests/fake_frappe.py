@@ -159,6 +159,7 @@ def install_fake_frappe_modules() -> None:
         lambda message, exc=None: _raise((exc or ValidationError)(message)),
     )
     setattr(frappe_module, "parse_json", lambda value: json.loads(value))
+    setattr(frappe_module, "as_json", lambda value: json.dumps(value, sort_keys=True))
     setattr(frappe_module, "session", SimpleNamespace(user="Administrator"))
     setattr(
         frappe_module,

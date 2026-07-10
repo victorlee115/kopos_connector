@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -11,7 +13,7 @@ from kopos_connector.kopos.services.operations.refill_service import (
 )
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def process_refill() -> dict[str, Any]:
     payload = _get_request_payload()
     validated = _validate_payload(payload)
@@ -85,8 +87,9 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     if not isinstance(lines, list) or not lines:
         frappe.throw("lines must contain at least one row", frappe.ValidationError)
+    line_rows = lines if isinstance(lines, list) else []
     validated_lines = []
-    for index, row in enumerate(lines, start=1):
+    for index, row in enumerate(line_rows, start=1):
         if not isinstance(row, Mapping):
             frappe.throw(f"lines[{index}] must be an object", frappe.ValidationError)
         item = cstr(row.get("item") or row.get("item_code"))

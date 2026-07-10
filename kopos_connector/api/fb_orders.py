@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 import frappe
@@ -5,7 +7,7 @@ import frappe
 from kopos_connector.kopos.api import fb_orders as fb_orders_impl
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def submit_order():
     return fb_orders_impl.submit_order()
 
@@ -15,6 +17,6 @@ def get_order_status(fb_order_name: str):
     return fb_orders_impl.get_order_status(fb_order_name)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def retry_failed_projections(fb_order_name: str):
     return fb_orders_impl.retry_failed_projections(fb_order_name)

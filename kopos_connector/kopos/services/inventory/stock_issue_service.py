@@ -1,9 +1,18 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 from collections import defaultdict
 from typing import Any
 
 import frappe
+
+from kopos_connector.api.devices import privileged_device_api_operation
+from kopos_connector.utils.diagnostics import (
+    log_sanitized_error,
+    make_savepoint,
+    rollback_to_savepoint,
+)
 
 
 def create_ingredient_stock_entry(fb_order: Any, resolved_sales: Any) -> str | None:
@@ -26,30 +35,31 @@ def create_ingredient_stock_entry(fb_order: Any, resolved_sales: Any) -> str | N
     savepoint = _make_savepoint("fb_stock_issue")
 
     try:
-        stock_entry = frappe.new_doc("Stock Entry")
-        stock_entry.stock_entry_type = "Material Issue"
-        stock_entry.purpose = "Material Issue"
-        stock_entry.company = _value(order_doc, "company")
-        stock_entry.project = _value(order_doc, "event_project") or None
-        posting_dt = _resolve_posting_datetime(order_doc)
-        stock_entry.posting_date = posting_dt.date().isoformat()
-        stock_entry.posting_time = posting_dt.time().strftime("%H:%M:%S")
-        stock_entry.set_posting_time = 1
-        stock_entry.remarks = _build_stock_entry_remarks(order_doc, resolved_sale_docs)
+        with privileged_device_api_operation("stock_projection"):
+            stock_entry = frappe.new_doc("Stock Entry")
+            stock_entry.stock_entry_type = "Material Issue"
+            stock_entry.purpose = "Material Issue"
+            stock_entry.company = _value(order_doc, "company")
+            stock_entry.project = _value(order_doc, "event_project") or None
+            posting_dt = _resolve_posting_datetime(order_doc)
+            stock_entry.posting_date = posting_dt.date().isoformat()
+            stock_entry.posting_time = posting_dt.time().strftime("%H:%M:%S")
+            stock_entry.set_posting_time = 1
+            stock_entry.remarks = _build_stock_entry_remarks(order_doc, resolved_sale_docs)
 
-        _set_if_present(stock_entry, ["custom_fb_order"], order_doc.name)
-        _set_if_present(stock_entry, ["custom_fb_shift"], _value(order_doc, "shift"))
-        _set_if_present(
-            stock_entry,
-            ["custom_fb_event_project"],
-            _value(order_doc, "event_project"),
-        )
+            _set_if_present(stock_entry, ["custom_fb_order"], order_doc.name)
+            _set_if_present(stock_entry, ["custom_fb_shift"], _value(order_doc, "shift"))
+            _set_if_present(
+                stock_entry,
+                ["custom_fb_event_project"],
+                _value(order_doc, "event_project"),
+            )
 
-        for item_row in grouped_items:
-            stock_entry.append("items", item_row)
+            for item_row in grouped_items:
+                stock_entry.append("items", item_row)
 
-        stock_entry.insert(ignore_permissions=True)
-        stock_entry.submit()
+            stock_entry.insert(ignore_permissions=True)
+            stock_entry.submit()
 
         _set_source_reference(order_doc, "ingredient_stock_entry", stock_entry.name)
         _set_source_reference(order_doc, "stock_status", "Posted")
@@ -198,26 +208,12 @@ def _set_source_reference(doc: Any, fieldname: str, value: Any) -> None:
 
 
 def _make_savepoint(prefix: str) -> str:
-    name = f"{prefix}_{frappe.generate_hash(length=8)}"
-    try:
-        frappe.db.savepoint(name)
-    except Exception:
-        return ""
-    return name
+    return make_savepoint(prefix)
 
 
 def _rollback_savepoint(savepoint: str) -> None:
-    try:
-        if savepoint:
-            frappe.db.rollback(save_point=savepoint)
-        else:
-            frappe.db.rollback()
-    except Exception:
-        pass
+    rollback_to_savepoint(savepoint, title="Stock issue projection rollback failed")
 
 
 def _log_error(title: str) -> None:
-    try:
-        frappe.log_error(frappe.get_traceback(), title)
-    except Exception:
-        pass
+    log_sanitized_error(title)

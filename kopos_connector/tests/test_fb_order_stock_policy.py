@@ -195,3 +195,64 @@ def test_before_submit_still_raises_non_stock_failures(fake_frappe):
 
     with pytest.raises(RuntimeError, match="resolved sale projection failed"):
         order.before_submit()
+
+
+def test_on_submit_keeps_noop_stock_projection_pending(fake_frappe, monkeypatch):
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    projection_updates: list[tuple[str, str, str, str | None, str | None]] = []
+    stock_service_called = {"value": False}
+
+    def fail_stock_service(*_args, **_kwargs):
+        stock_service_called["value"] = True
+        raise AssertionError("stock service should not run for no-op stock projections")
+
+    monkeypatch.setattr(fb_order_module, "create_sales_invoice", lambda order: "SINV-1")
+    monkeypatch.setattr(
+        fb_order_module,
+        "create_ingredient_stock_entry",
+        fail_stock_service,
+    )
+    monkeypatch.setattr(
+        fb_order_module,
+        "update_projection_state",
+        lambda log, state, doctype, target_name, error: projection_updates.append(
+            (log, state, doctype, target_name, error)
+        ),
+    )
+
+    order = fb_order_module.FBOrder()
+    order.name = "FB-ORDER-1"
+    order.order_id = "ORDER-1"
+    order.external_idempotency_key = "idem-1"
+    order.status = "Draft"
+    order.invoice_status = "Pending"
+    order.stock_status = "Pending"
+    order.shift = None
+    order.items = [SimpleNamespace(resolved_sale="RESOLVED-1")]
+    order.db_set_calls = []
+    order.db_set = lambda fieldname, value, update_modified=False: order.db_set_calls.append(
+        (fieldname, value, update_modified)
+    )
+    order.get_resolved_sales = lambda: [
+        SimpleNamespace(
+            name="RESOLVED-1",
+            booth_warehouse="WH-1",
+            resolved_components=[
+                SimpleNamespace(
+                    item="ITEM-1",
+                    warehouse="WH-1",
+                    stock_qty=1,
+                    affects_stock=0,
+                )
+            ],
+        )
+    ]
+
+    order.on_submit()
+
+    assert stock_service_called["value"] is False
+    assert order.stock_status == "Pending"
+    assert ("stock_status", "Pending", False) in order.db_set_calls
+    assert ("PROJECTION-LOG", "Pending", "Stock Entry", None, None) in projection_updates

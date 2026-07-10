@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -6,14 +8,16 @@ from typing import Any
 import frappe
 from frappe.utils import cint, cstr, flt
 
+from kopos_connector.api.devices import require_device_context
 from kopos_connector.kopos.services.operations.return_service import (
     process_return_event,
 )
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def process_return() -> dict[str, Any]:
     payload = _get_request_payload()
+    require_device_context(device_id=cstr(payload.get("device_id")))
     return process_return_payload(payload)
 
 
@@ -24,6 +28,7 @@ def process_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     if existing_return:
         return_doc = frappe.get_doc("FB Return Event", existing_return)
+        _validate_existing_return_matches(validated, return_doc)
         return {
             "status": "duplicate",
             "return_event": return_doc.name,
@@ -96,6 +101,7 @@ def _get_request_payload() -> dict[str, Any]:
 
 def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return_id = cstr(payload.get("return_id") or payload.get("idempotency_key"))
+    device_id = cstr(payload.get("device_id")).strip() or None
     fb_order = cstr(payload.get("fb_order")) or None
     original_sales_invoice = cstr(payload.get("original_sales_invoice")) or None
     reason_code = cstr(payload.get("reason_code")) or "Other"
@@ -105,6 +111,8 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     if not return_id:
         frappe.throw("return_id is required", frappe.ValidationError)
+    if not device_id:
+        frappe.throw("device_id is required", frappe.ValidationError)
     if not isinstance(lines, list) or not lines:
         if not fb_order:
             frappe.throw("lines must contain at least one row", frappe.ValidationError)
@@ -168,6 +176,7 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         original_sales_invoice = (
             cstr(getattr(resolved_sale, "sales_invoice", None)) or None
         )
+    original_sales_invoice = cstr(original_sales_invoice).strip()
     if not original_sales_invoice:
         frappe.throw("original_sales_invoice is required", frappe.ValidationError)
     if not frappe.db.exists("Sales Invoice", original_sales_invoice):
@@ -175,9 +184,25 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             f"Sales Invoice {original_sales_invoice} was not found",
             frappe.ValidationError,
         )
+    original_invoice = frappe.get_doc("Sales Invoice", original_sales_invoice)
+    _validate_original_invoice(original_invoice, original_sales_invoice, device_id)
+    resolved_fb_order = _resolve_fb_order(original_invoice, fb_order)
+    if fb_order and resolved_fb_order and fb_order != resolved_fb_order:
+        frappe.throw(
+            f"FB Order {fb_order} does not match Sales Invoice {original_sales_invoice}",
+            frappe.ValidationError,
+        )
+    fb_order = fb_order or resolved_fb_order
+    _validate_return_lines_belong_to_invoice(
+        validated_lines,
+        original_sales_invoice,
+        fb_order,
+    )
+    _validate_return_quantities(return_id, validated_lines)
 
     return {
         "return_id": return_id,
+        "device_id": device_id,
         "fb_order": fb_order,
         "original_sales_invoice": original_sales_invoice,
         "reason_code": reason_code,
@@ -199,3 +224,139 @@ def _build_return_event(validated: dict[str, Any]):
     for line in validated["lines"]:
         doc.append("lines", line)
     return doc
+
+
+def _validate_original_invoice(
+    original_invoice: Any, original_sales_invoice: str, device_id: str | None
+) -> None:
+    if cint(getattr(original_invoice, "docstatus", 0)) != 1:
+        frappe.throw(
+            f"Sales Invoice {original_sales_invoice} is not submitted",
+            frappe.ValidationError,
+        )
+    if cint(getattr(original_invoice, "is_return", 0)):
+        frappe.throw(
+            f"Sales Invoice {original_sales_invoice} is already a return invoice",
+            frappe.ValidationError,
+        )
+    invoice_device_id = cstr(getattr(original_invoice, "custom_fb_device_id", "")).strip()
+    if not invoice_device_id:
+        frappe.throw(
+            f"Sales Invoice {original_sales_invoice} has no device ownership context",
+            frappe.ValidationError,
+        )
+    if invoice_device_id != device_id:
+        frappe.throw(
+            f"Sales Invoice {original_sales_invoice} belongs to another device",
+            frappe.ValidationError,
+        )
+
+
+def _resolve_fb_order(original_invoice: Any, fb_order: str | None) -> str | None:
+    if fb_order:
+        return fb_order
+    return cstr(getattr(original_invoice, "custom_fb_order", None)).strip() or None
+
+
+def _validate_return_lines_belong_to_invoice(
+    lines: list[dict[str, Any]], original_sales_invoice: str, fb_order: str | None
+) -> None:
+    for line in lines:
+        resolved_sale_name = line["original_resolved_sale"]
+        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
+        resolved_sale_invoice = cstr(getattr(resolved_sale, "sales_invoice", None)).strip()
+        if resolved_sale_invoice and resolved_sale_invoice != original_sales_invoice:
+            frappe.throw(
+                f"FB Resolved Sale {resolved_sale_name} does not belong to Sales Invoice {original_sales_invoice}",
+                frappe.ValidationError,
+            )
+        resolved_sale_order = cstr(getattr(resolved_sale, "fb_order", None)).strip()
+        if fb_order and resolved_sale_order and resolved_sale_order != fb_order:
+            frappe.throw(
+                f"FB Resolved Sale {resolved_sale_name} does not belong to FB Order {fb_order}",
+                frappe.ValidationError,
+            )
+
+
+def _validate_existing_return_matches(validated: dict[str, Any], return_doc: Any) -> None:
+    existing_invoice = cstr(getattr(return_doc, "original_sales_invoice", None)).strip()
+    if existing_invoice and existing_invoice != validated["original_sales_invoice"]:
+        frappe.throw(
+            "return_id was already used for a different Sales Invoice",
+            frappe.ValidationError,
+        )
+    existing_order = cstr(getattr(return_doc, "fb_order", None)).strip()
+    if existing_order and validated.get("fb_order") and existing_order != validated["fb_order"]:
+        frappe.throw(
+            "return_id was already used for a different FB Order",
+            frappe.ValidationError,
+        )
+    if cint(getattr(return_doc, "return_to_stock", 0)) != cint(validated["return_to_stock"]):
+        frappe.throw(
+            "return_id was already used with different return_to_stock intent",
+            frappe.ValidationError,
+        )
+    existing_lines = {
+        cstr(getattr(line, "original_resolved_sale", "")).strip(): flt(
+            getattr(line, "qty_returned", 0)
+        )
+        for line in (return_doc.get("lines") or [])
+    }
+    requested_lines = {
+        cstr(line["original_resolved_sale"]).strip(): flt(line["qty_returned"])
+        for line in validated["lines"]
+    }
+    if existing_lines != requested_lines:
+        frappe.throw(
+            "return_id was already used with different return lines",
+            frappe.ValidationError,
+        )
+
+
+def _validate_return_quantities(
+    return_id: str,
+    lines: list[dict[str, Any]],
+) -> None:
+    for line in lines:
+        resolved_sale_name = line["original_resolved_sale"]
+        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
+        purchased_qty = flt(getattr(resolved_sale, "qty", 0))
+        requested_qty = flt(line["qty_returned"])
+        returned_qty = _get_existing_returned_qty(
+            return_id=return_id,
+            resolved_sale_name=resolved_sale_name,
+        )
+        if returned_qty + requested_qty > purchased_qty:
+            frappe.throw(
+                f"Return quantity for FB Resolved Sale {resolved_sale_name} exceeds purchased quantity",
+                frappe.ValidationError,
+            )
+
+
+def _get_existing_returned_qty(return_id: str, resolved_sale_name: str) -> float:
+    rows = frappe.get_all(
+        "FB Return Event Line",
+        filters={
+            "original_resolved_sale": resolved_sale_name,
+            "parenttype": "FB Return Event",
+        },
+        fields=["parent", "qty_returned"],
+    )
+    total = 0.0
+    for row in rows or []:
+        parent = cstr(_row_value(row, "parent")).strip()
+        if not parent:
+            continue
+        return_doc = frappe.get_doc("FB Return Event", parent)
+        if cstr(getattr(return_doc, "return_id", "")).strip() == return_id:
+            continue
+        if cstr(getattr(return_doc, "status", "")).strip() == "Cancelled":
+            continue
+        total += flt(_row_value(row, "qty_returned"))
+    return total
+
+
+def _row_value(row: Any, fieldname: str) -> Any:
+    if isinstance(row, Mapping):
+        return row.get(fieldname)
+    return getattr(row, fieldname, None)

@@ -1,5 +1,6 @@
 # Copyright (c) 2026, KoPOS and contributors
 # For license information, please see license.txt
+# pyright: reportMissingImports=false
 
 import frappe
 from frappe import _
@@ -516,7 +517,7 @@ async function koposShowProvisioningQr(payload) {
         <div><strong>${koposEscapeHtml(__("Provisioning User"))}:</strong> ${koposEscapeHtml(preview.provisioning_user || frappe.session.user || "-")}</div>
         <div><strong>${koposEscapeHtml(__("Expires At"))}:</strong> ${koposEscapeHtml(frappe.datetime.str_to_user(payload.expires_at))}</div>
       </div>
-      <div style="margin-top:12px;word-break:break-all;font-size:12px;color:var(--text-muted);"><code>${koposEscapeHtml(payload.provisioning_link)}</code></div>
+      <div style="margin-top:12px;font-size:12px;color:var(--text-muted);">${koposEscapeHtml(__("The one-time setup link is hidden after creation. Scan the QR or use Copy Link only while this dialog is open."))}</div>
     </div>
   `;
 
@@ -531,7 +532,7 @@ async function koposShowProvisioningQr(payload) {
           await navigator.clipboard.writeText(payload.provisioning_link);
           frappe.show_alert({ message: __("Provisioning link copied"), indicator: "green" });
         } catch (error) {
-          frappe.msgprint(payload.provisioning_link);
+          frappe.msgprint(__("Copy failed. Scan the QR while this dialog is open."));
         }
       },
     },
@@ -541,6 +542,10 @@ async function koposShowProvisioningQr(payload) {
 frappe.ui.form.on("KoPOS Device", {
   refresh(frm) {
     if (frm.is_new()) {
+      return;
+    }
+
+    if (!(frappe.user_roles || []).includes("System Manager")) {
       return;
     }
 
@@ -603,6 +608,10 @@ def ensure_pos_profile_provisioning_script() -> None:
 frappe.ui.form.on(\"POS Profile\", {
   refresh(frm) {
     if (frm.is_new()) {
+      return;
+    }
+
+    if (!(frappe.user_roles || []).includes(\"System Manager\")) {
       return;
     }
 

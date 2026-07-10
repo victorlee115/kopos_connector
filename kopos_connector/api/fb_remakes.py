@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -11,7 +13,7 @@ from kopos_connector.kopos.services.operations.remake_service import (
 )
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def process_remake() -> dict[str, Any]:
     payload = _get_request_payload()
     validated = _validate_payload(payload)

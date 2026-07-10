@@ -27,6 +27,7 @@ from kopos_connector.api.devices import (
     require_device_context,
     require_kopos_api_access,
 )
+from kopos_connector.utils.diagnostics import sanitized_error_message
 
 
 DEFAULT_MAX_RECEIPT_BYTES = 5 * 1024 * 1024
@@ -226,7 +227,7 @@ def upload_manual_qr_receipt(**kwargs: Any) -> dict[str, str | None]:
             transaction_name=transaction_name,
             device_id=payload.get("device_id"),
             idempotency_key=payload.get("idempotency_key"),
-            message=str(exc),
+            message=sanitized_error_message(exc),
         )
         raise
 
