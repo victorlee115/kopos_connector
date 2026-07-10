@@ -90,6 +90,7 @@ def _settlement_fixture(
                 type="Cash",
                 account="Cash - CO",
                 amount="12.00",
+                base_amount="12.00",
             )
         ],
     )
@@ -239,6 +240,125 @@ def test_full_cash_refund_posts_one_idempotent_journal_with_exact_gl_proof(
     assert provenance["tenders"] == [
         {"account": "Cash - CO", "amount_sen": 1200, "refund_method": "cash"}
     ]
+
+
+def test_original_tender_proof_matches_erpnext_v16_pos_gl_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, original, _, _, _ = _settlement_fixture(monkeypatch)
+    observed_filters: list[dict[str, Any]] = []
+    voucher_rows = [
+        {
+            "name": "GL-DEBTOR-DEBIT",
+            "account": "Debtors - CO",
+            "account_currency": "MYR",
+            "party_type": "Customer",
+            "party": "Walk-in Customer",
+            "debit": "12.00",
+            "credit": "0.00",
+            "debit_in_account_currency": "12.00",
+            "credit_in_account_currency": "0.00",
+            "against": "Sales - CO",
+            "against_voucher_type": "Sales Invoice",
+            "against_voucher": "SINV-1",
+        },
+        {
+            "name": "GL-SALES-CREDIT",
+            "account": "Sales - CO",
+            "account_currency": "MYR",
+            "party_type": None,
+            "party": None,
+            "debit": "0.00",
+            "credit": "12.00",
+            "debit_in_account_currency": "0.00",
+            "credit_in_account_currency": "12.00",
+            "against": "Walk-in Customer",
+            "against_voucher_type": None,
+            "against_voucher": None,
+        },
+        {
+            "name": "GL-DEBTOR-CREDIT",
+            "account": "Debtors - CO",
+            "account_currency": "MYR",
+            "party_type": "Customer",
+            "party": "Walk-in Customer",
+            "debit": "0.00",
+            "credit": "12.00",
+            "debit_in_account_currency": "0.00",
+            "credit_in_account_currency": "12.00",
+            "against": "Cash - CO",
+            "against_voucher_type": "Sales Invoice",
+            "against_voucher": "SINV-1",
+        },
+        {
+            "name": "GL-CASH-DEBIT",
+            "account": "Cash - CO",
+            "account_currency": "MYR",
+            "party_type": None,
+            "party": None,
+            "debit": "12.00",
+            "credit": "0.00",
+            "debit_in_account_currency": "12.00",
+            "credit_in_account_currency": "0.00",
+            "against": "Walk-in Customer",
+            "against_voucher_type": None,
+            "against_voucher": None,
+        },
+    ]
+
+    def get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        assert doctype == "GL Entry"
+        filters = kwargs["filters"]
+        observed_filters.append(filters)
+        account_filter = filters["account"]
+        assert account_filter[0] == "in"
+        allowed_accounts = set(account_filter[1])
+        return [row for row in voucher_rows if row["account"] in allowed_accounts]
+
+    monkeypatch.setattr(service.frappe, "get_all", get_all)
+
+    tenders = service._resolve_original_tenders(original, "cash", 1200)
+
+    assert observed_filters == [
+        {
+            "voucher_type": "Sales Invoice",
+            "voucher_no": "SINV-1",
+            "is_cancelled": 0,
+            "account": ["in", ["Cash - CO"]],
+        }
+    ]
+    assert tenders == [
+        {"account": "Cash - CO", "refund_method": "cash", "amount_sen": 1200}
+    ]
+
+
+def test_original_tender_mismatch_reports_exact_observed_sen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, original, _, _, _ = _settlement_fixture(monkeypatch)
+
+    monkeypatch.setattr(
+        service.frappe,
+        "get_all",
+        lambda doctype, **kwargs: [
+            {
+                "account": "Cash - CO",
+                "debit": "11.99",
+                "credit": "0.00",
+                "debit_in_account_currency": "11.99",
+                "credit_in_account_currency": "0.00",
+            }
+        ],
+    )
+
+    with pytest.raises(
+        service.frappe.ValidationError,
+        match=(
+            r"SINV-1: expected 1200 sen, observed 1199 sen across "
+            r'\{"Cash - CO":1199\}'
+        ),
+    ):
+        service._resolve_original_tenders(original, "cash", 1200)
 
 
 def test_settlement_fails_closed_without_submitted_gl_evidence(

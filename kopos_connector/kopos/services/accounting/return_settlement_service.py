@@ -358,9 +358,17 @@ def _resolve_original_tenders(
             }
         )
 
-    if sum(int(tender["amount_sen"]) for tender in tenders) != expected_total_sen:
+    observed_total_sen = sum(int(tender["amount_sen"]) for tender in tenders)
+    if observed_total_sen != expected_total_sen:
+        observed_by_account = {
+            cstr(tender["account"]).strip(): int(tender["amount_sen"])
+            for tender in tenders
+        }
         frappe.throw(
-            "Original tender GL total does not exactly match the full Sales Invoice total",
+            "Original tender GL total does not exactly match the full Sales Invoice "
+            f"total for {original_invoice.name}: expected {expected_total_sen} sen, "
+            f"observed {observed_total_sen} sen across "
+            f"{json.dumps(observed_by_account, sort_keys=True, separators=(',', ':'))}",
             frappe.ValidationError,
         )
     return tenders
