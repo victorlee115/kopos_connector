@@ -65,6 +65,11 @@ class TestFBPublicContracts(unittest.TestCase):
         ]:
             self.assertIn("def on_submit", (ERP_ROOT / relative).read_text())
 
+    def test_hooks_do_not_activate_legacy_pos_invoice_behavior(self):
+        content = (ERP_ROOT / "hooks.py").read_text()
+        self.assertIn("doctype_js = {}", content)
+        self.assertNotIn('"POS Invoice": "public/js/pos_invoice.js"', content)
+
     def test_custom_field_installer_covers_standard_docs(self):
         content = (ERP_ROOT / "kopos" / "install" / "fb_custom_fields.py").read_text()
         for doctype in ["Item", "Sales Invoice", "Sales Invoice Item", "Stock Entry"]:

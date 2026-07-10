@@ -48,13 +48,21 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
         )
 
         _copy_invoice_dimensions(original_invoice, return_invoice)
+        return_invoice.is_pos = 0
+        if hasattr(return_invoice, "set"):
+            return_invoice.set("payments", [])
+        else:
+            return_invoice.payments = []
         _append_return_items(return_doc, original_invoice, return_invoice)
         if hasattr(return_invoice, "set_missing_values"):
             return_invoice.set_missing_values()
         if hasattr(return_invoice, "calculate_taxes_and_totals"):
             return_invoice.calculate_taxes_and_totals()
         return_invoice.update_stock = 0
-        _append_return_payments(original_invoice, return_invoice)
+        if hasattr(return_invoice, "paid_amount"):
+            return_invoice.paid_amount = 0
+        if hasattr(return_invoice, "change_amount"):
+            return_invoice.change_amount = 0
 
         return_invoice.insert(ignore_permissions=True)
         return_invoice.submit()
@@ -144,7 +152,6 @@ def cstr(value: Any) -> str:
 
 def _copy_invoice_dimensions(original_invoice: Any, return_invoice: Any) -> None:
     for fieldname in (
-        "is_pos",
         "pos_profile",
         "cost_center",
         "project",
@@ -213,46 +220,6 @@ def _find_invoice_item(original_invoice: Any, resolved_sale_name: str):
     return None
 
 
-def _append_return_payments(original_invoice: Any, return_invoice: Any) -> None:
-    original_payments = list(_value(original_invoice, "payments") or [])
-    if not original_payments:
-        return
-
-    return_total = flt(_value(return_invoice, "grand_total"))
-    if return_total == 0:
-        return_total = sum(flt(_value(row, "amount")) for row in _value(return_invoice, "items") or [])
-    if return_total == 0:
-        return
-
-    sale_payment_total = sum(abs(flt(_value(row, "amount"))) for row in original_payments)
-    if sale_payment_total <= 0:
-        return
-
-    if hasattr(return_invoice, "set"):
-        return_invoice.set("payments", [])
-    else:
-        return_invoice.payments = []
-
-    for payment in original_payments:
-        original_amount = abs(flt(_value(payment, "amount")))
-        if original_amount <= 0:
-            continue
-        amount = return_total * (original_amount / sale_payment_total)
-        row = {
-            "mode_of_payment": _value(payment, "mode_of_payment"),
-            "amount": amount,
-            "reference_no": _value(payment, "reference_no") or None,
-            "account": _value(payment, "account") or None,
-        }
-        return_invoice.append("payments", row)
-
-    paid_amount = sum(flt(_value(row, "amount")) for row in _value(return_invoice, "payments") or [])
-    if hasattr(return_invoice, "paid_amount"):
-        return_invoice.paid_amount = paid_amount
-    if hasattr(return_invoice, "change_amount"):
-        return_invoice.change_amount = 0
-
-
 def refresh_fb_shift_cash(shift_name: Any) -> None:
     shift = cstr(shift_name).strip()
     if not shift:
@@ -270,7 +237,7 @@ def refresh_fb_shift_cash(shift_name: Any) -> None:
     for return_invoice_name in _get_shift_return_invoice_names(sales_invoice_names):
         return_invoice = _coerce_doc("Sales Invoice", return_invoice_name)
         if return_invoice and flt(_value(return_invoice, "docstatus")) == 1:
-            total_cash += _get_cash_payment_total(return_invoice)
+            total_cash += _get_return_cash_adjustment(return_invoice)
 
     expected_cash = flt(_value(shift_doc, "opening_float")) + total_cash
     _set_doc_field(shift_doc, "expected_cash", expected_cash)
@@ -321,6 +288,28 @@ def _get_cash_payment_total(invoice: Any) -> float:
         if cstr(_value(payment, "mode_of_payment")).strip() == "Cash":
             total += flt(_value(payment, "amount"))
     return total
+
+
+def _get_return_cash_adjustment(return_invoice: Any) -> float:
+    return_payments = list(_value(return_invoice, "payments") or [])
+    if return_payments:
+        return _get_cash_payment_total(return_invoice)
+
+    original_invoice_name = cstr(_value(return_invoice, "return_against")).strip()
+    original_invoice = _coerce_doc("Sales Invoice", original_invoice_name)
+    if not original_invoice:
+        return 0.0
+
+    original_payments = list(_value(original_invoice, "payments") or [])
+    total_paid = sum(abs(flt(_value(row, "amount"))) for row in original_payments)
+    if total_paid <= 0:
+        return 0.0
+    cash_paid = sum(
+        abs(flt(_value(row, "amount")))
+        for row in original_payments
+        if cstr(_value(row, "mode_of_payment")).strip() == "Cash"
+    )
+    return flt(_value(return_invoice, "grand_total")) * (cash_paid / total_paid)
 
 
 def _set_doc_field(doc: Any, fieldname: str, value: Any) -> None:

@@ -4,9 +4,7 @@ import unittest
 from pathlib import Path
 
 
-ERP_ROOT = Path(
-    "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext/kopos_connector"
-)
+ERP_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestFBServiceContracts(unittest.TestCase):
@@ -49,6 +47,25 @@ class TestFBServiceContracts(unittest.TestCase):
         self.assertIn("Partially Returned", content)
         self.assertIn("Returned", content)
         self.assertIn('resolved_sale.db_set("status"', content)
+
+    def test_return_quantity_guard_locks_resolved_sales_before_validation(self):
+        content = (
+            ERP_ROOT
+            / "kopos"
+            / "services"
+            / "operations"
+            / "return_guard_service.py"
+        ).read_text()
+        controller = (
+            ERP_ROOT
+            / "kopos"
+            / "doctype"
+            / "fb_return_event"
+            / "fb_return_event.py"
+        ).read_text()
+        self.assertIn("FOR UPDATE", content)
+        self.assertIn("ORDER BY name", content)
+        self.assertIn("lock_and_validate_return_quantities", controller)
 
     def test_transfer_service_uses_resolved_basic_rate(self):
         content = (

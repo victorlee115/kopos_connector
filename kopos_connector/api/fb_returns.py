@@ -9,6 +9,9 @@ import frappe
 from frappe.utils import cint, cstr, flt
 
 from kopos_connector.api.devices import require_device_context
+from kopos_connector.kopos.services.operations.return_guard_service import (
+    lock_and_validate_return_quantities,
+)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -20,6 +23,9 @@ def process_return() -> dict[str, Any]:
 
 def process_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
     validated = _validate_payload(payload)
+    lock_and_validate_return_quantities(
+        validated["return_id"], validated["lines"]
+    )
     existing_return = frappe.db.get_value(
         "FB Return Event", {"return_id": validated["return_id"]}, "name"
     )
@@ -166,8 +172,6 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         original_sales_invoice,
         fb_order,
     )
-    _validate_return_quantities(return_id, validated_lines)
-
     return {
         "return_id": return_id,
         "device_id": device_id,
@@ -279,52 +283,3 @@ def _validate_existing_return_matches(validated: dict[str, Any], return_doc: Any
             "return_id was already used with different return lines",
             frappe.ValidationError,
         )
-
-
-def _validate_return_quantities(
-    return_id: str,
-    lines: list[dict[str, Any]],
-) -> None:
-    for line in lines:
-        resolved_sale_name = line["original_resolved_sale"]
-        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
-        purchased_qty = flt(getattr(resolved_sale, "qty", 0))
-        requested_qty = flt(line["qty_returned"])
-        returned_qty = _get_existing_returned_qty(
-            return_id=return_id,
-            resolved_sale_name=resolved_sale_name,
-        )
-        if returned_qty + requested_qty > purchased_qty:
-            frappe.throw(
-                f"Return quantity for FB Resolved Sale {resolved_sale_name} exceeds purchased quantity",
-                frappe.ValidationError,
-            )
-
-
-def _get_existing_returned_qty(return_id: str, resolved_sale_name: str) -> float:
-    rows = frappe.get_all(
-        "FB Return Event Line",
-        filters={
-            "original_resolved_sale": resolved_sale_name,
-            "parenttype": "FB Return Event",
-        },
-        fields=["parent", "qty_returned"],
-    )
-    total = 0.0
-    for row in rows or []:
-        parent = cstr(_row_value(row, "parent")).strip()
-        if not parent:
-            continue
-        return_doc = frappe.get_doc("FB Return Event", parent)
-        if cstr(getattr(return_doc, "return_id", "")).strip() == return_id:
-            continue
-        if cstr(getattr(return_doc, "status", "")).strip() == "Cancelled":
-            continue
-        total += flt(_row_value(row, "qty_returned"))
-    return total
-
-
-def _row_value(row: Any, fieldname: str) -> Any:
-    if isinstance(row, Mapping):
-        return row.get(fieldname)
-    return getattr(row, fieldname, None)

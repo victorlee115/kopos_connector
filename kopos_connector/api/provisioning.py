@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 from datetime import timedelta
 from typing import Any
 from urllib.parse import quote
@@ -29,6 +30,13 @@ DEFAULT_TTL_SECONDS = 15 * 60
 MIN_TTL_SECONDS = 60
 MAX_TTL_SECONDS = 24 * 60 * 60
 DEVICE_USER_EMAIL_DOMAIN = "kopos.local"
+ATOMIC_CACHE_CONSUME_SCRIPT = """
+local value = redis.call('GET', KEYS[1])
+if value then
+    redis.call('DEL', KEYS[1])
+end
+return value
+"""
 
 
 def ensure_device_api_credentials(
@@ -229,11 +237,10 @@ def redeem_pos_provisioning(token: str | None = None) -> dict[str, Any]:
     if not token_value:
         frappe.throw(_("Provisioning token is required"))
 
-    cached = frappe.cache().get_value(_cache_key(token_value))
+    cached = _consume_cached_value(_cache_key(token_value))
     if not cached:
         frappe.throw(_("Provisioning token is invalid or expired"))
 
-    frappe.cache().delete_value(_cache_key(token_value))
     payload = json.loads(cached)
     return {
         "status": "ok",
@@ -266,6 +273,27 @@ def get_device_config(device_id: str | None = None) -> dict[str, Any]:
 
 def _cache_key(token: str) -> str:
     return f"{PROVISIONING_CACHE_PREFIX}{token}"
+
+
+def _consume_cached_value(key: str) -> Any:
+    """Atomically fetch and delete a Frappe cache value from Redis."""
+    cache = frappe.cache()
+    make_key = getattr(cache, "make_key", None)
+    eval_script = getattr(cache, "eval", None)
+    if not callable(make_key) or not callable(eval_script):
+        raise RuntimeError("Frappe Redis cache does not support atomic token consumption")
+
+    storage_key = make_key(key)
+    raw_value = eval_script(ATOMIC_CACHE_CONSUME_SCRIPT, 1, storage_key)
+    local_cache = getattr(getattr(frappe, "local", None), "cache", None)
+    if isinstance(local_cache, dict):
+        local_cache.pop(storage_key, None)
+    if raw_value is None:
+        return None
+    try:
+        return pickle.loads(raw_value)
+    except Exception as error:
+        raise RuntimeError("Provisioning token cache payload is invalid") from error
 
 
 def _device_api_user_email(device_doc) -> str:

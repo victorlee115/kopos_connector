@@ -1,5 +1,6 @@
 import importlib
 import json
+import pickle
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
@@ -36,6 +37,19 @@ class _FakeCache:
     def delete_value(self, key):
         self.deleted.append(key)
         self.values.pop(key, None)
+
+    def make_key(self, key):
+        return key.encode()
+
+    def eval(self, script, numkeys, storage_key):
+        self.eval_calls = getattr(self, "eval_calls", [])
+        self.eval_calls.append((script, numkeys, storage_key))
+        key = storage_key.decode()
+        value = self.values.pop(key, None)
+        if value is None:
+            return None
+        self.deleted.append(key)
+        return pickle.dumps(value)
 
 
 class PosProvisioningTests(unittest.TestCase):
@@ -590,6 +604,27 @@ class PosProvisioningTests(unittest.TestCase):
         self.assertEqual(result["setup"]["pos_profile"], "Counter 1")
         self.assertEqual(result["setup"]["static_qr_payload"], "000201STATICERP")
         self.assertIn("kopos:provisioning:token-123", cache.deleted)
+        self.assertEqual(cache.eval_calls[0][1:], (1, b"kopos:provisioning:token-123"))
+        self.assertIn("redis.call('GET'", cache.eval_calls[0][0])
+        self.assertIn("redis.call('DEL'", cache.eval_calls[0][0])
+
+        with (
+            patch.object(provisioning.frappe, "cache", return_value=cache),
+            self.assertRaises(provisioning.frappe.ValidationError),
+        ):
+            provisioning.redeem_pos_provisioning("token-123")
+
+    def test_redeem_pos_provisioning_fails_closed_without_atomic_cache(self):
+        cache = SimpleNamespace(
+            get_value=lambda key: "must-not-be-read",
+            delete_value=lambda key: None,
+        )
+
+        with (
+            patch.object(provisioning.frappe, "cache", return_value=cache),
+            self.assertRaisesRegex(RuntimeError, "does not support atomic token consumption"),
+        ):
+            provisioning.redeem_pos_provisioning("token-123")
 
     def test_get_device_config_returns_serialized_device_payload(self):
         fake_device = SimpleNamespace(device_id="tab-a-001", enabled=1)

@@ -244,8 +244,8 @@ def test_cash_refund_reduces_shift_expected_cash_and_duplicate_reuses_invoice(
     assert first == "SINV-RETURN-1"
     assert second == "SINV-RETURN-1"
     assert return_invoice.submit_count == 1
-    assert return_invoice.payments[0].mode_of_payment == "Cash"
-    assert return_invoice.payments[0].amount == -12.0
+    assert return_invoice.is_pos == 0
+    assert return_invoice.payments == []
     assert return_doc.return_sales_invoice == "SINV-RETURN-1"
     assert shift.expected_cash == 100.0
     assert shift.cash_variance == 0.0
@@ -321,6 +321,17 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
     )
 
     class FakeDB:
+        def sql(
+            self,
+            query: str,
+            values: tuple[str, ...],
+            as_dict: bool = False,
+        ) -> list[dict[str, str]]:
+            assert "FOR UPDATE" in query
+            assert values == ("RS-1",)
+            assert as_dict is True
+            return [{"name": "RS-1"}]
+
         def get_value(self, doctype: str, filters: Any, fieldname: str) -> Any:
             if doctype == "FB Return Event" and filters == {"return_id": "refund-idem-1"}:
                 return "FB-RETURN-SAME"
