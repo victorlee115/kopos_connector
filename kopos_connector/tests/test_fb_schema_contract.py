@@ -5,9 +5,7 @@ import unittest
 from pathlib import Path
 
 
-ERP_ROOT = Path(
-    "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext/kopos_connector"
-)
+ERP_ROOT = Path(__file__).resolve().parents[1]
 WORKTREE_ROOT = ERP_ROOT.parent
 DOCTYPE_ROOT = ERP_ROOT / "kopos" / "doctype"
 
@@ -249,6 +247,13 @@ class TestFBSchemaContract(unittest.TestCase):
         )
         for option in ["Pending", "Succeeded", "Failed", "Reversed"]:
             self.assertIn(option, state_field["options"])
+        projection_type_field = next(
+            field
+            for field in doc["fields"]
+            if field.get("fieldname") == "projection_type"
+        )
+        for option in ["Sales Invoice", "Stock Issue", "FB Shift"]:
+            self.assertIn(option, projection_type_field["options"])
 
     def test_fb_return_event_schema(self):
         doc = load_doctype("fb_return_event")

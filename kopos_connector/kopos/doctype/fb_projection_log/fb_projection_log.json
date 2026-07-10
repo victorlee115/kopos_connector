@@ -73,7 +73,7 @@
             "fieldtype": "Select",
             "in_list_view": 1,
             "label": "Projection Type",
-            "options": "Sales Invoice\nSales Return\nStock Issue\nStock Reversal\nTransfer\nWaste\nJournal Entry",
+            "options": "Sales Invoice\nSales Return\nStock Issue\nStock Reversal\nFB Shift\nTransfer\nWaste\nJournal Entry",
             "reqd": 1
         },
         {

@@ -1563,6 +1563,8 @@ def reset_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
     _delete_smoke_business_rows(device_id)
 
     for doctype in ("POS Invoice", "POS Closing Entry", "POS Opening Entry"):
+        if not _doctype_has_field(doctype, "custom_kopos_device_id"):
+            continue
         records = frappe.get_all(
             doctype,
             filters={"custom_kopos_device_id": device_id},
@@ -2434,9 +2436,31 @@ def _collect_legacy_active_paths(device_id: str) -> dict[str, dict[str, Any]]:
     }
     result: dict[str, dict[str, Any]] = {}
     for key, (doctype, filters) in checks.items():
+        if not _doctype_has_field(doctype, "custom_kopos_device_id"):
+            result[key] = {
+                "doctype": doctype,
+                "device_field_present": False,
+                "count": 0,
+                "records": [],
+            }
+            continue
         rows = _get_rows(doctype, filters=filters, fields=["name", "docstatus", "status"])
-        result[key] = {"doctype": doctype, "count": len(rows), "records": rows}
+        result[key] = {
+            "doctype": doctype,
+            "device_field_present": True,
+            "count": len(rows),
+            "records": rows,
+        }
     return result
+
+
+def _doctype_has_field(doctype: str, fieldname: str) -> bool:
+    """Verify metadata and storage before filtering on quarantined fields."""
+
+    return bool(
+        frappe.get_meta(doctype).has_field(fieldname)
+        and frappe.db.has_column(doctype, fieldname)
+    )
 
 
 def _build_idempotency_summary(

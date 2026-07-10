@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
@@ -102,6 +103,132 @@ def test_smoke_device_printers_allow_mock_endpoint_override(monkeypatch) -> None
     assert [printer["host"] for printer in printers] == ["10.0.2.2", "10.0.2.2"]
     assert [printer["port"] for printer in printers] == [19101, 19101]
     assert {printer["role"] for printer in printers} == {"receipt", "sticker"}
+
+
+def test_smoke_reset_skips_removed_legacy_device_fields(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    cleanup_calls: list[str] = []
+
+    monkeypatch.setattr(
+        frappe.db,
+        "get_value",
+        lambda doctype, filters, fieldname: "KOPOS-DEVICE-001",
+    )
+    monkeypatch.setattr(
+        frappe,
+        "get_meta",
+        lambda doctype: SimpleNamespace(has_field=lambda fieldname: True),
+    )
+    monkeypatch.setattr(frappe.db, "has_column", lambda doctype, fieldname: False)
+    monkeypatch.setattr(
+        frappe,
+        "get_all",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("removed legacy device field must not be queried")
+        ),
+    )
+    monkeypatch.setattr(
+        smoke,
+        "_delete_smoke_business_rows",
+        lambda device_id: cleanup_calls.append(device_id),
+    )
+    monkeypatch.setattr(
+        smoke,
+        "setup_full_smoke_data",
+        lambda erpnext_url=None: {"erpnext_url": erpnext_url, "status": "reseeded"},
+    )
+    monkeypatch.setattr(frappe.db, "commit", lambda: None)
+
+    result = smoke.reset_smoke_data(erpnext_url="https://erp.example.com")
+
+    assert cleanup_calls == [smoke.SMOKE_DEVICE_ID]
+    assert result == {
+        "erpnext_url": "https://erp.example.com",
+        "status": "reseeded",
+    }
+
+
+def test_legacy_path_evidence_treats_removed_device_fields_as_inactive(
+    monkeypatch,
+) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    monkeypatch.setattr(
+        frappe,
+        "get_meta",
+        lambda doctype: SimpleNamespace(has_field=lambda fieldname: False),
+    )
+    monkeypatch.setattr(
+        smoke,
+        "_get_rows",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("removed legacy device field must not be queried")
+        ),
+    )
+
+    result = smoke._collect_legacy_active_paths(smoke.SMOKE_DEVICE_ID)
+
+    assert set(result) == {
+        "pos_invoice",
+        "pos_opening_entry",
+        "pos_closing_entry",
+    }
+    for evidence in result.values():
+        assert evidence["device_field_present"] is False
+        assert evidence["count"] == 0
+        assert evidence["records"] == []
+
+
+def test_legacy_path_evidence_still_reports_active_rows_when_field_exists(
+    monkeypatch,
+) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    monkeypatch.setattr(
+        frappe,
+        "get_meta",
+        lambda doctype: SimpleNamespace(has_field=lambda fieldname: True),
+    )
+    monkeypatch.setattr(frappe.db, "has_column", lambda doctype, fieldname: True)
+
+    def fake_get_rows(
+        doctype: str,
+        *,
+        filters: dict[str, Any] | None = None,
+        fields: list[str] | None = None,
+        order_by: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if doctype == "POS Invoice":
+            return [{"name": "POS-INV-LEGACY", "docstatus": 1, "status": "Paid"}]
+        return []
+
+    monkeypatch.setattr(smoke, "_get_rows", fake_get_rows)
+
+    result = smoke._collect_legacy_active_paths(smoke.SMOKE_DEVICE_ID)
+
+    assert result["pos_invoice"] == {
+        "doctype": "POS Invoice",
+        "device_field_present": True,
+        "count": 1,
+        "records": [
+            {"name": "POS-INV-LEGACY", "docstatus": 1, "status": "Paid"}
+        ],
+    }
+    assert result["pos_opening_entry"]["count"] == 0
+    assert result["pos_closing_entry"]["count"] == 0
 
 
 def test_legacy_reliability_item_is_retired_from_catalog(monkeypatch) -> None:
