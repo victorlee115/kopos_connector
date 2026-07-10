@@ -1590,17 +1590,28 @@ def _delete_smoke_business_rows(device_id: str) -> None:
     fb_shifts = _get_smoke_fb_shift_names(device_id)
     return_events = _get_smoke_return_event_names(fb_orders)
     sales_invoices = _get_smoke_sales_invoice_names(device_id, fb_orders, return_events)
-    stock_entries = _get_smoke_stock_entry_names(fb_orders)
     resolved_sales = _get_smoke_resolved_sale_names(fb_orders)
+    settlement_journal_entries = _get_smoke_settlement_journal_entry_names(
+        return_events
+    )
+    stock_entries = _get_smoke_stock_entry_names(
+        fb_orders,
+        return_events=return_events,
+        resolved_sales=resolved_sales,
+    )
+    serial_batch_bundles = _get_smoke_serial_batch_bundle_names(stock_entries)
 
     _delete_task15_injected_projection_logs()
     _delete_projection_logs_for_sources("FB Order", fb_orders)
     _delete_projection_logs_for_sources("FB Shift", fb_shifts)
     _delete_projection_logs_for_sources("FB Return Event", return_events)
     _delete_smoke_projection_logs_by_fixture_fields()
+    _cancel_submitted_smoke_stock_entries(stock_entries)
 
     for doctype, names in (
+        ("Serial and Batch Bundle", serial_batch_bundles),
         ("FB Resolved Sale", resolved_sales),
+        ("Journal Entry", settlement_journal_entries),
         ("FB Return Event", return_events),
         ("FB Order", fb_orders),
         ("Sales Invoice", sales_invoices),
@@ -1610,6 +1621,11 @@ def _delete_smoke_business_rows(device_id: str) -> None:
         for name in names:
             _delete_smoke_doc(doctype, name)
 
+    _delete_smoke_ledger_artifacts(
+        sales_invoices=sales_invoices,
+        settlement_journal_entries=settlement_journal_entries,
+        stock_entries=stock_entries,
+    )
     frappe.db.commit()
 
 
@@ -1701,19 +1717,192 @@ def _get_smoke_sales_invoice_names(
     return _unique_names(names)
 
 
-def _get_smoke_stock_entry_names(fb_orders: list[str]) -> list[str]:
-    if not fb_orders:
+def _get_smoke_settlement_journal_entry_names(
+    return_events: list[str],
+) -> list[str]:
+    if not return_events:
+        return []
+
+    names: list[str] = []
+    rows = frappe.get_all(
+        "FB Return Event",
+        filters={"name": ["in", return_events]},
+        fields=["settlement_doctype", "settlement_document"],
+    )
+    names.extend(
+        str(row.get("settlement_document"))
+        for row in rows or []
+        if row.get("settlement_doctype") == "Journal Entry"
+        and row.get("settlement_document")
+    )
+
+    if _doctype_has_field("Journal Entry", "custom_fb_return_event"):
+        linked_rows = frappe.get_all(
+            "Journal Entry",
+            filters={"custom_fb_return_event": ["in", return_events]},
+            fields=["name"],
+        )
+        names.extend(
+            str(row.get("name"))
+            for row in linked_rows or []
+            if row.get("name")
+        )
+    return _unique_names(names)
+
+
+def _get_smoke_stock_entry_names(
+    fb_orders: list[str],
+    *,
+    return_events: list[str] | None = None,
+    resolved_sales: list[str] | None = None,
+) -> list[str]:
+    names: list[str] = []
+    if fb_orders:
+        rows = frappe.get_all(
+            "FB Order",
+            filters={"name": ["in", fb_orders]},
+            fields=["ingredient_stock_entry"],
+        )
+        names.extend(
+            str(row.get("ingredient_stock_entry"))
+            for row in rows or []
+            if row.get("ingredient_stock_entry")
+        )
+    if return_events:
+        rows = frappe.get_all(
+            "FB Return Event Line",
+            filters={"parent": ["in", return_events]},
+            fields=["reversal_stock_entry"],
+        )
+        names.extend(
+            str(row.get("reversal_stock_entry"))
+            for row in rows or []
+            if row.get("reversal_stock_entry")
+        )
+    if resolved_sales:
+        rows = frappe.get_all(
+            "FB Resolved Sale",
+            filters={"name": ["in", resolved_sales]},
+            fields=["stock_entry_issue", "stock_entry_reversal"],
+        )
+        for row in rows or []:
+            names.extend(
+                str(value)
+                for value in (
+                    row.get("stock_entry_issue"),
+                    row.get("stock_entry_reversal"),
+                )
+                if value
+            )
+    return _unique_names(names)
+
+
+def _get_smoke_serial_batch_bundle_names(stock_entries: list[str]) -> list[str]:
+    if not stock_entries:
         return []
     rows = frappe.get_all(
-        "FB Order",
-        filters={"name": ["in", fb_orders]},
-        fields=["ingredient_stock_entry"],
+        "Serial and Batch Bundle",
+        filters={
+            "voucher_type": "Stock Entry",
+            "voucher_no": ["in", stock_entries],
+        },
+        fields=["name"],
     )
     return _unique_names(
-        str(row.get("ingredient_stock_entry"))
-        for row in rows or []
-        if row.get("ingredient_stock_entry")
+        str(row.get("name")) for row in rows or [] if row.get("name")
     )
+
+
+def _delete_smoke_ledger_artifacts(
+    *,
+    sales_invoices: list[str],
+    settlement_journal_entries: list[str],
+    stock_entries: list[str],
+) -> None:
+    """Remove only ledger rows whose exact vouchers were proven smoke-owned."""
+
+    for voucher_type, voucher_names in (
+        ("Sales Invoice", sales_invoices),
+        ("Journal Entry", settlement_journal_entries),
+        ("Stock Entry", stock_entries),
+    ):
+        _delete_and_verify_ledger_rows(
+            "GL Entry",
+            {
+                "voucher_type": voucher_type,
+                "voucher_no": ["in", voucher_names],
+            },
+            voucher_names,
+        )
+
+    for voucher_type, voucher_names in (
+        ("Sales Invoice", sales_invoices),
+        ("Journal Entry", settlement_journal_entries),
+    ):
+        _delete_and_verify_ledger_rows(
+            "Payment Ledger Entry",
+            {
+                "voucher_type": voucher_type,
+                "voucher_no": ["in", voucher_names],
+            },
+            voucher_names,
+        )
+
+    _delete_and_verify_ledger_rows(
+        "Payment Ledger Entry",
+        {
+            "against_voucher_type": "Sales Invoice",
+            "against_voucher_no": ["in", sales_invoices],
+        },
+        sales_invoices,
+    )
+    _delete_and_verify_ledger_rows(
+        "Stock Ledger Entry",
+        {
+            "voucher_type": "Stock Entry",
+            "voucher_no": ["in", stock_entries],
+        },
+        stock_entries,
+    )
+
+
+def _cancel_submitted_smoke_stock_entries(stock_entries: list[str]) -> None:
+    """Reverse stock quantities before test-only document and ledger deletion."""
+
+    for stock_entry_name in stock_entries:
+        if not frappe.db.exists("Stock Entry", stock_entry_name):
+            continue
+        docstatus = int(
+            frappe.db.get_value("Stock Entry", stock_entry_name, "docstatus") or 0
+        )
+        if docstatus != 1:
+            continue
+        stock_entry = frappe.get_doc("Stock Entry", stock_entry_name)
+        try:
+            stock_entry.cancel()
+        except Exception as error:
+            raise RuntimeError(
+                f"Failed to cancel smoke-owned Stock Entry {stock_entry_name} during reset"
+            ) from error
+        if int(getattr(stock_entry, "docstatus", 0) or 0) != 2:
+            raise RuntimeError(
+                f"Smoke-owned Stock Entry {stock_entry_name} did not cancel during reset"
+            )
+
+
+def _delete_and_verify_ledger_rows(
+    doctype: str,
+    filters: dict[str, Any],
+    voucher_names: list[str],
+) -> None:
+    if not voucher_names:
+        return
+    frappe.db.delete(doctype, filters)
+    remaining = frappe.get_all(doctype, filters=filters, fields=["name"], limit=1)
+    if remaining:
+        raise RuntimeError(
+            f"Smoke reset left {doctype} rows for proven smoke vouchers"
+        )
 
 
 def _get_smoke_resolved_sale_names(fb_orders: list[str]) -> list[str]:

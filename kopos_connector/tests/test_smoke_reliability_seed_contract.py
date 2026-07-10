@@ -5,6 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
 
 
@@ -308,6 +310,15 @@ def test_smoke_reset_cleanup_deletes_stale_smoke_device_business_state(monkeypat
                 "return_id": "RETURN-STALE",
                 "original_sales_invoice": "SI-STALE",
                 "return_sales_invoice": "SI-RETURN-STALE",
+                "settlement_doctype": "Journal Entry",
+                "settlement_document": "JV-REFUND-STALE",
+            }
+        ],
+        "FB Return Event Line": [
+            {
+                "name": "RETURN-LINE-STALE",
+                "parent": "RET-STALE",
+                "reversal_stock_entry": "STE-RETURN-STALE",
             }
         ],
         "Sales Invoice": [
@@ -330,10 +341,99 @@ def test_smoke_reset_cleanup_deletes_stale_smoke_device_business_state(monkeypat
                 "custom_fb_idempotency_key": "merchant-idem-001",
             },
         ],
-        "Stock Entry": [{"name": "STE-STALE"}, {"name": "STE-LIVE"}],
+        "Journal Entry": [{"name": "JV-REFUND-STALE"}],
+        "Stock Entry": [
+            {"name": "STE-STALE"},
+            {"name": "STE-RETURN-STALE"},
+            {"name": "STE-LIVE"},
+        ],
         "FB Resolved Sale": [
-            {"name": "RS-STALE", "fb_order": "FB-ORDER-STALE"},
+            {
+                "name": "RS-STALE",
+                "fb_order": "FB-ORDER-STALE",
+                "stock_entry_issue": "STE-STALE",
+                "stock_entry_reversal": "STE-RETURN-STALE",
+            },
             {"name": "RS-LIVE", "fb_order": "FB-ORDER-LIVE"},
+        ],
+        "Serial and Batch Bundle": [
+            {
+                "name": "SABB-STALE",
+                "voucher_type": "Stock Entry",
+                "voucher_no": "STE-STALE",
+            },
+            {
+                "name": "SABB-LIVE",
+                "voucher_type": "Stock Entry",
+                "voucher_no": "STE-LIVE",
+            },
+        ],
+        "GL Entry": [
+            {
+                "name": "GL-SI-OLD",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-STALE",
+            },
+            {
+                "name": "GL-SI-REUSED-NAME",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-STALE",
+            },
+            {
+                "name": "GL-JV-STALE",
+                "voucher_type": "Journal Entry",
+                "voucher_no": "JV-REFUND-STALE",
+            },
+            {
+                "name": "GL-STOCK-STALE",
+                "voucher_type": "Stock Entry",
+                "voucher_no": "STE-STALE",
+            },
+            {
+                "name": "GL-SI-LIVE",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-LIVE",
+            },
+        ],
+        "Payment Ledger Entry": [
+            {
+                "name": "PLE-SI-STALE",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-STALE",
+                "against_voucher_type": "Sales Invoice",
+                "against_voucher_no": "SI-STALE",
+            },
+            {
+                "name": "PLE-JV-STALE",
+                "voucher_type": "Journal Entry",
+                "voucher_no": "JV-REFUND-STALE",
+                "against_voucher_type": "Sales Invoice",
+                "against_voucher_no": "SI-RETURN-STALE",
+            },
+            {
+                "name": "PLE-SI-LIVE",
+                "voucher_type": "Sales Invoice",
+                "voucher_no": "SI-LIVE",
+                "against_voucher_type": "Sales Invoice",
+                "against_voucher_no": "SI-LIVE",
+            },
+        ],
+        "Stock Ledger Entry": [
+            {
+                "name": "SLE-STALE",
+                "voucher_type": "Stock Entry",
+                "voucher_no": "STE-STALE",
+            },
+            {
+                "name": "SLE-RETURN-STALE",
+                "voucher_type": "Stock Entry",
+                "voucher_no": "STE-RETURN-STALE",
+            },
+            {
+                "name": "SLE-LIVE",
+                "voucher_type": "Stock Entry",
+                "voucher_no": "STE-LIVE",
+            },
         ],
         "FB Projection Log": [
             {
@@ -380,6 +480,7 @@ def test_smoke_reset_cleanup_deletes_stale_smoke_device_business_state(monkeypat
         if row.get("name")
     }
     deleted: list[tuple[str, str]] = []
+    cancelled_stock_entries: list[str] = []
 
     def row_matches(row: dict[str, Any], filters: dict[str, Any]) -> bool:
         for fieldname, expected in (filters or {}).items():
@@ -423,11 +524,33 @@ def test_smoke_reset_cleanup_deletes_stale_smoke_device_business_state(monkeypat
         deleted.append((doctype, name))
         existing_names.discard((doctype, name))
 
+    def fake_get_doc(doctype: str, name: str) -> SimpleNamespace:
+        assert doctype == "Stock Entry"
+        stock_entry = SimpleNamespace(name=name, docstatus=1)
+
+        def cancel() -> None:
+            stock_entry.docstatus = 2
+            cancelled_stock_entries.append(name)
+
+        stock_entry.cancel = cancel
+        return stock_entry
+
+    def fake_db_delete(doctype: str, filters: dict[str, Any]) -> None:
+        retained = []
+        for row in tables.get(doctype, []):
+            if row_matches(row, filters):
+                existing_names.discard((doctype, str(row.get("name"))))
+            else:
+                retained.append(row)
+        tables[doctype] = retained
+
     monkeypatch.setattr(frappe, "get_all", fake_get_all)
+    monkeypatch.setattr(frappe, "get_doc", fake_get_doc)
     monkeypatch.setattr(frappe, "delete_doc", fake_delete_doc, raising=False)
     monkeypatch.setattr(frappe.db, "exists", fake_exists)
     monkeypatch.setattr(frappe.db, "get_value", lambda *args, **kwargs: 1)
     monkeypatch.setattr(frappe.db, "set_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr(frappe.db, "delete", fake_db_delete)
 
     smoke._delete_smoke_business_rows(smoke.SMOKE_DEVICE_ID)
 
@@ -435,6 +558,10 @@ def test_smoke_reset_cleanup_deletes_stale_smoke_device_business_state(monkeypat
     assert ("FB Order", "FB-ORDER-STALE") in deleted
     assert ("Sales Invoice", "SI-STALE") in deleted
     assert ("Sales Invoice", "SI-RETURN-STALE") in deleted
+    assert ("Journal Entry", "JV-REFUND-STALE") in deleted
+    assert ("Stock Entry", "STE-RETURN-STALE") in deleted
+    assert ("Serial and Batch Bundle", "SABB-STALE") in deleted
+    assert cancelled_stock_entries == ["STE-STALE", "STE-RETURN-STALE"]
     assert ("FB Projection Log", "PROJ-FAILED-ORDER") in deleted
     assert ("FB Projection Log", "PROJ-FAILED-SHIFT") in deleted
     assert ("FB Projection Log", "PROJ-SMOKE-IDEM-MISSING-SOURCE") in deleted
@@ -443,3 +570,40 @@ def test_smoke_reset_cleanup_deletes_stale_smoke_device_business_state(monkeypat
     assert ("FB Order", "FB-ORDER-LIVE") not in deleted
     assert ("Sales Invoice", "SI-LIVE") not in deleted
     assert ("FB Projection Log", "PROJ-LIVE") not in deleted
+    assert [row["name"] for row in tables["GL Entry"]] == ["GL-SI-LIVE"]
+    assert [row["name"] for row in tables["Payment Ledger Entry"]] == [
+        "PLE-SI-LIVE"
+    ]
+    assert [row["name"] for row in tables["Stock Ledger Entry"]] == ["SLE-LIVE"]
+
+
+def test_smoke_reset_fails_loud_if_voucher_gl_rows_survive(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    monkeypatch.setattr(frappe.db, "delete", lambda doctype, filters: None)
+
+    def fake_get_all(
+        doctype: str,
+        filters: dict[str, Any] | None = None,
+        fields: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        if doctype == "GL Entry":
+            return [{"name": "GL-STALE-REUSED-VOUCHER"}]
+        return []
+
+    monkeypatch.setattr(frappe, "get_all", fake_get_all)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Smoke reset left GL Entry rows for proven smoke vouchers",
+    ):
+        smoke._delete_smoke_ledger_artifacts(
+            sales_invoices=["SI-REUSED-NAME"],
+            settlement_journal_entries=[],
+            stock_entries=[],
+        )
