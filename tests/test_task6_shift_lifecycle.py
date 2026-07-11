@@ -48,6 +48,7 @@ def _submit_payload() -> dict[str, Any]:
         "company": "JiJi",
         "currency": "MYR",
         "grand_total": 10.0,
+        "order": {"created_at": "2026-03-13T18:00:00"},
         "items": [{"item_code": "ITEM-1"}],
         "payments": [{"payment_method": "Cash"}],
     }
@@ -164,6 +165,7 @@ def _patch_close_dependencies(
         device_id="DEVICE-1",
         staff_id="staff@example.test",
         status="Open",
+        opened_at="2026-03-13T18:00:00",
         opening_float=10.0,
         expected_cash=10.0,
         counted_cash=None,

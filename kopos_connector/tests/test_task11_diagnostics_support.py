@@ -247,6 +247,8 @@ def build_sample_smoke_state() -> dict[str, object]:
                     "name": "SHIFT-001",
                     "shift_code": "smoke-shift-001",
                     "status": "Closed",
+                    "opened_at": "2026-07-12 00:00:00",
+                    "closed_at": "2026-07-12 08:00:00",
                     "opening_float": 0.0,
                     "expected_cash": 0.0,
                     "counted_cash": 0.0,
@@ -263,6 +265,8 @@ def build_sample_smoke_state() -> dict[str, object]:
                     "invoice_status": "Posted",
                     "stock_status": "Posted",
                     "sales_invoice": "SI-001",
+                    "ingredient_stock_entry": "STE-001",
+                    "sale_datetime": "2026-07-12 00:30:45",
                     "grand_total": 12.0,
                     "currency": "MYR",
                 }
@@ -276,6 +280,8 @@ def build_sample_smoke_state() -> dict[str, object]:
                     "grand_total": 12.0,
                     "paid_amount": 12.0,
                     "outstanding_amount": 0.0,
+                    "posting_date": "2026-07-12",
+                    "posting_time": "00:30:45",
                     "custom_fb_order": "ORDER-001",
                     "custom_fb_shift": "SHIFT-001",
                     "custom_fb_idempotency_key": "idem-001",
@@ -296,6 +302,16 @@ def build_sample_smoke_state() -> dict[str, object]:
                     "custom_fb_idempotency_key": "idem-001:return",
                     "items": [{"item_code": "ITEM-COFFEE"}],
                     "payments": [],
+                }
+            ],
+            "ingredient_stock_entries": [
+                {
+                    "name": "STE-001",
+                    "docstatus": 1,
+                    "posting_date": "2026-07-12",
+                    "posting_time": "00:30:45",
+                    "custom_fb_order": "ORDER-001",
+                    "custom_fb_shift": "SHIFT-001",
                 }
             ],
             "sales_invoice_payments": [

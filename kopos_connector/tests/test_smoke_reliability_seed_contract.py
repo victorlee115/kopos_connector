@@ -2,12 +2,100 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
+
+
+def test_smoke_asserts_sale_datetime_on_invoice_and_stock_projection() -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    state = {
+        "fb_shifts": [],
+        "fb_orders": [
+            {
+                "name": "FB-ORDER-1",
+                "status": "Submitted",
+                "stock_status": "Posted",
+                "sale_datetime": datetime(2026, 7, 12, 0, 30, 45),
+                "sales_invoice": "SINV-1",
+                "ingredient_stock_entry": "STE-1",
+            }
+        ],
+        "sales_invoices": [
+            {
+                "name": "SINV-1",
+                "docstatus": 1,
+                "is_return": False,
+                "posting_date": "2026-07-12",
+                "posting_time": "00:30:45",
+                "items": [{}],
+                "payments": [{}],
+            }
+        ],
+        "ingredient_stock_entries": [
+            {
+                "name": "STE-1",
+                "docstatus": 1,
+                "posting_date": "2026-07-12",
+                "posting_time": timedelta(minutes=30, seconds=45),
+            }
+        ],
+        "return_records": [],
+        "void_records": [],
+        "projection_statuses": {"failed": []},
+        "legacy_active_paths": {},
+        "idempotency": {},
+        "order_history": {},
+    }
+
+    result = smoke.build_smoke_business_assertions(state)
+
+    assert result["assertions"]["fb_order_sale_datetime_persisted"] is True
+    assert result["assertions"]["sales_invoice_sale_datetime_preserved"] is True
+    assert (
+        result["assertions"]["ingredient_stock_entry_sale_datetime_preserved"]
+        is True
+    )
+
+
+def test_smoke_rejects_projection_posted_on_sync_date_instead_of_sale_date() -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    assert smoke._projection_posts_at_sale_datetime(
+        {"sale_datetime": datetime(2026, 7, 11, 23, 55, 0)},
+        {
+            "posting_date": "2026-07-12",
+            "posting_time": "09:00:00",
+        },
+    ) is False
+
+
+def test_smoke_rejects_closed_shift_timestamp_before_open_timestamp() -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    assert smoke._shift_timestamps_in_order(
+        {
+            "opened_at": "2026-07-11 10:00:00",
+            "closed_at": "2026-07-11 17:00:00",
+        }
+    ) is True
+    assert smoke._shift_timestamps_in_order(
+        {
+            "opened_at": "2026-07-11 10:00:00",
+            "closed_at": "2026-07-11 09:59:59",
+        }
+    ) is False
 
 
 def test_reliability_drink_item_code_matches_t16_submit_payload() -> None:

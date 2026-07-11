@@ -8,6 +8,9 @@ from typing import Any
 import frappe
 
 from kopos_connector.api.devices import privileged_device_api_operation
+from kopos_connector.kopos.services.orders.sale_datetime import (
+    resolve_order_sale_datetime,
+)
 from kopos_connector.utils.diagnostics import (
     log_sanitized_error,
     make_savepoint,
@@ -186,10 +189,7 @@ def _set_if_present(doc: Any, fieldnames: list[str], value: Any) -> None:
 
 
 def _resolve_posting_datetime(order_doc: Any):
-    created_at = _value(order_doc, "modified") or _value(order_doc, "creation")
-    if created_at:
-        return frappe.utils.get_datetime(created_at)
-    return frappe.utils.now_datetime()
+    return resolve_order_sale_datetime(order_doc)
 
 
 def _get_existing_reference(doc: Any, fieldname: str) -> str | None:

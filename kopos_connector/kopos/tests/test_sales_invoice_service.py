@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from contextlib import nullcontext
+from datetime import datetime
 from unittest.mock import patch
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
@@ -31,6 +32,7 @@ class TestSalesInvoiceService(unittest.TestCase):
         order.device_id = "TEST-DEVICE-CASH"
         order.shift = "SHIFT-CASH"
         order.notes = None
+        order.sale_datetime = datetime(2026, 7, 12, 0, 30, 45)
         order.sales_invoice = None
         order.tax_total = 0.96
         order.rounding_adjustment = -0.01
@@ -80,14 +82,32 @@ class TestSalesInvoiceService(unittest.TestCase):
                 "kopos_connector.kopos.services.accounting.sales_invoice_service._coerce_doc"
             ) as coerce_doc_mock,
             patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._resolve_pos_profile_context",
+                return_value={
+                    "pos_profile": "KoPOS Test Profile",
+                    "company": self.company,
+                },
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._set_if_present",
+                side_effect=lambda doc, fieldnames, value: setattr(
+                    doc, fieldnames[0], value
+                ),
+            ),
+            patch(
                 "kopos_connector.kopos.services.accounting.sales_invoice_service.frappe.get_meta",
                 return_value=frappe._dict({"has_field": lambda fieldname: True}),
             ),
             patch(
-                "kopos_connector.kopos.services.accounting.sales_invoice_service.elevate_device_api_user",
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.privileged_device_api_operation",
                 return_value=nullcontext(),
             ),
         ):
+            def append_invoice_row(field, value):
+                row = frappe._dict(value)
+                invoice[field].append(row)
+                return row
+
             invoice = frappe._dict(
                 {
                     "doctype": "Sales Invoice",
@@ -100,9 +120,7 @@ class TestSalesInvoiceService(unittest.TestCase):
                     "disable_rounded_total": 0,
                     "write_off_amount": 0,
                     "base_write_off_amount": 0,
-                    "append": lambda field, value: invoice[field].append(
-                        frappe._dict(value)
-                    ),
+                    "append": append_invoice_row,
                     "set": lambda field, value: invoice.__setitem__(field, value),
                     "insert": lambda **kwargs: None,
                     "submit": lambda: None,
@@ -132,6 +150,8 @@ class TestSalesInvoiceService(unittest.TestCase):
             result = create_sales_invoice(order)
 
         self.assertEqual(result, "SINV-CASH-001")
+        self.assertEqual(invoice.posting_date, "2026-07-12")
+        self.assertEqual(invoice.posting_time, "00:30:45")
         self.assertEqual(len(invoice.taxes), 1)
         self.assertEqual(invoice.taxes[0].charge_type, "Actual")
         self.assertEqual(invoice.taxes[0].account_head, "Duties and Taxes - WP")

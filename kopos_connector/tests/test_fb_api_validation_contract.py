@@ -44,3 +44,18 @@ class TestFBAPIValidationContract(unittest.TestCase):
         self.assertNotIn(
             '"stock_entry": cstr(order_doc.ingredient_stock_entry)', content
         )
+
+    def test_order_api_validates_and_persists_canonical_sale_datetime(self):
+        content = (ERP_ROOT / "kopos" / "api" / "fb_orders.py").read_text()
+
+        self.assertIn('order_payload.get("created_at")', content)
+        self.assertIn("validate_submit_sale_datetime", content)
+        self.assertIn('order_doc.sale_datetime = validated["sale_datetime"]', content)
+
+    def test_shift_api_uses_offline_first_timestamp_contract(self):
+        content = (ERP_ROOT / "api" / "shifts.py").read_text()
+
+        self.assertIn("MAX_FUTURE_TIMESTAMP_SKEW_SECONDS", content)
+        self.assertIn("_normalize_offline_event_datetime", content)
+        self.assertIn("_validate_closed_at_not_before_opened_at", content)
+        self.assertNotIn("MAX_TIMESTAMP_SKEW_SECONDS", content)

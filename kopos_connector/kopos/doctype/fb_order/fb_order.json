@@ -13,6 +13,7 @@
         "order_id",
         "external_idempotency_key",
         "source",
+        "sale_datetime",
         "column_break_1",
         "device_id",
         "shift",
@@ -65,6 +66,14 @@
             "label": "Source",
             "options": "POS\nERP\nManual\nAPI",
             "reqd": 1
+        },
+        {
+            "description": "Site-local sale date and time supplied by the POS order.created_at field",
+            "fieldname": "sale_datetime",
+            "fieldtype": "Datetime",
+            "in_list_view": 1,
+            "label": "Sale Date & Time",
+            "read_only": 1
         },
         {
             "fieldname": "column_break_1",
@@ -246,7 +255,7 @@
             "link_fieldname": "source_name"
         }
     ],
-    "modified": "2026-04-14 00:00:00.000000",
+    "modified": "2026-07-12 00:00:00.000000",
     "modified_by": "Administrator",
     "module": "KoPOS",
     "name": "FB Order",

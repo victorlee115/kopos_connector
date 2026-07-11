@@ -1265,6 +1265,9 @@ def build_smoke_support_report(
                 "fb_shifts": len(_list(data.get("fb_shifts"))),
                 "fb_orders": len(_list(data.get("fb_orders"))),
                 "sales_invoices": len(_list(data.get("sales_invoices"))),
+                "ingredient_stock_entries": len(
+                    _list(data.get("ingredient_stock_entries"))
+                ),
                 "return_records": len(_list(data.get("return_records"))),
                 "void_records": len(_list(data.get("void_records"))),
                 "payment_rows": len(_list(data.get("sales_invoice_payments"))),
@@ -2221,11 +2224,13 @@ def _collect_smoke_business_state(device_id: str) -> dict[str, Any]:
             "grand_total",
             "currency",
             "docstatus",
+            "sale_datetime",
             "creation",
         ],
         order_by="creation asc, name asc",
     )
     sales_invoices = _collect_sales_invoices(device_id)
+    ingredient_stock_entries = _collect_ingredient_stock_entries(fb_orders)
     return_records = _collect_return_records(fb_orders)
     projections = _collect_projection_state(fb_orders, fb_shifts, return_records)
     legacy_active_paths = _collect_legacy_active_paths(device_id)
@@ -2239,6 +2244,7 @@ def _collect_smoke_business_state(device_id: str) -> dict[str, Any]:
         "fb_shifts": fb_shifts,
         "fb_orders": fb_orders,
         "sales_invoices": sales_invoices,
+        "ingredient_stock_entries": ingredient_stock_entries,
         "sales_invoice_items": [
             {"sales_invoice": invoice["name"], **item}
             for invoice in sales_invoices
@@ -2299,6 +2305,7 @@ def build_smoke_business_assertions(
     fb_shifts = _list(data.get("fb_shifts"))
     fb_orders = _list(data.get("fb_orders"))
     invoices = _list(data.get("sales_invoices"))
+    ingredient_stock_entries = _list(data.get("ingredient_stock_entries"))
     returns = _list(data.get("return_records"))
     voids = _list(data.get("void_records"))
     projection_statuses = data.get("projection_statuses") or {}
@@ -2331,11 +2338,42 @@ def build_smoke_business_assertions(
     open_shifts = [row for row in fb_shifts if row.get("status") == "Open"]
     duplicate_keys = _list(idempotency.get("duplicate_sales_invoice_keys"))
     sales_invoice_counts = idempotency.get("sales_invoice_counts_by_idempotency_key") or {}
+    invoices_by_name = {row.get("name"): row for row in invoices if row.get("name")}
+    stock_entries_by_name = {
+        row.get("name"): row
+        for row in ingredient_stock_entries
+        if row.get("name")
+    }
+    dated_orders = [row for row in fb_orders if row.get("sale_datetime")]
 
     expect("fb_shift_open_close_proven", bool(closed_shifts), fb_shifts)
+    expect(
+        "fb_shift_timestamps_ordered",
+        bool(closed_shifts)
+        and all(_shift_timestamps_in_order(shift) for shift in closed_shifts),
+        closed_shifts,
+    )
     expect("no_open_smoke_fb_shift_after_cleanup", not open_shifts, open_shifts)
     expect("fb_order_submit_proven", bool(submitted_orders), fb_orders)
+    expect(
+        "fb_order_sale_datetime_persisted",
+        bool(fb_orders) and len(dated_orders) == len(fb_orders),
+        fb_orders,
+    )
     expect("posted_sales_invoice_proven", bool(posted_sale_invoices), invoices)
+    expect(
+        "sales_invoice_sale_datetime_preserved",
+        bool(dated_orders)
+        and all(
+            not order.get("sales_invoice")
+            or _projection_posts_at_sale_datetime(
+                order,
+                invoices_by_name.get(order.get("sales_invoice")),
+            )
+            for order in dated_orders
+        ),
+        {"orders": dated_orders, "sales_invoices": invoices},
+    )
     expect(
         "sales_invoice_items_proven",
         any(invoice.get("items") for invoice in posted_sale_invoices),
@@ -2350,6 +2388,19 @@ def build_smoke_business_assertions(
         "stock_projection_state_proven",
         all(row.get("stock_status") in {"Posted", "Reversed", "Pending"} for row in fb_orders),
         fb_orders,
+    )
+    expect(
+        "ingredient_stock_entry_sale_datetime_preserved",
+        bool(ingredient_stock_entries)
+        and all(
+            not order.get("ingredient_stock_entry")
+            or _projection_posts_at_sale_datetime(
+                order,
+                stock_entries_by_name.get(order.get("ingredient_stock_entry")),
+            )
+            for order in dated_orders
+        ),
+        {"orders": dated_orders, "stock_entries": ingredient_stock_entries},
     )
     expect("refund_return_record_proven", bool(returns), returns)
     expect("refund_return_sales_invoice_proven", bool(submitted_return_invoices), invoices)
@@ -2424,6 +2475,7 @@ def build_smoke_business_assertions(
             "fb_shifts": len(fb_shifts),
             "fb_orders": len(fb_orders),
             "sales_invoices": len(invoices),
+            "ingredient_stock_entries": len(ingredient_stock_entries),
             "return_records": len(returns),
             "void_records": len(voids),
             "failed_projections": len(failed_projections),
@@ -2472,6 +2524,93 @@ def _collect_sales_invoices(device_id: str) -> list[dict[str, Any]]:
         invoice["payments"] = _collect_invoice_payments(invoice_doc)
         invoices.append(invoice)
     return invoices
+
+
+def _collect_ingredient_stock_entries(
+    fb_orders: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    names = [
+        str(order.get("ingredient_stock_entry"))
+        for order in fb_orders
+        if order.get("ingredient_stock_entry")
+    ]
+    if not names:
+        return []
+
+    return _get_rows(
+        "Stock Entry",
+        filters={"name": ["in", names]},
+        fields=[
+            "name",
+            "docstatus",
+            "posting_date",
+            "posting_time",
+            "custom_fb_order",
+            "custom_fb_shift",
+        ],
+        order_by="posting_date asc, posting_time asc, name asc",
+    )
+
+
+def _projection_posts_at_sale_datetime(
+    order: dict[str, Any],
+    projection: dict[str, Any] | None,
+) -> bool:
+    if not projection or not order.get("sale_datetime"):
+        return False
+
+    try:
+        sale_datetime = frappe.utils.get_datetime(order["sale_datetime"])
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+    if not sale_datetime:
+        return False
+
+    posting_date = str(projection.get("posting_date") or "")[:10]
+    posting_time = _posting_time_text(projection.get("posting_time"))
+    return (
+        sale_datetime.date().isoformat() == posting_date
+        and sale_datetime.strftime("%H:%M:%S") == posting_time
+    )
+
+
+def _shift_timestamps_in_order(shift: dict[str, Any]) -> bool:
+    if not shift.get("opened_at") or not shift.get("closed_at"):
+        return False
+    try:
+        opened_at = frappe.utils.get_datetime(shift["opened_at"])
+        closed_at = frappe.utils.get_datetime(shift["closed_at"])
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not opened_at or not closed_at:
+        return False
+    try:
+        return closed_at >= opened_at
+    except TypeError:
+        return False
+
+
+def _posting_time_text(value: Any) -> str:
+    if value is None:
+        return ""
+    total_seconds = getattr(value, "total_seconds", None)
+    if callable(total_seconds):
+        seconds = int(total_seconds()) % (24 * 60 * 60)
+        return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
+    strftime = getattr(value, "strftime", None)
+    if callable(strftime):
+        return strftime("%H:%M:%S")
+    text = str(value).strip().split(".", 1)[0]
+    parts = text.split(":")
+    if len(parts) == 2:
+        parts.append("00")
+    if len(parts) != 3:
+        return text
+    try:
+        return ":".join(f"{int(part):02d}" for part in parts)
+    except ValueError:
+        return text
 
 
 def _collect_invoice_items(invoice_doc: Any) -> list[dict[str, Any]]:
@@ -2881,6 +3020,7 @@ def _support_order_rows(rows: list[Any]) -> list[dict[str, Any]]:
                 "invoice_status": row.get("invoice_status"),
                 "stock_status": row.get("stock_status"),
                 "sales_invoice": row.get("sales_invoice"),
+                "sale_datetime": row.get("sale_datetime"),
                 "grand_total": row.get("grand_total"),
                 "currency": row.get("currency"),
             }
@@ -2903,6 +3043,8 @@ def _support_invoice_rows(rows: list[Any]) -> list[dict[str, Any]]:
                 "grand_total": row.get("grand_total"),
                 "paid_amount": row.get("paid_amount"),
                 "outstanding_amount": row.get("outstanding_amount"),
+                "posting_date": row.get("posting_date"),
+                "posting_time": row.get("posting_time"),
                 "fb_order": row.get("custom_fb_order"),
                 "fb_shift": row.get("custom_fb_shift"),
                 "idempotency_key": row.get("custom_fb_idempotency_key"),

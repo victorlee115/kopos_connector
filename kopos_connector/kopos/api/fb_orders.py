@@ -8,6 +8,11 @@ from typing import Any
 frappe = importlib.import_module("frappe")
 frappe_utils = importlib.import_module("frappe.utils")
 
+from kopos_connector.kopos.services.orders.sale_datetime import (
+    validate_submit_sale_datetime,
+    validate_submit_sale_datetime_bounds,
+)
+
 
 def cint(value: Any) -> int:
     return int(frappe_utils.cint(value))
@@ -109,6 +114,7 @@ def get_order_status(fb_order_name: str) -> dict[str, Any]:
         "status": "ok",
         "fb_order": order_doc.name,
         "order_id": cstr(order_doc.order_id),
+        "sale_datetime": cstr(getattr(order_doc, "sale_datetime", None)) or None,
         "shift_id": cstr(order_doc.shift),
         "staff_id": cstr(order_doc.staff_id),
         "device_id": cstr(order_doc.device_id),
@@ -147,6 +153,7 @@ def retry_failed_projections(fb_order_name: str) -> dict[str, Any]:
         "status": "ok",
         "fb_order": order_doc.name,
         "order_id": cstr(order_doc.order_id),
+        "sale_datetime": cstr(getattr(order_doc, "sale_datetime", None)) or None,
         "shift_id": cstr(order_doc.shift),
         "staff_id": cstr(order_doc.staff_id),
         "device_id": cstr(order_doc.device_id),
@@ -240,6 +247,7 @@ def _validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     customer = cstr(payload.get("customer")) or None
     event_project = cstr(payload.get("event_project")) or None
     notes = cstr(payload.get("notes") or order_payload.get("notes")) or None
+    sale_datetime_value = order_payload.get("created_at")
     items = (
         payload.get("items")
         if isinstance(payload.get("items"), list)
@@ -271,6 +279,8 @@ def _validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         frappe.throw("items must contain at least one row", frappe.ValidationError)
     if not isinstance(payments, list) or not payments:
         frappe.throw("payments must contain at least one row", frappe.ValidationError)
+
+    sale_datetime = validate_submit_sale_datetime(sale_datetime_value)
 
     item_rows = items if isinstance(items, list) else []
     payment_rows = payments if isinstance(payments, list) else []
@@ -309,10 +319,15 @@ def _validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not shift_name:
         frappe.throw(f"shift {shift} was not found", frappe.ValidationError)
     assert shift_name is not None
-    _validate_submit_shift(
+    shift_doc = _validate_submit_shift(
         shift_name=shift_name,
         device_id=device_id,
         staff_id=staff_id,
+    )
+    validate_submit_sale_datetime_bounds(
+        sale_datetime,
+        shift_name=shift_name,
+        shift_opened_at=getattr(shift_doc, "opened_at", None),
     )
     _require_doc("Warehouse", booth_warehouse, "booth_warehouse")
     _require_doc("Company", company, "company")
@@ -335,6 +350,7 @@ def _validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "customer": customer,
         "event_project": event_project,
         "notes": notes,
+        "sale_datetime": sale_datetime,
         "net_total": net_total,
         "tax_total": tax_total,
         "rounding_adjustment": rounding_adjustment,
@@ -614,6 +630,7 @@ def _build_fb_order(validated: dict[str, Any]):
     order_doc.order_id = validated["order_id"]
     order_doc.external_idempotency_key = validated["external_idempotency_key"]
     order_doc.source = validated["source"]
+    order_doc.sale_datetime = validated["sale_datetime"]
     order_doc.device_id = validated["device_id"]
     order_doc.shift = validated["shift"]
     order_doc.staff_id = validated["staff_id"]
@@ -696,6 +713,7 @@ def _build_submit_response(result_status: str, order_doc) -> dict[str, Any]:
         "fb_order": order_doc.name,
         "order_id": cstr(order_doc.order_id),
         "idempotency_key": cstr(order_doc.external_idempotency_key),
+        "sale_datetime": cstr(getattr(order_doc, "sale_datetime", None)) or None,
         "sales_invoice": cstr(order_doc.sales_invoice) or None,
         "ingredient_stock_entry": cstr(order_doc.ingredient_stock_entry) or None,
         "order_status": cstr(order_doc.status),
@@ -1396,7 +1414,7 @@ def _resolve_fb_shift_name(value: str) -> str | None:
     return frappe.db.get_value("FB Shift", {"shift_code": value}, "name")
 
 
-def _validate_submit_shift(*, shift_name: str, device_id: str, staff_id: str) -> None:
+def _validate_submit_shift(*, shift_name: str, device_id: str, staff_id: str) -> Any:
     shift_doc = frappe.get_doc("FB Shift", shift_name)
     shift_device_id = cstr(getattr(shift_doc, "device_id", None))
     shift_staff_id = cstr(getattr(shift_doc, "staff_id", None))
@@ -1417,3 +1435,4 @@ def _validate_submit_shift(*, shift_name: str, device_id: str, staff_id: str) ->
             f"shift {shift_name} is {shift_status or 'missing'}; new FB Orders require an Open FB Shift",
             frappe.ValidationError,
         )
+    return shift_doc

@@ -12,6 +12,9 @@ from kopos_connector.api.devices import (
     get_device_pos_profile_doc,
     privileged_device_api_operation,
 )
+from kopos_connector.kopos.services.orders.sale_datetime import (
+    resolve_order_sale_datetime,
+)
 from kopos_connector.utils.diagnostics import (
     log_sanitized_error,
     make_savepoint,
@@ -314,10 +317,7 @@ def _validate_recovered_field(
 
 
 def _resolve_posting_datetime(order_doc: Any):
-    created_at = _value(order_doc, "modified") or _value(order_doc, "creation")
-    if created_at:
-        return frappe.utils.get_datetime(created_at)
-    return frappe.utils.now_datetime()
+    return resolve_order_sale_datetime(order_doc)
 
 
 def _resolve_line_rate(order_item: Any) -> float:

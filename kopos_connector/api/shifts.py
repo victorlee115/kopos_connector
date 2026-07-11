@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 frappe = importlib.import_module("frappe")
 frappe_utils = importlib.import_module("frappe.utils")
@@ -21,7 +21,6 @@ cint = frappe_utils.cint
 cstr = frappe_utils.cstr
 flt = frappe_utils.flt
 now_datetime = frappe_utils.now_datetime
-nowdate = frappe_utils.nowdate
 
 from kopos_connector.api.devices import elevate_device_api_user, get_device_doc
 from kopos_connector.utils.diagnostics import log_sanitized_error, sanitized_error_message
@@ -31,12 +30,12 @@ MANAGER_APPROVAL_FIELD = "custom_kopos_approved_by_manager"
 
 
 # -----------------------------------------------------------------------------
-# Phase 6 - Timestamp Skew Validation Constants
+# Phase 6 - Offline Event Timestamp Validation Constants
 # -----------------------------------------------------------------------------
 
-# Maximum allowed clock skew between client and server (in seconds)
-# 10 minutes is generous for mobile devices that may have slight clock drift
-MAX_TIMESTAMP_SKEW_SECONDS = 600  # 10 minutes
+# Past shift events are valid offline work. Only reject tablet clocks that are
+# materially ahead of the ERP site clock.
+MAX_FUTURE_TIMESTAMP_SKEW_SECONDS = 300
 
 # Module logger for audit logging
 _audit_logger = logging.getLogger(__name__)
@@ -193,7 +192,7 @@ def resolve_and_validate_device_user(
 
 
 # -----------------------------------------------------------------------------
-# Phase 6 - Timestamp Skew Validation
+# Phase 6 - Offline Event Timestamp Validation
 # -----------------------------------------------------------------------------
 
 
@@ -201,80 +200,53 @@ def resolve_and_validate_device_user(
 _audit_logger = logging.getLogger("kopos_connector.shift_audit")
 
 
-def _validate_timestamp_skew(
+def _normalize_offline_event_datetime(
     client_timestamp: str | datetime | None,
     field_name: str,
-    max_skew_seconds: int = MAX_TIMESTAMP_SKEW_SECONDS,
+    max_future_skew_seconds: int = MAX_FUTURE_TIMESTAMP_SKEW_SECONDS,
 ) -> datetime:
+    """Normalize an offline event time and reject only excessive future skew.
+
+    A past timestamp is expected when a tablet reconnects after an outage and is
+    preserved exactly. Aware timestamps are converted to the Frappe site timezone;
+    naive timestamps remain site-local for compatibility with existing clients.
     """
-    Validate that a client-provided timestamp is within acceptable skew of server time.
-
-    Args:
-        client_timestamp: The timestamp provided by the client (ISO string or datetime)
-        field_name: The field name for error messages (e.g., "opened_at", "closed_at")
-        max_skew_seconds: Maximum allowed difference in seconds (default: 600 = 10 minutes)
-
-    Returns:
-        The parsed and validated datetime object
-
-    Raises:
-        frappe.ValidationError: If timestamp is too far in past or future
-    """
-    server_now = now_datetime()
+    server_now = _coerce_to_site_local_naive(now_datetime())
 
     if not client_timestamp:
         return server_now
 
-    # Parse timestamp if string
-    parsed: datetime = server_now  # default fallback
-    if isinstance(client_timestamp, str):
-        try:
+    try:
+        if isinstance(client_timestamp, str):
             parsed = frappe.utils.get_datetime(client_timestamp)
-        except Exception:
-            frappe.throw(
-                _("Invalid {0} timestamp format").format(field_name),
-                frappe.ValidationError,
-            )
-    elif isinstance(client_timestamp, datetime):
-        parsed = client_timestamp
-    else:
-        parsed = server_now
-
-    parsed_for_compare = parsed
-    server_for_compare = server_now
-
-    if parsed.tzinfo and not server_now.tzinfo:
-        timezone_name = cstr(
-            getattr(frappe.db, "get_single_value", lambda *_args, **_kwargs: None)(
-                "System Settings", "time_zone"
-            )
-            or ""
-        ).strip()
-        site_tz = ZoneInfo(timezone_name) if timezone_name else None
-        if site_tz:
-            parsed_for_compare = parsed.astimezone(site_tz)
-            server_for_compare = server_now.replace(tzinfo=site_tz)
+        elif isinstance(client_timestamp, datetime):
+            parsed = client_timestamp
         else:
-            parsed_for_compare = parsed.replace(tzinfo=None)
-    elif server_now.tzinfo and not parsed.tzinfo:
-        parsed_for_compare = parsed.replace(tzinfo=server_now.tzinfo)
-
-    skew = abs((parsed_for_compare - server_for_compare).total_seconds())
-
-    if skew > max_skew_seconds:
-        direction = (
-            "in the future"
-            if parsed_for_compare > server_for_compare
-            else "in the past"
+            raise TypeError(f"{field_name} must be a datetime or ISO timestamp")
+    except (TypeError, ValueError, OverflowError):
+        frappe.throw(
+            _("Invalid {0} timestamp format").format(field_name),
+            frappe.ValidationError,
         )
+        raise AssertionError(f"frappe.throw did not reject invalid {field_name}")
+
+    if not isinstance(parsed, datetime):
+        frappe.throw(
+            _("Invalid {0} timestamp format").format(field_name),
+            frappe.ValidationError,
+        )
+        raise AssertionError(f"frappe.throw did not reject invalid {field_name}")
+
+    event_datetime = _coerce_to_site_local_naive(parsed)
+    if event_datetime > server_now + timedelta(seconds=max_future_skew_seconds):
         frappe.throw(
             _(
-                "{0} timestamp is too far {1} (skew: {2} seconds, max allowed: {3})"
-            ).format(field_name, direction, int(skew), max_skew_seconds),
+                "{0} cannot be more than {1} minutes in the future relative to the Frappe site time"
+            ).format(field_name, max_future_skew_seconds // 60),
             frappe.ValidationError,
         )
 
-    return parsed
+    return event_datetime
 
 
 def _coerce_to_site_local_naive(value: datetime) -> datetime:
@@ -282,16 +254,68 @@ def _coerce_to_site_local_naive(value: datetime) -> datetime:
     if not isinstance(value, datetime) or not value.tzinfo:
         return value
 
-    timezone_name = cstr(
-        getattr(frappe.db, "get_single_value", lambda *_args, **_kwargs: None)(
-            "System Settings", "time_zone"
-        )
-        or ""
-    ).strip()
+    timezone_getter = getattr(frappe_utils, "get_system_timezone", None)
+    timezone_name = cstr(timezone_getter() if callable(timezone_getter) else None).strip()
     if not timezone_name:
-        return value.replace(tzinfo=None)
+        timezone_name = cstr(
+            getattr(frappe.db, "get_single_value", lambda *_args, **_kwargs: None)(
+                "System Settings", "time_zone"
+            )
+            or "UTC"
+        ).strip()
 
-    return value.astimezone(ZoneInfo(timezone_name)).replace(tzinfo=None)
+    try:
+        site_timezone = ZoneInfo(timezone_name or "UTC")
+    except ZoneInfoNotFoundError:
+        frappe.throw(
+            _("Frappe site timezone {0} is not a valid IANA timezone").format(
+                timezone_name
+            ),
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw did not reject an invalid site timezone")
+
+    return value.astimezone(site_timezone).replace(tzinfo=None)
+
+
+def _validate_closed_at_not_before_opened_at(
+    shift_doc: Any,
+    closed_at: datetime,
+) -> None:
+    shift_name = cstr(getattr(shift_doc, "name", None)) or "unknown"
+    opened_at_value = getattr(shift_doc, "opened_at", None)
+    if not opened_at_value:
+        frappe.throw(
+            _("FB Shift {0} has no persisted opened_at timestamp").format(shift_name),
+            frappe.ValidationError,
+        )
+
+    try:
+        opened_at = frappe.utils.get_datetime(opened_at_value)
+    except (TypeError, ValueError, OverflowError):
+        frappe.throw(
+            _("FB Shift {0} has an invalid opened_at timestamp").format(shift_name),
+            frappe.ValidationError,
+        )
+        raise AssertionError(
+            f"frappe.throw did not reject invalid FB Shift {shift_name} opened_at"
+        )
+
+    if not isinstance(opened_at, datetime):
+        frappe.throw(
+            _("FB Shift {0} has an invalid opened_at timestamp").format(shift_name),
+            frappe.ValidationError,
+        )
+        raise AssertionError(
+            f"frappe.throw did not reject invalid FB Shift {shift_name} opened_at"
+        )
+
+    normalized_opened_at = _coerce_to_site_local_naive(opened_at)
+    if closed_at < normalized_opened_at:
+        frappe.throw(
+            _("closed_at cannot be before FB Shift {0} opened_at").format(shift_name),
+            frappe.ValidationError,
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -609,7 +633,9 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
             - staff_id: ERP user ID (required)
             - shift_id: KoPOS shift ID (required)
             - opening_float_sen: Opening cash amount in sen/cents (optional)
-            - opened_at: ISO timestamp for shift open time (optional)
+            - opened_at: Actual POS event time. Past offline timestamps are
+              preserved; aware values are converted to the Frappe site timezone;
+              excessive future skew is rejected (optional, defaults to site now).
             - manager_approval_token: Manager approval token (optional, recommended)
 
     Returns:
@@ -706,10 +732,7 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
             frappe.ValidationError,
         )
 
-    period_start = _coerce_to_site_local_naive(
-        _validate_timestamp_skew(opened_at, "opened_at")
-    )
-    posting_date = period_start.date() if hasattr(period_start, "date") else nowdate()
+    period_start = _normalize_offline_event_datetime(opened_at, "opened_at")
 
     remarks = (
         f"KoPOS idempotency_key: {idempotency_key}\n"
@@ -773,7 +796,11 @@ def _parse_non_negative_sen(value: Any, fieldname: str) -> int:
 
 
 def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Close a KoPOS F&B shift in ERP."""
+    """Close a KoPOS F&B shift using the true offline event time.
+
+    Past closed_at values are preserved after site-timezone normalization. Values
+    materially in the future or before the persisted FB Shift opened_at are rejected.
+    """
     idempotency_key = frappe.utils.cstr(payload.get("idempotency_key"))
     device_id = frappe.utils.cstr(payload.get("device_id"))
     staff_id = frappe.utils.cstr(payload.get("staff_id"))
@@ -867,9 +894,8 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
         validate_shift_can_close(fb_shift)
 
-        period_end = _coerce_to_site_local_naive(
-            _validate_timestamp_skew(closed_at, "closed_at")
-        )
+        period_end = _normalize_offline_event_datetime(closed_at, "closed_at")
+        _validate_closed_at_not_before_opened_at(shift_doc, period_end)
 
         counted_amount = flt(counted_cash_sen) / 100
 

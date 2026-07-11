@@ -14,6 +14,16 @@ class TestFBServiceContracts(unittest.TestCase):
         ).read_text()
         self.assertIn("invoice.update_stock = 0", content)
 
+    def test_sale_and_ingredient_stock_services_use_fb_order_sale_datetime(self):
+        for relative in [
+            "kopos/services/accounting/sales_invoice_service.py",
+            "kopos/services/inventory/stock_issue_service.py",
+        ]:
+            content = (ERP_ROOT / relative).read_text()
+            self.assertIn("resolve_order_sale_datetime", content, relative)
+            self.assertIn("posting_dt.date().isoformat()", content, relative)
+            self.assertIn('posting_dt.time().strftime("%H:%M:%S")', content, relative)
+
     def test_sales_invoice_service_maps_custom_fb_fields(self):
         content = (
             ERP_ROOT / "kopos" / "services" / "accounting" / "sales_invoice_service.py"

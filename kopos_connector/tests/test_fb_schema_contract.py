@@ -53,6 +53,7 @@ class TestFBSchemaContract(unittest.TestCase):
             {
                 "order_id",
                 "external_idempotency_key",
+                "sale_datetime",
                 "shift",
                 "staff_id",
                 "booth_warehouse",
@@ -65,6 +66,13 @@ class TestFBSchemaContract(unittest.TestCase):
             }.issubset(names)
         )
         self.assertEqual(doc.get("is_submittable"), 1)
+        sale_datetime = next(
+            field
+            for field in doc["fields"]
+            if field.get("fieldname") == "sale_datetime"
+        )
+        self.assertEqual(sale_datetime["fieldtype"], "Datetime")
+        self.assertNotEqual(sale_datetime.get("reqd"), 1)
 
     def test_fb_stock_override_log_schema(self):
         doc = load_doctype("fb_stock_override_log")

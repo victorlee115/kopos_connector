@@ -69,16 +69,77 @@ class MutableDoc(SimpleNamespace):
 
 
 class ShiftSyncTests(unittest.TestCase):
-    def test_timestamp_skew_accepts_equivalent_utc_and_local_instants(self):
+    def test_offline_event_time_converts_equivalent_utc_to_site_local(self):
         server_now = datetime(2026, 3, 13, 18, 0, 0)
 
         with patch.object(shifts, "now_datetime", return_value=server_now):
-            parsed = shifts._validate_timestamp_skew(
+            parsed = shifts._normalize_offline_event_datetime(
                 datetime(2026, 3, 13, 10, 0, 0, tzinfo=timezone.utc),
                 "opened_at",
             )
 
-        self.assertEqual(parsed.tzinfo, timezone.utc)
+        self.assertEqual(parsed, datetime(2026, 3, 13, 18, 0, 0))
+        self.assertIsNone(parsed.tzinfo)
+
+    def test_offline_event_time_preserves_hours_old_timestamp(self):
+        server_now = datetime(2026, 3, 13, 18, 0, 0)
+
+        with patch.object(shifts, "now_datetime", return_value=server_now):
+            parsed = shifts._normalize_offline_event_datetime(
+                "2026-03-13T02:00:00Z",
+                "opened_at",
+            )
+
+        self.assertEqual(parsed, datetime(2026, 3, 13, 10, 0, 0))
+
+    def test_offline_event_time_rejects_excessive_future_skew(self):
+        server_now = datetime(2026, 3, 13, 18, 0, 0)
+
+        for field_name in ("opened_at", "closed_at"):
+            with (
+                self.subTest(field_name=field_name),
+                patch.object(shifts, "now_datetime", return_value=server_now),
+                self.assertRaises(shifts.frappe.ValidationError) as error,
+            ):
+                shifts._normalize_offline_event_datetime(
+                    "2026-03-13T10:05:01Z",
+                    field_name,
+                )
+
+            self.assertIn("more than 5 minutes in the future", str(error.exception))
+
+    def test_offline_open_and_close_times_can_sync_in_order(self):
+        server_now = datetime(2026, 3, 14, 9, 0, 0)
+
+        with patch.object(shifts, "now_datetime", return_value=server_now):
+            opened_at = shifts._normalize_offline_event_datetime(
+                "2026-03-13T02:00:00Z",
+                "opened_at",
+            )
+            closed_at = shifts._normalize_offline_event_datetime(
+                "2026-03-13T09:00:00Z",
+                "closed_at",
+            )
+
+        shift_doc = make_doc(name="FB-SHIFT-1", opened_at=opened_at)
+        shifts._validate_closed_at_not_before_opened_at(shift_doc, closed_at)
+
+        self.assertEqual(opened_at, datetime(2026, 3, 13, 10, 0, 0))
+        self.assertEqual(closed_at, datetime(2026, 3, 13, 17, 0, 0))
+
+    def test_close_time_rejects_timestamp_before_persisted_open_time(self):
+        shift_doc = make_doc(
+            name="FB-SHIFT-1",
+            opened_at=datetime(2026, 3, 13, 10, 0, 0),
+        )
+
+        with self.assertRaises(shifts.frappe.ValidationError) as error:
+            shifts._validate_closed_at_not_before_opened_at(
+                shift_doc,
+                datetime(2026, 3, 13, 9, 59, 59),
+            )
+
+        self.assertIn("closed_at cannot be before", str(error.exception))
 
     def test_coerce_to_site_local_naive_converts_utc_for_storage(self):
         converted = shifts._coerce_to_site_local_naive(
@@ -187,7 +248,7 @@ class ShiftSyncTests(unittest.TestCase):
                     "staff_id": "john@example.com",
                     "shift_id": "SHIFT-1",
                     "opening_float_sen": 5000,
-                    "opened_at": "2026-03-13T10:00:00Z",
+                    "opened_at": "2026-03-13T02:00:00Z",
                 }
             )
 
@@ -198,6 +259,7 @@ class ShiftSyncTests(unittest.TestCase):
         self.assertEqual(fb_shift_doc.staff_id, "john@example.com")
         self.assertEqual(fb_shift_doc.opening_float, Decimal("50"))
         self.assertEqual(fb_shift_doc.expected_cash, Decimal("50"))
+        self.assertEqual(fb_shift_doc.opened_at, datetime(2026, 3, 13, 10, 0, 0))
         self.assertIn("KoPOS shift_id: SHIFT-1", fb_shift_doc.remarks)
 
     def test_open_shift_rejects_fractional_opening_float_sen(self):
@@ -243,6 +305,7 @@ class ShiftSyncTests(unittest.TestCase):
             staff_id="john@example.com",
             shift_code="SHIFT-1",
             expected_cash=50.0,
+            opened_at=datetime(2026, 3, 13, 10, 0, 0),
             remarks="",
         )
         closing_doc = MutableDoc(
@@ -289,7 +352,7 @@ class ShiftSyncTests(unittest.TestCase):
                     "staff_id": "john@example.com",
                     "shift_id": "SHIFT-1",
                     "counted_cash_sen": 6500,
-                    "closed_at": "2026-03-13T10:10:00Z",
+                    "closed_at": "2026-03-13T09:00:00Z",
                 }
             )
 
@@ -298,6 +361,7 @@ class ShiftSyncTests(unittest.TestCase):
         self.assertEqual(opening_entry.status, "Closed")
         self.assertEqual(opening_entry.counted_cash, 65.0)
         self.assertEqual(opening_entry.cash_variance, 15.0)
+        self.assertEqual(opening_entry.closed_at, datetime(2026, 3, 13, 17, 0, 0))
         self.assertEqual(find_open_mock.call_count, 1)
 
     def test_close_shift_rejects_opening_entry_from_another_device(self):
