@@ -29,7 +29,7 @@ from kopos_connector.api.devices import (
     require_device_context,
     require_kopos_api_access,
 )
-from kopos_connector.utils.diagnostics import sanitized_error_message
+from kopos_connector.utils.diagnostics import log_sanitized_error, sanitized_error_message
 
 
 DEFAULT_MAX_RECEIPT_BYTES = 5 * 1024 * 1024
@@ -1178,5 +1178,5 @@ def _write_audit_log(
                 }
             )
             comment.insert(ignore_permissions=True)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "Manual QR receipt audit log failed")
+    except Exception as error:
+        log_sanitized_error("Manual QR receipt audit log failed", error)

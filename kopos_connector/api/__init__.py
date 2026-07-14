@@ -8,6 +8,8 @@ from typing import Any
 import frappe
 from frappe import _
 
+from kopos_connector.utils.diagnostics import log_sanitized_error
+
 from .catalog import (
     build_catalog_payload,
     get_item_modifiers_payload,
@@ -83,8 +85,8 @@ def get_catalog(
                     known_version=known_version,
                 )
             )
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "KoPOS get_catalog failed")
+    except Exception as error:
+        log_sanitized_error("KoPOS get_catalog failed", error)
         raise
 
 
@@ -151,8 +153,8 @@ def get_promotion_snapshot(
             _write_response(payload)
     except frappe.ValidationError as exc:
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "KoPOS get_promotion_snapshot failed")
+    except Exception as error:
+        log_sanitized_error("KoPOS get_promotion_snapshot failed", error)
         _write_response(
             {"status": "error", "message": "Failed to fetch promotion snapshot"},
             http_status_code=500,
@@ -253,11 +255,9 @@ def review_promotion_reconciliation(**kwargs: Any) -> None:
     except frappe.ValidationError as exc:
         frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
-    except Exception:
+    except Exception as error:
         frappe.db.rollback()
-        frappe.log_error(
-            frappe.get_traceback(), "KoPOS review_promotion_reconciliation failed"
-        )
+        log_sanitized_error("KoPOS review_promotion_reconciliation failed", error)
         _write_response(
             {
                 "status": "error",
@@ -288,9 +288,9 @@ def submit_order(**kwargs: Any) -> None:
     except frappe.ValidationError as exc:
         frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
-    except Exception:
+    except Exception as error:
         frappe.db.rollback()
-        frappe.log_error(frappe.get_traceback(), "KoPOS submit_order failed")
+        log_sanitized_error("KoPOS submit_order failed", error)
         _write_response(
             {
                 "status": "error",
@@ -436,9 +436,9 @@ def open_shift(**kwargs: Any) -> None:
     except frappe.ValidationError as exc:
         frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
-    except Exception:
+    except Exception as error:
         frappe.db.rollback()
-        frappe.log_error(frappe.get_traceback(), "KoPOS open_shift failed")
+        log_sanitized_error("KoPOS open_shift failed", error)
         _write_response(
             {
                 "status": "error",
@@ -461,9 +461,9 @@ def close_shift(**kwargs: Any) -> None:
     except frappe.ValidationError as exc:
         frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
-    except Exception:
+    except Exception as error:
         frappe.db.rollback()
-        frappe.log_error(frappe.get_traceback(), "KoPOS close_shift failed")
+        log_sanitized_error("KoPOS close_shift failed", error)
         _write_response(
             {
                 "status": "error",
@@ -501,8 +501,8 @@ def get_device_open_shift(device_id: str | None = None) -> None:
             _write_response({"status": "ok", "shift": None})
     except frappe.ValidationError as exc:
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "KoPOS get_device_open_shift failed")
+    except Exception as error:
+        log_sanitized_error("KoPOS get_device_open_shift failed", error)
         _write_response(
             {
                 "status": "error",
@@ -544,8 +544,8 @@ def get_order_history(
     except frappe.ValidationError as exc:
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
         return {"status": "error", "message": str(exc)}
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "KoPOS get_order_history failed")
+    except Exception as error:
+        log_sanitized_error("KoPOS get_order_history failed", error)
         _write_response(
             {
                 "status": "error",
@@ -570,9 +570,9 @@ def void_order(**kwargs: Any) -> None:
     except frappe.ValidationError as exc:
         frappe.db.rollback()
         _write_response(_validation_error_payload(exc), http_status_code=400)
-    except Exception:
+    except Exception as error:
         frappe.db.rollback()
-        frappe.log_error(frappe.get_traceback(), "KoPOS void_order failed")
+        log_sanitized_error("KoPOS void_order failed", error)
         _write_response(
             {
                 "status": "error",
@@ -919,9 +919,9 @@ def process_refund(**kwargs: Any) -> None:
     except frappe.ValidationError as exc:
         frappe.db.rollback()
         _write_response(_validation_error_payload(exc), http_status_code=400)
-    except Exception:
+    except Exception as error:
         frappe.db.rollback()
-        frappe.log_error(frappe.get_traceback(), "KoPOS process_refund failed")
+        log_sanitized_error("KoPOS process_refund failed", error)
         _write_response(
             {
                 "status": "error",
@@ -1098,10 +1098,8 @@ def request_shift_manager_approval(**kwargs: Any) -> None:
         )
     except frappe.ValidationError as exc:
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
-    except Exception:
-        frappe.log_error(
-            frappe.get_traceback(), "KoPOS request_shift_manager_approval failed"
-        )
+    except Exception as error:
+        log_sanitized_error("KoPOS request_shift_manager_approval failed", error)
         _write_response(
             {
                 "status": "error",
@@ -1127,9 +1125,9 @@ def generate_maybank_qr(**kwargs: Any) -> None:
     except frappe.ValidationError as exc:
         frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
-    except Exception:
+    except Exception as error:
         frappe.db.rollback()
-        frappe.log_error(frappe.get_traceback(), "KoPOS generate_maybank_qr failed")
+        log_sanitized_error("KoPOS generate_maybank_qr failed", error)
         _write_response(
             {"status": "error", "message": "Failed to generate QR code"},
             http_status_code=500,
@@ -1162,8 +1160,8 @@ def check_maybank_payment(
         _write_response(result)
     except frappe.ValidationError as exc:
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
-    except Exception:
-        frappe.log_error(frappe.get_traceback(), "KoPOS check_maybank_payment failed")
+    except Exception as error:
+        log_sanitized_error("KoPOS check_maybank_payment failed", error)
         _write_response(
             {"status": "error", "message": "Failed to check payment status"},
             http_status_code=500,
@@ -1180,9 +1178,9 @@ def upload_manual_qr_receipt(**kwargs: Any) -> None:
     except frappe.ValidationError as exc:
         frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
-    except Exception:
+    except Exception as error:
         frappe.db.rollback()
-        frappe.log_error(frappe.get_traceback(), "KoPOS upload_manual_qr_receipt failed")
+        log_sanitized_error("KoPOS upload_manual_qr_receipt failed", error)
         _write_response(
             {"status": "error", "message": "Failed to upload manual QR receipt"},
             http_status_code=500,
@@ -1200,9 +1198,9 @@ def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> None:
         _write_response(fetch_status_payload(**kwargs))
     except frappe.ValidationError as exc:
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
-    except Exception:
-        frappe.log_error(
-            frappe.get_traceback(), "KoPOS fetch_manual_qr_reconciliation_status failed"
+    except Exception as error:
+        log_sanitized_error(
+            "KoPOS fetch_manual_qr_reconciliation_status failed", error
         )
         _write_response(
             {

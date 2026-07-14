@@ -16,7 +16,7 @@ from kopos_connector.api.maybank_qr import (
     _validate_status_response,
 )
 from kopos_connector.services.maybank.client import MaybankClient
-from kopos_connector.utils.diagnostics import redacted_json
+from kopos_connector.utils.diagnostics import log_sanitized_error, redacted_json
 
 MIN_POLL_INTERVAL_SECONDS = 2
 MAX_POLL_INTERVAL_SECONDS = 15
@@ -38,10 +38,8 @@ def poll_pending_maybank_transactions() -> None:
     try:
         try:
             client = MaybankClient.from_settings()
-        except Exception:
-            frappe.log_error(
-                frappe.get_traceback(), "Maybank poll: failed to init client"
-            )
+        except Exception as error:
+            log_sanitized_error("Maybank poll: failed to init client", error)
             return
 
         poll_now = now_datetime()
@@ -80,11 +78,8 @@ def poll_pending_maybank_transactions() -> None:
         for txn in due:
             try:
                 _poll_single(client, txn)
-            except Exception:
-                frappe.log_error(
-                    frappe.get_traceback(),
-                    f"Maybank poll failed: {txn.name}",
-                )
+            except Exception as error:
+                log_sanitized_error(f"Maybank poll failed: {txn.name}", error)
     finally:
         _release_lock(cache, lock_key, lock_token)
 
@@ -200,10 +195,9 @@ def _sweep_stale_pending_transactions(client: MaybankClient, now) -> set[str]:
         processed_names.add(txn.name)
         try:
             _poll_single(client, txn, now=now)
-        except Exception:
-            frappe.log_error(
-                frappe.get_traceback(),
-                f"Maybank stale sweep poll failed: {txn.name}",
+        except Exception as error:
+            log_sanitized_error(
+                f"Maybank stale sweep poll failed: {txn.name}", error
             )
     return processed_names
 

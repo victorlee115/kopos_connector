@@ -18,7 +18,7 @@ from frappe.utils import (
 )
 
 from kopos_connector.services.maybank.client import MaybankClient
-from kopos_connector.utils.diagnostics import redacted_json
+from kopos_connector.utils.diagnostics import log_sanitized_error, redacted_json
 
 STATUS_MAP = {
     "0": "failed",
@@ -147,10 +147,9 @@ def _resolve_existing_txn(
             )
             try:
                 _poll_txn_status(txn)
-            except Exception:
-                frappe.log_error(
-                    frappe.get_traceback(),
-                    "Maybank existing transaction refresh failed",
+            except Exception as error:
+                log_sanitized_error(
+                    "Maybank existing transaction refresh failed", error
                 )
             existing = _load_existing_txn(device_id, idempotency_key)
             if not existing:
@@ -517,10 +516,8 @@ def check_maybank_payment_payload(
         if (now_datetime() - last_poll).total_seconds() > 2:
             try:
                 _poll_txn_status(txn)
-            except Exception:
-                frappe.log_error(
-                    frappe.get_traceback(), "Maybank on-demand poll failed"
-                )
+            except Exception as error:
+                log_sanitized_error("Maybank on-demand poll failed", error)
 
     return {
         "status": txn.status,
