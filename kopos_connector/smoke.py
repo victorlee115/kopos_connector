@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import frappe
 from frappe.utils import flt, now_datetime, nowdate
+
+from kopos_connector.kopos.api.money_contract import (
+    persisted_money_to_sen,
+    sen_to_decimal,
+)
 
 
 DEMO_DRINK_ITEM = "SMOKE-STRAWBERRY-001"
@@ -18,6 +26,32 @@ DEMO_MATCHA_ITEM = "SMOKE-MATCHA-POWDER"
 DEMO_STRAWBERRY_ITEM = "SMOKE-STRAWBERRY-PUREE"
 DEMO_MILK_ITEM = "SMOKE-MILK"
 DEMO_CUP_ITEM = "SMOKE-CUP"
+DEMO_MATCHA_QTY_PER_ORDER = 18
+DEMO_STRAWBERRY_QTY_PER_ORDER = 40
+DEMO_MILK_QTY_PER_ORDER = 180
+DEMO_CUP_QTY_PER_ORDER = 1
+SMOKE_ACCEPTANCE_MINIMUM_ORDERS = 500
+SMOKE_ACCEPTANCE_STOCK_HEADROOM_MULTIPLIER = 2
+SMOKE_ACCEPTANCE_MATCHA_TARGET_QTY = (
+    DEMO_MATCHA_QTY_PER_ORDER
+    * SMOKE_ACCEPTANCE_MINIMUM_ORDERS
+    * SMOKE_ACCEPTANCE_STOCK_HEADROOM_MULTIPLIER
+)
+SMOKE_ACCEPTANCE_STRAWBERRY_TARGET_QTY = (
+    DEMO_STRAWBERRY_QTY_PER_ORDER
+    * SMOKE_ACCEPTANCE_MINIMUM_ORDERS
+    * SMOKE_ACCEPTANCE_STOCK_HEADROOM_MULTIPLIER
+)
+SMOKE_ACCEPTANCE_MILK_TARGET_QTY = (
+    DEMO_MILK_QTY_PER_ORDER
+    * SMOKE_ACCEPTANCE_MINIMUM_ORDERS
+    * SMOKE_ACCEPTANCE_STOCK_HEADROOM_MULTIPLIER
+)
+SMOKE_ACCEPTANCE_CUP_TARGET_QTY = (
+    DEMO_CUP_QTY_PER_ORDER
+    * SMOKE_ACCEPTANCE_MINIMUM_ORDERS
+    * SMOKE_ACCEPTANCE_STOCK_HEADROOM_MULTIPLIER
+)
 DEMO_CURRENCY_FALLBACK = "MYR"
 SMOKE_SIZE_GROUP_CODE = "SMOKE-FB-SIZE"
 SMOKE_SIZE_REGULAR_CODE = "SMOKE-FB-SIZE-REGULAR"
@@ -174,10 +208,10 @@ def get_demo_ingredient_state() -> dict[str, Any]:
 
 
 def set_demo_ingredient_quantities(
-    matcha_qty: float = 500,
-    strawberry_qty: float = 1000,
-    milk_qty: float = 2000,
-    cup_qty: float = 20,
+    matcha_qty: float = SMOKE_ACCEPTANCE_MATCHA_TARGET_QTY,
+    strawberry_qty: float = SMOKE_ACCEPTANCE_STRAWBERRY_TARGET_QTY,
+    milk_qty: float = SMOKE_ACCEPTANCE_MILK_TARGET_QTY,
+    cup_qty: float = SMOKE_ACCEPTANCE_CUP_TARGET_QTY,
 ) -> dict[str, Any]:
     company = frappe.get_all("Company", pluck="name", limit=1)[0]
     warehouse = _ensure_warehouse(company)
@@ -288,6 +322,7 @@ def run_demo_fb_sale_audit(return_to_stock: bool = False) -> dict[str, Any]:
     order_id = f"SMOKE-DEMO-{frappe.generate_hash(length=8)}"
     idempotency_key = f"SMOKE-DEMO-{frappe.generate_hash(length=16)}"
     frappe.local.form_dict = {
+        "money_contract_version": "sen_v1",
         "order_id": order_id,
         "idempotency_key": idempotency_key,
             "device_id": SMOKE_DEVICE_ID,
@@ -300,25 +335,32 @@ def run_demo_fb_sale_audit(return_to_stock: bool = False) -> dict[str, Any]:
             "display_number": "SMK-DEMO-1",
             "order_type": "takeaway",
             "created_at": now_datetime().isoformat(),
+            "subtotal_sen": 1200,
+            "tax_amount_sen": 0,
+            "rounding_adjustment_sen": 0,
+            "total_sen": 1200,
             "items": [
                 {
                     "line_id": f"LINE-{frappe.generate_hash(length=8)}",
                     "item_code": DEMO_DRINK_ITEM,
                     "item_name": DEMO_DRINK_NAME,
+                    "recipe": DEMO_RECIPE_CODE,
+                    "recipe_version": 1,
                     "qty": 1,
-                    "rate": 12.0,
-                    "discount_amount": 0,
-                    "modifier_total": 0,
-                    "amount": 12.0,
+                    "unit_price_sen": 1200,
+                    "discount_amount_sen": 0,
+                    "modifier_total_sen": 0,
+                    "line_total_sen": 1200,
                     "modifiers": [],
                 }
             ],
             "payments": [
                 {
+                    "payment_id": "SMOKE-DEMO-PAYMENT-1",
                     "payment_method": "Cash",
-                    "amount": 12.0,
-                    "tendered_amount": 12.0,
-                    "change_amount": 0,
+                    "amount_sen": 1200,
+                    "tendered_amount_sen": 1200,
+                    "change_amount_sen": 0,
                 }
             ],
         },
@@ -391,6 +433,7 @@ def run_demo_advisory_stock_audit() -> dict[str, Any]:
 
     order_id = f"ADV-{frappe.generate_hash(length=8)}"
     frappe.local.form_dict = {
+        "money_contract_version": "sen_v1",
         "order_id": order_id,
         "idempotency_key": f"ADV-{frappe.generate_hash(length=16)}",
         "device_id": SMOKE_DEVICE_ID,
@@ -407,25 +450,32 @@ def run_demo_advisory_stock_audit() -> dict[str, Any]:
             "display_number": "SMK-ADV-1",
             "order_type": "takeaway",
             "created_at": now_datetime().isoformat(),
+            "subtotal_sen": 1200,
+            "tax_amount_sen": 0,
+            "rounding_adjustment_sen": 0,
+            "total_sen": 1200,
             "items": [
                 {
                     "line_id": f"LINE-{frappe.generate_hash(length=8)}",
                     "item_code": DEMO_DRINK_ITEM,
                     "item_name": DEMO_DRINK_NAME,
+                    "recipe": DEMO_RECIPE_CODE,
+                    "recipe_version": 1,
                     "qty": 1,
-                    "rate": 12.0,
-                    "discount_amount": 0,
-                    "modifier_total": 0,
-                    "amount": 12.0,
+                    "unit_price_sen": 1200,
+                    "discount_amount_sen": 0,
+                    "modifier_total_sen": 0,
+                    "line_total_sen": 1200,
                     "modifiers": [],
                 }
             ],
             "payments": [
                 {
+                    "payment_id": "SMOKE-ADVISORY-PAYMENT-1",
                     "payment_method": "Cash",
-                    "amount": 12.0,
-                    "tendered_amount": 12.0,
-                    "change_amount": 0,
+                    "amount_sen": 1200,
+                    "tendered_amount_sen": 1200,
+                    "change_amount_sen": 0,
                 }
             ],
         },
@@ -996,7 +1046,7 @@ def _ensure_demo_recipe(
         {
             "item": DEMO_MATCHA_ITEM,
             "component_type": "Ingredient",
-            "qty": 18.0,
+            "qty": DEMO_MATCHA_QTY_PER_ORDER,
             "uom": "Gram",
             "affects_stock": 1,
             "affects_cogs": 1,
@@ -1007,7 +1057,7 @@ def _ensure_demo_recipe(
         {
             "item": DEMO_STRAWBERRY_ITEM,
             "component_type": "Ingredient",
-            "qty": 40.0,
+            "qty": DEMO_STRAWBERRY_QTY_PER_ORDER,
             "uom": "Millilitre",
             "affects_stock": 1,
             "affects_cogs": 1,
@@ -1018,7 +1068,7 @@ def _ensure_demo_recipe(
         {
             "item": DEMO_MILK_ITEM,
             "component_type": "Ingredient",
-            "qty": 180.0,
+            "qty": DEMO_MILK_QTY_PER_ORDER,
             "uom": "Millilitre",
             "affects_stock": 1,
             "affects_cogs": 1,
@@ -1029,7 +1079,7 @@ def _ensure_demo_recipe(
         {
             "item": DEMO_CUP_ITEM,
             "component_type": "Packaging",
-            "qty": 1.0,
+            "qty": DEMO_CUP_QTY_PER_ORDER,
             "uom": "Nos",
             "affects_stock": 1,
             "affects_cogs": 1,
@@ -1510,7 +1560,7 @@ def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
         ensure_device_api_credentials,
     )
 
-    credentials = ensure_device_api_credentials(device_doc, rotate=True)
+    credentials = ensure_device_api_credentials(device_doc)
 
     resolved_url = erpnext_url or frappe.utils.get_url().rstrip("/")
     provisioning = create_pos_provisioning(
@@ -2159,15 +2209,21 @@ def dump_smoke_state() -> dict[str, Any]:
         if api_user and not api_secret and not api_secret_error:
             api_secret_error = "decrypt_failed: empty_secret"
 
-    business_state = _collect_smoke_business_state(device_id)
+    device_profile = _collect_device_profile_evidence(device)
+    business_state = _collect_smoke_business_state(
+        device_id,
+        ingredient_warehouse=device_profile.get("pos_profile_warehouse"),
+    )
 
     return {
         "status": "ready",
         "site": frappe.local.site,
+        "site_timezone": frappe.utils.get_system_timezone(),
         "device": {
             "device_id": device_id,
             "enabled": bool(device.enabled),
             "pos_profile": device.pos_profile,
+            **device_profile,
             "config_version": device.config_version,
         },
         "credentials": {
@@ -2186,7 +2242,34 @@ def dump_smoke_state() -> dict[str, Any]:
     }
 
 
-def _collect_smoke_business_state(device_id: str) -> dict[str, Any]:
+def _collect_device_profile_evidence(device: Any) -> dict[str, Any]:
+    profile_name = str(_value(device, "pos_profile") or "").strip()
+    if not profile_name:
+        return {
+            "pos_profile_resolved": False,
+            "pos_profile_company": None,
+            "pos_profile_customer": None,
+            "pos_profile_warehouse": None,
+            "pos_profile_currency": None,
+        }
+    try:
+        profile = frappe.get_cached_doc("POS Profile", profile_name)
+    except Exception:
+        profile = None
+    return {
+        "pos_profile_resolved": profile is not None,
+        "pos_profile_company": _value(profile, "company") if profile else None,
+        "pos_profile_customer": _value(profile, "customer") if profile else None,
+        "pos_profile_warehouse": _value(profile, "warehouse") if profile else None,
+        "pos_profile_currency": _value(profile, "currency") if profile else None,
+    }
+
+
+def _collect_smoke_business_state(
+    device_id: str,
+    *,
+    ingredient_warehouse: Any = None,
+) -> dict[str, Any]:
     fb_shifts = _get_rows(
         "FB Shift",
         filters={"device_id": device_id},
@@ -2207,21 +2290,39 @@ def _collect_smoke_business_state(device_id: str) -> dict[str, Any]:
         ],
         order_by="creation asc, name asc",
     )
+    for shift in fb_shifts:
+        for fieldname in (
+            "opening_float",
+            "expected_cash",
+            "counted_cash",
+            "cash_variance",
+        ):
+            shift[fieldname] = _exact_money(shift.get(fieldname))
     fb_orders = _get_rows(
         "FB Order",
         filters={"device_id": device_id},
         fields=[
             "name",
             "order_id",
+            "display_number",
+            "order_type",
+            "catalog_version",
             "external_idempotency_key",
             "device_id",
             "shift",
+            "staff_id",
+            "booth_warehouse",
+            "company",
             "status",
             "invoice_status",
             "stock_status",
             "sales_invoice",
             "ingredient_stock_entry",
             "grand_total",
+            "net_total",
+            "tax_total",
+            "tax_rate",
+            "rounding_adjustment",
             "currency",
             "docstatus",
             "sale_datetime",
@@ -2229,8 +2330,26 @@ def _collect_smoke_business_state(device_id: str) -> dict[str, Any]:
         ],
         order_by="creation asc, name asc",
     )
+    for order in fb_orders:
+        for fieldname in (
+            "grand_total",
+            "net_total",
+            "tax_total",
+            "rounding_adjustment",
+        ):
+            order[fieldname] = _exact_money(order.get(fieldname))
+        order["tax_rate"] = _decimal_text(order.get("tax_rate"))
+        order_name = str(order.get("name") or "")
+        order_doc = frappe.get_doc("FB Order", order_name) if order_name else None
+        order["items"] = _collect_fb_order_items(order_doc)
+        order["payments"] = _collect_fb_order_payments(order_doc)
     sales_invoices = _collect_sales_invoices(device_id)
     ingredient_stock_entries = _collect_ingredient_stock_entries(fb_orders)
+    ingredient_bin_balances = _collect_ingredient_bin_balances(
+        ingredient_warehouse
+    )
+    manual_qr_reconciliations = _collect_manual_qr_reconciliations(device_id)
+    maybank_qr_transactions = _collect_maybank_qr_transactions(device_id)
     return_records = _collect_return_records(fb_orders)
     projections = _collect_projection_state(fb_orders, fb_shifts, return_records)
     legacy_active_paths = _collect_legacy_active_paths(device_id)
@@ -2245,6 +2364,12 @@ def _collect_smoke_business_state(device_id: str) -> dict[str, Any]:
         "fb_orders": fb_orders,
         "sales_invoices": sales_invoices,
         "ingredient_stock_entries": ingredient_stock_entries,
+        "ingredient_bin_balances": ingredient_bin_balances,
+        "manual_qr_reconciliations": manual_qr_reconciliations,
+        "maybank_qr_transactions": maybank_qr_transactions,
+        "maybank_qr_policy": {
+            "payment_expiry_grace_seconds": _maybank_payment_expiry_grace_seconds()
+        },
         "sales_invoice_items": [
             {"sales_invoice": invoice["name"], **item}
             for invoice in sales_invoices
@@ -2493,10 +2618,19 @@ def _collect_sales_invoices(device_id: str) -> list[dict[str, Any]]:
             "name",
             "docstatus",
             "status",
+            "is_pos",
             "is_return",
             "return_against",
+            "update_stock",
             "grand_total",
+            "net_total",
+            "total_taxes_and_charges",
+            "rounding_adjustment",
+            "rounded_total",
+            "disable_rounded_total",
+            "write_off_amount",
             "paid_amount",
+            "change_amount",
             "outstanding_amount",
             "posting_date",
             "posting_time",
@@ -2508,6 +2642,10 @@ def _collect_sales_invoices(device_id: str) -> list[dict[str, Any]]:
             "custom_fb_shift",
             "custom_fb_device_id",
             "custom_fb_idempotency_key",
+            "custom_fb_void_idempotency_key",
+            "custom_fb_void_request_fingerprint",
+            "custom_fb_void_manager",
+            "custom_fb_void_approval_token_id",
         ],
         order_by="posting_date asc, posting_time asc, name asc",
     )
@@ -2516,14 +2654,289 @@ def _collect_sales_invoices(device_id: str) -> list[dict[str, Any]]:
         name = str(row.get("name") or "")
         invoice_doc = frappe.get_doc("Sales Invoice", name) if name else None
         invoice = dict(row)
+        invoice["is_pos"] = bool(invoice.get("is_pos"))
         invoice["is_return"] = bool(invoice.get("is_return"))
-        invoice["grand_total"] = _money(invoice.get("grand_total"))
-        invoice["paid_amount"] = _money(invoice.get("paid_amount"))
-        invoice["outstanding_amount"] = _money(invoice.get("outstanding_amount"))
+        invoice["update_stock"] = bool(invoice.get("update_stock"))
+        invoice["disable_rounded_total"] = bool(
+            invoice.get("disable_rounded_total")
+        )
+        invoice["grand_total"] = _exact_money(invoice.get("grand_total"))
+        invoice["net_total"] = _exact_money(invoice.get("net_total"))
+        invoice["total_taxes_and_charges"] = _exact_money(
+            invoice.get("total_taxes_and_charges")
+        )
+        invoice["rounding_adjustment"] = _exact_money(
+            invoice.get("rounding_adjustment")
+        )
+        invoice["rounded_total"] = _exact_money(invoice.get("rounded_total"))
+        invoice["write_off_amount"] = _exact_money(
+            invoice.get("write_off_amount")
+        )
+        invoice["paid_amount"] = _exact_money(invoice.get("paid_amount"))
+        invoice["change_amount"] = _exact_money(invoice.get("change_amount"))
+        invoice["outstanding_amount"] = _exact_money(
+            invoice.get("outstanding_amount")
+        )
         invoice["items"] = _collect_invoice_items(invoice_doc)
         invoice["payments"] = _collect_invoice_payments(invoice_doc)
+        invoice["taxes"] = _collect_invoice_taxes(invoice_doc)
+        invoice["gl_entries"] = _collect_invoice_gl_entries(name)
         invoices.append(invoice)
     return invoices
+
+
+def _collect_manual_qr_reconciliations(device_id: str) -> list[dict[str, Any]]:
+    """Collect only release-safe Manual QR accounting evidence for one device."""
+
+    rows = _get_rows(
+        "Manual QR Reconciliation",
+        filters={"device_id": device_id},
+        fields=[
+            "name",
+            "status",
+            "fb_order",
+            "sales_invoice",
+            "fb_order_payment",
+            "device_id",
+            "staff_id",
+            "company",
+            "currency",
+            "business_date",
+            "amount_sen",
+            "payment_reference",
+            "provider_session_id",
+            "reconciliation_idempotency_key",
+            "suspense_account",
+            "evidence_kind",
+            "evidence_captured_at",
+            "evidence_json",
+            "receipt_file",
+            "receipt_idempotency_key",
+            "receipt_idempotency_fingerprint",
+            "receipt_payment_id",
+            "receipt_order_id",
+            "receipt_amount_sen",
+            "receipt_file_name",
+            "receipt_file_hash",
+            "receipt_captured_at",
+            "receipt_uploaded_at",
+            "reconciled_by",
+            "reconciled_at",
+            "reconciliation_note",
+            "reconciliation_failed_reason",
+        ],
+        order_by="creation asc, name asc",
+    )
+    payment_names = [
+        str(row.get("fb_order_payment"))
+        for row in rows
+        if row.get("fb_order_payment")
+    ]
+    payment_rows = (
+        _get_rows(
+            "FB Order Payment",
+            filters={"name": ["in", payment_names]},
+            fields=[
+                "name",
+                "parent",
+                "source_payment_id",
+                "amount",
+                "payment_channel_code",
+                "reference_no",
+                "external_transaction_id",
+                "is_manual_confirmation",
+                "settlement_status",
+                "manual_qr_reconciliation",
+                "reconciliation_idempotency_key",
+            ],
+            order_by="name asc",
+        )
+        if payment_names
+        else []
+    )
+    payment_by_name = {
+        str(payment.get("name")): payment for payment in payment_rows
+    }
+    for row in rows:
+        evidence = _parse_json_record(row.pop("evidence_json", None))
+        row["evidence"] = {
+            "evidence_kind": evidence.get("evidence_kind"),
+            "captured_at": evidence.get("captured_at"),
+            "upload_status": evidence.get("upload_status"),
+            "reconciliation_status": evidence.get("reconciliation_status"),
+            "no_receipt_acknowledged": bool(
+                evidence.get("no_receipt_acknowledged")
+            ),
+            "no_receipt_reason_code": evidence.get("no_receipt_reason_code"),
+            "local_confirmation_reference": evidence.get(
+                "local_confirmation_reference"
+            ),
+            "evidence_upload_idempotency_key": evidence.get(
+                "evidence_upload_idempotency_key"
+            ),
+            "reconciliation_idempotency_key": evidence.get(
+                "reconciliation_idempotency_key"
+            ),
+            "evidence_captured_device_id": evidence.get(
+                "evidence_captured_device_id"
+            ),
+        }
+        payment = payment_by_name.get(str(row.get("fb_order_payment") or ""))
+        row["payment"] = payment
+        if payment:
+            payment["amount"] = _exact_money(payment.get("amount"))
+            payment["payment_id"] = payment.get("source_payment_id")
+        row["receipt_file_evidence"] = _collect_receipt_file_evidence(
+            row.get("receipt_file")
+        )
+    return rows
+
+
+def _collect_receipt_file_evidence(file_document: Any) -> dict[str, Any] | None:
+    file_name = str(file_document or "").strip()
+    if not file_name:
+        return None
+    evidence: dict[str, Any] = {
+        "name": file_name,
+        "exists": False,
+        "content_readable": False,
+        "file_name": None,
+        "is_private": False,
+        "attached_to_doctype": None,
+        "attached_to_name": None,
+        "content_sha256": None,
+        "byte_length": None,
+    }
+    if not frappe.db.exists("File", file_name):
+        return evidence
+    evidence["exists"] = True
+    try:
+        file_doc = frappe.get_doc("File", file_name)
+        evidence.update(
+            {
+                "name": _value(file_doc, "name") or file_name,
+                "file_name": _value(file_doc, "file_name"),
+                "is_private": bool(_value(file_doc, "is_private")),
+                "attached_to_doctype": _value(
+                    file_doc, "attached_to_doctype"
+                ),
+                "attached_to_name": _value(file_doc, "attached_to_name"),
+            }
+        )
+        content = file_doc.get_content()
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        if not isinstance(content, (bytes, bytearray)):
+            return evidence
+        content_bytes = bytes(content)
+        evidence["content_readable"] = True
+        evidence["content_sha256"] = hashlib.sha256(content_bytes).hexdigest()
+        evidence["byte_length"] = len(content_bytes)
+    except Exception:
+        # Keep the release-safe failure shape; the acceptance validator rejects
+        # unreadable or mismatched File evidence without leaking file content.
+        return evidence
+    return evidence
+
+
+def _maybank_payment_expiry_grace_seconds() -> int:
+    from kopos_connector.kopos.services.accounting.maybank_payment_service import (
+        PAYMENT_EXPIRY_GRACE_SECONDS,
+    )
+
+    return int(PAYMENT_EXPIRY_GRACE_SECONDS)
+
+
+def _collect_maybank_qr_transactions(device_id: str) -> list[dict[str, Any]]:
+    """Collect provider-authenticity and exact-consumption evidence without QR data."""
+
+    PAYMENT_EXPIRY_GRACE_SECONDS = _maybank_payment_expiry_grace_seconds()
+
+    rows = _get_rows(
+        "Maybank QR Transaction",
+        filters={"device_id": device_id},
+        fields=[
+            "name",
+            "transaction_refno",
+            "status",
+            "maybank_status",
+            "sale_amount",
+            "sale_amount_sen",
+            "fb_order",
+            "sales_invoice",
+            "outlet_id",
+            "device_id",
+            "provider",
+            "currency",
+            "idempotency_key",
+            "request_fingerprint",
+            "consumption_key",
+            "invoice_consumption_key",
+            "created_at",
+            "business_date",
+            "scanned_at",
+            "paid_at",
+            "consumed_at",
+            "expires_at",
+            "last_polled_at",
+            "poll_count",
+        ],
+        order_by="creation asc, transaction_refno asc",
+    )
+    references = [
+        str(row.get("transaction_refno"))
+        for row in rows
+        if row.get("transaction_refno")
+    ]
+    payment_rows = (
+        _get_rows(
+            "FB Order Payment",
+            filters={"external_transaction_id": ["in", references]},
+            fields=[
+                "name",
+                "parent",
+                "source_payment_id",
+                "amount",
+                "payment_channel_code",
+                "reference_no",
+                "external_transaction_id",
+                "is_manual_confirmation",
+                "maybank_qr_transaction",
+                "settlement_status",
+            ],
+            order_by="name asc",
+        )
+        if references
+        else []
+    )
+    payment_by_reference = {
+        str(payment.get("external_transaction_id")): payment
+        for payment in payment_rows
+    }
+    for row in rows:
+        payment = payment_by_reference.get(str(row.get("transaction_refno") or ""))
+        row["payment"] = payment
+        if payment:
+            payment["amount"] = _exact_money(payment.get("amount"))
+            payment["payment_id"] = payment.get("source_payment_id")
+        paid_at = frappe.utils.get_datetime(row.get("paid_at")) if row.get("paid_at") else None
+        expires_at = (
+            frappe.utils.get_datetime(row.get("expires_at"))
+            if row.get("expires_at")
+            else None
+        )
+        seconds_after_expiry = (
+            (paid_at - expires_at).total_seconds()
+            if paid_at is not None and expires_at is not None and paid_at > expires_at
+            else 0
+        )
+        row["payment_expiry_grace_seconds"] = PAYMENT_EXPIRY_GRACE_SECONDS
+        row["paid_seconds_after_expiry"] = seconds_after_expiry
+        row["paid_after_expiry"] = bool(seconds_after_expiry > 0)
+        row["paid_after_expiry_within_grace"] = bool(
+            0 < seconds_after_expiry <= PAYMENT_EXPIRY_GRACE_SECONDS
+        )
+    return rows
 
 
 def _collect_ingredient_stock_entries(
@@ -2534,15 +2947,23 @@ def _collect_ingredient_stock_entries(
         for order in fb_orders
         if order.get("ingredient_stock_entry")
     ]
+    return _collect_stock_entries(names)
+
+
+def _collect_stock_entries(entry_names: list[str]) -> list[dict[str, Any]]:
+    """Collect exact Stock Entry, item-detail, and SLE lifecycle evidence."""
+
+    names = _unique_names(entry_names)
     if not names:
         return []
-
-    return _get_rows(
+    rows = _get_rows(
         "Stock Entry",
         filters={"name": ["in", names]},
         fields=[
             "name",
             "docstatus",
+            "purpose",
+            "stock_entry_type",
             "posting_date",
             "posting_time",
             "custom_fb_order",
@@ -2550,6 +2971,202 @@ def _collect_ingredient_stock_entries(
         ],
         order_by="posting_date asc, posting_time asc, name asc",
     )
+    for row in rows:
+        entry_name = str(row.get("name") or "")
+        entry_doc = frappe.get_doc("Stock Entry", entry_name) if entry_name else None
+        row["items"] = [
+            {
+                "name": _value(item, "name"),
+                "item_code": _value(item, "item_code"),
+                "qty": _decimal_text(_value(item, "qty")),
+                "transfer_qty": _decimal_text(_value(item, "transfer_qty")),
+                "stock_uom": _value(item, "stock_uom"),
+                "s_warehouse": _value(item, "s_warehouse"),
+                "t_warehouse": _value(item, "t_warehouse"),
+            }
+            for item in (getattr(entry_doc, "items", None) or [])
+        ]
+        row["stock_ledger_entries"] = _collect_stock_ledger_entries(
+            entry_name,
+            include_cancelled=int(row.get("docstatus") or 0) == 2,
+        )
+    return rows
+
+
+def _collect_stock_ledger_entries(
+    entry_name: str, *, include_cancelled: bool = False
+) -> list[dict[str, Any]]:
+    if not entry_name:
+        return []
+    filters: dict[str, Any] = {
+        "voucher_type": "Stock Entry",
+        "voucher_no": entry_name,
+    }
+    if not include_cancelled:
+        filters["is_cancelled"] = 0
+    rows = _get_rows(
+        "Stock Ledger Entry",
+        filters=filters,
+        fields=[
+            "name",
+            "voucher_type",
+            "voucher_no",
+            "voucher_detail_no",
+            "item_code",
+            "warehouse",
+            "actual_qty",
+            "qty_after_transaction",
+            "is_cancelled",
+            "posting_datetime",
+            "creation",
+        ],
+        order_by="posting_datetime asc, creation asc, name asc",
+    )
+    for row in rows:
+        row["actual_qty"] = _decimal_text(row.get("actual_qty"))
+        row["qty_after_transaction"] = _decimal_text(
+            row.get("qty_after_transaction")
+        )
+        row["is_cancelled"] = bool(row.get("is_cancelled"))
+        for fieldname in ("posting_datetime", "creation"):
+            if row.get(fieldname) is not None:
+                row[fieldname] = str(row[fieldname])
+    return rows
+
+
+def _collect_ingredient_bin_balances(warehouse: Any) -> list[dict[str, Any]]:
+    warehouse_name = str(warehouse or "").strip()
+    if not warehouse_name:
+        return []
+    tracked_items = _get_rows(
+        "Item",
+        filters={"is_stock_item": 1, "custom_kopos_track_stock": 1},
+        fields=["item_code"],
+        order_by="item_code asc",
+    )
+    item_codes = _unique_names(row.get("item_code") for row in tracked_items)
+    if not item_codes:
+        return []
+    bin_rows = _get_rows(
+        "Bin",
+        filters={
+            "warehouse": warehouse_name,
+            "item_code": ["in", item_codes],
+        },
+        fields=["name", "item_code", "warehouse", "actual_qty"],
+        order_by="item_code asc, warehouse asc, name asc",
+    )
+    bin_by_item = {
+        str(row.get("item_code") or "").strip(): row
+        for row in bin_rows
+        if str(row.get("item_code") or "").strip()
+    }
+    balances: list[dict[str, Any]] = []
+    for item_code in item_codes:
+        bin_row = bin_by_item.get(item_code, {})
+        balances.append(
+            {
+                "name": bin_row.get("name"),
+                "item_code": item_code,
+                "warehouse": warehouse_name,
+                "actual_qty": _decimal_text(bin_row.get("actual_qty") or 0),
+            }
+        )
+    return balances
+
+
+def _collect_fb_order_items(order_doc: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in getattr(order_doc, "items", None) or []:
+        rows.append(
+            {
+                "line_id": _value(line, "line_id"),
+                "item": _value(line, "item"),
+                "item_name_snapshot": _value(line, "item_name_snapshot"),
+                "qty": _decimal_text(_value(line, "qty")),
+                "uom": _value(line, "uom"),
+                "unit_price": _exact_money(_value(line, "unit_price")),
+                "modifier_total": _exact_money(_value(line, "modifier_total")),
+                "discount_amount": _exact_money(
+                    _value(line, "discount_amount")
+                ),
+                "line_total": _exact_money(_value(line, "line_total")),
+                "recipe": _value(line, "recipe"),
+                "recipe_version": _value(line, "recipe_version"),
+                "is_recipe_managed": bool(_value(line, "is_recipe_managed")),
+                "resolved_sale": _value(line, "resolved_sale"),
+                "resolved_components": _parse_json_list(
+                    _value(line, "resolved_components_snapshot")
+                ),
+                "selected_modifiers": [
+                    {
+                        "modifier_group": _value(modifier, "modifier_group"),
+                        "modifier": _value(modifier, "modifier"),
+                        "price_adjustment": _exact_money(
+                            _value(modifier, "price_adjustment")
+                        ),
+                        "affects_stock": bool(
+                            _value(modifier, "affects_stock")
+                        ),
+                        "affects_recipe": bool(
+                            _value(modifier, "affects_recipe")
+                        ),
+                    }
+                    for modifier in (
+                        getattr(line, "selected_modifiers", None) or []
+                    )
+                ],
+            }
+        )
+    return rows
+
+
+def _collect_fb_order_payments(order_doc: Any) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": _value(payment, "name"),
+            "payment_id": _value(payment, "source_payment_id"),
+            "payment_method": _value(payment, "payment_method"),
+            "payment_channel_code": _value(payment, "payment_channel_code"),
+            "amount": _exact_money(_value(payment, "amount")),
+            "tendered_amount": _exact_money(
+                _value(payment, "tendered_amount"), optional=True
+            ),
+            "change_amount": _exact_money(
+                _value(payment, "change_amount"), optional=True
+            ),
+            "reference_no": _value(payment, "reference_no"),
+            "external_transaction_id": _value(
+                payment, "external_transaction_id"
+            ),
+            "settlement_status": _value(payment, "settlement_status"),
+        }
+        for payment in (getattr(order_doc, "payments", None) or [])
+    ]
+
+
+def _parse_json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _parse_json_record(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
 
 
 def _projection_posts_at_sale_datetime(
@@ -2619,12 +3236,24 @@ def _collect_invoice_items(invoice_doc: Any) -> list[dict[str, Any]]:
         rows.append(
             {
                 "item_code": _value(item, "item_code"),
-                "qty": _money(_value(item, "qty")),
-                "rate": _money(_value(item, "rate")),
-                "amount": _money(_value(item, "amount")),
+                "qty": _decimal_text(_value(item, "qty")),
+                "rate": _decimal_text(_value(item, "rate")),
+                "amount": _exact_money(_value(item, "amount")),
+                "net_rate": _decimal_text(_value(item, "net_rate")),
+                "net_amount": _exact_money(_value(item, "net_amount")),
                 "warehouse": _value(item, "warehouse"),
+                "income_account": _value(item, "income_account"),
+                "cost_center": _value(item, "cost_center"),
+                "project": _value(item, "project"),
                 "order_line_ref": _value(item, "custom_fb_order_line_ref"),
                 "resolved_sale": _value(item, "custom_fb_resolved_sale"),
+                "modifier_total": _exact_money(
+                    _value(item, "custom_kopos_modifier_total")
+                ),
+                "has_modifiers": bool(
+                    _value(item, "custom_kopos_has_modifiers")
+                ),
+                "modifiers_json": _value(item, "custom_kopos_modifiers"),
             }
         )
     return rows
@@ -2636,9 +3265,77 @@ def _collect_invoice_payments(invoice_doc: Any) -> list[dict[str, Any]]:
         rows.append(
             {
                 "mode_of_payment": _value(payment, "mode_of_payment"),
-                "amount": _money(_value(payment, "amount")),
+                "amount": _exact_money(_value(payment, "amount")),
+                "account": _value(payment, "account"),
+                "payment_id": _value(payment, "custom_fb_source_payment_id"),
             }
         )
+    return rows
+
+
+def _collect_invoice_taxes(invoice_doc: Any) -> list[dict[str, Any]]:
+    rows = []
+    for tax in getattr(invoice_doc, "taxes", []) or []:
+        rows.append(
+            {
+                "charge_type": _value(tax, "charge_type"),
+                "account_head": _value(tax, "account_head"),
+                "tax_amount": _exact_money(_value(tax, "tax_amount")),
+                "tax_amount_after_discount_amount": _exact_money(
+                    _value(tax, "tax_amount_after_discount_amount")
+                ),
+                "included_in_print_rate": bool(
+                    _value(tax, "included_in_print_rate")
+                ),
+            }
+        )
+    return rows
+
+
+def _collect_invoice_gl_entries(invoice_name: str) -> list[dict[str, Any]]:
+    """Collect exact submitted-ledger evidence for one Sales Invoice."""
+
+    if not invoice_name:
+        return []
+    rows = _get_rows(
+        "GL Entry",
+        filters={
+            "voucher_type": "Sales Invoice",
+            "voucher_no": invoice_name,
+        },
+        fields=[
+            "name",
+            "posting_date",
+            "account",
+            "account_currency",
+            "debit",
+            "credit",
+            "debit_in_account_currency",
+            "credit_in_account_currency",
+            "party_type",
+            "party",
+            "against",
+            "voucher_type",
+            "voucher_no",
+            "against_voucher_type",
+            "against_voucher",
+            "cost_center",
+            "project",
+            "remarks",
+            "is_cancelled",
+        ],
+        order_by="posting_date asc, creation asc, name asc",
+    )
+    for row in rows:
+        row["debit"] = _exact_money(row.get("debit"))
+        row["credit"] = _exact_money(row.get("credit"))
+        row["debit_in_account_currency"] = _exact_money(
+            row.get("debit_in_account_currency")
+        )
+        row["credit_in_account_currency"] = _exact_money(
+            row.get("credit_in_account_currency")
+        )
+        row["is_cancelled"] = bool(row.get("is_cancelled"))
     return rows
 
 
@@ -2657,6 +3354,9 @@ def _collect_return_records(fb_orders: list[dict[str, Any]]) -> list[dict[str, A
             "original_sales_invoice",
             "return_sales_invoice",
             "refund_method",
+            "request_fingerprint",
+            "approval_token_id",
+            "approved_by_manager",
             "settlement_doctype",
             "settlement_document",
             "settlement_status",
@@ -2668,9 +3368,62 @@ def _collect_return_records(fb_orders: list[dict[str, Any]]) -> list[dict[str, A
         ],
         order_by="creation asc, name asc",
     )
+    return_names = _unique_names(row.get("name") for row in rows)
+    line_rows = (
+        _get_rows(
+            "FB Return Event Line",
+            filters={"parent": ["in", return_names]},
+            fields=[
+                "name",
+                "parent",
+                "idx",
+                "original_resolved_sale",
+                "qty_returned",
+                "reversal_stock_entry",
+            ],
+            order_by="parent asc, idx asc, name asc",
+        )
+        if return_names
+        else []
+    )
+    lines_by_parent: dict[str, list[dict[str, Any]]] = {}
+    for line in line_rows:
+        parent = str(line.get("parent") or "")
+        if not parent:
+            continue
+        lines_by_parent.setdefault(parent, []).append(
+            {
+                "name": line.get("name"),
+                "original_resolved_sale": line.get("original_resolved_sale"),
+                "qty_returned": _decimal_text(line.get("qty_returned")),
+                "reversal_stock_entry": line.get("reversal_stock_entry"),
+            }
+        )
+
+    reversal_entries = _collect_stock_entries(
+        _unique_names(
+            line.get("reversal_stock_entry")
+            for line in line_rows
+            if line.get("reversal_stock_entry")
+        )
+    )
+    reversal_by_name = {
+        str(entry.get("name") or ""): entry
+        for entry in reversal_entries
+        if entry.get("name")
+    }
     for row in rows:
         row["return_to_stock"] = bool(row.get("return_to_stock"))
         row["settlement_amount"] = _money(row.get("settlement_amount"))
+        lines = lines_by_parent.get(str(row.get("name") or ""), [])
+        row["lines"] = lines
+        row["reversal_stock_entries"] = [
+            reversal_by_name[name]
+            for name in _unique_names(
+                line.get("reversal_stock_entry") for line in lines
+            )
+            if name in reversal_by_name
+        ]
         return_invoice = str(row.get("return_sales_invoice") or "")
         row["return_outstanding_amount"] = (
             _money(
@@ -2793,12 +3546,17 @@ def _shift_expected_cash_matches_state(
     invoice_by_name = {
         str(invoice.get("name") or ""): invoice for invoice in sale_invoices
     }
-    cash_sales_sen = sum(
-        _money_sen(payment.get("amount")) or 0
-        for invoice in sale_invoices
-        for payment in _list(invoice.get("payments"))
-        if payment.get("mode_of_payment") == "Cash"
-    )
+    cash_sales_sen = 0
+    for invoice in sale_invoices:
+        invoice_cash_tender_sen = sum(
+            _money_sen(payment.get("amount")) or 0
+            for payment in _list(invoice.get("payments"))
+            if payment.get("mode_of_payment") == "Cash"
+        )
+        if invoice_cash_tender_sen:
+            cash_sales_sen += invoice_cash_tender_sen - (
+                _money_sen(invoice.get("change_amount")) or 0
+            )
     cash_refunds_sen = sum(
         abs(_money_sen(row.get("settlement_amount")) or 0)
         for row in returns
@@ -2952,7 +3710,21 @@ def _collect_void_records(
         records.append(
             {
                 "sales_invoice": invoice.get("name"),
+                "sale_idempotency_key": invoice.get(
+                    "custom_fb_idempotency_key"
+                ),
                 "idempotency_key": invoice.get("custom_fb_idempotency_key"),
+                "void_idempotency_key": invoice.get(
+                    "custom_fb_void_idempotency_key"
+                ),
+                "void_request_fingerprint": invoice.get(
+                    "custom_fb_void_request_fingerprint"
+                ),
+                "void_manager": invoice.get("custom_fb_void_manager"),
+                "void_approval_token_id": invoice.get(
+                    "custom_fb_void_approval_token_id"
+                ),
+                "invoice_docstatus": invoice.get("docstatus"),
                 "fb_order": invoice.get("custom_fb_order"),
                 "fb_order_status": (cancelled_orders.get(invoice.get("name")) or {}).get("status"),
                 "invoice_status": (cancelled_orders.get(invoice.get("name")) or {}).get("invoice_status"),
@@ -3110,6 +3882,27 @@ def _get_rows(
         order_by=order_by,
     )
     return [dict(row) for row in rows or []]
+
+
+def _exact_money(value: Any, *, optional: bool = False) -> str | None:
+    if value is None or value == "":
+        if optional:
+            return None
+        value = 0
+    amount_sen = persisted_money_to_sen(value, "smoke evidence money")
+    return format(sen_to_decimal(amount_sen), ".2f")
+
+
+def _decimal_text(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    try:
+        decimal_value = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError) as error:
+        raise ValueError("smoke evidence quantity must be an exact decimal") from error
+    if not decimal_value.is_finite():
+        raise ValueError("smoke evidence quantity must be finite")
+    return format(decimal_value, "f")
 
 
 def _money(value: Any) -> float | None:

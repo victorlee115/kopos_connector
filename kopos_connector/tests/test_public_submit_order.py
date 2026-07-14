@@ -173,7 +173,7 @@ def test_process_refund_wrapper_executes_fb_return_target(monkeypatch: Any) -> N
     monkeypatch.setattr(
         fb_returns,
         "process_return_payload",
-        lambda payload: captured.update({"payload": payload})
+        lambda payload, **_kwargs: captured.update({"payload": payload})
         or {"status": "ok", "return_id": payload["return_id"]},
     )
     monkeypatch.setattr(
@@ -196,6 +196,7 @@ def test_process_refund_wrapper_executes_fb_return_target(monkeypatch: Any) -> N
         "refund_method": "cash",
         "return_to_stock": None,
         "lines": [],
+        "manager_approval_token": None,
     }
     assert captured["response"] == {"status": "ok", "return_id": "return-1"}
 

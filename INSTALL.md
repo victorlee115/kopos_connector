@@ -34,7 +34,7 @@ If you have the app code locally:
 
 ```bash
 cd /home/frappe/frappe-bench
-bench get-app kopos_connector /path/to/JiJiPOS/erpnext/kopos_connector
+bench get-app kopos_connector /absolute/path/to/JiJiPOS-Everything/worktree-fnb-erpnext
 ```
 
 #### Option B: From Git Repository
@@ -88,7 +88,45 @@ This creates 5 sample modifier groups:
 
 ## Configuration
 
-### 1. Create Modifier Groups
+### 1. Configure the Manager Approval Signing Secret
+
+Privileged void and refund approvals fail closed until every site has a unique,
+random signing secret of at least 32 characters:
+
+```bash
+bench --site your-site set-config kopos_manager_approval_secret "$(openssl rand -hex 32)"
+bench --site your-site migrate
+```
+
+Keep this value out of source control and application logs. Do not rotate it
+while an issued approval token may still be in flight (tokens expire within
+five minutes).
+
+### 2. Provision Maybank Provider Identity
+
+The connector persists one Maybank provider device identity and version-neutral
+metadata during `install-app`/`migrate`. The production endpoint defaults to the
+official HTTPS origin and rejects HTTP, embedded credentials, query redirects,
+unlisted origins, and `mock://`.
+
+For the small Tab A11 deployment, set the exact model/OS labels before the first
+migration if they differ from the validated defaults:
+
+```bash
+bench --site your-site.com set-config maybank_provider_device_name "Samsung Galaxy Tab A11 Small SM-X130"
+bench --site your-site.com set-config maybank_provider_device_os "Android 16"
+bench --site your-site.com migrate
+```
+
+Use the OS actually installed on the release tablet; do not copy the example
+version blindly. The persisted provider identity and metadata are immutable
+during normal settings edits. Changing them requires an approved provider
+re-registration procedure. Additional HTTPS provider origins require an explicit
+`maybank_allowed_origins` site configuration and security review. `mock://`
+requires both `allow_maybank_mock=1` and a test/developer context and must never
+be enabled on a production site.
+
+### 3. Create Modifier Groups
 
 Navigate to ERPNext Desk:
 
@@ -100,12 +138,12 @@ Navigate to ERPNext Desk:
    - **Display Order**: Order in modifier sheet (1, 2, 3...)
 3. Add options in the child table:
    - **Option Name**: e.g., "Large"
-   - **Price Adjustment**: Additional charge (e.g., 3.00)
+   - **Price Adjustment**: Additional charge (for example RM3.00; the POS wire contract carries this as `300` sen)
    - **Default**: Check if this is the default selection
    - **Display Order**: Order within group (1, 2, 3...)
 4. Save
 
-### 2. Link Modifiers to Items
+### 4. Link Modifiers to Items
 
 1. Go to **Stock > Item**
 2. Open or create an item
@@ -117,7 +155,7 @@ Navigate to ERPNext Desk:
    - Check **Always Prompt** if you want the sheet to always open
 5. Save
 
-### 3. Configure Availability
+### 5. Configure Availability
 
 In the Item form, under **KoPOS Availability** section:
 
@@ -130,7 +168,7 @@ In the Item form, under **KoPOS Availability** section:
 
 - **Min Qty**: Minimum quantity threshold for advisory warning trigger (default: 1)
 
-### 4. Configure SST (Optional)
+### 6. Configure SST (Optional)
 
 1. Go to **POS > POS Profile**
 2. Open or create a POS profile
@@ -177,40 +215,50 @@ curl -X POST \
   -H "Authorization: token your-api-key:your-api-secret" \
   -H "Content-Type: application/json" \
   -d '{
+    "money_contract_version": "sen_v1",
+    "order_id": "device-1-order-1",
     "idempotency_key": "device-1-order-1",
     "device_id": "device-1",
-    "pos_profile": "KoPOS Main",
+    "shift_id": "SHIFT-1",
+    "staff_id": "cashier@example.test",
+    "warehouse": "Main Booth - JC",
+    "company": "JiJi Cafe",
+    "currency": "MYR",
     "order": {
       "display_number": "001",
       "order_type": "dine_in",
-      "subtotal": 24,
-      "tax_amount": 0,
-      "tax_rate": 0,
-      "discount_amount": 0,
-      "rounding_adj": 0,
-      "total": 24,
-      "created_at": "2026-03-09 15:35:00",
+      "subtotal_sen": 2400,
+      "tax_amount_sen": 0,
+      "rounding_adjustment_sen": 0,
+      "total_sen": 2400,
+      "created_at": "2026-07-14T15:35:00+08:00",
       "items": [
         {
+          "line_id": "line-1",
           "item_code": "ICED-MATCHA",
           "item_name": "Iced Matcha Latte",
           "qty": 2,
-          "rate": 12,
-          "amount": 24,
+          "unit_price_sen": 1200,
+          "modifier_total_sen": 0,
+          "discount_amount_sen": 0,
+          "line_total_sen": 2400,
           "modifiers": []
         }
       ],
       "payments": [
         {
-          "method": "cash",
-          "amount": 24
+          "payment_method": "Cash",
+          "amount_sen": 2400,
+          "tendered_amount_sen": 2400,
+          "change_amount_sen": 0
         }
       ]
     }
   }'
 ```
 
-2. Refund the sale as a return POS Invoice:
+2. Request a scoped `refund_order` manager approval token, then refund the sale
+   as a return `Sales Invoice`:
 
 ```bash
 curl -X POST \
@@ -218,31 +266,30 @@ curl -X POST \
   -H "Authorization: token your-api-key:your-api-secret" \
   -H "Content-Type: application/json" \
   -d '{
-    "idempotency_key": "device-1-order-1-refund-1",
+    "return_id": "device-1-order-1-refund-1",
     "device_id": "device-1",
-    "original_invoice": "ACC-PSINV-2026-00001",
-    "refund_type": "partial",
-    "refund_reason_code": "wrong_order",
-    "refund_reason": "Wrong order",
-    "refund_reason_notes": "Customer received the wrong drink",
+    "fb_order": "FB-ORDER-2026-00001",
+    "original_sales_invoice": "ACC-SINV-2026-00001",
+    "reason_code": "wrong_order",
+    "reason_text": "Customer received the wrong drink",
+    "refund_method": "cash",
     "return_to_stock": false,
-    "payment_mode": "cash",
-    "items": [
+    "lines": [
       {
-        "item_code": "ICED-MATCHA",
-        "qty": 1,
-        "rate": 12
+        "original_resolved_sale": "FB-RESOLVED-SALE-00001-1",
+        "qty_returned": 1
       }
-    ]
+    ],
+    "manager_approval_token": "<short-lived-scoped-token>"
   }'
 ```
 
 3. Verify:
-   - sale response returns `status: ok` and a `pos_invoice`
-   - refund response returns `status: ok` and a `credit_note`
+   - sale response returns `status: ok`, an `fb_order`, a `sales_invoice`, and `projection_status: posted`
+   - refund response returns `status: ok`, a `return_sales_invoice`, and posted settlement proof
    - replaying the same refund request returns `status: duplicate`
    - ERPNext marks the return document with `is_return = 1` and `return_against = <original invoice>`
-   - ERPNext stores `custom_kopos_refund_reason_code`, `custom_kopos_refund_reason`, and refund remarks on the return `POS Invoice`
+   - ERPNext stores the reason and refund audit data on the return event and return `Sales Invoice`
 
 ### 2b. Test Refund Reason Presets
 
@@ -401,18 +448,78 @@ This will:
 
 ## Backup and Restore
 
-### Backup
+Database-only backup is insufficient. A production recovery set must contain the
+database, public files, private QR evidence files, the site encryption key, the
+exact connector artifact/commit, and the external credential inventory.
+
+Before release, the operator must approve and record these values; this guide
+does not invent business-specific defaults:
+
+| Required release input | Approved value |
+|---|---|
+| Recovery point objective (RPO) | `<required>` |
+| Recovery time objective (RTO) | `<required>` |
+| Online backup retention | `<required>` |
+| Offline/immutable backup retention | `<required>` |
+| Restore-drill frequency and owner | `<required>` |
+
+### Create a Complete Recovery Set
 
 ```bash
-bench --site your-site.com backup
+bench --site your-site.com backup --with-files
+bench version
 ```
 
-### Restore
+Store together, under access control and encryption:
+
+- the generated database backup and both public/private file archives;
+- `sites/your-site.com/site_config.json`, including its encryption key, without
+  printing it to logs or committing it to source control;
+- the exact signed `kopos_connector` wheel/source artifact, namespaced release
+  tag, commit SHA, manifest, and SHA-256 digest;
+- an inventory of required external credentials and owners (device API keys,
+  Maybank merchant/outlet credentials, manager approval signing secret, SMTP,
+  object storage, and monitoring). Store actual secret values only in the
+  approved secrets manager;
+- ERPNext/Frappe app versions from `bench version` and the site configuration
+  needed to recreate workers, scheduler, TLS, queues, and storage mounts.
+
+Verify the backup command produced non-empty database, public-file, and
+private-file artifacts. Copy the recovery set off the ERP host according to the
+approved RPO, retention, geographic, and immutability policy.
+
+### Restore to an Isolated Drill Site
+
+Never test a restore against the production site. Build an isolated host with
+the exact recorded Frappe/ERPNext and connector artifacts, restore
+`site_config.json` securely, and keep outbound Maybank, email, webhooks, printers,
+and production device credentials disabled until validation is complete.
 
 ```bash
-bench --site your-site.com restore /path/to/backup.sql
-bench --site your-site.com migrate
+bench --site restore-drill.local restore /secure/recovery/database.sql.gz \
+  --with-public-files /secure/recovery/public-files.tar \
+  --with-private-files /secure/recovery/private-files.tar
+bench --site restore-drill.local migrate
+bench --site restore-drill.local list-apps
 ```
+
+Credential restoration must preserve the original site encryption key so
+encrypted passwords remain readable. Then restore or rotate secrets through the
+approved secrets manager, verify worker/scheduler health, and keep the restored
+site isolated while proving:
+
+- FB Shift, FB Order, Sales Invoice, return, settlement, GL, stock ledger,
+  projection and idempotency records are readable and reconcile;
+- private manual-QR evidence opens only for authorized support roles;
+- device configuration and catalog endpoints remain device-scoped;
+- the Maybank provider device identity matches the pre-backup identity;
+- a synthetic sale/refund/shift lifecycle passes without contacting production
+  providers; and
+- measured recovery point and elapsed recovery time meet the approved RPO/RTO.
+
+A witnessed restore drill with retained evidence is mandatory before production
+launch and at the approved recurring frequency. A successful backup without a
+successful restore drill is not release evidence.
 
 ## Production Deployment
 
@@ -449,7 +556,7 @@ tail -f /home/frappe/frappe-bench/logs/web.error.log | grep kopos
 
 ## Support
 
-- **Documentation**: `/erpnext/kopos_connector/README.md`
+- **Documentation**: the authoritative `worktree-fnb-erpnext/README.md`
 - **Issues**: https://github.com/your-org/kopos-connector/issues
 - **Email**: support@kopos.my
 
@@ -462,7 +569,9 @@ After successful installation:
 3. Configure availability modes
 4. Test with KoPOS mobile app
 5. Train staff on modifier configuration
-6. Go live!
+6. Complete the signed release, live ERP smoke, backup/restore drill, exact small
+   Tab A11 and printer acceptance, canary, monitoring, and rollback gates before
+   authorizing production traffic
 
 ## Checklist
 
@@ -480,3 +589,9 @@ After successful installation:
 - [ ] Modifier sheet verified
 - [ ] Stock-based availability tested
 - [ ] Production deployment completed
+- [ ] Exact connector release artifact, tag, commit, manifest and digest recorded
+- [ ] RPO, RTO, retention and restore-drill ownership approved
+- [ ] Database, public files, private files and site encryption key backed up
+- [ ] Isolated restore drill reconciled and witnessed
+- [ ] Maybank HTTPS origin, immutable provider identity and real credentials validated
+- [ ] Live Sales Invoice/GL/stock/refund/shift smoke evidence retained

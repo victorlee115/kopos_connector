@@ -14,6 +14,10 @@
   "encrypted_pin",
   "user_type",
   "outlet_id",
+  "provider_device_id",
+  "provider_device_name",
+  "provider_device_os",
+  "manual_qr_suspense_account",
   "section_api",
   "base_url"
  ],
@@ -53,6 +57,40 @@
    "fieldtype": "Data",
    "label": "Default Outlet ID",
    "reqd": 1
+  },
+  {
+   "description": "Durable provider identity generated during install or migrate. Do not rotate during normal operations.",
+   "fieldname": "provider_device_id",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Provider Device ID",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "description": "Immutable provider-facing model label provisioned during install or migrate.",
+   "fieldname": "provider_device_name",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Provider Device Name",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "description": "Immutable version-neutral provider OS label provisioned during install or migrate.",
+   "fieldname": "provider_device_os",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Provider Device OS",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "description": "Asset clearing account used for static QR payments until bank reconciliation is completed",
+   "fieldname": "manual_qr_suspense_account",
+   "fieldtype": "Link",
+   "label": "Manual QR Suspense Account",
+   "options": "Account"
   },
   {
    "fieldname": "section_api",

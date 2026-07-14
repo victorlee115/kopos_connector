@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 from contextlib import nullcontext
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -81,6 +82,15 @@ def test_public_process_refund_rejects_cross_device_before_return_event(monkeypa
         is_return=0,
         custom_fb_device_id="DEVICE-A",
         custom_fb_order="FB-ORDER-1",
+        custom_fb_shift="SHIFT-1",
+        grand_total=12,
+    )
+    order = MutableDoc(
+        doctype="FB Order",
+        name="FB-ORDER-1",
+        device_id="DEVICE-A",
+        staff_id="cashier@example.com",
+        shift="SHIFT-1",
     )
 
     class FakeDB:
@@ -90,12 +100,29 @@ def test_public_process_refund_rejects_cross_device_before_return_event(monkeypa
         def get_value(self, doctype: str, name_or_filters: Any, fieldname: str) -> Any:
             if doctype == "Sales Invoice" and fieldname == "custom_fb_order":
                 return "FB-ORDER-1"
+            if doctype == "Sales Invoice" and fieldname == "custom_fb_shift":
+                return "SHIFT-1"
             if doctype == "FB Return Event":
                 return None
             return None
 
         def exists(self, doctype: str, name: str) -> bool:
             return doctype in {"Sales Invoice", "FB Resolved Sale"}
+
+        def sql(
+            self, query: str, values: tuple[str, ...], **kwargs: Any
+        ) -> list[Any]:
+            assert "FOR UPDATE" in query
+            if "tabFB Shift" in query:
+                return [
+                    {
+                        "name": "SHIFT-1",
+                        "opening_float": 100,
+                        "counted_cash": 100,
+                    }
+                ]
+            assert "tabSales Invoice" in query
+            return [{"name": "SINV-1"}]
 
     def get_doc(doctype: str, name: str) -> MutableDoc:
         if doctype == "Sales Invoice" and name == "SINV-1":
@@ -176,7 +203,7 @@ def test_public_refund_rolls_back_when_settlement_proof_fails(monkeypatch):
     monkeypatch.setattr(
         fb_returns,
         "process_return_payload",
-        lambda payload: (_ for _ in ()).throw(
+        lambda payload, **_kwargs: (_ for _ in ()).throw(
             api.frappe.ValidationError("posted accounting settlement proof is missing")
         ),
     )
@@ -329,6 +356,15 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
         is_return=0,
         custom_fb_device_id="DEVICE-A",
         custom_fb_order="FB-ORDER-1",
+        custom_fb_shift="SHIFT-1",
+        grand_total=12,
+    )
+    order = MutableDoc(
+        doctype="FB Order",
+        name="FB-ORDER-1",
+        device_id="DEVICE-A",
+        staff_id="cashier@example.com",
+        shift="SHIFT-1",
     )
     resolved_sale = MutableDoc(
         doctype="FB Resolved Sale",
@@ -378,6 +414,18 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
         ) -> list[dict[str, str]]:
             assert "FOR UPDATE" in query
             assert as_dict is True
+            if "FROM `tabFB Shift`" in query:
+                assert values == ("SHIFT-1",)
+                return [
+                    {
+                        "name": "SHIFT-1",
+                        "opening_float": 100,
+                        "counted_cash": 100,
+                    }
+                ]
+            if "FROM `tabSales Invoice`" in query:
+                assert values == ("SINV-1",)
+                return [{"name": "SINV-1"}]
             if "FROM `tabFB Resolved Sale`" in query:
                 assert values == ("SINV-1",)
                 return [{"name": "RS-1", "qty": 1}]
@@ -386,6 +434,8 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
             return list(self.submitted_rows)
 
         def get_value(self, doctype: str, filters: Any, fieldname: str) -> Any:
+            if doctype == "Sales Invoice" and fieldname == "custom_fb_shift":
+                return "SHIFT-1"
             if doctype == "FB Return Event" and filters == {"return_id": "refund-idem-1"}:
                 return "FB-RETURN-SAME"
             return None
@@ -396,6 +446,7 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
     def get_doc(doctype: str, name: str) -> MutableDoc:
         docs = {
             ("Sales Invoice", "SINV-1"): invoice,
+            ("FB Order", "FB-ORDER-1"): order,
             ("FB Resolved Sale", "RS-1"): resolved_sale,
             ("FB Return Event", "FB-RETURN-EXISTING"): existing_return,
             ("FB Return Event", "FB-RETURN-SAME"): same_return,
@@ -447,11 +498,17 @@ def test_void_rejects_cross_device_before_cancel(monkeypatch):
         docstatus=1,
         is_return=0,
         custom_fb_order="FB-ORDER-1",
+        custom_fb_shift="SHIFT-1",
         custom_fb_idempotency_key="sale-idem-1",
         custom_fb_device_id="DEVICE-B",
     )
 
     monkeypatch.setattr(api.frappe, "get_doc", lambda doctype, name: invoice)
+    monkeypatch.setattr(
+        api,
+        "_lock_sales_invoice_cash_shift",
+        lambda sales_invoice: "SHIFT-1",
+    )
 
     with pytest.raises(api.frappe.ValidationError, match="belongs to another device"):
         api._process_sales_invoice_void_payload(
@@ -478,12 +535,28 @@ def test_void_updates_fb_order_stock_projection_and_shift_once(monkeypatch):
         custom_fb_shift="SHIFT-1",
         custom_fb_idempotency_key="sale-idem-1",
         custom_fb_device_id="DEVICE-A",
+        grand_total=12.0,
         payments=[MutableDoc(mode_of_payment="Cash", amount=12.0)],
+    )
+    remaining_invoice = MutableDoc(
+        doctype="Sales Invoice",
+        name="SINV-2",
+        docstatus=1,
+        is_return=0,
+        custom_fb_order="FB-ORDER-2",
+        custom_fb_shift="SHIFT-1",
+        custom_fb_idempotency_key="sale-idem-2",
+        custom_fb_device_id="DEVICE-A",
+        grand_total=12.0,
+        payments=[MutableDoc(mode_of_payment="Cash", amount=20.0)],
+        change_amount=8.0,
     )
     invoice.add_comment = lambda kind, text: None
     order = MutableDoc(
         doctype="FB Order",
         name="FB-ORDER-1",
+        device_id="DEVICE-A",
+        staff_id="cashier@example.com",
         shift="SHIFT-1",
         status="Submitted",
         invoice_status="Posted",
@@ -509,6 +582,7 @@ def test_void_updates_fb_order_stock_projection_and_shift_once(monkeypatch):
     def get_doc(doctype: str, name: str) -> MutableDoc:
         docs = {
             ("Sales Invoice", "SINV-1"): invoice,
+            ("Sales Invoice", "SINV-2"): remaining_invoice,
             ("FB Order", "FB-ORDER-1"): order,
             ("Stock Entry", "STE-1"): stock_entry,
             ("FB Shift", "SHIFT-1"): shift,
@@ -529,18 +603,108 @@ def test_void_updates_fb_order_stock_projection_and_shift_once(monkeypatch):
                 MutableDoc(name="LOG-SH", projection_type="FB Shift"),
             ]
         if doctype == "FB Order":
-            return (
-                [MutableDoc(sales_invoice="SINV-1")]
-                if order.status == "Submitted"
-                else []
-            )
+            rows = [MutableDoc(sales_invoice="SINV-2")]
+            if order.status == "Submitted":
+                rows.append(MutableDoc(sales_invoice="SINV-1"))
+            return rows
         if doctype == "Sales Invoice":
             return []
         return []
 
+    cash_sql_calls: list[str] = []
+
+    def db_get_value(doctype: str, _name: Any, fieldname: Any, **_kwargs: Any) -> Any:
+        if doctype == "Sales Invoice" and fieldname == "custom_fb_shift":
+            return "SHIFT-1"
+        return None
+
+    def db_sql(
+        query: str,
+        _values: tuple[str, ...],
+        *,
+        as_dict: bool = False,
+    ) -> list[dict[str, Any]]:
+        if "FOR UPDATE" in query:
+            cash_sql_calls.append(query)
+        if "FROM `tabFB Shift`" in query:
+            assert as_dict is True
+            return [
+                {
+                    "name": "SHIFT-1",
+                    "opening_float": 100.0,
+                    "counted_cash": 100.0,
+                }
+            ]
+        if "`tabSales Invoice Payment`" in query:
+            assert as_dict is True
+            return [
+                {
+                    "sales_invoice": "SINV-2",
+                    "change_amount": 8.0,
+                    "payment_row": "PAY-SINV-2",
+                    "mode_of_payment": "Cash",
+                    "payment_amount": 20.0,
+                }
+            ]
+        if "FROM `tabFB Return Event`" in query:
+            assert as_dict is True
+            return []
+        if "FROM `tabSales Invoice`" in query:
+            assert as_dict is True
+            return []
+        raise AssertionError(f"Unexpected SQL: {query}")
+
+    def db_set_value(
+        doctype: str,
+        name: str,
+        values: dict[str, Any],
+        *,
+        update_modified: bool,
+    ) -> None:
+        assert update_modified is False
+        if (doctype, name) == ("Sales Invoice", "SINV-1"):
+            for fieldname, value in values.items():
+                setattr(invoice, fieldname, value)
+            return
+        assert (doctype, name) == ("FB Shift", "SHIFT-1")
+        for fieldname, value in values.items():
+            setattr(shift, fieldname, value)
+
     monkeypatch.setattr(api, "elevate_device_api_user", lambda: nullcontext())
     monkeypatch.setattr(api.frappe, "get_doc", get_doc)
     monkeypatch.setattr(api.frappe, "get_all", get_all)
+    monkeypatch.setattr(api.frappe.db, "get_value", db_get_value)
+    monkeypatch.setattr(api.frappe.db, "sql", db_sql)
+    monkeypatch.setattr(api.frappe.db, "set_value", db_set_value)
+    manager_approval = importlib.import_module(
+        "kopos_connector.utils.manager_approval"
+    )
+    approval_calls: list[tuple[str, dict[str, Any]]] = []
+
+    def verify_approval(token: str, **scope: Any) -> dict[str, str]:
+        approval_calls.append((token, scope))
+        return {
+            "manager_id": "manager@example.com",
+            "token_id": "approval-token-1",
+        }
+
+    monkeypatch.setattr(
+        manager_approval,
+        "verify_manager_approval_token",
+        verify_approval,
+    )
+    persisted_proof = {
+        "approval_manager_id": "manager@example.com",
+        "approval_token_id": "approval-token-1",
+        "approval_context_hash": manager_approval.canonical_context_hash(
+            {"reason": "Operator correction"}
+        ),
+    }
+    monkeypatch.setattr(
+        manager_approval,
+        "load_consumed_manager_approval_proof",
+        lambda **kwargs: persisted_proof,
+    )
 
     result = api._process_sales_invoice_void_payload(
         {
@@ -548,6 +712,7 @@ def test_void_updates_fb_order_stock_projection_and_shift_once(monkeypatch):
             "device_id": "DEVICE-A",
             "idempotency_key": "void-idem-1",
             "reason": "Operator correction",
+            "manager_approval_token": "signed-token",
         }
     )
     duplicate = api._process_sales_invoice_void_payload(
@@ -558,9 +723,40 @@ def test_void_updates_fb_order_stock_projection_and_shift_once(monkeypatch):
             "reason": "Operator correction",
         }
     )
+    with pytest.raises(
+        api.frappe.ValidationError,
+        match="different void payload",
+    ):
+        api._process_sales_invoice_void_payload(
+            {
+                "sales_invoice": "SINV-1",
+                "device_id": "DEVICE-A",
+                "idempotency_key": "void-idem-1",
+                "reason": "Different reason",
+            }
+        )
 
     assert result["status"] == "ok"
     assert duplicate["status"] == "duplicate"
+    assert result | persisted_proof == result
+    assert duplicate | persisted_proof == duplicate
+    assert approval_calls == [
+        (
+            "signed-token",
+            {
+                "device_id": "DEVICE-A",
+                "staff_id": "cashier@example.com",
+                "action": "void_order",
+                "shift_id": "SHIFT-1",
+                "resource_id": "SINV-1",
+                "amount_sen": 1_200,
+                "context_hash": manager_approval.canonical_context_hash(
+                    {"reason": "Operator correction"}
+                ),
+                "idempotency_key": "void-idem-1",
+            },
+        )
+    ]
     assert invoice.cancel_count == 1
     assert stock_entry.cancel_count == 1
     assert order.status == "Cancelled"
@@ -568,5 +764,7 @@ def test_void_updates_fb_order_stock_projection_and_shift_once(monkeypatch):
     assert order.stock_status == "Reversed"
     assert resolved_sale.status == "Cancelled"
     assert {log.state for log in logs.values()} == {"Reversed"}
-    assert shift.expected_cash == 100.0
-    assert shift.cash_variance == 0.0
+    assert shift.expected_cash == Decimal("112")
+    assert shift.cash_variance == Decimal("-12")
+    assert cash_sql_calls
+    assert all("FOR UPDATE" in query for query in cash_sql_calls)

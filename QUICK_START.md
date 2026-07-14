@@ -14,7 +14,7 @@ Get up and running with KoPOS modifiers in 5 minutes.
 
 ```bash
 cd /home/frappe/frappe-bench
-bench get-app kopos_connector /path/to/JiJiPOS/erpnext/kopos_connector
+bench get-app kopos_connector /absolute/path/to/JiJiPOS-Everything/worktree-fnb-erpnext
 ```
 
 ### 2. Install on Site

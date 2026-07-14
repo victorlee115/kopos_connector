@@ -319,8 +319,11 @@ def create_sample_modifiers():
     return {"created": created_count, "skipped": skipped_count}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def link_sample_modifiers_to_items():
+    from kopos_connector.api.devices import require_system_manager
+
+    require_system_manager()
     modifier_groups = frappe.get_all(
         "FB Modifier Group", filters={"active": 1}, pluck="name"
     )
@@ -368,8 +371,6 @@ def link_sample_modifiers_to_items():
         if changed:
             recipe.save(ignore_permissions=True)
             updated_count += 1
-
-    frappe.db.commit()
 
     frappe.msgprint(
         _("Linked {0} modifier groups to {1} recipes").format(

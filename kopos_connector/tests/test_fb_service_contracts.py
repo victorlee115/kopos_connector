@@ -89,9 +89,18 @@ class TestFBServiceContracts(unittest.TestCase):
         self.assertIn("standard_rate", content)
 
     def test_fb_order_updates_shift_expected_cash(self):
-        content = (
+        order_content = (
             ERP_ROOT / "kopos" / "doctype" / "fb_order" / "fb_order.py"
         ).read_text()
-        self.assertIn("update_shift_expected_cash", content)
-        self.assertIn("expected_cash", content)
-        self.assertIn("mode_of_payment", content)
+        cash_service_content = (
+            ERP_ROOT
+            / "kopos"
+            / "services"
+            / "accounting"
+            / "return_invoice_service.py"
+        ).read_text()
+        self.assertIn("update_shift_expected_cash", order_content)
+        self.assertIn("refresh_fb_shift_cash", order_content)
+        self.assertIn("expected_cash", cash_service_content)
+        self.assertIn("mode_of_payment", cash_service_content)
+        self.assertIn("FOR UPDATE", cash_service_content)

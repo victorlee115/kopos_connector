@@ -42,7 +42,7 @@ def before_install():
 
 
 def before_migrate():
-    """Normalize duplicate device API users before DocType schema sync."""
+    """Fail closed when a migration would strand devices by changing API users."""
     normalize_duplicate_device_api_users()
 
 
@@ -55,12 +55,13 @@ def after_install():
         ensure_kopos_module_defs()
         ensure_kopos_custom_fields(skip_if_missing_doctypes=True)
         create_fb_custom_fields()
+        ensure_maybank_provider_device_id()
     except Exception as e:
         frappe.log_error(
-            title="KoPOS Connector: Failed to create custom fields",
+            title="KoPOS Connector: Post-install setup failed",
             message=frappe.get_traceback(),
         )
-        frappe.throw(_("Failed to create custom fields: {0}").format(str(e)))
+        frappe.throw(_("KoPOS Connector post-install setup failed: {0}").format(str(e)))
 
 
 def after_migrate():
@@ -68,6 +69,19 @@ def after_migrate():
     ensure_kopos_module_defs()
     ensure_kopos_custom_fields(skip_if_missing_doctypes=False)
     create_fb_custom_fields()
+    ensure_maybank_provider_device_id()
+
+
+def ensure_maybank_provider_device_id() -> str:
+    """Create or migrate durable Maybank provider identity after schema sync."""
+    from kopos_connector.services.maybank.client import (
+        ensure_stable_device_id,
+        ensure_stable_device_metadata,
+    )
+
+    device_id = ensure_stable_device_id()
+    ensure_stable_device_metadata()
+    return device_id
 
 
 def ensure_kopos_module_defs() -> None:

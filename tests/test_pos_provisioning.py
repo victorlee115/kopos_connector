@@ -85,8 +85,20 @@ class PosProvisioningTests(unittest.TestCase):
                 catalog,
                 "get_items",
                 return_value=[
-                    {"id": "item-1", "category_id": "Drinks"},
-                    {"id": "item-2", "category_id": "Coffee"},
+                    {
+                        "id": "item-1",
+                        "name": "Item 1",
+                        "category_id": "Drinks",
+                        "price_sen": 100,
+                        "modifier_group_ids": [],
+                    },
+                    {
+                        "id": "item-2",
+                        "name": "Item 2",
+                        "category_id": "Coffee",
+                        "price_sen": 200,
+                        "modifier_group_ids": [],
+                    },
                 ],
             ),
             patch.object(
@@ -114,7 +126,7 @@ class PosProvisioningTests(unittest.TestCase):
             payload = catalog.build_catalog_payload(device_id="device-1")
 
         get_categories_mock.assert_called_once_with(
-            None, category_ids={"Drinks", "Coffee"}
+            category_ids={"Drinks", "Coffee"}
         )
         self.assertEqual(
             [row["id"] for row in payload["categories"]], ["Drinks", "Coffee"]
@@ -167,13 +179,12 @@ class PosProvisioningTests(unittest.TestCase):
             "custom_kopos_min_qty": 3,
         }
 
-        with (
-            patch.object(catalog.frappe.db, "get_value", return_value=2),
-            patch.object(catalog, "get_pos_reserved_qty", return_value=1),
-        ):
-            availability = catalog.get_item_availability(
-                item, warehouse="Main Warehouse"
-            )
+        availability = catalog.get_item_availability(
+            item,
+            warehouse="Main Warehouse",
+            bin_qty_by_item={"ITEM-001": 2},
+            reserved_qty_by_item={"ITEM-001": 1},
+        )
 
         self.assertEqual(
             availability,
@@ -219,9 +230,33 @@ class PosProvisioningTests(unittest.TestCase):
                 side_effect=[[saleable_row], []],
             ),
             patch.object(catalog, "get_recipe_changed_item_codes", return_value=[]),
+            patch.object(
+                catalog,
+                "get_item_recipe_snapshots_map",
+                return_value={
+                    "item-1": {
+                        "recipe_id": "RECIPE-ITEM-1",
+                        "recipe_version": 1,
+                    }
+                },
+            ),
             patch.object(catalog, "get_item_modifier_groups_map", return_value={}),
-            patch.object(catalog, "get_item_price", return_value=12),
-            patch.object(catalog, "get_item_barcode", return_value="1234567890"),
+            patch.object(
+                catalog,
+                "get_item_prices_map",
+                return_value={"item-1": 12},
+            ),
+            patch.object(
+                catalog,
+                "get_item_barcodes_map",
+                return_value={"item-1": "1234567890"},
+            ),
+            patch.object(catalog, "get_bin_qty_map", return_value={}),
+            patch.object(
+                catalog,
+                "get_fb_pending_reserved_qty_map",
+                return_value={},
+            ),
             patch.object(
                 catalog,
                 "get_item_availability",
@@ -246,12 +281,15 @@ class PosProvisioningTests(unittest.TestCase):
                     "name": "Item 1",
                     "category_id": "Drinks",
                     "price": 12,
+                    "price_sen": 1200,
                     "barcode": "1234567890",
                     "is_available": True,
                     "stock_warning": "erp_stock_short",
                     "is_active": 1,
                     "is_prep_item": 0,
                     "modifier_group_ids": [],
+                    "recipe_id": "RECIPE-ITEM-1",
+                    "recipe_version": 1,
                 }
             ],
         )
@@ -346,22 +384,10 @@ class PosProvisioningTests(unittest.TestCase):
         )
         self.assertEqual(len(commit_calls), 2)
 
-    def test_ensure_device_api_credentials_rotates_on_decrypt_failure(self):
+    def test_ensure_device_api_credentials_fails_closed_on_decrypt_failure(self):
         device_doc = SimpleNamespace(
             name="KOPOS-DEVICE-001", api_user="device@example.com"
         )
-        generated = iter(["rotated-api-key", "rotated-api-secret"])
-        set_value_calls = []
-        commit_calls = []
-
-        def fake_generate_hash(length=32):
-            return next(generated)
-
-        def fake_set_value(*args, **kwargs):
-            set_value_calls.append((args, kwargs))
-
-        def fake_commit():
-            commit_calls.append("commit")
 
         with (
             patch.object(
@@ -370,31 +396,28 @@ class PosProvisioningTests(unittest.TestCase):
             patch.object(
                 provisioning,
                 "get_decrypted_password",
-                side_effect=[RuntimeError("decrypt failed"), "rotated-api-secret"],
+                side_effect=RuntimeError("decrypt failed"),
             ),
             patch.object(
                 provisioning,
                 "_ensure_device_api_user",
                 return_value="device@example.com",
             ),
-            patch.object(
-                provisioning.frappe, "generate_hash", side_effect=fake_generate_hash
+            patch.object(provisioning.frappe, "generate_hash") as generate_hash,
+            patch.object(provisioning.frappe.db, "set_value") as set_value,
+            patch.object(provisioning.frappe.db, "commit") as commit,
+            patch.object(provisioning, "set_encrypted_password") as set_secret,
+            self.assertRaisesRegex(
+                provisioning.frappe.ValidationError,
+                "credentials are incomplete",
             ),
-            patch.object(
-                provisioning.frappe.db, "set_value", side_effect=fake_set_value
-            ),
-            patch.object(provisioning.frappe.db, "commit", side_effect=fake_commit),
-            patch.object(provisioning, "set_encrypted_password"),
         ):
-            result = provisioning.ensure_device_api_credentials(device_doc)
+            provisioning.ensure_device_api_credentials(device_doc)
 
-        self.assertEqual(result["api_key"], "rotated-api-key")
-        self.assertEqual(result["api_secret"], "rotated-api-secret")
-        self.assertEqual(
-            set_value_calls[0][0][:4],
-            ("User", "device@example.com", "api_key", "rotated-api-key"),
-        )
-        self.assertEqual(len(commit_calls), 2)
+        commit.assert_called_once()
+        generate_hash.assert_not_called()
+        set_value.assert_not_called()
+        set_secret.assert_not_called()
 
     def test_ensure_device_api_credentials_raises_when_secret_cannot_be_verified(self):
         device_doc = SimpleNamespace(
@@ -424,7 +447,7 @@ class PosProvisioningTests(unittest.TestCase):
             with self.assertRaises(provisioning.frappe.ValidationError) as error:
                 provisioning.ensure_device_api_credentials(device_doc)
 
-        self.assertIn("Failed to persist a usable API secret", str(error.exception))
+        self.assertIn("credentials are incomplete", str(error.exception))
 
     def test_dump_smoke_state_reports_decrypt_failure_explicitly(self):
         fake_device = SimpleNamespace(
@@ -509,6 +532,33 @@ class PosProvisioningTests(unittest.TestCase):
 
         self.assertIn("already assigned to KoPOS Device", str(error.exception))
 
+    def test_require_device_context_rejects_disabled_device(self):
+        device_doc = SimpleNamespace(
+            name="KOPOS-DEVICE-001",
+            device_id="tab-a-001",
+            api_user="device-a@kopos.local",
+            enabled=0,
+        )
+
+        with (
+            patch.object(
+                devices.frappe,
+                "session",
+                SimpleNamespace(user="device-a@kopos.local"),
+            ),
+            patch.object(
+                devices.frappe,
+                "get_roles",
+                return_value=[devices.KOPOS_DEVICE_API_ROLE],
+            ),
+            patch.object(devices, "get_device_doc", return_value=device_doc),
+            patch.object(devices, "require_device_api_access"),
+        ):
+            with self.assertRaises(devices.frappe.ValidationError) as error:
+                devices.require_device_context(device_id="tab-a-001")
+
+        self.assertIn("disabled", str(error.exception))
+
     def test_device_api_users_are_blocked_from_non_api_routes(self):
         with (
             patch.object(
@@ -526,12 +576,108 @@ class PosProvisioningTests(unittest.TestCase):
             with self.assertRaises(auth.frappe.ValidationError):
                 auth.enforce_device_api_restrictions()
 
+    def test_device_api_users_can_access_only_exact_approved_method(self):
+        with (
+            patch.object(
+                auth.frappe, "session", SimpleNamespace(user="device-a@kopos.local")
+            ),
+            patch.object(
+                auth.frappe,
+                "local",
+                SimpleNamespace(
+                    request=SimpleNamespace(
+                        path="/api/method/kopos_connector.api.submit_order",
+                        method="POST",
+                    )
+                ),
+            ),
+            patch.object(
+                auth.frappe, "get_roles", return_value=[devices.KOPOS_DEVICE_API_ROLE]
+            ),
+        ):
+            auth.enforce_device_api_restrictions()
+
+    def test_device_api_users_are_blocked_from_wrong_http_method(self):
+        with (
+            patch.object(
+                auth.frappe, "session", SimpleNamespace(user="device-a@kopos.local")
+            ),
+            patch.object(
+                auth.frappe,
+                "local",
+                SimpleNamespace(
+                    request=SimpleNamespace(
+                        path="/api/method/kopos_connector.api.submit_order",
+                        method="GET",
+                    )
+                ),
+            ),
+            patch.object(
+                auth.frappe, "get_roles", return_value=[devices.KOPOS_DEVICE_API_ROLE]
+            ),
+        ):
+            with self.assertRaises(auth.frappe.ValidationError):
+                auth.enforce_device_api_restrictions()
+
+    def test_device_api_users_are_blocked_before_oversized_body_processing(self):
+        with (
+            patch.object(
+                auth.frappe, "session", SimpleNamespace(user="device-a@kopos.local")
+            ),
+            patch.object(
+                auth.frappe,
+                "local",
+                SimpleNamespace(
+                    request=SimpleNamespace(
+                        path="/api/method/kopos_connector.api.submit_order",
+                        method="POST",
+                        content_length=512 * 1024 + 1,
+                    )
+                ),
+            ),
+            patch.object(
+                auth.frappe, "get_roles", return_value=[devices.KOPOS_DEVICE_API_ROLE]
+            ),
+        ):
+            with self.assertRaises(auth.frappe.ValidationError) as error:
+                auth.enforce_device_api_restrictions()
+
+        self.assertIn("request body", str(error.exception))
+
+    def test_device_api_users_are_blocked_from_hidden_namespace_methods(self):
+        for path in (
+            "/api/method/kopos_connector.api.fb_refill.process_refill",
+            "/api/method/kopos_connector.api.modifier_migration.backfill_kopos_modifiers_to_fb",
+            "/api/method/kopos_connector.api.submit_order.attacker_suffix",
+        ):
+            with (
+                self.subTest(path=path),
+                patch.object(
+                    auth.frappe,
+                    "session",
+                    SimpleNamespace(user="device-a@kopos.local"),
+                ),
+                patch.object(
+                    auth.frappe,
+                    "local",
+                    SimpleNamespace(request=SimpleNamespace(path=path)),
+                ),
+                patch.object(
+                    auth.frappe,
+                    "get_roles",
+                    return_value=[devices.KOPOS_DEVICE_API_ROLE],
+                ),
+            ):
+                with self.assertRaises(auth.frappe.ValidationError):
+                    auth.enforce_device_api_restrictions()
+
     def test_create_pos_provisioning_returns_one_time_link(self):
         cache = _FakeCache()
         fake_device = SimpleNamespace(
             name="KOPOS-DEVICE-001",
             device_id="tab-a-001",
             pos_profile="Counter 1",
+            api_user="device-001@kopos.local",
         )
 
         with (
@@ -555,7 +701,14 @@ class PosProvisioningTests(unittest.TestCase):
                     "managed_by_erp": True,
                     "config_version": 3,
                     "printers": [],
-                    "users": [],
+                    "users": [
+                        {
+                            "id": "cashier@example.com",
+                            "display_name": "Cashier",
+                            "pin_hash": "hashed-pin",
+                            "active": True,
+                        }
+                    ],
                     "api_key": "api-key",
                     "api_secret": "api-secret",
                 },
@@ -596,6 +749,10 @@ class PosProvisioningTests(unittest.TestCase):
         self.assertEqual(cached["setup"]["device_prefix"], "A")
         self.assertEqual(cached["setup"]["static_qr_payload"], "000201STATICERP")
         self.assertEqual(cached["setup"]["device_id"], "tab-a-001")
+        self.assertEqual(
+            cached["setup"]["provisioning_user"],
+            "device-001@kopos.local",
+        )
         self.assertEqual(cached["setup"]["api_key"], "api-key")
         self.assertEqual(
             cached["setup"]["erpnext_url"], "https://devices.example.com:8080"
@@ -626,6 +783,16 @@ class PosProvisioningTests(unittest.TestCase):
                     "erpnext_url": "https://erp.example.com",
                     "pos_profile": "Counter 1",
                     "static_qr_payload": "000201STATICERP",
+                    "provisioning_user": "device-001@kopos.local",
+                    "config_version": 3,
+                    "users": [
+                        {
+                            "id": "cashier@example.com",
+                            "display_name": "Cashier",
+                            "pin_hash": "hashed-pin",
+                            "active": True,
+                        }
+                    ],
                     "api_key": "api-key",
                     "api_secret": "api-secret",
                 },
@@ -633,7 +800,40 @@ class PosProvisioningTests(unittest.TestCase):
         ).encode()
         cache.ttls["kopos:provisioning:token-123"] = 900
 
-        with patch.object(provisioning.frappe, "cache", return_value=cache):
+        device_doc = SimpleNamespace(
+            device_id="tab-a-001",
+            enabled=1,
+            api_user="device-001@kopos.local",
+            config_version=3,
+        )
+        with (
+            patch.object(provisioning.frappe, "cache", return_value=cache),
+            patch.object(provisioning, "get_device_doc", return_value=device_doc),
+            patch.object(
+                provisioning.frappe.db,
+                "get_value",
+                return_value="api-key",
+            ),
+            patch.object(
+                provisioning,
+                "_read_device_api_secret",
+                return_value="api-secret",
+            ),
+            patch.object(
+                provisioning,
+                "serialize_device_config",
+                return_value={
+                    "users": [
+                        {
+                            "id": "cashier@example.com",
+                            "display_name": "Cashier",
+                            "pin_hash": "hashed-pin",
+                            "active": True,
+                        }
+                    ]
+                },
+            ),
+        ):
             result = provisioning.redeem_pos_provisioning("token-123")
 
         self.assertEqual(result["status"], "ok")
@@ -650,6 +850,121 @@ class PosProvisioningTests(unittest.TestCase):
             self.assertRaises(provisioning.frappe.ValidationError),
         ):
             provisioning.redeem_pos_provisioning("token-123")
+
+    def test_redeem_consumes_and_rejects_token_after_device_users_change(self):
+        cache = _FakeCache()
+        cache.values["kopos:provisioning:token-stale-users"] = json.dumps(
+            {
+                "setup": {
+                    "device_id": "tab-a-001",
+                    "provisioning_user": "device-001@kopos.local",
+                    "config_version": 3,
+                    "api_key": "api-key",
+                    "api_secret": "api-secret",
+                    "users": [
+                        {
+                            "id": "old-cashier@example.com",
+                            "pin_hash": "old-pin-hash",
+                            "active": True,
+                        }
+                    ],
+                }
+            }
+        ).encode()
+        device_doc = SimpleNamespace(
+            device_id="tab-a-001",
+            enabled=1,
+            api_user="device-001@kopos.local",
+            config_version=3,
+        )
+
+        with (
+            patch.object(provisioning.frappe, "cache", return_value=cache),
+            patch.object(provisioning, "get_device_doc", return_value=device_doc),
+            patch.object(provisioning.frappe.db, "get_value", return_value="api-key"),
+            patch.object(
+                provisioning,
+                "_read_device_api_secret",
+                return_value="api-secret",
+            ),
+            patch.object(
+                provisioning,
+                "serialize_device_config",
+                return_value={
+                    "users": [
+                        {
+                            "id": "current-cashier@example.com",
+                            "pin_hash": "current-pin-hash",
+                            "active": True,
+                        }
+                    ]
+                },
+            ),
+            self.assertRaisesRegex(
+                provisioning.frappe.ValidationError,
+                "users are stale or inactive",
+            ),
+        ):
+            provisioning.redeem_pos_provisioning("token-stale-users")
+
+        self.assertIn("kopos:provisioning:token-stale-users", cache.deleted)
+        self.assertNotIn("kopos:provisioning:token-stale-users", cache.values)
+
+    def test_cached_provisioning_rejects_disabled_device_and_stale_credentials(self):
+        setup = {
+            "device_id": "tab-a-001",
+            "provisioning_user": "device-001@kopos.local",
+            "config_version": 3,
+            "api_key": "api-key",
+            "api_secret": "api-secret",
+            "users": [{"id": "cashier@example.com", "active": True}],
+        }
+
+        with (
+            patch.object(
+                provisioning,
+                "get_device_doc",
+                return_value=SimpleNamespace(
+                    device_id="tab-a-001",
+                    enabled=0,
+                    api_user="device-001@kopos.local",
+                    config_version=3,
+                ),
+            ),
+            self.assertRaisesRegex(
+                provisioning.frappe.ValidationError,
+                "device is disabled or unavailable",
+            ),
+        ):
+            provisioning._validate_cached_provisioning_setup(setup)
+
+        with (
+            patch.object(
+                provisioning,
+                "get_device_doc",
+                return_value=SimpleNamespace(
+                    device_id="tab-a-001",
+                    enabled=1,
+                    api_user="device-001@kopos.local",
+                    config_version=3,
+                ),
+            ),
+            patch.object(
+                provisioning.frappe.db,
+                "get_value",
+                return_value="replaced-api-key",
+            ),
+            patch.object(
+                provisioning,
+                "_read_device_api_secret",
+                return_value="api-secret",
+            ),
+            self.assertRaisesRegex(
+                provisioning.frappe.ValidationError,
+                "credentials are stale",
+            ),
+        ):
+            provisioning._validate_cached_provisioning_setup(setup)
 
     def test_redeem_pos_provisioning_fails_closed_without_atomic_cache(self):
         cache = SimpleNamespace(
@@ -669,6 +984,7 @@ class PosProvisioningTests(unittest.TestCase):
             name="KOPOS-DEVICE-001",
             device_id="tab-a-001",
             pos_profile="Counter 1",
+            api_user="device-001@kopos.local",
         )
 
         def fail_set(*args, **kwargs):
@@ -713,6 +1029,7 @@ class PosProvisioningTests(unittest.TestCase):
             name="KOPOS-DEVICE-001",
             device_id="tab-a-001",
             pos_profile="Counter 1",
+            api_user="device-001@kopos.local",
         )
         with (
             patch.object(provisioning, "require_system_manager", return_value=None),
@@ -773,11 +1090,32 @@ class PosProvisioningTests(unittest.TestCase):
         self.assertIn("kopos:provisioning:token-no-ttl", cache.deleted)
         self.assertNotIn("kopos:provisioning:token-no-ttl", cache.values)
 
+    def test_orphan_token_cleanup_failure_is_logged_for_operations(self):
+        cache = _FakeCache()
+        cache.delete = lambda _key: (_ for _ in ()).throw(
+            ConnectionError("redis cleanup unavailable")
+        )
+
+        with (
+            patch.object(provisioning.frappe, "cache", return_value=cache),
+            patch.object(provisioning, "log_sanitized_error") as log_error,
+        ):
+            provisioning._delete_cached_value(
+                "kopos:provisioning:token-cleanup-failed"
+            )
+
+        log_error.assert_called_once()
+        self.assertEqual(
+            log_error.call_args.args[0],
+            "KoPOS unconfirmed provisioning token cleanup failed",
+        )
+
     def test_get_device_config_returns_serialized_device_payload(self):
         fake_device = SimpleNamespace(device_id="tab-a-001", enabled=1)
 
         with (
             patch.object(provisioning, "get_device_doc", return_value=fake_device),
+            patch.object(provisioning, "require_device_api_access") as require_access,
             patch.object(
                 provisioning,
                 "serialize_device_config",
@@ -792,6 +1130,7 @@ class PosProvisioningTests(unittest.TestCase):
         ):
             result = provisioning.get_device_config("tab-a-001")
 
+        require_access.assert_called_once_with(fake_device)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["device_id"], "tab-a-001")
         self.assertEqual(result["config_version"], 7)
@@ -844,6 +1183,193 @@ class PosProvisioningTests(unittest.TestCase):
         self.assertEqual(
             result["setup_preview"]["provisioning_user"], "device-001@kopos.local"
         )
+
+    def test_rotating_qr_is_rejected_before_credentials_or_token_change(self):
+        device = SimpleNamespace(
+            name="KOPOS-DEVICE-001",
+            api_user="device-001@kopos.local",
+        )
+        original = {
+            "api_key": "old-api-key",
+            "api_secret": "old-api-secret",
+        }
+        persisted = dict(original)
+        commits: list[str] = []
+        rollbacks: list[str] = []
+        generated = iter(["new-api-key", "new-api-secret"])
+
+        def set_value(
+            doctype: str,
+            name: str,
+            fieldname: str,
+            value: str,
+            **_kwargs,
+        ) -> None:
+            self.assertEqual((doctype, name, fieldname), ("User", device.api_user, "api_key"))
+            persisted["api_key"] = value
+
+        def set_secret(
+            doctype: str,
+            name: str,
+            value: str,
+            fieldname: str,
+        ) -> None:
+            self.assertEqual((doctype, name, fieldname), ("User", device.api_user, "api_secret"))
+            persisted["api_secret"] = value
+
+        def rollback() -> None:
+            persisted.update(original)
+            rollbacks.append("rollback")
+
+        with (
+            patch.object(provisioning, "require_system_manager", return_value=None),
+            patch.object(provisioning, "get_device_doc", return_value=device),
+            patch.object(
+                provisioning,
+                "_ensure_device_api_user",
+                return_value=device.api_user,
+            ),
+            patch.object(
+                provisioning.frappe.db,
+                "get_value",
+                side_effect=lambda *_args, **_kwargs: persisted["api_key"],
+            ),
+            patch.object(
+                provisioning,
+                "get_decrypted_password",
+                side_effect=lambda *_args, **_kwargs: persisted["api_secret"],
+            ),
+            patch.object(provisioning.frappe.db, "set_value", side_effect=set_value),
+            patch.object(provisioning, "set_encrypted_password", side_effect=set_secret),
+            patch.object(
+                provisioning.frappe,
+                "generate_hash",
+                side_effect=lambda **_kwargs: next(generated),
+            ),
+            patch.object(
+                provisioning,
+                "create_pos_provisioning",
+                side_effect=RuntimeError("Provisioning token could not be persisted to Redis"),
+            ),
+            patch.object(
+                provisioning.frappe.db,
+                "commit",
+                side_effect=lambda: commits.append("commit"),
+            ),
+            patch.object(provisioning.frappe.db, "rollback", side_effect=rollback),
+            self.assertRaisesRegex(
+                provisioning.frappe.ValidationError,
+                "credential rotation is disabled",
+            ),
+        ):
+            provisioning.create_device_provisioning_qr(
+                device=device.name,
+                erpnext_url="https://erp.example.com",
+                rotate_credentials=True,
+            )
+
+        self.assertEqual(persisted, original)
+        self.assertEqual(commits, [])
+        self.assertEqual(rollbacks, [])
+
+    def test_rotating_qr_cannot_publish_a_replacement_token(self):
+        device = SimpleNamespace(
+            name="KOPOS-DEVICE-001",
+            api_user="device-001@kopos.local",
+        )
+        original = {
+            "api_key": "old-api-key",
+            "api_secret": "old-api-secret",
+        }
+        persisted = dict(original)
+        cache = _FakeCache()
+        generated = iter(["new-api-key", "new-api-secret"])
+        rollbacks: list[str] = []
+
+        def set_value(
+            _doctype: str,
+            _name: str,
+            _fieldname: str,
+            value: str,
+            **_kwargs,
+        ) -> None:
+            persisted["api_key"] = value
+
+        def set_secret(
+            _doctype: str,
+            _name: str,
+            value: str,
+            _fieldname: str,
+        ) -> None:
+            persisted["api_secret"] = value
+
+        def create_token(**_kwargs):
+            key = "kopos:provisioning:token-commit-fail"
+            cache.values[key] = b'{"setup":{"api_key":"new-api-key"}}'
+            cache.ttls[key] = 900
+            return {
+                "status": "ok",
+                "token": "token-commit-fail",
+                "provisioning_link": "kopos://provision?token=token-commit-fail",
+                "setup_preview": {},
+            }
+
+        def rollback() -> None:
+            persisted.update(original)
+            rollbacks.append("rollback")
+
+        with (
+            patch.object(provisioning, "require_system_manager", return_value=None),
+            patch.object(provisioning, "get_device_doc", return_value=device),
+            patch.object(
+                provisioning,
+                "_ensure_device_api_user",
+                return_value=device.api_user,
+            ),
+            patch.object(
+                provisioning.frappe.db,
+                "get_value",
+                side_effect=lambda *_args, **_kwargs: persisted["api_key"],
+            ),
+            patch.object(
+                provisioning,
+                "get_decrypted_password",
+                side_effect=lambda *_args, **_kwargs: persisted["api_secret"],
+            ),
+            patch.object(provisioning.frappe.db, "set_value", side_effect=set_value),
+            patch.object(provisioning, "set_encrypted_password", side_effect=set_secret),
+            patch.object(
+                provisioning.frappe,
+                "generate_hash",
+                side_effect=lambda **_kwargs: next(generated),
+            ),
+            patch.object(
+                provisioning,
+                "create_pos_provisioning",
+                side_effect=create_token,
+            ),
+            patch.object(
+                provisioning.frappe.db,
+                "commit",
+                side_effect=RuntimeError("database commit failed"),
+            ),
+            patch.object(provisioning.frappe.db, "rollback", side_effect=rollback),
+            patch.object(provisioning.frappe, "cache", return_value=cache),
+            self.assertRaisesRegex(
+                provisioning.frappe.ValidationError,
+                "credential rotation is disabled",
+            ),
+        ):
+            provisioning.create_device_provisioning_qr(
+                device=device.name,
+                erpnext_url="https://erp.example.com",
+                rotate_credentials=True,
+            )
+
+        self.assertEqual(persisted, original)
+        self.assertEqual(rollbacks, [])
+        self.assertNotIn("kopos:provisioning:token-commit-fail", cache.deleted)
+        self.assertNotIn("kopos:provisioning:token-commit-fail", cache.values)
 
     def test_ensure_device_api_credentials_rejects_shared_api_user_mapping(self):
         device_doc = SimpleNamespace(
@@ -947,7 +1473,21 @@ class PosProvisioningTests(unittest.TestCase):
                 normalize_duplicate_device_api_users.frappe.db, "commit"
             ) as commit,
         ):
-            normalize_duplicate_device_api_users.execute()
+            with self.assertRaises(
+                normalize_duplicate_device_api_users.frappe.ValidationError
+            ) as blocked:
+                normalize_duplicate_device_api_users.execute()
+
+            self.assertIn("allow_clear=True and backup_verified=True", str(blocked.exception))
+            self.assertIn("verified backup", str(blocked.exception))
+            self.assertIn("tab-a-001 (shared@kopos.local)", str(blocked.exception))
+            self.assertEqual(set_value_calls, [])
+            log_error.assert_not_called()
+
+            normalize_duplicate_device_api_users.execute(
+                allow_clear=True,
+                backup_verified=True,
+            )
 
         self.assertEqual(
             set_value_calls,
@@ -959,7 +1499,7 @@ class PosProvisioningTests(unittest.TestCase):
             ],
         )
         log_error.assert_called_once()
-        commit.assert_called_once()
+        commit.assert_not_called()
 
 
 if __name__ == "__main__":

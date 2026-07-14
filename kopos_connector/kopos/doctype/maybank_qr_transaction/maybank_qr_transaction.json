@@ -22,7 +22,11 @@
     "outlet_id",
    "device_id",
     "provider",
+    "currency",
     "idempotency_key",
+    "request_fingerprint",
+    "consumption_key",
+    "invoice_consumption_key",
     "section_receipt",
     "receipt_file",
     "receipt_idempotency_key",
@@ -45,7 +49,8 @@
    "created_at",
    "business_date",
    "scanned_at",
-  "paid_at",
+   "paid_at",
+  "consumed_at",
   "expires_at",
   "last_polled_at",
   "poll_count",
@@ -68,7 +73,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "pending\nscanned\npaid\nfailed\ntimeout\nunknown",
+   "options": "creating\npending\nscanned\npaid\nfailed\ntimeout\nunknown",
    "reqd": 1,
    "search_index": 1
   },
@@ -131,7 +136,8 @@
    {
     "fieldname": "device_id",
     "fieldtype": "Data",
-    "label": "Device ID"
+    "label": "Device ID",
+    "search_index": 1
    },
    {
     "fieldname": "provider",
@@ -139,9 +145,40 @@
     "label": "Provider"
    },
     {
-      "fieldname": "idempotency_key",
+     "fieldname": "currency",
+     "fieldtype": "Link",
+     "label": "Currency",
+     "options": "Currency"
+    },
+    {
+     "fieldname": "idempotency_key",
      "fieldtype": "Data",
-      "label": "Idempotency Key"
+      "label": "Idempotency Key",
+      "search_index": 1
+    },
+    {
+     "fieldname": "request_fingerprint",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Request Fingerprint",
+     "read_only": 1,
+     "unique": 1
+    },
+    {
+     "fieldname": "consumption_key",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "FB Order Consumption Key",
+     "read_only": 1,
+     "unique": 1
+    },
+    {
+     "fieldname": "invoice_consumption_key",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Sales Invoice Consumption Key",
+     "read_only": 1,
+     "unique": 1
     },
     {
      "fieldname": "section_receipt",
@@ -294,6 +331,12 @@
    "read_only": 1
   },
   {
+   "fieldname": "consumed_at",
+   "fieldtype": "Datetime",
+   "label": "Consumed At",
+   "read_only": 1
+  },
+  {
    "fieldname": "expires_at",
    "fieldtype": "Datetime",
    "label": "Expires At"
@@ -332,7 +375,7 @@
  "permissions": [
   {
    "create": 1,
-   "delete": 1,
+   "delete": 0,
    "read": 1,
    "role": "System Manager",
    "write": 1

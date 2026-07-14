@@ -24,7 +24,7 @@ ERPNext connector app for KoPOS mobile POS system with full modifier and availab
 
 ```bash
 cd /path/to/erpnext/frappe-bench
-bench get-app kopos_connector /path/to/JiJiPOS/erpnext/kopos_connector
+bench get-app kopos_connector /absolute/path/to/JiJiPOS-Everything/worktree-fnb-erpnext
 ```
 
 Or from a Git repository:
@@ -85,24 +85,71 @@ In POS Profile form, under **KoPOS SST Configuration** section:
 
 ### Submit Order
 
-Create and submit a POS Invoice using KoPOS' idempotent order contract.
+Create an idempotent `FB Order` and project it to a submitted ERPNext
+`Sales Invoice`. New clients must use the `sen_v1` integer-money contract.
 
 ```http
 POST /api/method/kopos_connector.api.submit_order
+```
+
+Request excerpt:
+```json
+{
+  "money_contract_version": "sen_v1",
+  "order_id": "ORDER-00042",
+  "idempotency_key": "TAB-A-001:SHIFT-001:00042",
+  "device_id": "TAB-A-001",
+  "shift_id": "SHIFT-001",
+  "staff_id": "cashier@example.test",
+  "warehouse": "Main Booth - JC",
+  "company": "JiJi Cafe",
+  "currency": "MYR",
+  "order": {
+    "display_number": "A042",
+    "order_type": "takeaway",
+    "created_at": "2026-07-14T12:30:00+08:00",
+    "subtotal_sen": 1200,
+    "tax_amount_sen": 0,
+    "rounding_adjustment_sen": 0,
+    "total_sen": 1200,
+    "items": [{
+      "line_id": "LINE-1",
+      "item_code": "ICED-MATCHA",
+      "item_name": "Iced Matcha",
+      "qty": 1,
+      "unit_price_sen": 1200,
+      "modifier_total_sen": 0,
+      "discount_amount_sen": 0,
+      "line_total_sen": 1200,
+      "modifiers": []
+    }],
+    "payments": [{
+      "payment_method": "Cash",
+      "amount_sen": 1200,
+      "tendered_amount_sen": 1500,
+      "change_amount_sen": 300
+    }]
+  }
+}
 ```
 
 Response:
 ```json
 {
   "status": "ok",
-  "pos_invoice": "ACC-PSINV-2026-00001",
-  "idempotency_key": "TAB-A-001:SHIFT-001:042"
+  "fb_order": "FB-ORDER-2026-00042",
+  "sales_invoice": "ACC-SINV-2026-00042",
+  "idempotency_key": "TAB-A-001:SHIFT-001:00042",
+  "projection_status": "posted",
+  "partial_failure": false
 }
 ```
 
 ### Process Refund
 
-Process a KoPOS refund as a return `POS Invoice` against the original POS sale.
+Create a return `Sales Invoice` and its posted accounting settlement against an
+ERP-verified original sale. Obtain a scoped `refund_order` manager approval token
+immediately before this call; tokens are short-lived and single-use.
 
 ```http
 POST /api/method/kopos_connector.api.process_refund
@@ -111,22 +158,19 @@ POST /api/method/kopos_connector.api.process_refund
 Request:
 ```json
 {
-  "idempotency_key": "TAB-A-001:SHIFT-001:042:refund-1",
+  "return_id": "TAB-A-001:SHIFT-001:00042:refund-1",
   "device_id": "TAB-A-001",
-  "original_invoice": "ACC-PSINV-2026-00001",
-  "refund_type": "partial",
-  "refund_reason_code": "wrong_order",
-  "refund_reason": "Wrong order",
-  "refund_reason_notes": "Customer received the wrong drink",
+  "fb_order": "FB-ORDER-2026-00042",
+  "original_sales_invoice": "ACC-SINV-2026-00042",
+  "reason_code": "wrong_order",
+  "reason_text": "Customer received the wrong drink",
+  "refund_method": "cash",
   "return_to_stock": false,
-  "payment_mode": "cash",
-  "items": [
-    {
-      "item_code": "ICED-MATCHA",
-      "qty": 1,
-      "rate": 12.00
-    }
-  ]
+  "lines": [{
+    "original_resolved_sale": "FB-RESOLVED-SALE-00042-1",
+    "qty_returned": 1
+  }],
+  "manager_approval_token": "<short-lived-scoped-token>"
 }
 ```
 
@@ -134,9 +178,11 @@ Response:
 ```json
 {
   "status": "ok",
-  "credit_note": "ACC-PSINV-2026-00002",
-  "idempotency_key": "TAB-A-001:SHIFT-001:042:refund-1",
-  "refund_amount": 12.0
+  "return_event": "FB-RETURN-2026-00001",
+  "return_sales_invoice": "ACC-SINV-RET-2026-00001",
+  "settlement_doctype": "Payment Entry",
+  "settlement_document": "ACC-PAY-2026-00001",
+  "settlement_status": "Posted"
 }
 ```
 
@@ -144,9 +190,9 @@ Duplicate-safe replay response:
 ```json
 {
   "status": "duplicate",
-  "credit_note": "ACC-PSINV-2026-00002",
-  "idempotency_key": "TAB-A-001:SHIFT-001:042:refund-1",
-  "message": "Refund already processed"
+  "return_event": "FB-RETURN-2026-00001",
+  "return_sales_invoice": "ACC-SINV-RET-2026-00001",
+  "settlement_status": "Posted"
 }
 ```
 
@@ -180,22 +226,27 @@ Response:
 
 ### Get Catalog
 
-Returns full catalog with categories, items, and modifiers.
+Returns either a complete catalog snapshot or a small content-hash match response.
+The endpoint does not expose partial/delta arrays: clients must not use a delta
+contract until deletions have explicit tombstones.
 
 ```http
-GET /api/method/kopos_connector.api.get_catalog
+GET /api/method/kopos_connector.api.get_catalog?device_id=TABLET-1&known_version=sha256%3A...
 ```
 
 Response:
 ```json
 {
+  "sync_mode": "full",
+  "unchanged": 0,
+  "catalog_version": "sha256:...",
   "categories": [...],
   "items": [
     {
       "id": "ICED-MATCHA",
       "name": "Iced Matcha",
       "category_id": "Beverages",
-      "price": 15.00,
+      "price_sen": 1500,
       "is_available": true,
       "is_active": true,
       "modifier_group_ids": ["size", "milk"]
@@ -217,7 +268,7 @@ Response:
       "id": "size-large",
       "group_id": "size",
       "name": "Large",
-      "price_adjustment": 3.00,
+      "price_adjustment_sen": 300,
       "is_default": false,
       "is_active": true,
       "display_order": 2
@@ -232,6 +283,29 @@ Response:
   }
 }
 ```
+
+If `known_version` matches the current content, the response omits all catalog
+arrays so the tablet does not parse or persist an identical snapshot:
+
+```json
+{
+  "sync_mode": "unchanged",
+  "unchanged": 1,
+  "catalog_version": "sha256:...",
+  "timestamp": "2026-03-08T12:02:00+08:00",
+  "metadata": {
+    "company": "Your Company",
+    "pos_profile": "Main POS",
+    "warehouse": "Stores - YC",
+    "currency": "MYR",
+    "tax_rate": 0.08
+  }
+}
+```
+
+`price_sen` and `price_adjustment_sen` are authoritative. Compatibility decimal
+fields may still appear at migration boundaries, but new clients must neither
+send them nor use them for totals, tax, discounts, tender, change, or refunds.
 
 ### Get Item Modifiers
 
@@ -258,9 +332,9 @@ Response:
 
 ### Refund Notes
 
-- POS-originated refunds are created as return `POS Invoice` documents in ERPNext v16.
-- `refund_reason_code` accepts: `customer_changed_mind`, `wrong_order`, `quality_issue`, `item_damaged`, `service_issue`, `pricing_error`, `other`.
-- `refund_reason` is required and is stored on the return `POS Invoice`; when `refund_reason_code` is `other`, `refund_reason_notes` becomes the stored reason text.
+- POS-originated refunds are created as return `Sales Invoice` documents in ERPNext v16.
+- `reason_code` accepts: `customer_changed_mind`, `wrong_order`, `quality_issue`, `item_damaged`, `service_issue`, `pricing_error`, `other`.
+- `reason_code` is required and is stored on the return `Sales Invoice`; use `reason_text` for approved free-text detail.
 - `return_to_stock` controls whether the return updates inventory.
 
 ### Stock Availability Policy
@@ -329,10 +403,12 @@ Links items to modifier groups.
 - `custom_kopos_enable_sst`: Enable SST
 - `custom_kopos_sst_rate`: SST percentage rate
 
-### POS Invoice DocType
+### Sales Invoice DocType
 
-- `custom_kopos_idempotency_key`: Unique key used to deduplicate retries
-- `custom_kopos_device_id`: Device identifier captured from KoPOS submissions
+- `custom_fb_order`: Canonical source `FB Order`
+- `custom_fb_shift`: Canonical source `FB Shift`
+- `custom_fb_idempotency_key`: Unique sale key used to deduplicate retries
+- `custom_fb_device_id`: Device identifier captured from KoPOS submissions
 
 ## Sample Data
 

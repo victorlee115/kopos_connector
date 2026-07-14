@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import frappe
@@ -23,11 +24,22 @@ def create_ingredient_stock_entry(fb_order: Any, resolved_sales: Any) -> str | N
     if not order_doc:
         return None
 
+    resolved_sale_docs = _coerce_resolved_sales(resolved_sales)
     existing_entry = _get_existing_reference(order_doc, "ingredient_stock_entry")
     if existing_entry:
+        existing_doc = _coerce_doc("Stock Entry", existing_entry)
+        if not existing_doc:
+            frappe.throw(
+                f"Recovered Stock Entry {existing_entry} was not found",
+                frappe.ValidationError,
+            )
+        _validate_stock_entry_equivalence(
+            order_doc,
+            resolved_sale_docs,
+            existing_doc,
+        )
         return existing_entry
 
-    resolved_sale_docs = _coerce_resolved_sales(resolved_sales)
     if not resolved_sale_docs:
         return None
 
@@ -63,6 +75,13 @@ def create_ingredient_stock_entry(fb_order: Any, resolved_sales: Any) -> str | N
 
             stock_entry.insert(ignore_permissions=True)
             stock_entry.submit()
+            if hasattr(stock_entry, "reload"):
+                stock_entry.reload()
+            _validate_stock_entry_equivalence(
+                order_doc,
+                resolved_sale_docs,
+                stock_entry,
+            )
 
         _set_source_reference(order_doc, "ingredient_stock_entry", stock_entry.name)
         _set_source_reference(order_doc, "stock_status", "Posted")
@@ -120,11 +139,23 @@ def _build_grouped_issue_items(resolved_sale_docs: list[Any]) -> list[dict[str, 
                 resolved_sale_doc, "booth_warehouse"
             )
             item_code = _value(component, "item")
-            qty = float(_value(component, "stock_qty") or _value(component, "qty") or 0)
+            stock_qty_value = _value(component, "stock_qty")
+            if stock_qty_value in (None, ""):
+                stock_qty_value = _value(component, "qty")
+            qty = _positive_decimal_quantity(
+                stock_qty_value,
+                f"Resolved Sale {_value(resolved_sale_doc, 'name') or '(unnamed)'} stock quantity",
+            )
             stock_uom = _value(component, "stock_uom") or _value(component, "uom")
 
-            if not warehouse or not item_code or qty <= 0:
-                continue
+            if (
+                not warehouse
+                or not item_code
+                or not stock_uom
+            ):
+                raise ValueError(
+                    "Stock-affecting resolved component requires item, warehouse, stock UOM, and positive stock quantity"
+                )
 
             key = (
                 warehouse,
@@ -139,6 +170,7 @@ def _build_grouped_issue_items(resolved_sale_docs: list[Any]) -> list[dict[str, 
                 grouped[key] = {
                     "item_code": item_code,
                     "s_warehouse": warehouse,
+                    "t_warehouse": None,
                     "qty": qty,
                     "uom": stock_uom,
                     "stock_uom": stock_uom,
@@ -149,9 +181,137 @@ def _build_grouped_issue_items(resolved_sale_docs: list[Any]) -> list[dict[str, 
                 }
                 continue
 
-            current["qty"] = float(current.get("qty") or 0) + qty
+            current["qty"] = Decimal(str(current.get("qty") or 0)) + qty
 
     return list(grouped.values())
+
+
+def _positive_decimal_quantity(value: Any, fieldname: str) -> Decimal:
+    if isinstance(value, bool) or value in (None, ""):
+        raise ValueError(f"{fieldname} must be a finite positive decimal")
+    try:
+        quantity = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError, AttributeError) as error:
+        raise ValueError(
+            f"{fieldname} must be a finite positive decimal"
+        ) from error
+    if not quantity.is_finite() or quantity <= 0:
+        raise ValueError(f"{fieldname} must be a finite positive decimal")
+    return quantity
+
+
+def _validate_stock_entry_equivalence(
+    order_doc: Any,
+    resolved_sale_docs: list[Any],
+    stock_entry: Any,
+) -> None:
+    """Prove one submitted Material Issue exactly consumes resolved components."""
+
+    stock_entry_name = str(_value(stock_entry, "name") or "(unnamed)")
+    if int(_value(stock_entry, "docstatus") or 0) != 1:
+        frappe.throw(
+            f"Recovered Stock Entry {stock_entry_name} is not submitted",
+            frappe.ValidationError,
+        )
+    if str(_value(stock_entry, "stock_entry_type") or "").strip() != "Material Issue":
+        frappe.throw(
+            f"Recovered Stock Entry {stock_entry_name} is not a Material Issue",
+            frappe.ValidationError,
+        )
+    if str(_value(stock_entry, "purpose") or "").strip() != "Material Issue":
+        frappe.throw(
+            f"Recovered Stock Entry {stock_entry_name} has the wrong purpose",
+            frappe.ValidationError,
+        )
+    if str(_value(stock_entry, "company") or "").strip() != str(
+        _value(order_doc, "company") or ""
+    ).strip():
+        frappe.throw(
+            f"Recovered Stock Entry {stock_entry_name} belongs to another company",
+            frappe.ValidationError,
+        )
+    if str(_value(stock_entry, "custom_fb_order") or "").strip() != str(
+        _value(order_doc, "name") or ""
+    ).strip():
+        frappe.throw(
+            f"Recovered Stock Entry {stock_entry_name} belongs to another FB Order",
+            frappe.ValidationError,
+        )
+    if str(_value(stock_entry, "custom_fb_shift") or "").strip() != str(
+        _value(order_doc, "shift") or ""
+    ).strip():
+        frappe.throw(
+            f"Recovered Stock Entry {stock_entry_name} belongs to another FB Shift",
+            frappe.ValidationError,
+        )
+
+    expected_rows = _build_grouped_issue_items(resolved_sale_docs)
+    actual_rows = list(_value(stock_entry, "items") or [])
+    if len(actual_rows) != len(expected_rows):
+        frappe.throw(
+            f"Recovered Stock Entry {stock_entry_name} item count does not match resolved components",
+            frappe.ValidationError,
+        )
+
+    expected_by_key = {
+        _stock_row_key(row): row
+        for row in expected_rows
+    }
+    if len(expected_by_key) != len(expected_rows):
+        frappe.throw(
+            f"FB Order {_value(order_doc, 'name')} resolved components are not uniquely grouped",
+            frappe.ValidationError,
+        )
+
+    seen_keys: set[tuple[str, str, str]] = set()
+    for row in actual_rows:
+        key = _stock_row_key(row)
+        expected = expected_by_key.get(key)
+        if expected is None or key in seen_keys:
+            frappe.throw(
+                f"Recovered Stock Entry {stock_entry_name} has an unknown or duplicate component row",
+                frappe.ValidationError,
+            )
+        seen_keys.add(key)
+        if str(_value(row, "t_warehouse") or "").strip():
+            frappe.throw(
+                f"Recovered Stock Entry {stock_entry_name} Material Issue row has a target warehouse",
+                frappe.ValidationError,
+            )
+        expected_qty = _positive_decimal_quantity(
+            _value(expected, "qty"),
+            f"Expected Stock Entry {stock_entry_name} item quantity",
+        )
+        actual_qty = _positive_decimal_quantity(
+            _value(row, "qty"),
+            f"Recovered Stock Entry {stock_entry_name} item quantity",
+        )
+        transfer_qty = _positive_decimal_quantity(
+            _value(row, "transfer_qty"),
+            f"Recovered Stock Entry {stock_entry_name} transfer quantity",
+        )
+        if actual_qty != expected_qty or transfer_qty != expected_qty:
+            frappe.throw(
+                f"Recovered Stock Entry {stock_entry_name} component quantity does not match resolved components",
+                frappe.ValidationError,
+            )
+        conversion_factor = _positive_decimal_quantity(
+            _value(row, "conversion_factor"),
+            f"Recovered Stock Entry {stock_entry_name} conversion factor",
+        )
+        if conversion_factor != Decimal("1"):
+            frappe.throw(
+                f"Recovered Stock Entry {stock_entry_name} component conversion factor must be 1",
+                frappe.ValidationError,
+            )
+
+
+def _stock_row_key(row: Any) -> tuple[str, str, str]:
+    return (
+        str(_value(row, "item_code") or "").strip(),
+        str(_value(row, "s_warehouse") or "").strip(),
+        str(_value(row, "stock_uom") or _value(row, "uom") or "").strip(),
+    )
 
 
 def _build_component_description(resolved_sale_doc: Any, component: Any) -> str:

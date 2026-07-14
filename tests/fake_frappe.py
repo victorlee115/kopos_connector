@@ -81,8 +81,14 @@ def install_fake_frappe_modules() -> None:
         frappe_model_document_module = ModuleType("frappe.model.document")
         sys.modules["frappe.model.document"] = frappe_model_document_module
 
-    class ValidationError(Exception):
-        pass
+    existing_validation_error = getattr(frappe_module, "ValidationError", None)
+    if isinstance(existing_validation_error, type) and issubclass(
+        existing_validation_error, Exception
+    ):
+        ValidationError = existing_validation_error
+    else:
+        class ValidationError(Exception):
+            pass
 
     def cstr(value):
         return "" if value is None else str(value)
@@ -149,9 +155,13 @@ def install_fake_frappe_modules() -> None:
     class PermissionError(Exception):
         pass
 
+    class DuplicateEntryError(Exception):
+        pass
+
     setattr(frappe_module, "_", lambda value: value)
     setattr(frappe_module, "ValidationError", ValidationError)
     setattr(frappe_module, "PermissionError", PermissionError)
+    setattr(frappe_module, "DuplicateEntryError", DuplicateEntryError)
     setattr(frappe_module, "whitelist", lambda *args, **kwargs: (lambda fn: fn))
     setattr(frappe_module, "sendmail", lambda *args, **kwargs: None)
     setattr(

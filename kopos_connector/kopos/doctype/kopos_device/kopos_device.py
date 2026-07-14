@@ -83,6 +83,7 @@ class KoPOSDevice(Document):
 
     def _normalize_users(self) -> None:
         seen_users: set[str] = set()
+        active_user_count = 0
         default_cashier_count = 0
 
         for row in self.device_users or []:
@@ -120,8 +121,16 @@ class KoPOSDevice(Document):
 
             row.pin = None
 
-            if cint(row.active) and cint(row.default_cashier):
-                default_cashier_count += 1
+            if cint(row.active):
+                active_user_count += 1
+                if cint(row.default_cashier):
+                    default_cashier_count += 1
+
+        if cint(self.enabled) and active_user_count == 0:
+            frappe.throw(
+                _("Enabled KoPOS Devices require at least one active device user"),
+                frappe.ValidationError,
+            )
 
         if default_cashier_count > 1:
             frappe.throw(

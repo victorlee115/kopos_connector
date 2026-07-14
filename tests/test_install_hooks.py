@@ -13,7 +13,7 @@ quarantine_legacy_modifier_report = importlib.import_module(
 
 
 class InstallHookTests(unittest.TestCase):
-    def test_before_migrate_normalizes_duplicate_device_api_users(self):
+    def test_before_migrate_preflights_duplicate_device_api_users(self):
         with patch.object(
             install_module, "normalize_duplicate_device_api_users"
         ) as normalize:

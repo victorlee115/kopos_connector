@@ -10,9 +10,13 @@
     "engine": "InnoDB",
     "field_order": [
         "order_info_section",
-        "order_id",
-        "external_idempotency_key",
-        "source",
+	  "order_id",
+	  "display_number",
+	  "order_type",
+	  "catalog_version",
+	  "external_idempotency_key",
+  "request_fingerprint",
+  "source",
         "sale_datetime",
         "column_break_1",
         "device_id",
@@ -34,8 +38,9 @@
         "ingredient_stock_entry",
         "totals_section",
         "net_total",
-        "tax_total",
-        "rounding_adjustment",
+	        "tax_total",
+	        "tax_rate",
+	        "rounding_adjustment",
         "grand_total",
         "notes_section",
         "notes"
@@ -54,12 +59,38 @@
             "reqd": 1,
             "unique": 1
         },
-        {
-            "fieldname": "external_idempotency_key",
+	  {
+	   "fieldname": "display_number",
+	   "fieldtype": "Data",
+	   "label": "Display Number",
+	   "read_only": 1
+	  },
+	  {
+	   "fieldname": "order_type",
+	   "fieldtype": "Data",
+	   "label": "Order Type",
+	   "read_only": 1
+	  },
+	  {
+	   "description": "Immutable catalog content version captured by the POS at sale commit",
+	   "fieldname": "catalog_version",
+	   "fieldtype": "Data",
+	   "label": "Catalog Version",
+	   "read_only": 1
+	  },
+  {
+   "fieldname": "external_idempotency_key",
             "fieldtype": "Data",
             "label": "Idempotency Key",
-            "unique": 1
-        },
+   "unique": 1
+  },
+  {
+   "fieldname": "request_fingerprint",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Canonical Request Fingerprint",
+   "read_only": 1
+  },
         {
             "fieldname": "source",
             "fieldtype": "Select",
@@ -207,6 +238,14 @@
             "fieldtype": "Currency",
             "label": "Tax Total"
         },
+	  {
+	   "description": "Decimal tax rate submitted by the POS, for example 0.08 for 8 percent",
+	   "fieldname": "tax_rate",
+	   "fieldtype": "Float",
+	   "label": "Submitted Tax Rate",
+	   "precision": "6",
+	   "read_only": 1
+	  },
         {
             "fieldname": "rounding_adjustment",
             "fieldtype": "Currency",
@@ -288,7 +327,6 @@
             "write": 1
         },
         {
-            "create": 1,
             "delete": 0,
             "email": 0,
             "export": 0,
@@ -296,9 +334,7 @@
             "read": 1,
             "report": 0,
             "role": "KoPOS Cashier",
-            "share": 0,
-            "submit": 1,
-            "write": 1
+            "share": 0
         }
     ],
     "sort_field": "modified",

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import frappe
 
-from kopos_connector.kopos.services.accounting.return_settlement_service import (
-    get_settlement_cash_adjustment_sen,
+from kopos_connector.kopos.api.money_contract import (
+    MoneyContractValidationError,
+    persisted_money_to_sen,
 )
 
 from kopos_connector.utils.diagnostics import (
@@ -207,92 +210,324 @@ def _copy_invoice_dimensions(original_invoice: Any, return_invoice: Any) -> None
             setattr(return_invoice, fieldname, getattr(original_invoice, fieldname))
 
 
+def lock_fb_shift_cash_scope(shift_name: Any) -> Any:
+    """Serialize every cash-affecting mutation for one FB Shift."""
+    shift = cstr(shift_name).strip()
+    if not shift:
+        frappe.throw("FB Shift is required for cash reconciliation", frappe.ValidationError)
+
+    rows = frappe.db.sql(
+        """
+        SELECT name, opening_float, counted_cash
+        FROM `tabFB Shift`
+        WHERE name = %s
+        LIMIT 1
+        FOR UPDATE
+        """,
+        (shift,),
+        as_dict=True,
+    )
+    if not rows:
+        frappe.throw(f"FB Shift {shift} was not found", frappe.ValidationError)
+    return rows[0]
+
+
 def refresh_fb_shift_cash(shift_name: Any) -> None:
+    """Reconcile shift cash from current, row-locked accounting evidence."""
     shift = cstr(shift_name).strip()
     if not shift:
         return
 
-    shift_doc = frappe.get_doc("FB Shift", shift)
-    sales_invoice_names = _get_shift_sales_invoice_names(shift)
-    total_cash_sen = 0
+    shift_row = lock_fb_shift_cash_scope(shift)
+    total_cash_sen = _get_locked_shift_sales_cash_sen(shift)
+    total_cash_sen += _get_locked_shift_return_cash_adjustment_sen(shift)
 
-    for invoice_name in sales_invoice_names:
-        invoice = _coerce_doc("Sales Invoice", invoice_name)
-        if invoice and flt(_value(invoice, "docstatus")) == 1:
-            total_cash_sen += _get_cash_payment_total_sen(invoice)
-
-    for return_event in _get_shift_return_events(sales_invoice_names):
-        total_cash_sen += get_settlement_cash_adjustment_sen(return_event)
-
-    expected_cash_sen = _money_to_sen(
-        _value(shift_doc, "opening_float"), "FB Shift opening_float"
-    ) + total_cash_sen
-    _set_doc_field(shift_doc, "expected_cash", _sen_to_amount(expected_cash_sen))
-    if _value(shift_doc, "counted_cash") is not None:
-        counted_cash_sen = _money_to_sen(
-            _value(shift_doc, "counted_cash"), "FB Shift counted_cash"
-        )
-        _set_doc_field(
-            shift_doc,
-            "cash_variance",
-            _sen_to_amount(counted_cash_sen - expected_cash_sen),
-        )
-
-
-def _get_shift_sales_invoice_names(shift: str) -> list[str]:
-    rows = frappe.get_all(
-        "FB Order",
-        filters={"shift": shift, "status": "Submitted"},
-        fields=["sales_invoice"],
+    opening_float_sen = _money_to_sen(
+        _value(shift_row, "opening_float"), f"FB Shift {shift} opening_float"
     )
-    invoice_names: list[str] = []
+    expected_cash_sen = opening_float_sen + total_cash_sen
+    updates: dict[str, Decimal] = {
+        "expected_cash": _sen_to_amount(expected_cash_sen)
+    }
+    if _value(shift_row, "counted_cash") is not None:
+        counted_cash_sen = _money_to_sen(
+            _value(shift_row, "counted_cash"), f"FB Shift {shift} counted_cash"
+        )
+        updates["cash_variance"] = _sen_to_amount(
+            counted_cash_sen - expected_cash_sen
+        )
+    frappe.db.set_value(
+        "FB Shift",
+        shift,
+        updates,
+        update_modified=False,
+    )
+
+
+def _get_locked_shift_sales_cash_sen(shift: str) -> int:
+    rows = frappe.db.sql(
+        """
+        SELECT
+            sales_invoice.name AS sales_invoice,
+            sales_invoice.change_amount,
+            payment.name AS payment_row,
+            payment.mode_of_payment,
+            payment.amount AS payment_amount
+        FROM `tabFB Order` AS fb_order
+        INNER JOIN `tabSales Invoice` AS sales_invoice
+            ON sales_invoice.name = fb_order.sales_invoice
+        LEFT JOIN `tabSales Invoice Payment` AS payment
+            ON payment.parent = sales_invoice.name
+            AND payment.parenttype = 'Sales Invoice'
+            AND payment.parentfield = 'payments'
+        WHERE fb_order.shift = %s
+            AND fb_order.status = 'Submitted'
+            AND sales_invoice.docstatus = 1
+        ORDER BY sales_invoice.name, payment.idx, payment.name
+        FOR UPDATE
+        """,
+        (shift,),
+        as_dict=True,
+    )
+    invoice_totals: dict[str, dict[str, Any]] = {}
     for row in rows or []:
         invoice_name = cstr(_value(row, "sales_invoice")).strip()
-        if invoice_name:
-            invoice_names.append(invoice_name)
-    return invoice_names
+        if not invoice_name:
+            frappe.throw(
+                f"FB Shift {shift} contains an order without a Sales Invoice",
+                frappe.ValidationError,
+            )
+        totals = invoice_totals.setdefault(
+            invoice_name,
+            {
+                "cash_tender_sen": 0,
+                "change_sen": _money_to_sen(
+                    _value(row, "change_amount"),
+                    f"Sales Invoice {invoice_name} change_amount",
+                ),
+                "payment_rows": set(),
+            },
+        )
+        observed_change_sen = _money_to_sen(
+            _value(row, "change_amount"),
+            f"Sales Invoice {invoice_name} change_amount",
+        )
+        if observed_change_sen != totals["change_sen"]:
+            frappe.throw(
+                f"Sales Invoice {invoice_name} has inconsistent change evidence",
+                frappe.ValidationError,
+            )
+
+        payment_row = cstr(_value(row, "payment_row")).strip()
+        if not payment_row or payment_row in totals["payment_rows"]:
+            continue
+        totals["payment_rows"].add(payment_row)
+        if cstr(_value(row, "mode_of_payment")).strip().lower() == "cash":
+            totals["cash_tender_sen"] += _money_to_sen(
+                _value(row, "payment_amount"),
+                f"Sales Invoice {invoice_name} cash payment",
+            )
+
+    total_cash_sen = 0
+    for invoice_name, totals in invoice_totals.items():
+        cash_tender_sen = int(totals["cash_tender_sen"])
+        change_sen = int(totals["change_sen"])
+        if change_sen < 0:
+            frappe.throw(
+                f"Sales Invoice {invoice_name} change_amount must be non-negative",
+                frappe.ValidationError,
+            )
+        if change_sen > cash_tender_sen:
+            frappe.throw(
+                f"Sales Invoice {invoice_name} change exceeds its cash tender",
+                frappe.ValidationError,
+            )
+        total_cash_sen += cash_tender_sen - change_sen
+    return total_cash_sen
 
 
-def _get_shift_return_events(sales_invoice_names: list[str]) -> list[Any]:
-    if not sales_invoice_names:
-        return []
-    rows = frappe.get_all(
-        "FB Return Event",
-        filters={
-            "original_sales_invoice": ["in", sales_invoice_names],
-            "docstatus": 1,
-            "settlement_status": "Posted",
-        },
-        fields=["name"],
+def _get_locked_shift_return_cash_adjustment_sen(shift: str) -> int:
+    rows = frappe.db.sql(
+        """
+        SELECT
+            return_event.name,
+            return_event.refund_method,
+            return_event.settlement_doctype,
+            return_event.settlement_document,
+            return_event.settlement_amount,
+            return_event.settlement_tenders_json,
+            settlement.name AS settlement_name,
+            settlement.docstatus AS settlement_docstatus
+        FROM `tabFB Return Event` AS return_event
+        INNER JOIN `tabFB Order` AS fb_order
+            ON fb_order.sales_invoice = return_event.original_sales_invoice
+        LEFT JOIN `tabJournal Entry` AS settlement
+            ON settlement.name = return_event.settlement_document
+        WHERE fb_order.shift = %s
+            AND fb_order.status = 'Submitted'
+            AND return_event.docstatus = 1
+            AND return_event.settlement_status = 'Posted'
+        ORDER BY return_event.name
+        FOR UPDATE
+        """,
+        (shift,),
+        as_dict=True,
     )
-    return [
-        frappe.get_doc("FB Return Event", cstr(_value(row, "name")).strip())
-        for row in rows or []
-        if cstr(_value(row, "name")).strip()
-    ]
+    total_adjustment_sen = 0
+    seen_events: set[str] = set()
+    for row in rows or []:
+        event_name = cstr(_value(row, "name")).strip()
+        if not event_name or event_name in seen_events:
+            continue
+        seen_events.add(event_name)
+        if cstr(_value(row, "refund_method")).strip().lower() != "cash":
+            continue
+        total_adjustment_sen -= _validate_locked_cash_settlement_sen(row, event_name)
+    return total_adjustment_sen
+
+
+def _validate_locked_cash_settlement_sen(row: Any, event_name: str) -> int:
+    settlement_doctype = cstr(_value(row, "settlement_doctype")).strip()
+    settlement_document = cstr(_value(row, "settlement_document")).strip()
+    if settlement_doctype != "Journal Entry" or not settlement_document:
+        frappe.throw(
+            f"FB Return Event {event_name} has no Journal Entry settlement proof",
+            frappe.ValidationError,
+        )
+    if (
+        cstr(_value(row, "settlement_name")).strip() != settlement_document
+        or int(_value(row, "settlement_docstatus") or 0) != 1
+    ):
+        frappe.throw(
+            f"FB Return Event {event_name} settlement is not submitted",
+            frappe.ValidationError,
+        )
+
+    settlement_amount_sen = _money_to_sen(
+        _value(row, "settlement_amount"),
+        f"FB Return Event {event_name} settlement_amount",
+    )
+    if settlement_amount_sen <= 0:
+        frappe.throw(
+            f"FB Return Event {event_name} settlement_amount must be positive",
+            frappe.ValidationError,
+        )
+    raw_evidence = _value(row, "settlement_tenders_json")
+    try:
+        evidence = json.loads(cstr(raw_evidence))
+    except (json.JSONDecodeError, TypeError, ValueError) as error:
+        frappe.throw(
+            f"FB Return Event {event_name} has invalid settlement tender evidence",
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw must raise") from error
+    if not isinstance(evidence, Mapping):
+        frappe.throw(
+            f"FB Return Event {event_name} has invalid settlement tender evidence",
+            frappe.ValidationError,
+        )
+
+    evidence_amount_sen = _strict_evidence_sen(
+        evidence.get("settlement_amount_sen"),
+        event_name,
+        "settlement_amount_sen",
+    )
+    customer_debit_sen = _strict_evidence_sen(
+        evidence.get("customer_debit_sen"), event_name, "customer_debit_sen"
+    )
+    return_outstanding_sen = _strict_evidence_sen(
+        evidence.get("return_outstanding_sen"),
+        event_name,
+        "return_outstanding_sen",
+    )
+    if (
+        cstr(evidence.get("refund_method")).strip().lower() != "cash"
+        or evidence_amount_sen != settlement_amount_sen
+        or customer_debit_sen != settlement_amount_sen
+        or return_outstanding_sen != 0
+    ):
+        frappe.throw(
+            f"FB Return Event {event_name} settlement tender evidence is inconsistent",
+            frappe.ValidationError,
+        )
+
+    tenders = evidence.get("tenders")
+    if not isinstance(tenders, list) or not tenders:
+        frappe.throw(
+            f"FB Return Event {event_name} has no settlement tender rows",
+            frappe.ValidationError,
+        )
+    tender_total_sen = 0
+    for index, tender in enumerate(tenders, start=1):
+        if not isinstance(tender, Mapping):
+            frappe.throw(
+                f"FB Return Event {event_name} tender {index} is invalid",
+                frappe.ValidationError,
+            )
+        if cstr(tender.get("refund_method")).strip().lower() != "cash":
+            frappe.throw(
+                f"FB Return Event {event_name} tender {index} is not cash",
+                frappe.ValidationError,
+            )
+        amount_sen = _strict_evidence_sen(
+            tender.get("amount_sen"), event_name, f"tenders[{index}].amount_sen"
+        )
+        if amount_sen <= 0:
+            frappe.throw(
+                f"FB Return Event {event_name} tender {index} must be positive",
+                frappe.ValidationError,
+            )
+        tender_total_sen += amount_sen
+    if tender_total_sen != settlement_amount_sen:
+        frappe.throw(
+            f"FB Return Event {event_name} tender total does not match settlement_amount",
+            frappe.ValidationError,
+        )
+    return settlement_amount_sen
+
+
+def _strict_evidence_sen(value: Any, event_name: str, fieldname: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        frappe.throw(
+            f"FB Return Event {event_name} {fieldname} must be integer sen",
+            frappe.ValidationError,
+        )
+    return value
 
 
 def _get_cash_payment_total_sen(invoice: Any) -> int:
-    total_sen = 0
+    cash_tender_sen = 0
     for payment in _value(invoice, "payments") or []:
-        if cstr(_value(payment, "mode_of_payment")).strip() == "Cash":
-            total_sen += _money_to_sen(
+        if cstr(_value(payment, "mode_of_payment")).strip().lower() == "cash":
+            cash_tender_sen += _money_to_sen(
                 _value(payment, "amount"), "Sales Invoice cash payment"
             )
-    return total_sen
+
+    change_sen = _money_to_sen(
+        _value(invoice, "change_amount"), "Sales Invoice change_amount"
+    )
+    if change_sen < 0:
+        frappe.throw(
+            "Sales Invoice change_amount must be non-negative",
+            frappe.ValidationError,
+        )
+    if change_sen > cash_tender_sen:
+        frappe.throw(
+            "Sales Invoice change exceeds its cash tender",
+            frappe.ValidationError,
+        )
+    return cash_tender_sen - change_sen
 
 
 def _money_to_sen(value: Any, label: str) -> int:
     try:
-        amount = Decimal(cstr(value or 0).strip() or "0")
-    except (InvalidOperation, ValueError) as error:
-        frappe.throw(f"Invalid {label}: {value}", frappe.ValidationError)
-        raise ValueError(f"Invalid {label}: {value}") from error
-    sen = amount * Decimal("100")
-    integral_sen = sen.to_integral_value()
-    if sen != integral_sen:
-        frappe.throw(f"{label} contains fractional sen", frappe.ValidationError)
-    return int(integral_sen)
+        return persisted_money_to_sen(
+            0 if value is None or value == "" else value,
+            label,
+        )
+    except MoneyContractValidationError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+        raise AssertionError("frappe.throw must raise") from error
 
 
 def _sen_to_amount(value_sen: int) -> Decimal:

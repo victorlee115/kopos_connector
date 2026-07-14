@@ -50,6 +50,14 @@ def _write_response(payload: dict[str, Any], http_status_code: int = 200) -> Non
         frappe.local.response.pop(key, None)
 
 
+def _validation_error_payload(exc: frappe.ValidationError) -> dict[str, Any]:
+    payload: dict[str, Any] = {"status": "error", "message": str(exc)}
+    error_code = frappe.utils.cstr(getattr(exc, "error_code", None)).strip()
+    if error_code:
+        payload["error_code"] = error_code
+    return payload
+
+
 @frappe.whitelist(allow_guest=True)
 def ping() -> None:
     """Simple health endpoint for KoPOS setup validation."""
@@ -57,14 +65,24 @@ def ping() -> None:
 
 
 @frappe.whitelist()
-def get_catalog(since: str | None = None, device_id: str | None = None) -> None:
+def get_catalog(
+    since: str | None = None,
+    device_id: str | None = None,
+    known_version: str | None = None,
+) -> None:
     """Public KoPOS endpoint for catalog sync."""
     try:
         require_device_context(device_id=device_id)
         if device_id:
             mark_device_seen(device_id=device_id)
         with elevate_device_api_user():
-            _write_response(build_catalog_payload(since=since, device_id=device_id))
+            _write_response(
+                build_catalog_payload(
+                    since=since,
+                    device_id=device_id,
+                    known_version=known_version,
+                )
+            )
     except Exception:
         frappe.log_error(frappe.get_traceback(), "KoPOS get_catalog failed")
         raise
@@ -182,7 +200,7 @@ def create_pos_provisioning(**kwargs: Any) -> None:
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist(allow_guest=True, methods=["POST"])
 def redeem_pos_provisioning(token: str | None = None, **kwargs: Any) -> None:
     """Redeem a one-time KoPOS provisioning link from a QR/deep link."""
     try:
@@ -551,7 +569,7 @@ def void_order(**kwargs: Any) -> None:
         _write_response(result)
     except frappe.ValidationError as exc:
         frappe.db.rollback()
-        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+        _write_response(_validation_error_payload(exc), http_status_code=400)
     except Exception:
         frappe.db.rollback()
         frappe.log_error(frappe.get_traceback(), "KoPOS void_order failed")
@@ -565,17 +583,68 @@ def void_order(**kwargs: Any) -> None:
 
 
 def _process_sales_invoice_void_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    from kopos_connector.utils.manager_approval import (
+        build_sales_invoice_approval_scope,
+        canonical_context_hash,
+        load_consumed_manager_approval_proof,
+        verify_manager_approval_token,
+    )
+
     sales_invoice = frappe.utils.cstr(payload.get("sales_invoice")).strip()
     device_id = frappe.utils.cstr(payload.get("device_id")).strip()
     idempotency_key = frappe.utils.cstr(payload.get("idempotency_key")).strip()
     reason = frappe.utils.cstr(payload.get("reason")).strip()
+    manager_approval_token = frappe.utils.cstr(
+        payload.get("manager_approval_token")
+    ).strip()
     if not sales_invoice:
         frappe.throw(_("sales_invoice is required"), frappe.ValidationError)
     if not device_id:
         frappe.throw(_("device_id is required"), frappe.ValidationError)
     if not idempotency_key:
         frappe.throw(_("idempotency_key is required"), frappe.ValidationError)
+    locked_cash_shift = _lock_sales_invoice_cash_shift(sales_invoice)
+    locked_rows = frappe.db.sql(
+        """
+        SELECT
+            name, docstatus, is_return, custom_fb_order, custom_fb_shift,
+            custom_fb_device_id, grand_total, custom_fb_void_idempotency_key,
+            custom_fb_void_request_fingerprint, custom_fb_void_manager,
+            custom_fb_void_approval_token_id
+        FROM `tabSales Invoice`
+        WHERE name = %s
+        FOR UPDATE
+        """,
+        (sales_invoice,),
+        as_dict=True,
+    )
     invoice = frappe.get_doc("Sales Invoice", sales_invoice)
+    if locked_rows:
+        for fieldname in (
+            "docstatus",
+            "is_return",
+            "custom_fb_order",
+            "custom_fb_shift",
+            "custom_fb_device_id",
+            "grand_total",
+            "custom_fb_void_idempotency_key",
+            "custom_fb_void_request_fingerprint",
+            "custom_fb_void_manager",
+            "custom_fb_void_approval_token_id",
+        ):
+            locked_value = _row_value(locked_rows[0], fieldname)
+            if locked_value is not None:
+                setattr(invoice, fieldname, locked_value)
+    invoice_cash_shift = frappe.utils.cstr(
+        getattr(invoice, "custom_fb_shift", None)
+    ).strip()
+    if not locked_cash_shift or invoice_cash_shift != locked_cash_shift:
+        frappe.throw(
+            _(
+                "Sales Invoice {0} has no stable FB Shift cash scope; retry after repairing its shift link"
+            ).format(sales_invoice),
+            frappe.ValidationError,
+        )
     if getattr(invoice, "is_return", 0):
         frappe.throw(_("Cannot void a return Sales Invoice"), frappe.ValidationError)
     if not _is_fb_sales_invoice(invoice):
@@ -588,18 +657,78 @@ def _process_sales_invoice_void_payload(payload: dict[str, Any]) -> dict[str, An
         frappe.throw(_("Sales Invoice {0} has no device ownership context").format(sales_invoice), frappe.ValidationError)
     if invoice_device_id != device_id:
         frappe.throw(_("Sales Invoice {0} belongs to another device").format(sales_invoice), frappe.ValidationError)
+    approval_context = {"reason": reason}
+    scope = build_sales_invoice_approval_scope(invoice, context=approval_context)
+    if scope["device_id"] != device_id:
+        frappe.throw(
+            _("Sales Invoice {0} belongs to another device").format(sales_invoice),
+            frappe.ValidationError,
+        )
+    request_fingerprint = canonical_context_hash(
+        {
+            "idempotency_key": idempotency_key,
+            "device_id": scope["device_id"],
+            "staff_id": scope["staff_id"],
+            "shift_id": scope["shift_id"],
+            "resource_id": scope["resource_id"],
+            "amount_sen": scope["amount_sen"],
+            "context": approval_context,
+        }
+    )
     if invoice.docstatus == 2:
+        _validate_completed_void_retry(
+            invoice,
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
+        )
         _apply_fb_void_side_effects(invoice)
+        proof = load_consumed_manager_approval_proof(
+            approval_token_id=frappe.utils.cstr(
+                getattr(invoice, "custom_fb_void_approval_token_id", None)
+            ).strip(),
+            approval_manager_id=frappe.utils.cstr(
+                getattr(invoice, "custom_fb_void_manager", None)
+            ).strip(),
+            action="void_order",
+            idempotency_key=idempotency_key,
+            resource_id=sales_invoice,
+        )
         return {
             "status": "duplicate",
             "sales_invoice": sales_invoice,
             "idempotency_key": idempotency_key,
             "order_status": "Cancelled",
             "invoice_status": "Cancelled",
+            **proof,
         }
     if invoice.docstatus != 1:
         frappe.throw(_("Sales Invoice {0} is not submitted").format(sales_invoice), frappe.ValidationError)
+    approval = verify_manager_approval_token(
+        manager_approval_token,
+        device_id=scope["device_id"],
+        staff_id=scope["staff_id"],
+        action="void_order",
+        shift_id=scope["shift_id"],
+        resource_id=scope["resource_id"],
+        amount_sen=scope["amount_sen"],
+        context_hash=scope["context_hash"],
+        idempotency_key=idempotency_key,
+    )
     with elevate_device_api_user():
+        void_updates = {
+            "custom_fb_void_idempotency_key": idempotency_key,
+            "custom_fb_void_request_fingerprint": request_fingerprint,
+            "custom_fb_void_manager": approval["manager_id"],
+            "custom_fb_void_approval_token_id": approval["token_id"],
+        }
+        frappe.db.set_value(
+            "Sales Invoice",
+            sales_invoice,
+            void_updates,
+            update_modified=False,
+        )
+        for fieldname, value in void_updates.items():
+            setattr(invoice, fieldname, value)
         if reason:
             invoice.add_comment("Comment", f"KoPOS void reason: {reason}")
         flags = getattr(invoice, "flags", None)
@@ -607,13 +736,47 @@ def _process_sales_invoice_void_payload(payload: dict[str, Any]) -> dict[str, An
             flags.ignore_links = True
         invoice.cancel()
         _apply_fb_void_side_effects(invoice)
+    proof = load_consumed_manager_approval_proof(
+        approval_token_id=approval["token_id"],
+        approval_manager_id=approval["manager_id"],
+        action="void_order",
+        idempotency_key=idempotency_key,
+        resource_id=sales_invoice,
+    )
     return {
         "status": "ok",
         "sales_invoice": sales_invoice,
         "idempotency_key": idempotency_key,
         "order_status": "Cancelled",
         "invoice_status": "Cancelled",
+        **proof,
     }
+
+
+def _validate_completed_void_retry(
+    invoice: Any, *, idempotency_key: str, request_fingerprint: str
+) -> None:
+    existing_key = frappe.utils.cstr(
+        getattr(invoice, "custom_fb_void_idempotency_key", None)
+    ).strip()
+    existing_fingerprint = frappe.utils.cstr(
+        getattr(invoice, "custom_fb_void_request_fingerprint", None)
+    ).strip()
+    if not existing_key or not existing_fingerprint:
+        frappe.throw(
+            _("Cancelled Sales Invoice has no verifiable KoPOS void idempotency proof"),
+            frappe.ValidationError,
+        )
+    if existing_key != idempotency_key:
+        frappe.throw(
+            _("Sales Invoice was already voided with another idempotency_key"),
+            frappe.ValidationError,
+        )
+    if existing_fingerprint != request_fingerprint:
+        frappe.throw(
+            _("idempotency_key was already used with a different void payload"),
+            frappe.ValidationError,
+        )
 
 
 def _is_fb_sales_invoice(invoice: Any) -> bool:
@@ -621,6 +784,21 @@ def _is_fb_sales_invoice(invoice: Any) -> bool:
         frappe.utils.cstr(getattr(invoice, "custom_fb_order", "")).strip()
         or frappe.utils.cstr(getattr(invoice, "custom_fb_idempotency_key", "")).strip()
     )
+
+
+def _lock_sales_invoice_cash_shift(sales_invoice: str) -> str:
+    """Lock the shift before the invoice to keep cash mutations deadlock-safe."""
+    from kopos_connector.kopos.services.accounting.return_invoice_service import (
+        lock_fb_shift_cash_scope,
+    )
+
+    shift_name = frappe.utils.cstr(
+        frappe.db.get_value("Sales Invoice", sales_invoice, "custom_fb_shift")
+    ).strip()
+    if not shift_name:
+        return ""
+    lock_fb_shift_cash_scope(shift_name)
+    return shift_name
 
 
 def _apply_fb_void_side_effects(invoice: Any) -> None:
@@ -733,11 +911,14 @@ def process_refund(**kwargs: Any) -> None:
     try:
         payload = _get_submit_payload(kwargs)
         require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
-        result = process_return_payload(_to_public_fb_return_payload(payload))
+        result = process_return_payload(
+            _to_public_fb_return_payload(payload),
+            require_manager_approval=True,
+        )
         _write_response(result)
     except frappe.ValidationError as exc:
         frappe.db.rollback()
-        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+        _write_response(_validation_error_payload(exc), http_status_code=400)
     except Exception:
         frappe.db.rollback()
         frappe.log_error(frappe.get_traceback(), "KoPOS process_refund failed")
@@ -769,87 +950,144 @@ def _to_public_fb_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "refund_method": payload.get("refund_method"),
         "return_to_stock": payload.get("return_to_stock"),
         "lines": payload.get("lines"),
+        "manager_approval_token": payload.get("manager_approval_token"),
     }
+
+
+def _resolve_manager_approval_scope(payload: dict[str, Any]) -> dict[str, Any]:
+    from kopos_connector.utils.manager_approval import (
+        build_sales_invoice_approval_scope,
+        canonical_context_hash,
+        parse_integer_sen,
+        validate_requested_scope,
+    )
+
+    action = frappe.utils.cstr(payload.get("action")).strip()
+    if action == "void_order":
+        invoice_name = frappe.utils.cstr(
+            payload.get("sales_invoice") or payload.get("resource_id")
+        ).strip()
+        if not invoice_name:
+            frappe.throw(_("sales_invoice is required"), frappe.ValidationError)
+        invoice = frappe.get_doc("Sales Invoice", invoice_name)
+        if frappe.utils.cint(getattr(invoice, "docstatus", 0)) != 1:
+            frappe.throw(
+                _("Sales Invoice {0} is not submitted").format(invoice_name),
+                frappe.ValidationError,
+            )
+        scope = build_sales_invoice_approval_scope(
+            invoice,
+            context={"reason": frappe.utils.cstr(payload.get("reason")).strip()},
+        )
+        validate_requested_scope(payload, scope)
+    elif action == "refund_order":
+        from kopos_connector.api.fb_returns import build_refund_approval_scope
+
+        scope = build_refund_approval_scope(_to_public_fb_return_payload(payload))
+        validate_requested_scope(payload, scope)
+    else:
+        device_id = frappe.utils.cstr(payload.get("device_id")).strip()
+        staff_id = frappe.utils.cstr(payload.get("staff_id")).strip()
+        shift_id = frappe.utils.cstr(payload.get("shift_id")).strip()
+        if not device_id:
+            frappe.throw(_("device_id is required"), frappe.ValidationError)
+        if not staff_id:
+            frappe.throw(_("staff_id is required"), frappe.ValidationError)
+        if not shift_id:
+            frappe.throw(_("shift_id is required"), frappe.ValidationError)
+        raw_amount = payload.get("amount_sen")
+        if raw_amount is None:
+            raw_amount = (
+                payload.get("opening_float_sen")
+                if action == "open_shift"
+                else payload.get("counted_cash_sen", 0)
+            )
+        context_value = payload.get("context")
+        context = (
+            dict(context_value)
+            if isinstance(context_value, Mapping)
+            else {"reason": frappe.utils.cstr(payload.get("reason")).strip()}
+        )
+        scope = {
+            "device_id": device_id,
+            "staff_id": staff_id,
+            "shift_id": shift_id,
+            "resource_id": frappe.utils.cstr(
+                payload.get("resource_id") or shift_id
+            ).strip(),
+            "amount_sen": parse_integer_sen(raw_amount or 0),
+            "context_hash": canonical_context_hash(context),
+        }
+    scope["action"] = action
+    return scope
 
 
 @frappe.whitelist(methods=["POST"])
 def request_shift_manager_approval(**kwargs: Any) -> None:
     """
-    Request a manager approval token for shift operations.
+    Request a server-scoped manager approval token for a privileged POS action.
 
-    This endpoint requires manager credentials or a server-verified manager session.
-    It returns a short-lived signed token that can be used to authorize
-    privileged shift actions (open_shift, close_shift, reopen_shift).
+    Device API sessions must supply the exact assigned manager and raw PIN.
+    Only an explicit System Manager session may use admin_approval. Void and
+    refund identity, shift, resource, amount, and context are derived from ERP.
 
     Required parameters:
         - device_id: The KoPOS device ID
-        - staff_id: The staff user ID performing the action
-        - action: The action to authorize (open_shift, close_shift, reopen_shift)
+        - action: The privileged action to authorize
+        - manager_id / manager_pin: Device-assigned manager credentials
 
     Optional parameters:
-        - shift_id: The shift ID (required for close_shift and reopen_shift)
+        - sales_invoice and action-specific context for void/refund
+        - shift_id / staff_id / amount_sen / context for shift operations
+        - admin_approval: Explicit System Manager-only approval path
         - ttl_seconds: Token validity duration (default: 300 seconds / 5 minutes)
 
     Returns:
         - token: The approval token string
         - token_id: Unique token identifier
-        - issued_at: Unix timestamp when token was issued
-        - expires_at: Unix timestamp when token expires
+        - issued_at / expires_at: Token validity timestamps
+        - action, device_id, staff_id, shift_id, resource_id, amount_sen,
+          context_hash: Exact server-derived scope bound into the token
     """
     from kopos_connector.utils.manager_approval import (
+        authorize_manager_for_device,
         generate_manager_approval_token,
     )
 
     try:
         payload = _get_submit_payload(kwargs)
-
-        # Require authenticated session (not guest)
-        session_user = frappe.utils.cstr(getattr(frappe.session, "user", None)).strip()
-        if not session_user or session_user == "Guest":
-            frappe.throw(
-                _("Authentication required for manager approval"),
-                frappe.ValidationError,
-            )
-
-        # Verify the requesting user has manager privileges
-        # This can be via System Manager role or can_manager_override on device
-        device_id = frappe.utils.cstr(payload.get("device_id"))
-        if device_id:
-            device_doc = require_device_context(device_id=device_id)
-
-            # Check if user is System Manager
-            roles = (
-                frappe.get_roles(session_user) if hasattr(frappe, "get_roles") else []
-            )
-            is_system_manager = "System Manager" in roles
-
-            # Check if user has can_manager_override on this device
-            is_device_manager = False
-            device_users = getattr(device_doc, "device_users", None)
-            for user_row in device_users or []:
-                if frappe.utils.cstr(getattr(user_row, "user", "")) == session_user:
-                    if frappe.utils.cint(getattr(user_row, "can_manager_override", 0)):
-                        is_device_manager = True
-                        break
-
-            if not is_system_manager and not is_device_manager:
-                frappe.throw(
-                    _("User {0} is not authorized to approve shift operations").format(
-                        session_user
-                    ),
-                    frappe.ValidationError,
-                )
-        else:
-            # Without device_id, require System Manager role
-            require_system_manager()
+        requested_device_id = frappe.utils.cstr(payload.get("device_id")).strip()
+        if requested_device_id:
+            require_device_context(device_id=requested_device_id)
+        scope = _resolve_manager_approval_scope(payload)
+        device_doc = require_device_context(device_id=scope["device_id"])
+        if device_doc is None:
+            frappe.throw(_("KoPOS Device is required"), frappe.ValidationError)
+        admin_approval = bool(frappe.utils.cint(payload.get("admin_approval")))
+        manager_id = authorize_manager_for_device(
+            device_doc,
+            manager_id=frappe.utils.cstr(payload.get("manager_id")).strip() or None,
+            manager_pin=frappe.utils.cstr(
+                payload.get("manager_pin") or payload.get("pin")
+            ).strip()
+            or None,
+            admin_approval=admin_approval,
+            action=scope["action"],
+        )
 
         result = generate_manager_approval_token(
-            device_id=device_id,
-            staff_id=frappe.utils.cstr(payload.get("staff_id")),
-            action=frappe.utils.cstr(payload.get("action")),
-            manager_id=session_user,
-            shift_id=frappe.utils.cstr(payload.get("shift_id")) or None,
+            device_id=scope["device_id"],
+            staff_id=scope["staff_id"],
+            action=scope["action"],
+            manager_id=manager_id,
+            shift_id=scope["shift_id"],
+            resource_id=scope["resource_id"],
+            amount_sen=scope["amount_sen"],
+            context_hash=scope["context_hash"],
             ttl_seconds=payload.get("ttl_seconds"),
+            authorization_mode=(
+                "system_manager" if admin_approval else "device_manager"
+            ),
         )
 
         _write_response(
@@ -880,7 +1118,11 @@ def generate_maybank_qr(**kwargs: Any) -> None:
 
     try:
         payload = _get_submit_payload(kwargs)
-        require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
+        require_device_operational_scope(
+            device_id=frappe.utils.cstr(payload.get("device_id")),
+            currency="MYR",
+        )
+        payload["currency"] = "MYR"
         _write_response(generate_maybank_qr_payload(payload))
     except frappe.ValidationError as exc:
         frappe.db.rollback()
@@ -910,12 +1152,14 @@ def check_maybank_payment(
         else:
             device = get_authenticated_device_doc()
             resolved_device_id = frappe.utils.cstr(getattr(device, "device_id", ""))
-        _write_response(
-            check_maybank_payment_payload(
-                transaction_refno=frappe.utils.cstr(transaction_refno),
-                device_id=resolved_device_id,
-            )
+        result = check_maybank_payment_payload(
+            transaction_refno=frappe.utils.cstr(transaction_refno),
+            device_id=resolved_device_id,
         )
+        # This endpoint remains GET-compatible for deployed tablets. Tell Frappe to
+        # commit the validated on-demand poll writes at request completion.
+        frappe.flags.commit = True
+        _write_response(result)
     except frappe.ValidationError as exc:
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
     except Exception:
@@ -934,8 +1178,10 @@ def upload_manual_qr_receipt(**kwargs: Any) -> None:
     try:
         _write_response(upload_payload(**kwargs))
     except frappe.ValidationError as exc:
+        frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
     except Exception:
+        frappe.db.rollback()
         frappe.log_error(frappe.get_traceback(), "KoPOS upload_manual_qr_receipt failed")
         _write_response(
             {"status": "error", "message": "Failed to upload manual QR receipt"},

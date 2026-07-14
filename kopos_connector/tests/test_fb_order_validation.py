@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
@@ -9,9 +10,30 @@ install_fake_frappe_modules()
 
 
 class TestFBOrderModifierValidation(unittest.TestCase):
+    def test_add_modifier_preserves_explicit_non_stock_effect(self):
+        from kopos_connector.kopos.doctype.fb_order.fb_order import FBOrder
+
+        order = FBOrder()
+        order.booth_warehouse = "WH-1"
+        component = order.build_modifier_component(
+            SimpleNamespace(
+                name="FB-MOD-NOTE",
+                new_item="PACKAGING-NOTE",
+                target_item=None,
+                qty_delta=1,
+                qty_uom="Nos",
+                affects_stock=0,
+                instruction_text="No stock impact",
+            ),
+            1,
+            SimpleNamespace(line_id="LINE-1", item="LATTE"),
+        )
+
+        self.assertEqual(component["affects_stock"], 0)
+
     @patch("kopos_connector.kopos.api.fb_orders.frappe.get_cached_doc")
     @patch("kopos_connector.kopos.api.fb_orders.frappe.db.exists")
-    def test_validate_selected_modifier_uses_fb_modifier_record_values(
+    def test_validate_selected_modifier_preserves_offline_sale_price_snapshot(
         self, mock_exists, mock_get_cached_doc
     ):
         from kopos_connector.kopos.api.fb_orders import _validate_selected_modifier
@@ -53,7 +75,7 @@ class TestFBOrderModifierValidation(unittest.TestCase):
 
         self.assertEqual(result["modifier_group"], "FB-GRP-TEMP")
         self.assertEqual(result["modifier"], "FB-MOD-ICED")
-        self.assertEqual(result["price_adjustment"], 1.5)
+        self.assertEqual(result["price_adjustment"], 99)
         self.assertEqual(result["instruction_text"], "Less ice")
         self.assertEqual(result["sort_order"], 4)
         self.assertEqual(result["affects_stock"], 1)
@@ -72,6 +94,7 @@ class TestFBOrderModifierValidation(unittest.TestCase):
                 {
                     "modifier_group": "FB-GRP-TEMP",
                     "modifier": "KOPOS-OPT-00001",
+                    "price_adjustment": 0,
                 },
                 1,
                 1,
@@ -116,6 +139,7 @@ class TestFBOrderModifierValidation(unittest.TestCase):
         with self.assertRaises(Exception) as context:
             _validate_order_item(
                 {
+                    "line_id": "LINE-1",
                     "item_code": "ITEM-COFFEE",
                     "qty": 1,
                     "uom": "Nos",
@@ -127,6 +151,7 @@ class TestFBOrderModifierValidation(unittest.TestCase):
                         {
                             "modifier_group": "FB-GRP-TEMP",
                             "modifier": "FB-MOD-ICED",
+                            "price_adjustment": 1.5,
                         }
                     ],
                 },
@@ -134,7 +159,7 @@ class TestFBOrderModifierValidation(unittest.TestCase):
             )
 
         self.assertIn(
-            "modifier_total must equal summed FB modifier price adjustments",
+            "modifier_total_sen must equal summed modifier price adjustments",
             str(context.exception),
         )
 
@@ -168,6 +193,7 @@ class TestFBOrderModifierValidation(unittest.TestCase):
                 {
                     "modifier_group": "FB-GRP-TEMP",
                     "modifier": "FB-MOD-ICED",
+                    "price_adjustment": 0,
                 },
                 1,
                 1,

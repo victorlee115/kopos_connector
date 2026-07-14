@@ -36,12 +36,12 @@ def _validated_payload(monkeypatch: Any, created_at: Any) -> dict[str, Any]:
     )
     monkeypatch.setattr(
         fb_orders,
-        "_validate_order_item",
+        "_resolve_order_item",
         lambda row, index: {"line_total": 10.0},
     )
     monkeypatch.setattr(
         fb_orders,
-        "_validate_order_payment",
+        "_resolve_order_payment",
         lambda row, index: {"amount": 10.0},
     )
     monkeypatch.setattr(fb_orders, "_resolve_fb_shift_name", lambda shift: "FB-SHIFT-1")
@@ -54,6 +54,7 @@ def _validated_payload(monkeypatch: Any, created_at: Any) -> dict[str, Any]:
 
     return fb_orders._validate_submit_order_payload(
         {
+            "money_contract_version": "sen_v1",
             "order_id": "ORDER-1",
             "idempotency_key": "IDEMP-1",
             "device_id": "DEVICE-1",
@@ -63,10 +64,27 @@ def _validated_payload(monkeypatch: Any, created_at: Any) -> dict[str, Any]:
             "company": "KoPOS Cafe",
             "currency": "MYR",
             "order": {
+                "display_number": "ORDER-1",
+                "order_type": "takeaway",
                 "created_at": created_at,
-                "total": 10.0,
-                "items": [{}],
-                "payments": [{}],
+                "subtotal_sen": 1000,
+                "tax_amount_sen": 0,
+                "rounding_adjustment_sen": 0,
+                "total_sen": 1000,
+                "items": [
+                    {
+                        "line_id": "LINE-1",
+                        "item_code": "ITEM-1",
+                        "item_name": "Item 1",
+                        "qty": 1,
+                        "unit_price_sen": 1000,
+                        "modifier_total_sen": 0,
+                        "discount_amount_sen": 0,
+                        "line_total_sen": 1000,
+                        "modifiers": [],
+                    }
+                ],
+                "payments": [{"payment_method": "Cash", "amount_sen": 1000}],
             },
         }
     )
@@ -127,7 +145,11 @@ def test_fb_order_builder_persists_normalized_sale_datetime(monkeypatch: Any) ->
     built = fb_orders._build_fb_order(
         {
             "order_id": "ORDER-1",
+            "display_number": "A001",
+            "order_type": "dine_in",
+            "catalog_version": "catalog-2026-07-12",
             "external_idempotency_key": "IDEMP-1",
+            "request_fingerprint": "f" * 64,
             "source": "API",
             "sale_datetime": sale_datetime,
             "device_id": "DEVICE-1",
@@ -140,6 +162,7 @@ def test_fb_order_builder_persists_normalized_sale_datetime(monkeypatch: Any) ->
             "customer": None,
             "net_total": 10.0,
             "tax_total": 0.0,
+            "tax_rate": 0,
             "rounding_adjustment": 0.0,
             "grand_total": 10.0,
             "notes": None,

@@ -415,6 +415,7 @@ class TestCatalogFBSource(unittest.TestCase):
                     "group_id": "grp-temp",
                     "name": "Iced",
                     "price_adjustment": 0.5,
+                    "price_adjustment_sen": 50,
                     "is_default": 0,
                     "is_active": 1,
                     "display_order": 1,
@@ -481,6 +482,31 @@ class TestCatalogFBSource(unittest.TestCase):
         )
 
         self.assertEqual(result, {"ITEM-1": ["grp-temp", "grp-ice"]})
+
+    @patch("kopos_connector.api.catalog.frappe.get_all")
+    def test_catalog_recipe_snapshot_exposes_exact_active_version(self, mock_get_all):
+        from kopos_connector.api.catalog import get_item_recipe_snapshots_map
+
+        mock_get_all.return_value = [
+            {
+                "name": "RECIPE-ITEM-1-V3",
+                "sellable_item": "ITEM-1",
+                "effective_from": None,
+                "effective_to": None,
+                "version_no": 3,
+                "modified": "2026-07-12 00:00:00",
+            }
+        ]
+
+        result = get_item_recipe_snapshots_map(
+            [{"id": "ITEM-1", "custom_fb_recipe_required": 1}],
+            company="JiJi",
+        )
+
+        self.assertEqual(
+            result,
+            {"ITEM-1": {"recipe_id": "RECIPE-ITEM-1-V3", "recipe_version": 3}},
+        )
 
     @patch("kopos_connector.api.catalog.frappe.get_all")
     def test_get_item_modifier_groups_requires_active_recipe_for_recipe_managed_item(
@@ -746,7 +772,11 @@ class TestCatalogApiElevation(unittest.TestCase):
 
         require_device_context.assert_called_once_with(device_id="device-1")
         mark_device_seen.assert_called_once_with(device_id="device-1")
-        build_catalog_payload.assert_called_once_with(since=None, device_id="device-1")
+        build_catalog_payload.assert_called_once_with(
+            since=None,
+            device_id="device-1",
+            known_version=None,
+        )
         self.assertEqual(events, ["enter", "exit"])
 
     def test_get_item_modifiers_elevates_device_requests(self):

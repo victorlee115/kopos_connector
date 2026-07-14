@@ -1,0 +1,84 @@
+name: KoPOS ERP Connector CI
+
+on:
+  push:
+    paths:
+      - "kopos_connector/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - "setup.py"
+      - ".github/workflows/connector-ci.yml"
+  pull_request:
+    paths:
+      - "kopos_connector/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - "setup.py"
+      - ".github/workflows/connector-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: erp-connector-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  connector-contract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout exact connector commit
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      - name: Install deterministic test dependencies
+        run: |
+          python -m pip install --upgrade "pip==26.1.2" "wheel==0.46.2"
+          python -m pip install \
+            "pytest==9.0.3" \
+            "pycryptodome==3.23.0" \
+            "jsonschema==4.24.0" \
+            "pip-audit==2.10.1"
+
+      - name: Audit production dependencies and generate CycloneDX SBOM
+        run: python -m pip_audit . --format cyclonedx-json --output "$RUNNER_TEMP/kopos-connector.cdx.json"
+
+      - name: Compile all connector and test sources
+        run: python -m compileall -q kopos_connector tests
+
+      - name: Run complete connector contract suite
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest -q \
+            tests \
+            kopos_connector/tests \
+            kopos_connector/kopos/tests/test_sales_invoice_service.py \
+            kopos_connector/kopos/tests/test_maybank_qr_sales_invoice_flow.py
+
+      - name: Reject generated or secret-bearing changes
+        run: |
+          if [ -n "$(git status --porcelain=v1 --untracked-files=all)" ]; then
+            git status --short
+            echo "Connector tests modified the release source." >&2
+            exit 1
+          fi
+
+      - name: Upload connector security evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: kopos-erp-connector-security-${{ github.sha }}
+          if-no-files-found: error
+          path: ${{ runner.temp }}/kopos-connector.cdx.json

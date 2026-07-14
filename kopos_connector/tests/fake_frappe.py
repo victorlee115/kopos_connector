@@ -81,8 +81,14 @@ def install_fake_frappe_modules() -> None:
         frappe_model_document_module = ModuleType("frappe.model.document")
         sys.modules["frappe.model.document"] = frappe_model_document_module
 
-    class ValidationError(Exception):
-        pass
+    existing_validation_error = getattr(frappe_module, "ValidationError", None)
+    if isinstance(existing_validation_error, type) and issubclass(
+        existing_validation_error, Exception
+    ):
+        ValidationError = existing_validation_error
+    else:
+        class ValidationError(Exception):
+            pass
 
     def cstr(value):
         return "" if value is None else str(value)

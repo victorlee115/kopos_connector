@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Mapping
+from datetime import date
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 import frappe
@@ -18,9 +23,19 @@ ERPRecord = dict[str, Any]
 
 
 def build_catalog_payload(
-    since: str | None = None, device_id: str | None = None
+    since: str | None = None,
+    device_id: str | None = None,
+    known_version: str | None = None,
 ) -> CatalogPayload:
-    """Build the catalog payload consumed by KoPOS clients."""
+    """Build a complete, versioned catalog payload consumed by KoPOS clients.
+
+    ``since`` is accepted for compatibility with older tablets, but is
+    intentionally not used as a delta cursor. Older implementations returned
+    filtered arrays that a tablet could mistake for a complete snapshot and
+    thereby remove valid cached products. KoPOS catalog sync is now explicitly
+    full-or-unchanged until a tombstone-capable delta contract is introduced.
+    """
+    del since
     pos_profile = resolve_catalog_pos_profile(device_id=device_id)
     company = pos_profile.get("company") if pos_profile else None
     warehouse = pos_profile.get("warehouse") if pos_profile else None
@@ -31,7 +46,6 @@ def build_catalog_payload(
     items = get_items(
         warehouse=warehouse,
         selling_price_list=selling_price_list,
-        since=since,
         pos_profile=pos_profile,
     )
     category_ids = {
@@ -40,12 +54,11 @@ def build_catalog_payload(
         if cstr(item.get("category_id")).strip()
     }
 
-    payload = {
-        "categories": get_categories(since, category_ids=category_ids),
+    snapshot = {
+        "categories": get_categories(category_ids=category_ids),
         "items": items,
-        "modifier_groups": get_modifier_groups(since),
-        "modifier_options": get_modifier_options(since),
-        "timestamp": now_datetime().isoformat(),
+        "modifier_groups": get_modifier_groups(),
+        "modifier_options": get_modifier_options(),
         "metadata": {
             "company": company,
             "pos_profile": (pos_profile or {}).get("name"),
@@ -53,6 +66,27 @@ def build_catalog_payload(
             "currency": currency,
             "tax_rate": get_tax_rate_value(device_id=device_id),
         },
+    }
+    validate_catalog_snapshot(snapshot)
+    catalog_version = build_catalog_version(snapshot)
+    timestamp = now_datetime().isoformat()
+    normalized_known_version = cstr(known_version).strip()
+
+    if normalized_known_version and normalized_known_version == catalog_version:
+        return {
+            "sync_mode": "unchanged",
+            "unchanged": 1,
+            "catalog_version": catalog_version,
+            "timestamp": timestamp,
+            "metadata": snapshot["metadata"],
+        }
+
+    payload = {
+        "sync_mode": "full",
+        "unchanged": 0,
+        "catalog_version": catalog_version,
+        "timestamp": timestamp,
+        **snapshot,
     }
 
     frappe.logger("kopos_connector").info(
@@ -64,12 +98,136 @@ def build_catalog_payload(
     return payload
 
 
+def build_catalog_version(snapshot: Mapping[str, Any]) -> str:
+    """Return a deterministic content hash; request timestamps are excluded."""
+    encoded = json.dumps(
+        snapshot,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def validate_catalog_snapshot(snapshot: Mapping[str, Any]) -> None:
+    """Reject malformed or empty ERP data before publishing a content version."""
+    categories = snapshot.get("categories")
+    items = snapshot.get("items")
+    modifier_groups = snapshot.get("modifier_groups")
+    modifier_options = snapshot.get("modifier_options")
+    if not isinstance(categories, list) or not categories:
+        frappe.throw(
+            _("KoPOS catalog requires at least one category"),
+            frappe.ValidationError,
+        )
+    if not isinstance(items, list) or not items:
+        frappe.throw(
+            _("KoPOS catalog requires at least one saleable item"),
+            frappe.ValidationError,
+        )
+    if not isinstance(modifier_groups, list) or not isinstance(
+        modifier_options, list
+    ):
+        frappe.throw(
+            _("KoPOS catalog modifier arrays are malformed"),
+            frappe.ValidationError,
+        )
+
+    category_ids = _unique_catalog_ids(categories, "category")
+    modifier_group_ids = _unique_catalog_ids(modifier_groups, "modifier group")
+    _unique_catalog_ids(items, "item")
+    _unique_catalog_ids(modifier_options, "modifier option")
+
+    barcodes: set[str] = set()
+    for item in items:
+        item_id = cstr(item.get("id")).strip()
+        if not cstr(item.get("name")).strip():
+            _throw_catalog_validation(f"Item {item_id} has no name")
+        category_id = cstr(item.get("category_id")).strip()
+        if category_id not in category_ids:
+            _throw_catalog_validation(
+                f"Item {item_id} references unknown category {category_id or '(missing)'}"
+            )
+        price_sen = item.get("price_sen")
+        if isinstance(price_sen, bool) or not isinstance(price_sen, int):
+            _throw_catalog_validation(f"Item {item_id} price_sen must be an integer")
+        if price_sen < 0:
+            _throw_catalog_validation(f"Item {item_id} price_sen cannot be negative")
+        linked_groups = item.get("modifier_group_ids")
+        if not isinstance(linked_groups, list):
+            _throw_catalog_validation(
+                f"Item {item_id} modifier_group_ids must be an array"
+            )
+        for group_id_value in linked_groups:
+            group_id = cstr(group_id_value).strip()
+            if group_id not in modifier_group_ids:
+                _throw_catalog_validation(
+                    f"Item {item_id} references unknown modifier group {group_id or '(missing)'}"
+                )
+        recipe_id = cstr(item.get("recipe_id")).strip()
+        recipe_version = item.get("recipe_version")
+        if bool(recipe_id) != (recipe_version is not None):
+            _throw_catalog_validation(
+                f"Item {item_id} recipe_id and recipe_version must be provided together"
+            )
+        if recipe_id and (
+            isinstance(recipe_version, bool)
+            or not isinstance(recipe_version, int)
+            or recipe_version <= 0
+        ):
+            _throw_catalog_validation(
+                f"Item {item_id} recipe_version must be a positive integer"
+            )
+        barcode = cstr(item.get("barcode")).strip()
+        if barcode:
+            if barcode in barcodes:
+                _throw_catalog_validation(f"Duplicate catalog barcode {barcode}")
+            barcodes.add(barcode)
+
+    for option in modifier_options:
+        option_id = cstr(option.get("id")).strip()
+        group_id = cstr(option.get("group_id")).strip()
+        if group_id not in modifier_group_ids:
+            _throw_catalog_validation(
+                f"Modifier option {option_id} references unknown group {group_id or '(missing)'}"
+            )
+        adjustment_sen = option.get("price_adjustment_sen")
+        if isinstance(adjustment_sen, bool) or not isinstance(adjustment_sen, int):
+            _throw_catalog_validation(
+                f"Modifier option {option_id} price_adjustment_sen must be an integer"
+            )
+
+
+def _unique_catalog_ids(rows: list[ERPRecord], label: str) -> set[str]:
+    identifiers: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            _throw_catalog_validation(f"Catalog {label} row must be an object")
+        identifier = cstr(row.get("id")).strip()
+        if not identifier:
+            _throw_catalog_validation(f"Catalog {label} id is required")
+        if identifier in identifiers:
+            _throw_catalog_validation(f"Duplicate catalog {label} id {identifier}")
+        identifiers.add(identifier)
+    return identifiers
+
+
+def _throw_catalog_validation(message: str) -> None:
+    frappe.throw(_(message), frappe.ValidationError)
+
+
 def resolve_catalog_pos_profile(device_id: str | None = None) -> ERPRecord | None:
     if cstr(device_id).strip():
         device_doc = get_device_doc(device_id=device_id)
         profile_name = cstr(getattr(device_doc, "pos_profile", None)).strip()
         if not profile_name:
-            return get_default_pos_profile()
+            frappe.throw(
+                _("KoPOS Device {0} has no POS Profile configured").format(
+                    cstr(device_id).strip()
+                ),
+                frappe.ValidationError,
+            )
         profile = frappe.get_cached_doc("POS Profile", profile_name)
         return profile.as_dict()
     return get_default_pos_profile()
@@ -176,17 +334,58 @@ def get_items(
             cstr(row.get("id") or row.get("item_code")),
         ),
     )
-    modifier_groups_by_item = get_item_modifier_groups_map(rows, company=company)
+    recipe_snapshots_by_item = get_item_recipe_snapshots_map(rows, company=company)
+    rows = [
+        row
+        for row in rows
+        if cstr(row.get("id") or row.get("item_code")).strip()
+        in recipe_snapshots_by_item
+    ]
+    modifier_groups_by_item = get_item_modifier_groups_map(
+        rows,
+        company=company,
+        recipe_snapshots_by_item=recipe_snapshots_by_item,
+    )
+    item_ids = [
+        cstr(row.get("id") or row.get("item_code")).strip()
+        for row in rows
+        if cstr(row.get("id") or row.get("item_code")).strip()
+    ]
+    prices_by_item = get_item_prices_map(
+        item_codes=item_ids,
+        selling_price_list=selling_price_list,
+        item_uoms={
+            cstr(row.get("id") or row.get("item_code")).strip(): cstr(
+                row.get("stock_uom")
+            ).strip()
+            for row in rows
+            if cstr(row.get("id") or row.get("item_code")).strip()
+        },
+    )
+    barcodes_by_item = get_item_barcodes_map(item_ids)
+    stock_tracked_item_ids = [
+        cstr(row.get("id") or row.get("item_code")).strip()
+        for row in rows
+        if cint(row.get("custom_kopos_track_stock"))
+        and cstr(row.get("id") or row.get("item_code")).strip()
+    ]
+    bin_qty_by_item = get_bin_qty_map(stock_tracked_item_ids, warehouse)
+    reserved_qty_by_item = get_fb_pending_reserved_qty_map(
+        stock_tracked_item_ids,
+        warehouse,
+    )
 
     items: list[ERPRecord] = []
     for row in rows:
         item_id = cstr(row.get("id") or row.get("item_code"))
-        price = get_item_price(
-            item_code=item_id,
-            standard_rate=flt(row.get("price")),
-            selling_price_list=selling_price_list,
+        recipe_snapshot = recipe_snapshots_by_item.get(item_id)
+        price = prices_by_item.get(item_id, flt(row.get("price")))
+        availability = get_item_availability(
+            row,
+            warehouse,
+            bin_qty_by_item=bin_qty_by_item,
+            reserved_qty_by_item=reserved_qty_by_item,
         )
-        availability = get_item_availability(row, warehouse)
         items.append(
             {
                 "id": item_id,
@@ -194,12 +393,19 @@ def get_items(
                 "name": cstr(row.get("name")),
                 "category_id": cstr(row.get("category_id")),
                 "price": price,
-                "barcode": get_item_barcode(item_id),
+                "price_sen": money_to_sen(price),
+                "barcode": barcodes_by_item.get(item_id),
                 "is_available": availability["is_available"],
                 "stock_warning": availability["stock_warning"],
                 "is_active": 0 if cint(row.get("disabled")) else 1,
                 "is_prep_item": cint(row.get("custom_kopos_is_prep_item") or 0),
                 "modifier_group_ids": modifier_groups_by_item.get(item_id, []),
+                "recipe_id": recipe_snapshot.get("recipe_id")
+                if recipe_snapshot
+                else None,
+                "recipe_version": recipe_snapshot.get("recipe_version")
+                if recipe_snapshot
+                else None,
             }
         )
 
@@ -242,6 +448,7 @@ def get_saleable_item_rows(
             "custom_kopos_is_prep_item",
             "custom_fb_recipe_required",
             "custom_fb_default_recipe",
+            "stock_uom",
         ],
         order_by="item_name asc",
     )
@@ -333,7 +540,9 @@ def get_item_modifier_groups(item_code: str, company: str | None = None) -> list
 
 
 def get_item_modifier_groups_map(
-    item_rows: list[ERPRecord], company: str | None = None
+    item_rows: list[ERPRecord],
+    company: str | None = None,
+    recipe_snapshots_by_item: dict[str, ERPRecord] | None = None,
 ) -> dict[str, list[str]]:
     item_codes = sorted(
         {
@@ -345,73 +554,18 @@ def get_item_modifier_groups_map(
     if not item_codes:
         return {}
 
-    recipe_filters: dict[str, Any] = {
-        "sellable_item": ["in", item_codes],
-        "status": "Active",
-    }
-    if company:
-        recipe_filters["company"] = company
-
-    recipe_rows = frappe.get_all(
-        "FB Recipe",
-        filters=recipe_filters,
-        fields=[
-            "name",
-            "sellable_item",
-            "effective_from",
-            "effective_to",
-            "version_no",
-            "modified",
-        ],
-        order_by="sellable_item asc, version_no desc, modified desc",
+    snapshots = (
+        recipe_snapshots_by_item
+        if recipe_snapshots_by_item is not None
+        else get_item_recipe_snapshots_map(item_rows, company=company)
     )
-
-    effective_recipe_by_item: dict[str, str] = {}
-    current_time = now_datetime()
-    for row in recipe_rows:
-        item_code = cstr(row.get("sellable_item")).strip()
-        recipe_name = cstr(row.get("name")).strip()
-        if not item_code or not recipe_name:
-            continue
-        if not is_effective_recipe_row(row, current_time):
-            continue
-        existing_recipe_name = effective_recipe_by_item.get(item_code)
-        if existing_recipe_name and existing_recipe_name != recipe_name:
-            frappe.throw(
-                "Multiple active FB Recipes were found for item {0}: {1}, {2}".format(
-                    item_code,
-                    existing_recipe_name,
-                    recipe_name,
-                ),
-                frappe.ValidationError,
-            )
-        effective_recipe_by_item[item_code] = recipe_name
-
-    required_recipe_items = sorted(
+    recipe_names = sorted(
         {
-            cstr(row.get("id") or row.get("item_code")).strip()
-            for row in item_rows
-            if cstr(row.get("id") or row.get("item_code")).strip()
-            and (
-                cint(row.get("custom_fb_recipe_required"))
-                or cstr(row.get("custom_fb_default_recipe")).strip()
-            )
+            cstr(snapshot.get("recipe_id")).strip()
+            for snapshot in snapshots.values()
+            if cstr(snapshot.get("recipe_id")).strip()
         }
     )
-    missing_recipe_items = [
-        item_code
-        for item_code in required_recipe_items
-        if item_code not in effective_recipe_by_item
-    ]
-    if missing_recipe_items:
-        frappe.throw(
-            "No active FB Recipe was found for item(s): {0}".format(
-                ", ".join(missing_recipe_items)
-            ),
-            frappe.ValidationError,
-        )
-
-    recipe_names = sorted(set(effective_recipe_by_item.values()))
     if not recipe_names:
         return {}
 
@@ -441,8 +595,9 @@ def get_item_modifier_groups_map(
     )
 
     item_code_by_recipe_name = {
-        recipe_name: item_code
-        for item_code, recipe_name in effective_recipe_by_item.items()
+        cstr(snapshot.get("recipe_id")).strip(): item_code
+        for item_code, snapshot in snapshots.items()
+        if cstr(snapshot.get("recipe_id")).strip()
     }
     group_ids_by_item: dict[str, list[str]] = {}
     for row in allowed_group_rows:
@@ -463,6 +618,93 @@ def get_item_modifier_groups_map(
     return group_ids_by_item
 
 
+def get_item_recipe_snapshots_map(
+    item_rows: list[ERPRecord], company: str | None = None
+) -> dict[str, ERPRecord]:
+    item_codes = sorted(
+        {
+            cstr(row.get("id") or row.get("item_code")).strip()
+            for row in item_rows
+            if cstr(row.get("id") or row.get("item_code")).strip()
+        }
+    )
+    if not item_codes:
+        return {}
+
+    recipe_filters: dict[str, Any] = {
+        "sellable_item": ["in", item_codes],
+        "status": "Active",
+    }
+    if company:
+        recipe_filters["company"] = company
+    recipe_rows = frappe.get_all(
+        "FB Recipe",
+        filters=recipe_filters,
+        fields=[
+            "name",
+            "sellable_item",
+            "effective_from",
+            "effective_to",
+            "version_no",
+            "modified",
+        ],
+        order_by="sellable_item asc, version_no desc, modified desc",
+    )
+
+    snapshots: dict[str, ERPRecord] = {}
+    current_time = now_datetime()
+    for row in recipe_rows:
+        item_code = cstr(row.get("sellable_item")).strip()
+        recipe_name = cstr(row.get("name")).strip()
+        if not item_code or not recipe_name or not is_effective_recipe_row(
+            row, current_time
+        ):
+            continue
+        existing = snapshots.get(item_code)
+        if existing and cstr(existing.get("recipe_id")) != recipe_name:
+            frappe.throw(
+                "Multiple active FB Recipes were found for item {0}: {1}, {2}".format(
+                    item_code,
+                    existing.get("recipe_id"),
+                    recipe_name,
+                ),
+                frappe.ValidationError,
+            )
+        version_no = cint(row.get("version_no"))
+        if version_no <= 0:
+            frappe.throw(
+                f"FB Recipe {recipe_name} must have a positive version_no",
+                frappe.ValidationError,
+            )
+        snapshots[item_code] = {
+            "recipe_id": recipe_name,
+            "recipe_version": version_no,
+        }
+
+    required_recipe_items = sorted(
+        {
+            cstr(row.get("id") or row.get("item_code")).strip()
+            for row in item_rows
+            if cstr(row.get("id") or row.get("item_code")).strip()
+            and (
+                cint(row.get("custom_fb_recipe_required"))
+                or cstr(row.get("custom_fb_default_recipe")).strip()
+            )
+        }
+    )
+    missing_recipe_items = [
+        item_code for item_code in required_recipe_items if item_code not in snapshots
+    ]
+    if missing_recipe_items:
+        frappe.throw(
+            "No active FB Recipe was found for item(s): {0}".format(
+                ", ".join(missing_recipe_items)
+            ),
+            frappe.ValidationError,
+        )
+    return snapshots
+
+
 def is_effective_recipe_row(row: ERPRecord, current_time: Any) -> bool:
     effective_from = row.get("effective_from")
     effective_to = row.get("effective_to")
@@ -477,15 +719,44 @@ def get_datetime(value: Any) -> Any:
     return frappe.utils.get_datetime(value)
 
 
-def get_item_barcode(item_code: str) -> str | None:
-    return frappe.db.get_value(
-        "Item Barcode",
-        {"parent": item_code, "parenttype": "Item", "parentfield": "barcodes"},
-        "barcode",
+def get_item_barcodes_map(item_codes: list[str]) -> dict[str, str]:
+    normalized_item_codes = sorted(
+        {cstr(item_code).strip() for item_code in item_codes if cstr(item_code).strip()}
     )
+    if not normalized_item_codes:
+        return {}
+
+    rows = frappe.get_all(
+        "Item Barcode",
+        filters={
+            "parent": ["in", normalized_item_codes],
+            "parenttype": "Item",
+            "parentfield": "barcodes",
+        },
+        fields=["parent", "barcode", "idx"],
+        order_by="parent asc, idx asc",
+    )
+    result: dict[str, str] = {}
+    for row in rows:
+        item_code = cstr(row.get("parent")).strip()
+        barcode = cstr(row.get("barcode")).strip()
+        if item_code and barcode and item_code not in result:
+            result[item_code] = barcode
+    return result
 
 
-def get_item_availability(item: ERPRecord, warehouse: str | None = None) -> ERPRecord:
+def get_item_barcode(item_code: str) -> str | None:
+    """Compatibility helper for callers outside the bulk catalog builder."""
+    return get_item_barcodes_map([item_code]).get(cstr(item_code).strip())
+
+
+def get_item_availability(
+    item: ERPRecord,
+    warehouse: str | None = None,
+    *,
+    bin_qty_by_item: Mapping[str, float] | None = None,
+    reserved_qty_by_item: Mapping[str, float] | None = None,
+) -> ERPRecord:
     """Resolve final item availability from override mode and stock."""
     if cint(item.get("disabled")):
         return {"is_available": False, "stock_warning": None}
@@ -499,49 +770,188 @@ def get_item_availability(item: ERPRecord, warehouse: str | None = None) -> ERPR
     if not cint(item.get("custom_kopos_track_stock")) or not warehouse:
         return {"is_available": True, "stock_warning": None}
 
-    bin_qty = flt(
-        frappe.db.get_value(
-            "Bin",
-            {
-                "item_code": item.get("item_code") or item.get("id"),
-                "warehouse": warehouse,
-            },
-            "actual_qty",
-        )
+    item_code = cstr(item.get("item_code") or item.get("id")).strip()
+    bins = (
+        bin_qty_by_item
+        if bin_qty_by_item is not None
+        else get_bin_qty_map([item_code], warehouse)
     )
-    reserved_qty = get_pos_reserved_qty(
-        item.get("item_code") or item.get("id"), warehouse
+    reservations = (
+        reserved_qty_by_item
+        if reserved_qty_by_item is not None
+        else get_fb_pending_reserved_qty_map([item_code], warehouse)
     )
+    bin_qty = flt(bins.get(item_code, 0))
+    reserved_qty = flt(reservations.get(item_code, 0))
     min_qty = flt(item.get("custom_kopos_min_qty") or 1)
     if (bin_qty - reserved_qty) >= min_qty:
         return {"is_available": True, "stock_warning": None}
     return {"is_available": True, "stock_warning": "erp_stock_short"}
 
 
-def get_pos_reserved_qty(item_code: str | None, warehouse: str | None) -> float:
-    if not item_code or not warehouse:
-        return 0
-
-    from erpnext.accounts.doctype.pos_invoice.pos_invoice import (
-        get_pos_reserved_qty as impl,
+def get_bin_qty_map(
+    item_codes: list[str], warehouse: str | None
+) -> dict[str, float]:
+    normalized_item_codes = sorted(
+        {cstr(item_code).strip() for item_code in item_codes if cstr(item_code).strip()}
     )
+    normalized_warehouse = cstr(warehouse).strip()
+    if not normalized_item_codes or not normalized_warehouse:
+        return {}
 
-    return flt(impl(item_code, warehouse) or 0)
+    rows = frappe.get_all(
+        "Bin",
+        filters={
+            "item_code": ["in", normalized_item_codes],
+            "warehouse": normalized_warehouse,
+        },
+        fields=["item_code", "actual_qty"],
+    )
+    return {
+        cstr(row.get("item_code")).strip(): flt(row.get("actual_qty"))
+        for row in rows
+        if cstr(row.get("item_code")).strip()
+    }
+
+
+def get_fb_pending_reserved_qty_map(
+    item_codes: list[str], warehouse: str | None
+) -> dict[str, float]:
+    """Return quantities awaiting the canonical FB Order stock projection.
+
+    A submitted FB Order with ``stock_status = Pending`` has committed a sale
+    locally/financially but has not yet reduced Bin.actual_qty. Treating those
+    rows as reservations prevents that projection delay from overstating stock.
+    """
+    normalized_item_codes = sorted(
+        {cstr(item_code).strip() for item_code in item_codes if cstr(item_code).strip()}
+    )
+    normalized_warehouse = cstr(warehouse).strip()
+    if not normalized_item_codes or not normalized_warehouse:
+        return {}
+
+    placeholders = ", ".join(["%s"] * len(normalized_item_codes))
+    rows = frappe.db.sql(
+        f"""
+            SELECT
+                line.item AS item_code,
+                SUM(GREATEST(line.qty - COALESCE(line.refunded_qty, 0), 0)) AS reserved_qty
+            FROM `tabFB Order Line` line
+            INNER JOIN `tabFB Order` fb_order ON fb_order.name = line.parent
+            WHERE line.parenttype = 'FB Order'
+              AND line.parentfield = 'items'
+              AND fb_order.docstatus = 1
+              AND fb_order.status = 'Submitted'
+              AND fb_order.stock_status = 'Pending'
+              AND fb_order.booth_warehouse = %s
+              AND line.item IN ({placeholders})
+            GROUP BY line.item
+        """,
+        tuple([normalized_warehouse, *normalized_item_codes]),
+        as_dict=True,
+    )
+    return {
+        cstr(row.get("item_code")).strip(): flt(row.get("reserved_qty"))
+        for row in rows
+        if cstr(row.get("item_code")).strip()
+    }
 
 
 def get_item_price(
-    item_code: str, standard_rate: float, selling_price_list: str | None = None
+    item_code: str,
+    standard_rate: float,
+    selling_price_list: str | None = None,
+    item_uom: str | None = None,
 ) -> float:
     """Return price list rate when available, otherwise Item.standard_selling_rate."""
-    if not selling_price_list:
-        return standard_rate or 0
-
-    price = frappe.db.get_value(
-        "Item Price",
-        {"item_code": item_code, "selling": 1, "price_list": selling_price_list},
-        "price_list_rate",
+    item_id = cstr(item_code).strip()
+    return get_item_prices_map(
+        [item_code],
+        selling_price_list,
+        item_uoms={item_id: cstr(item_uom).strip()} if item_uom else None,
+    ).get(
+        item_id,
+        standard_rate or 0,
     )
-    return flt(price) if price is not None else (standard_rate or 0)
+
+
+def get_item_prices_map(
+    item_codes: list[str],
+    selling_price_list: str | None = None,
+    item_uoms: Mapping[str, str] | None = None,
+) -> dict[str, float]:
+    normalized_item_codes = sorted(
+        {cstr(item_code).strip() for item_code in item_codes if cstr(item_code).strip()}
+    )
+    normalized_price_list = cstr(selling_price_list).strip()
+    if not normalized_item_codes or not normalized_price_list:
+        return {}
+
+    rows = frappe.get_all(
+        "Item Price",
+        filters={
+            "item_code": ["in", normalized_item_codes],
+            "selling": 1,
+            "price_list": normalized_price_list,
+        },
+        fields=[
+            "name",
+            "item_code",
+            "price_list_rate",
+            "uom",
+            "valid_from",
+            "valid_upto",
+            "modified",
+        ],
+        order_by="item_code asc, uom asc, valid_from desc, modified desc, name asc",
+    )
+    current_date = now_datetime().date()
+    selected: dict[str, tuple[tuple[int, date, str, str], float]] = {}
+    for row in rows:
+        item_code = cstr(row.get("item_code")).strip()
+        if not item_code or row.get("price_list_rate") is None:
+            continue
+        valid_from = _catalog_date(row.get("valid_from"))
+        valid_upto = _catalog_date(row.get("valid_upto"))
+        if valid_from and valid_from > current_date:
+            continue
+        if valid_upto and valid_upto < current_date:
+            continue
+
+        expected_uom = cstr((item_uoms or {}).get(item_code)).strip()
+        price_uom = cstr(row.get("uom")).strip()
+        if expected_uom and price_uom and price_uom != expected_uom:
+            continue
+        uom_priority = 1 if expected_uom and price_uom == expected_uom else 0
+        rank = (
+            uom_priority,
+            valid_from or date.min,
+            cstr(row.get("modified")),
+            cstr(row.get("name")),
+        )
+        existing = selected.get(item_code)
+        if existing is None or rank > existing[0]:
+            selected[item_code] = (rank, flt(row.get("price_list_rate")))
+    return {item_code: value for item_code, (_, value) in selected.items()}
+
+
+def _catalog_date(value: Any) -> date | None:
+    if value in (None, ""):
+        return None
+    parsed = get_datetime(value)
+    return parsed.date()
+
+
+def money_to_sen(value: Any) -> int:
+    """Convert ERP currency values to integer sen using explicit half-up rounding."""
+    try:
+        amount = Decimal(str(value if value is not None else 0))
+    except (InvalidOperation, ValueError):
+        frappe.throw(_("Catalog money value is invalid"), frappe.ValidationError)
+        return 0
+    if not amount.is_finite():
+        frappe.throw(_("Catalog money value must be finite"), frappe.ValidationError)
+    return int((amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def get_modifier_groups(since: str | None = None) -> list[ERPRecord]:
@@ -614,6 +1024,7 @@ def get_modifier_options(since: str | None = None) -> list[ERPRecord]:
             "group_id": row.get("group_id"),
             "name": row.get("name"),
             "price_adjustment": flt(row.get("price_adjustment")),
+            "price_adjustment_sen": money_to_sen(row.get("price_adjustment")),
             "is_default": cint(row.get("is_default")),
             "is_active": cint(
                 row.get("is_active") if row.get("is_active") is not None else 1
@@ -633,7 +1044,12 @@ def get_tax_rate_value(
         device_doc = get_device_doc(device_id=device_id)
         profile_name = cstr(getattr(device_doc, "pos_profile", None)).strip()
         if not profile_name:
-            return 0.08
+            frappe.throw(
+                _("KoPOS Device {0} has no POS Profile configured").format(
+                    cstr(device_id).strip()
+                ),
+                frappe.ValidationError,
+            )
         profile = frappe.get_doc("POS Profile", profile_name)
         profile_data = profile.as_dict()
     elif pos_profile_name:

@@ -11,6 +11,10 @@
     "field_order": [
         "shift_section",
         "shift_code",
+        "open_idempotency_key",
+        "open_request_fingerprint",
+        "close_idempotency_key",
+        "close_request_fingerprint",
         "device_id",
         "staff_id",
         "column_break_1",
@@ -47,6 +51,38 @@
             "label": "Shift Code",
             "reqd": 1,
             "unique": 1
+        },
+        {
+            "fieldname": "open_idempotency_key",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Open Idempotency Key",
+            "read_only": 1,
+            "search_index": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "open_request_fingerprint",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Open Request Fingerprint",
+            "read_only": 1
+        },
+        {
+            "fieldname": "close_idempotency_key",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Close Idempotency Key",
+            "read_only": 1,
+            "search_index": 1,
+            "unique": 1
+        },
+        {
+            "fieldname": "close_request_fingerprint",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Close Request Fingerprint",
+            "read_only": 1
         },
         {
             "fieldname": "device_id",
@@ -216,7 +252,6 @@
             "write": 1
         },
         {
-            "create": 1,
             "delete": 0,
             "email": 0,
             "export": 0,
@@ -224,8 +259,7 @@
             "read": 1,
             "report": 0,
             "role": "KoPOS Cashier",
-            "share": 0,
-            "write": 1
+            "share": 0
         }
     ],
     "sort_field": "modified",

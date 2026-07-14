@@ -16,8 +16,10 @@ from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
 @dataclass
 class ReconciliationEnv:
     transactions: dict[str, SimpleNamespace] = field(default_factory=dict)
+    manual_reconciliations: dict[str, SimpleNamespace] = field(default_factory=dict)
     comments: list[SimpleNamespace] = field(default_factory=list)
     updates: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    payment_updates: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
 
 @pytest.fixture
@@ -94,9 +96,13 @@ def reconciliation_module(monkeypatch):
         order_by: str | None = None,
         **_kwargs: Any,
     ) -> list[dict[str, Any]]:
-        assert doctype == "Maybank QR Transaction"
+        records = (
+            env.manual_reconciliations
+            if doctype == "Manual QR Reconciliation"
+            else env.transactions
+        )
         rows = []
-        for txn in env.transactions.values():
+        for txn in records.values():
             if filters:
                 matches = True
                 for key, value in filters.items():
@@ -120,16 +126,27 @@ def reconciliation_module(monkeypatch):
         fieldname: Any = None,
         **_kwargs: Any,
     ) -> Any:
-        assert doctype == "Maybank QR Transaction"
+        records = (
+            env.manual_reconciliations
+            if doctype == "Manual QR Reconciliation"
+            else env.transactions
+        )
         if isinstance(filters, dict):
-            for txn in env.transactions.values():
+            for txn in records.values():
                 if all(getattr(txn, key, None) == value for key, value in filters.items()):
                     return getattr(txn, fieldname)
         return None
 
     def fake_set_value(doctype: str, name: str, values: dict[str, Any], **_kwargs: Any) -> None:
-        assert doctype == "Maybank QR Transaction"
-        txn = env.transactions[name]
+        if doctype == "FB Order Payment":
+            env.payment_updates.append((name, values))
+            return
+        records = (
+            env.manual_reconciliations
+            if doctype == "Manual QR Reconciliation"
+            else env.transactions
+        )
+        txn = records[name]
         for key, value in values.items():
             setattr(txn, key, value)
         env.updates.append((name, values))
@@ -141,6 +158,8 @@ def reconciliation_module(monkeypatch):
                 return FakeCommentDoc(env, payload)
         if len(args) >= 2 and args[0] == "Maybank QR Transaction":
             return env.transactions[str(args[1])]
+        if len(args) >= 2 and args[0] == "Manual QR Reconciliation":
+            return env.manual_reconciliations[str(args[1])]
         raise AssertionError(f"unexpected get_doc call: {args!r} {kwargs!r}")
 
     monkeypatch.setattr(frappe.db, "get_value", fake_get_value, raising=False)
@@ -168,6 +187,8 @@ def test_list_returns_only_pending_reconciliation_transactions(reconciliation_mo
     assert rows[0]["manual_reconciliation_status"] == "pending_reconciliation"
     assert rows[0]["device_id"] == "DEVICE-A"
     assert rows[0]["sale_amount_sen"] == 1200
+    assert rows[0]["business_date"] == "2026-03-13"
+    assert rows[0]["provider"] == "maybank_qr"
     assert rows[0]["receipt_file"] == "FILE-1"
     assert rows[0]["receipt_uploaded_at"] == datetime(2026, 3, 13, 18, 6, 0)
     assert rows[0]["receipt_idempotency_key"] == "receipt-key-1"
@@ -221,6 +242,72 @@ def test_fetch_manual_qr_reconciliation_status_returns_requested_rows(reconcilia
             "reconciliation_note": None,
             "reconciliation_failed_reason": None,
         },
+    ]
+
+
+def test_static_qr_list_fetch_and_reconcile_route_to_manual_record(
+    reconciliation_module,
+):
+    reconciliation = build_manual_reconciliation()
+    reconciliation_module.env.manual_reconciliations[reconciliation.name] = reconciliation
+
+    listed = reconciliation_module.module.list_pending_manual_qr_reconciliations()
+    fetched = reconciliation_module.module.fetch_manual_qr_reconciliation_status(
+        payments=[
+            {"payment_id": "PAY-STATIC", "provider_session_id": "static-session-1"}
+        ]
+    )
+    result = reconciliation_module.module.mark_manual_qr_reconciled(
+        transaction_refno="static-session-1",
+        amount_sen="1200",
+        business_date="2026-03-13",
+        device_id="DEVICE-A",
+        provider="static_qr",
+        manager_id="manager@example.com",
+        note="Matched static QR bank settlement",
+    )
+
+    assert "static-session-1" in {row["transaction_refno"] for row in listed}
+    static_row = next(
+        row for row in listed if row["transaction_refno"] == "static-session-1"
+    )
+    assert static_row["provider"] == "static_qr"
+    assert static_row["business_date"] == "2026-03-13"
+    assert fetched["statuses"][0]["reconciliation_status"] == (
+        "pending_reconciliation"
+    )
+    assert result == {"status": "ok", "manual_reconciliation_status": "reconciled"}
+    assert reconciliation.status == "reconciled"
+    assert reconciliation_module.env.payment_updates == [
+        ("FB-PAY-STATIC", {"settlement_status": "reconciled"})
+    ]
+    assert reconciliation_module.env.comments[-1].reference_doctype == (
+        "Manual QR Reconciliation"
+    )
+
+
+def test_static_qr_failure_updates_order_payment_settlement(reconciliation_module):
+    reconciliation = build_manual_reconciliation()
+    reconciliation_module.env.manual_reconciliations[reconciliation.name] = reconciliation
+
+    result = reconciliation_module.module.mark_manual_qr_reconciliation_failed(
+        transaction_refno="static-session-1",
+        amount_sen="1200",
+        business_date="2026-03-13",
+        device_id="DEVICE-A",
+        provider="static_qr",
+        manager_id="manager@example.com",
+        reason="no_bank_transaction",
+        note="No matching static QR bank settlement",
+    )
+
+    assert result == {
+        "status": "ok",
+        "manual_reconciliation_status": "reconciliation_failed",
+    }
+    assert reconciliation.status == "reconciliation_failed"
+    assert reconciliation_module.env.payment_updates == [
+        ("FB-PAY-STATIC", {"settlement_status": "reconciliation_failed"})
     ]
 
 
@@ -388,6 +475,32 @@ def test_non_manager_role_cannot_reconcile(reconciliation_module, monkeypatch):
 
     txn = reconciliation_module.env.transactions["MBQR-PENDING-1"]
     assert "Only a System Manager" in str(excinfo.value)
+
+
+def test_reconciliation_validation_failure_rolls_back(
+    reconciliation_module, monkeypatch
+):
+    rollbacks: list[bool] = []
+    monkeypatch.setattr(
+        reconciliation_module.frappe.db,
+        "rollback",
+        lambda: rollbacks.append(True),
+        raising=False,
+    )
+
+    with pytest.raises(reconciliation_module.frappe.ValidationError):
+        reconciliation_module.module.mark_manual_qr_reconciled(
+            transaction_refno="TXN-PENDING-1",
+            amount_sen="999",
+            business_date="2026-03-13",
+            device_id="DEVICE-A",
+            provider="maybank_qr",
+            manager_id="manager@example.com",
+            note="Wrong amount",
+        )
+
+    txn = reconciliation_module.env.transactions["MBQR-PENDING-1"]
+    assert rollbacks == [True]
     assert txn.manual_reconciliation_status == "pending_reconciliation"
     assert reconciliation_module.env.updates == []
     assert reconciliation_module.env.comments == []
@@ -452,6 +565,7 @@ def test_manager_identity_is_required(reconciliation_module):
     ("override", "message"),
     [
         ({"amount_sen": "1199"}, "amount_sen does not match"),
+        ({"amount_sen": "1200.9"}, "amount_sen must be an integer"),
         ({"business_date": "2026-03-14"}, "business_date does not match"),
         ({"device_id": "DEVICE-B"}, "device_id does not match"),
         ({"provider": "other_provider"}, "provider does not match"),
@@ -555,6 +669,37 @@ def build_transaction(
         reconciled_at=None,
         reconciliation_note=None,
         reconciliation_failed_reason=reconciliation_failed_reason,
+    )
+
+
+def build_manual_reconciliation() -> SimpleNamespace:
+    return SimpleNamespace(
+        doctype="Manual QR Reconciliation",
+        name="MQR-1",
+        provider_session_id="static-session-1",
+        device_id="DEVICE-A",
+        staff_id="staff@example.com",
+        amount_sen=1200,
+        business_date="2026-03-13",
+        company="KoPOS Cafe",
+        currency="MYR",
+        status="pending_reconciliation",
+        created_at=datetime(2026, 3, 13, 18, 5, 0),
+        evidence_json="{}",
+        receipt_file=None,
+        receipt_uploaded_at=None,
+        receipt_idempotency_key=None,
+        receipt_payment_id="PAY-STATIC",
+        receipt_order_id="ORDER-STATIC",
+        receipt_amount_sen=1200,
+        fb_order_payment="FB-PAY-STATIC",
+        fb_order="FB-STATIC-1",
+        sales_invoice="SINV-STATIC-1",
+        reconciliation_idempotency_key="manual-reconciliation-1",
+        reconciled_by=None,
+        reconciled_at=None,
+        reconciliation_note=None,
+        reconciliation_failed_reason=None,
     )
 
 

@@ -242,7 +242,14 @@ def _invoice_payable_total_sen(invoice: Any, label: str) -> int:
         rounded_total_sen = _money_to_sen(rounded_total, f"{label} rounded_total")
         if rounded_total_sen != 0:
             return rounded_total_sen
-    return _money_to_sen(_value(invoice, "grand_total"), f"{label} grand_total")
+    grand_total_sen = _money_to_sen(
+        _value(invoice, "grand_total"), f"{label} grand_total"
+    )
+    write_off_sen = _money_to_sen(
+        _value(invoice, "write_off_amount") or 0,
+        f"{label} write_off_amount",
+    )
+    return grand_total_sen - write_off_sen
 
 
 def _resolve_original_tenders(

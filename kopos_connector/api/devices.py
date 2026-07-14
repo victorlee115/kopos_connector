@@ -115,6 +115,13 @@ def require_device_context(device_id: str | None = None, name: str | None = None
 
     device_doc = get_device_doc(device_id=device_id, name=name)
     require_device_api_access(device_doc)
+    if not cint(getattr(device_doc, "enabled", 1)):
+        frappe.throw(
+            _("KoPOS Device {0} is disabled").format(
+                cstr(getattr(device_doc, "device_id", None)).strip()
+            ),
+            frappe.ValidationError,
+        )
     return device_doc
 
 
@@ -340,6 +347,28 @@ def serialize_device_config(
 ) -> dict[str, Any]:
     from kopos_connector.api.catalog import get_tax_rate_value
 
+    if not cint(getattr(device_doc, "enabled", 0)):
+        frappe.throw(
+            _("KoPOS Device {0} is disabled").format(
+                cstr(getattr(device_doc, "device_id", None)).strip()
+            ),
+            frappe.ValidationError,
+        )
+
+    active_device_users = [
+        row
+        for row in (device_doc.device_users or [])
+        if cstr(getattr(row, "user", None)).strip()
+        and cint(getattr(row, "active", 0))
+    ]
+    if not active_device_users:
+        frappe.throw(
+            _("KoPOS Device {0} must have at least one active device user").format(
+                cstr(getattr(device_doc, "device_id", None)).strip()
+            ),
+            frappe.ValidationError,
+        )
+
     profile_doc = frappe.get_doc("POS Profile", device_doc.pos_profile)
     company = cstr(getattr(profile_doc, "company", None)).strip() or None
     warehouse = cstr(getattr(profile_doc, "warehouse", None)).strip() or None
@@ -399,8 +428,7 @@ def serialize_device_config(
                 "can_close_shift": bool(cint(row.can_close_shift)),
                 "default_cashier": bool(cint(row.default_cashier)),
             }
-            for row in (device_doc.device_users or [])
-            if cstr(row.user).strip()
+            for row in active_device_users
         ],
         "demo_mode": False,
         "erpnext_url": frappe.utils.get_url().rstrip("/"),

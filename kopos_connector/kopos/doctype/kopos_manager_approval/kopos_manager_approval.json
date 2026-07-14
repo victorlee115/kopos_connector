@@ -1,0 +1,178 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 0,
+ "allow_rename": 0,
+ "autoname": "field:token_id",
+ "creation": "2026-07-12 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "token_id",
+  "status",
+  "token_digest",
+  "device_id",
+  "staff_id",
+  "manager_id",
+  "authorization_mode",
+  "action",
+  "shift_id",
+  "resource_id",
+  "amount_sen",
+  "context_hash",
+  "issued_at",
+  "expires_at",
+  "issued_by_api_user",
+  "consumed_at",
+  "consumed_idempotency_key"
+ ],
+ "fields": [
+  {
+   "fieldname": "token_id",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Token ID",
+   "read_only": 1,
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "issued",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "issued\nconsumed",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "token_digest",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Token Digest",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "device_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Device ID",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "staff_id",
+   "fieldtype": "Link",
+   "label": "Staff",
+   "options": "User",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "manager_id",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Approving Manager",
+   "options": "User",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "device_manager",
+   "fieldname": "authorization_mode",
+   "fieldtype": "Select",
+   "label": "Authorization Mode",
+   "options": "device_manager\nsystem_manager",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "action",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Action",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "shift_id",
+   "fieldtype": "Data",
+   "label": "Shift",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "resource_id",
+   "fieldtype": "Data",
+   "label": "Resource ID",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "amount_sen",
+   "fieldtype": "Int",
+   "label": "Amount (sen)",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "context_hash",
+   "fieldtype": "Data",
+   "label": "Canonical Context Hash",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "issued_at",
+   "fieldtype": "Datetime",
+   "label": "Issued At",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "expires_at",
+   "fieldtype": "Datetime",
+   "label": "Expires At",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "issued_by_api_user",
+   "fieldtype": "Link",
+   "label": "Issuing API User",
+   "options": "User",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "consumed_at",
+   "fieldtype": "Datetime",
+   "label": "Consumed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "consumed_idempotency_key",
+   "fieldtype": "Data",
+   "label": "Consumed Idempotency Key",
+   "read_only": 1
+  }
+ ],
+ "module": "KoPOS",
+ "name": "KoPOS Manager Approval",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "read": 1,
+   "role": "System Manager"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

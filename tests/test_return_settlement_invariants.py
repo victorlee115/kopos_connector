@@ -115,6 +115,7 @@ def _settlement_fixture(
         original_sales_invoice="SINV-1",
         return_sales_invoice="SINV-RETURN-1",
         refund_method="cash",
+        request_fingerprint="f" * 64,
         settlement_doctype=None,
         settlement_document=None,
         settlement_status="Pending",
@@ -493,6 +494,30 @@ def test_settlement_uses_rounded_payable_total_without_losing_grand_total_proof(
         service._validate_full_return_invoice(original, return_invoice)
 
 
+@pytest.mark.parametrize(
+    ("original_write_off", "return_write_off", "expected_sen"),
+    [
+        ("0.01", "-0.01", 1202),
+        ("-0.01", "0.01", 1204),
+    ],
+)
+def test_settlement_uses_pos_write_off_payable_total_for_both_rounding_signs(
+    monkeypatch: pytest.MonkeyPatch,
+    original_write_off: str,
+    return_write_off: str,
+    expected_sen: int,
+) -> None:
+    service, original, return_invoice, _, _ = _settlement_fixture(monkeypatch)
+    original.grand_total = "12.03"
+    original.rounded_total = "0.00"
+    original.write_off_amount = original_write_off
+    return_invoice.grand_total = "-12.03"
+    return_invoice.rounded_total = "0.00"
+    return_invoice.write_off_amount = return_write_off
+
+    assert service._validate_full_return_invoice(original, return_invoice) == expected_sen
+
+
 def test_return_guard_uses_two_current_locks_and_aggregates_duplicate_lines(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -580,6 +605,7 @@ def test_duplicate_persisted_children_match_an_aggregated_idempotent_retry() -> 
         fb_order="FB-ORDER-1",
         return_to_stock=0,
         refund_method="cash",
+        request_fingerprint="f" * 64,
         lines=[
             FakeDoc(original_resolved_sale="RS-1", qty_returned="0.50"),
             FakeDoc(original_resolved_sale="RS-1", qty_returned="0.50"),
@@ -590,6 +616,7 @@ def test_duplicate_persisted_children_match_an_aggregated_idempotent_retry() -> 
         "fb_order": "FB-ORDER-1",
         "return_to_stock": 0,
         "refund_method": "cash",
+        "request_fingerprint": "f" * 64,
         "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 1.0}],
     }
 
@@ -623,57 +650,237 @@ def test_return_idempotency_lookup_is_a_post_lock_current_read(
     assert captured["as_dict"] is True
 
 
+def test_completed_refund_retry_is_verified_before_token_consumption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = importlib.import_module("kopos_connector.api.fb_returns")
+    return_doc = FakeDoc(
+        name="FB-RETURN-1",
+        request_fingerprint="f" * 64,
+    )
+    return_doc.reload = lambda: None
+    validated = {
+        "return_id": "refund-idem-1",
+        "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 1}],
+        "original_sales_invoice": "SINV-1",
+        "request_fingerprint": "f" * 64,
+    }
+    scope = {
+        "device_id": "DEVICE-1",
+        "staff_id": "cashier@example.com",
+        "shift_id": "SHIFT-1",
+        "resource_id": "SINV-1",
+        "amount_sen": 1200,
+        "context_hash": "c" * 64,
+    }
+
+    monkeypatch.setattr(api, "_validate_payload", lambda payload: dict(validated))
+    monkeypatch.setattr(api, "_build_refund_approval_scope", lambda value: scope)
+    monkeypatch.setattr(
+        api,
+        "_return_request_fingerprint",
+        lambda value, approval_scope: "f" * 64,
+    )
+    monkeypatch.setattr(api, "lock_and_validate_return_quantities", lambda *args: None)
+    monkeypatch.setattr(
+        api,
+        "_get_existing_return_name_current",
+        lambda return_id: "FB-RETURN-1",
+    )
+    monkeypatch.setattr(api.frappe, "get_doc", lambda *args: return_doc)
+    monkeypatch.setattr(api, "_validate_existing_return_matches", lambda *args: None)
+    monkeypatch.setattr(
+        api,
+        "verify_manager_approval_token",
+        lambda *args, **kwargs: pytest.fail("duplicate must not consume token"),
+    )
+    monkeypatch.setattr(
+        "kopos_connector.kopos.services.operations.return_service.ensure_existing_return_event_settlement",
+        lambda doc: None,
+    )
+    monkeypatch.setattr(
+        api,
+        "_serialize_return_response",
+        lambda status, doc, **_kwargs: {"status": status, "return_event": doc.name},
+    )
+
+    assert api.process_return_payload(
+        {"manager_approval_token": "already-consumed"},
+        require_manager_approval=True,
+    ) == {"status": "duplicate", "return_event": "FB-RETURN-1"}
+
+
+def test_new_refund_consumes_token_with_exact_server_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = importlib.import_module("kopos_connector.api.fb_returns")
+    validated = {
+        "return_id": "refund-idem-1",
+        "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 1}],
+        "original_sales_invoice": "SINV-1",
+        "manager_approval_token": "signed-token",
+    }
+    scope = {
+        "device_id": "DEVICE-1",
+        "staff_id": "cashier@example.com",
+        "shift_id": "SHIFT-1",
+        "resource_id": "SINV-1",
+        "amount_sen": 1200,
+        "context_hash": "c" * 64,
+    }
+    approval = {
+        "manager_id": "manager@example.com",
+        "token_id": "approval-token-1",
+    }
+    approval_calls: list[tuple[str, dict[str, Any]]] = []
+    return_doc = FakeDoc(name="FB-RETURN-1")
+    return_doc.insert = lambda ignore_permissions=False: return_doc
+    return_doc.submit = lambda: return_doc
+    return_doc.reload = lambda: None
+
+    monkeypatch.setattr(api, "_validate_payload", lambda payload: dict(validated))
+    monkeypatch.setattr(api, "_build_refund_approval_scope", lambda value: scope)
+    monkeypatch.setattr(
+        api,
+        "_return_request_fingerprint",
+        lambda value, approval_scope: "f" * 64,
+    )
+    monkeypatch.setattr(api, "lock_and_validate_return_quantities", lambda *args: None)
+    monkeypatch.setattr(api, "_get_existing_return_name_current", lambda key: None)
+
+    def verify_approval(token: str, **bindings: Any) -> dict[str, str]:
+        approval_calls.append((token, bindings))
+        return approval
+
+    monkeypatch.setattr(api, "verify_manager_approval_token", verify_approval)
+    monkeypatch.setattr(
+        api,
+        "_build_return_event",
+        lambda value, *, approval=None: return_doc,
+    )
+    monkeypatch.setattr(
+        api,
+        "_serialize_return_response",
+        lambda status, doc, **_kwargs: {"status": status, "return_event": doc.name},
+    )
+
+    assert api.process_return_payload(
+        {"manager_approval_token": "signed-token"},
+        require_manager_approval=True,
+    ) == {"status": "ok", "return_event": "FB-RETURN-1"}
+    assert approval_calls == [
+        (
+            "signed-token",
+            {
+                "device_id": "DEVICE-1",
+                "staff_id": "cashier@example.com",
+                "action": "refund_order",
+                "shift_id": "SHIFT-1",
+                "resource_id": "SINV-1",
+                "amount_sen": 1200,
+                "context_hash": "c" * 64,
+                "idempotency_key": "refund-idem-1",
+            },
+        )
+    ]
+
+
+def test_refund_duplicate_rejects_same_key_with_different_fingerprint() -> None:
+    api = importlib.import_module("kopos_connector.api.fb_returns")
+    return_doc = FakeDoc(request_fingerprint="a" * 64)
+    with pytest.raises(api.frappe.ValidationError, match="different canonical payload"):
+        api._validate_existing_return_matches(
+            {"request_fingerprint": "b" * 64},
+            return_doc,
+        )
+
+
 def test_shift_cash_uses_posted_settlement_cash_outflow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = importlib.import_module(
         "kopos_connector.kopos.services.accounting.return_invoice_service"
     )
-    shift = FakeDoc(
-        doctype="FB Shift",
-        name="SHIFT-1",
-        opening_float="100.00",
-        counted_cash="100.00",
-    )
-    sale = FakeDoc(
-        doctype="Sales Invoice",
-        name="SINV-1",
-        docstatus=1,
-        payments=[FakeDoc(mode_of_payment="Cash", amount="12.00")],
-    )
-    return_event = FakeDoc(
-        doctype="FB Return Event",
-        name="FB-RETURN-1",
-        refund_method="cash",
-        settlement_status="Posted",
-    )
+    sql_calls: list[str] = []
+    updates: list[tuple[str, str, dict[str, Any], bool]] = []
 
-    def get_doc(doctype: str, name: str) -> FakeDoc:
-        return {
-            ("FB Shift", "SHIFT-1"): shift,
-            ("Sales Invoice", "SINV-1"): sale,
-            ("FB Return Event", "FB-RETURN-1"): return_event,
-        }[(doctype, name)]
+    def sql(query: str, _params: Any, *, as_dict: bool) -> list[dict[str, Any]]:
+        sql_calls.append(query)
+        assert as_dict is True
+        if "FROM `tabFB Shift`" in query:
+            return [
+                {
+                    "name": "SHIFT-1",
+                    "opening_float": "100.00",
+                    "counted_cash": "100.00",
+                }
+            ]
+        if "`tabSales Invoice Payment`" in query:
+            return [
+                {
+                    "sales_invoice": "SINV-1",
+                    "change_amount": "8.00",
+                    "payment_row": "PAY-1",
+                    "mode_of_payment": "Cash",
+                    "payment_amount": "20.00",
+                }
+            ]
+        if "FROM `tabFB Return Event`" in query:
+            return [
+                {
+                    "name": "FB-RETURN-1",
+                    "refund_method": "cash",
+                    "settlement_doctype": "Journal Entry",
+                    "settlement_document": "JV-REFUND-1",
+                    "settlement_amount": "12.00",
+                    "settlement_tenders_json": json.dumps(
+                        {
+                            "refund_method": "cash",
+                            "settlement_amount_sen": 1200,
+                            "customer_debit_sen": 1200,
+                            "return_outstanding_sen": 0,
+                            "tenders": [
+                                {
+                                    "account": "Cash - CO",
+                                    "amount_sen": 1200,
+                                    "refund_method": "cash",
+                                }
+                            ],
+                        }
+                    ),
+                    "settlement_name": "JV-REFUND-1",
+                    "settlement_docstatus": 1,
+                }
+            ]
+        raise AssertionError(f"Unexpected query: {query}")
 
-    def get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
-        if doctype == "FB Order":
-            return [{"sales_invoice": "SINV-1"}]
-        if doctype == "FB Return Event":
-            return [{"name": "FB-RETURN-1"}]
-        return []
+    def set_value(
+        doctype: str,
+        name: str,
+        values: dict[str, Any],
+        *,
+        update_modified: bool,
+    ) -> None:
+        updates.append((doctype, name, values, update_modified))
 
-    monkeypatch.setattr(service.frappe, "get_doc", get_doc)
-    monkeypatch.setattr(service.frappe, "get_all", get_all)
-    monkeypatch.setattr(
-        service,
-        "get_settlement_cash_adjustment_sen",
-        lambda event: -1200,
-    )
+    monkeypatch.setattr(service.frappe.db, "sql", sql)
+    monkeypatch.setattr(service.frappe.db, "set_value", set_value)
 
     service.refresh_fb_shift_cash("SHIFT-1")
 
-    assert shift.expected_cash == service.Decimal("100")
-    assert shift.cash_variance == service.Decimal("0")
+    assert len(sql_calls) == 3
+    assert all("FOR UPDATE" in query for query in sql_calls)
+    assert updates == [
+        (
+            "FB Shift",
+            "SHIFT-1",
+            {
+                "expected_cash": service.Decimal("100"),
+                "cash_variance": service.Decimal("0"),
+            },
+            False,
+        )
+    ]
 
 
 def test_success_and_duplicate_api_responses_expose_same_settlement_proof(
@@ -685,12 +892,16 @@ def test_success_and_duplicate_api_responses_expose_same_settlement_proof(
     )
     return_event = FakeDoc(
         name="FB-RETURN-1",
+        return_id="refund-idem-1",
+        original_sales_invoice="SINV-1",
         return_sales_invoice="SINV-RETURN-1",
         settlement_doctype="Journal Entry",
         settlement_document="JV-REFUND-1",
         settlement_status="Posted",
         return_to_stock=0,
         lines=[],
+        approval_token_id="approval-token-id-refund",
+        approved_by_manager="original-manager@example.com",
     )
     verified: list[str] = []
     monkeypatch.setattr(
@@ -708,3 +919,20 @@ def test_success_and_duplicate_api_responses_expose_same_settlement_proof(
         assert response["settlement_document"] == "JV-REFUND-1"
         assert response["settlement_status"] == "Posted"
     assert verified == ["FB-RETURN-1", "FB-RETURN-1"]
+
+    persisted_proof = {
+        "approval_manager_id": "original-manager@example.com",
+        "approval_token_id": "approval-token-id-refund",
+        "approval_context_hash": "b" * 64,
+    }
+    monkeypatch.setattr(
+        api,
+        "load_consumed_manager_approval_proof",
+        lambda **kwargs: persisted_proof,
+    )
+    recovered = api._serialize_return_response(
+        "duplicate",
+        return_event,
+        require_approval_proof=True,
+    )
+    assert recovered | persisted_proof == recovered

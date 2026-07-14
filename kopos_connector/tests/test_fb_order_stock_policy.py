@@ -197,7 +197,7 @@ def test_before_submit_still_raises_non_stock_failures(fake_frappe):
         order.before_submit()
 
 
-def test_on_submit_keeps_noop_stock_projection_pending(fake_frappe, monkeypatch):
+def test_on_submit_marks_noop_stock_projection_as_terminal_success(fake_frappe, monkeypatch):
     fb_order_module = importlib.import_module(
         "kopos_connector.kopos.doctype.fb_order.fb_order"
     )
@@ -253,6 +253,6 @@ def test_on_submit_keeps_noop_stock_projection_pending(fake_frappe, monkeypatch)
     order.on_submit()
 
     assert stock_service_called["value"] is False
-    assert order.stock_status == "Pending"
-    assert ("stock_status", "Pending", False) in order.db_set_calls
-    assert ("PROJECTION-LOG", "Pending", "Stock Entry", None, None) in projection_updates
+    assert order.stock_status == "Posted"
+    assert ("stock_status", "Posted", False) in order.db_set_calls
+    assert ("PROJECTION-LOG", "Succeeded", "Stock Entry", None, None) in projection_updates

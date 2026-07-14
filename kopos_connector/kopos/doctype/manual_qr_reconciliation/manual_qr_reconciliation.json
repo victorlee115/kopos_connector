@@ -1,0 +1,316 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 0,
+ "allow_rename": 0,
+ "autoname": "format:MQR-{YYYY}-{#####}",
+ "creation": "2026-07-12 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "status",
+  "section_source",
+  "fb_order",
+  "sales_invoice",
+  "fb_order_payment",
+  "device_id",
+  "staff_id",
+  "company",
+  "currency",
+  "business_date",
+  "amount_sen",
+  "payment_reference",
+  "provider_session_id",
+  "reconciliation_idempotency_key",
+  "suspense_account",
+  "section_evidence",
+  "evidence_kind",
+  "evidence_captured_at",
+  "evidence_json",
+  "receipt_file",
+  "receipt_idempotency_key",
+  "receipt_idempotency_fingerprint",
+  "receipt_payment_id",
+  "receipt_order_id",
+  "receipt_amount_sen",
+  "receipt_file_name",
+  "receipt_file_hash",
+  "receipt_captured_at",
+  "receipt_uploaded_at",
+  "created_at",
+  "reconciled_by",
+  "reconciled_at",
+  "reconciliation_note",
+  "reconciliation_failed_reason"
+ ],
+ "fields": [
+  {
+   "default": "pending_reconciliation",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "pending_reconciliation\nreconciled\nreconciliation_failed",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "section_source",
+   "fieldtype": "Section Break",
+   "label": "Source and Accounting"
+  },
+  {
+   "fieldname": "fb_order",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "FB Order",
+   "options": "FB Order",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "sales_invoice",
+   "fieldtype": "Link",
+   "label": "Sales Invoice",
+   "options": "Sales Invoice",
+   "read_only": 1,
+   "search_index": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "fb_order_payment",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "FB Order Payment Row",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "device_id",
+   "fieldtype": "Data",
+   "label": "Device ID",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "staff_id",
+   "fieldtype": "Link",
+   "label": "Staff",
+   "options": "User",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "currency",
+   "fieldtype": "Link",
+   "label": "Currency",
+   "options": "Currency",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "business_date",
+   "fieldtype": "Date",
+   "label": "Business Date",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "amount_sen",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Amount (sen)",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "payment_reference",
+   "fieldtype": "Data",
+   "label": "Payment Reference",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "provider_session_id",
+   "fieldtype": "Data",
+   "label": "Static QR Session",
+   "read_only": 1,
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "reconciliation_idempotency_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Reconciliation Idempotency Key",
+   "read_only": 1,
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "suspense_account",
+   "fieldtype": "Link",
+   "label": "Suspense Account",
+   "options": "Account",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "section_evidence",
+   "fieldtype": "Section Break",
+   "label": "Evidence and Reconciliation"
+  },
+  {
+   "fieldname": "evidence_kind",
+   "fieldtype": "Data",
+   "label": "Evidence Kind",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "evidence_captured_at",
+   "fieldtype": "Datetime",
+   "label": "Evidence Captured At",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "evidence_json",
+   "fieldtype": "Code",
+   "hidden": 1,
+   "label": "Evidence JSON",
+   "options": "JSON",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "receipt_file",
+   "fieldtype": "Link",
+   "label": "Receipt File",
+   "options": "File",
+   "read_only": 1
+  },
+  {
+   "fieldname": "receipt_idempotency_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Receipt Idempotency Key",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "receipt_idempotency_fingerprint",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Receipt Idempotency Fingerprint",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "receipt_payment_id",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Receipt Payment ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "receipt_order_id",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Receipt Order ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "receipt_amount_sen",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "Receipt Amount (sen)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "receipt_file_name",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Receipt File Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "receipt_file_hash",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Receipt File Hash",
+   "read_only": 1
+  },
+  {
+   "fieldname": "receipt_captured_at",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "Receipt Captured At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "receipt_uploaded_at",
+   "fieldtype": "Datetime",
+   "label": "Receipt Uploaded At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "created_at",
+   "fieldtype": "Datetime",
+   "label": "Created At",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "reconciled_by",
+   "fieldtype": "Data",
+   "label": "Reconciled By",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reconciled_at",
+   "fieldtype": "Datetime",
+   "label": "Reconciled At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reconciliation_note",
+   "fieldtype": "Small Text",
+   "label": "Reconciliation Note",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reconciliation_failed_reason",
+   "fieldtype": "Data",
+   "label": "Reconciliation Failed Reason",
+   "read_only": 1
+  }
+ ],
+ "module": "KoPOS",
+ "name": "Manual QR Reconciliation",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "read": 1,
+   "role": "System Manager"
+  },
+  {
+   "read": 1,
+   "role": "KoPOS Manager"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

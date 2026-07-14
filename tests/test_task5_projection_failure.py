@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from .fake_frappe import install_fake_frappe_modules
 
 
@@ -30,6 +32,7 @@ class FakeOrder:
         self.name = "FB-ORDER-1"
         self.order_id = "order-1"
         self.external_idempotency_key = "idem-1"
+        self.request_fingerprint = "f" * 64
         self.status = "Draft"
         self.invoice_status = invoice_status
         self.stock_status = stock_status
@@ -101,9 +104,33 @@ class FakeRelinkOrder:
         self.external_idempotency_key = "idem-1"
         self.shift = "FB-SHIFT-1"
         self.device_id = "DEVICE-1"
+        self.company = "JiJi Cafe"
+        self.currency = "MYR"
+        self.net_total = "12.00"
+        self.tax_total = "0.00"
+        self.rounding_adjustment = "0.00"
+        self.grand_total = "12.00"
+        self.booth_warehouse = "Main - JC"
         self.sales_invoice = None
         self.invoice_status = "Failed"
-        self.items: list[Any] = []
+        self.items: list[Any] = [
+            {
+                "line_id": "LINE-1",
+                "item": "LATTE",
+                "qty": 1,
+                "line_total": "12.00",
+                "modifier_total": "0.00",
+            }
+        ]
+        self.payments: list[Any] = [
+            {
+                "source_payment_id": "PAY-1",
+                "payment_method": "Cash",
+                "amount": "12.00",
+                "tendered_amount": "12.00",
+                "change_amount": "0.00",
+            }
+        ]
         self.db_set_calls: list[tuple[str, str, bool]] = []
 
     def get(self, fieldname: str) -> Any:
@@ -167,9 +194,21 @@ def test_submit_order_payload_returns_partial_failure_for_invoice_projection_fai
     )
     monkeypatch.setattr(
         fb_orders,
-        "_validate_submit_order_payload",
-        lambda payload: {"external_idempotency_key": "idem-1"},
+        "_normalize_submit_order_payload",
+        lambda payload: {
+            "external_idempotency_key": "idem-1",
+            "request_fingerprint": "f" * 64,
+            "shift": "FB-SHIFT-1",
+            "device_id": "DEVICE-1",
+            "staff_id": "staff@example.com",
+        },
     )
+    monkeypatch.setattr(
+        fb_orders,
+        "_validate_new_submit_order_state",
+        lambda normalized: normalized,
+    )
+    monkeypatch.setattr(fb_orders, "_validate_submit_shift", lambda **kwargs: None)
     monkeypatch.setattr(fb_orders, "_get_existing_fb_order_name", lambda key: None)
     monkeypatch.setattr(fb_orders, "_build_fb_order", lambda validated: order)
     monkeypatch.setattr(
@@ -228,9 +267,21 @@ def test_submit_order_payload_duplicate_idempotency_key_reuses_posted_projection
     monkeypatch.setattr(order, "insert", insert_once)
     monkeypatch.setattr(
         fb_orders,
-        "_validate_submit_order_payload",
-        lambda payload: {"external_idempotency_key": "idem-1"},
+        "_normalize_submit_order_payload",
+        lambda payload: {
+            "external_idempotency_key": "idem-1",
+            "request_fingerprint": "f" * 64,
+            "shift": "FB-SHIFT-1",
+            "device_id": "DEVICE-1",
+            "staff_id": "staff@example.com",
+        },
     )
+    monkeypatch.setattr(
+        fb_orders,
+        "_validate_new_submit_order_state",
+        lambda normalized: normalized,
+    )
+    monkeypatch.setattr(fb_orders, "_validate_submit_shift", lambda **kwargs: None)
     monkeypatch.setattr(fb_orders, "_get_existing_fb_order_name", get_existing)
     monkeypatch.setattr(fb_orders, "_build_fb_order", build_order)
     monkeypatch.setattr(fb_orders.frappe, "get_doc", lambda doctype, name: order)
@@ -253,6 +304,56 @@ def test_submit_order_payload_duplicate_idempotency_key_reuses_posted_projection
     assert order.insert_count == 1
     assert order.submit_count == 1
     assert len({first["sales_invoice"], second["sales_invoice"]}) == 1
+
+
+def test_race_duplicate_rejects_same_key_with_different_order_fingerprint(
+    monkeypatch,
+):
+    order = FakeOrder(
+        invoice_status="Posted",
+        stock_status="Posted",
+        sales_invoice="SINV-1",
+    )
+    order.request_fingerprint = "a" * 64
+    lookups = {"count": 0}
+
+    def get_existing(_key: str) -> str | None:
+        lookups["count"] += 1
+        return None if lookups["count"] == 1 else order.name
+
+    monkeypatch.setattr(
+        fb_orders,
+        "_normalize_submit_order_payload",
+        lambda payload: {
+            "external_idempotency_key": "idem-1",
+            "request_fingerprint": "b" * 64,
+            "shift": "FB-SHIFT-1",
+            "device_id": "DEVICE-1",
+            "staff_id": "staff@example.com",
+        },
+    )
+    monkeypatch.setattr(
+        fb_orders,
+        "_validate_new_submit_order_state",
+        lambda normalized: normalized,
+    )
+    monkeypatch.setattr(fb_orders, "_get_existing_fb_order_name", get_existing)
+    monkeypatch.setattr(fb_orders, "_validate_submit_shift", lambda **kwargs: None)
+    monkeypatch.setattr(fb_orders, "_build_fb_order", lambda validated: order)
+    monkeypatch.setattr(fb_orders.frappe, "get_doc", lambda *args: order)
+    monkeypatch.setattr(
+        order,
+        "insert",
+        lambda **kwargs: (_ for _ in ()).throw(
+            fb_orders.frappe.DuplicateEntryError("duplicate")
+        ),
+    )
+
+    with pytest.raises(
+        fb_orders.frappe.ValidationError,
+        match="different canonical FB Order payload",
+    ):
+        fb_orders.submit_order_payload({"idempotency_key": "idem-1"})
 
 
 def test_retry_failed_sales_invoice_projection_runs_handler_and_updates_order(
@@ -311,7 +412,7 @@ def test_retry_failed_sales_invoice_projection_runs_handler_and_updates_order(
     assert order.reload_count == 1
 
 
-def test_retry_failed_noop_stock_projection_stays_pending_without_handler(
+def test_retry_failed_noop_stock_projection_completes_without_handler(
     monkeypatch,
 ) -> None:
     log = FakeProjectionLog("Stock Issue")
@@ -347,7 +448,7 @@ def test_retry_failed_noop_stock_projection_stays_pending_without_handler(
     result = fb_orders._retry_projection_log(log.name)
 
     assert result["projection_type"] == "Stock Issue"
-    assert result["state"] == "Pending"
+    assert result["state"] == "Succeeded"
     assert result["target_name"] is None
     assert stock_handler_called["value"] is False
 
@@ -365,6 +466,43 @@ def test_sales_invoice_projection_relinks_existing_invoice_by_idempotency_key(
             "custom_fb_order": "FB-ORDER-1",
             "custom_fb_shift": "FB-SHIFT-1",
             "custom_fb_device_id": "DEVICE-1",
+            "custom_fb_idempotency_key": "idem-1",
+            "company": "JiJi Cafe",
+            "currency": "MYR",
+            "docstatus": 1,
+            "is_return": 0,
+            "is_pos": 1,
+            "update_stock": 0,
+            "pos_profile": "Counter 1",
+            "net_total": "12.00",
+            "total_taxes_and_charges": "0.00",
+            "grand_total": "12.00",
+            "disable_rounded_total": 1,
+            "rounded_total": "0.00",
+            "write_off_amount": "0.00",
+            "paid_amount": "12.00",
+            "change_amount": "0.00",
+            "outstanding_amount": "0.00",
+            "items": [
+                {
+                    "custom_fb_order_line_ref": "LINE-1",
+                    "item_code": "LATTE",
+                    "qty": 1,
+                    "amount": "12.00",
+                    "net_amount": "12.00",
+                    "custom_kopos_modifier_total": "0.00",
+                    "warehouse": "Main - JC",
+                }
+            ],
+            "payments": [
+                {
+                    "mode_of_payment": "Cash",
+                    "amount": "12.00",
+                    "account": "Cash - JC",
+                    "custom_fb_source_payment_id": "PAY-1",
+                }
+            ],
+            "taxes": [],
         },
     )()
 
@@ -403,6 +541,15 @@ def test_sales_invoice_projection_rejects_idempotency_collision_for_other_device
             "custom_fb_order": "FB-ORDER-1",
             "custom_fb_shift": "FB-SHIFT-1",
             "custom_fb_device_id": "OTHER-DEVICE",
+            "custom_fb_idempotency_key": "idem-1",
+            "company": "JiJi Cafe",
+            "currency": "MYR",
+            "docstatus": 1,
+            "is_return": 0,
+            "is_pos": 1,
+            "grand_total": "12.00",
+            "paid_amount": "12.00",
+            "outstanding_amount": "0.00",
         },
     )()
 

@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections import defaultdict
 from importlib import import_module
+from math import isfinite
 from typing import Any
 
 frappe = import_module("frappe")
@@ -14,11 +15,20 @@ flt = frappe_utils.flt
 now_datetime = frappe_utils.now_datetime
 DocumentLike = Any
 
+from kopos_connector.kopos.api.money_contract import (
+    MoneyContractValidationError,
+    parse_positive_integer_quantity,
+    persisted_money_to_sen,
+    sen_to_decimal,
+)
 from kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group import (
     filter_visible_allowed_modifier_groups,
 )
 from kopos_connector.kopos.services.accounting.sales_invoice_service import (
     create_sales_invoice,
+)
+from kopos_connector.kopos.services.accounting.maybank_payment_service import (
+    register_qr_payment_settlement,
 )
 from kopos_connector.kopos.services.inventory.stock_issue_service import (
     create_ingredient_stock_entry,
@@ -35,6 +45,26 @@ from kopos_connector.kopos.services.projection.log_service import (
 
 def cstr(value: Any) -> str:
     return str(frappe.utils.cstr(value))
+
+
+def _optional_money_value(value: Any) -> Any:
+    return 0 if value is None or value == "" else value
+
+
+def _money_sen(value: Any, fieldname: str) -> int:
+    try:
+        return persisted_money_to_sen(value, fieldname)
+    except MoneyContractValidationError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+        raise AssertionError("frappe.throw must raise") from error
+
+
+def _positive_integer_qty(value: Any, fieldname: str) -> int:
+    try:
+        return parse_positive_integer_quantity(value, fieldname)
+    except MoneyContractValidationError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+        raise AssertionError("frappe.throw must raise") from error
 
 
 class FBOrder(BaseDocument):
@@ -59,6 +89,7 @@ class FBOrder(BaseDocument):
         line_resolutions = self.build_line_resolutions()
         self.validate_stock_availability(line_resolutions)
         self.create_resolved_sales(line_resolutions)
+        register_qr_payment_settlement(self)
 
     def on_submit(self):
         resolved_sales = self.get_resolved_sales()
@@ -113,10 +144,11 @@ class FBOrder(BaseDocument):
                 None,
             )
         elif not stock_projection_required:
-            self.stock_status = "Pending"
+            # A no-op stock projection is terminal success, not retryable work.
+            self.stock_status = "Posted"
             update_projection_state(
                 stock_log,
-                "Pending",
+                "Succeeded",
                 "Stock Entry",
                 None,
                 None,
@@ -210,59 +242,83 @@ class FBOrder(BaseDocument):
                     or getattr(component, "qty", None)
                     or 0
                 )
-                if item and warehouse and qty > 0:
-                    return True
+                stock_uom = getattr(component, "stock_uom", None) or getattr(
+                    component,
+                    "uom",
+                    None,
+                )
+                if not item or not warehouse or not stock_uom or not isfinite(qty) or qty <= 0:
+                    frappe.throw(
+                        "Stock-affecting resolved component requires item, warehouse, stock UOM, and positive stock quantity",
+                        frappe.ValidationError,
+                    )
+                return True
         return False
 
     def update_shift_expected_cash(self):
         if not self.shift:
             return
-        shift_doc = frappe.get_doc("FB Shift", self.shift)
-        orders = frappe.get_all(
-            "FB Order",
-            filters={"shift": self.shift, "status": "Submitted"},
-            fields=["sales_invoice"],
+        from kopos_connector.kopos.services.accounting.return_invoice_service import (
+            refresh_fb_shift_cash,
         )
-        total_cash = 0.0
-        for order in orders:
-            if not order.sales_invoice:
-                continue
-            sales_invoice = frappe.get_doc("Sales Invoice", order.sales_invoice)
-            for payment in sales_invoice.get("payments") or []:
-                if cstr(getattr(payment, "mode_of_payment", None)) == "Cash":
-                    total_cash += flt(getattr(payment, "amount", 0))
-        shift_doc.db_set(
-            "expected_cash",
-            flt(getattr(shift_doc, "opening_float", 0)) + total_cash,
-            update_modified=False,
-        )
-        if getattr(shift_doc, "counted_cash", None) is not None:
-            shift_doc.db_set(
-                "cash_variance",
-                flt(getattr(shift_doc, "counted_cash", 0))
-                - flt(getattr(shift_doc, "expected_cash", 0)),
-                update_modified=False,
-            )
+
+        refresh_fb_shift_cash(self.shift)
 
     def calculate_totals(self):
-        net_total = 0.0
-        for line in self.get("items") or []:
-            unit_price = flt(line.unit_price)
-            modifier_total = flt(line.modifier_total)
-            discount_amount = flt(line.discount_amount)
-            qty = flt(line.qty)
-            computed_line_total = (
-                (unit_price + modifier_total) * qty
-            ) - discount_amount
-            line.line_total = computed_line_total
-            net_total += computed_line_total
+        net_total_sen = 0
+        for line_index, line in enumerate(self.get("items") or [], start=1):
+            prefix = f"FB Order item {line_index}"
+            unit_price_sen = _money_sen(
+                _optional_money_value(getattr(line, "unit_price", None)),
+                f"{prefix} unit_price",
+            )
+            modifier_total_sen = _money_sen(
+                _optional_money_value(getattr(line, "modifier_total", None)),
+                f"{prefix} modifier_total",
+            )
+            discount_amount_sen = _money_sen(
+                _optional_money_value(getattr(line, "discount_amount", None)),
+                f"{prefix} discount_amount",
+            )
+            qty = _positive_integer_qty(getattr(line, "qty", None), f"{prefix} qty")
+            computed_line_total_sen = (
+                (unit_price_sen + modifier_total_sen) * qty
+            ) - discount_amount_sen
+            if computed_line_total_sen <= 0:
+                frappe.throw(
+                    f"{prefix} line_total must be greater than 0",
+                    frappe.ValidationError,
+                )
+            line.qty = qty
+            line.unit_price = sen_to_decimal(unit_price_sen)
+            line.modifier_total = sen_to_decimal(modifier_total_sen)
+            line.discount_amount = sen_to_decimal(discount_amount_sen)
+            line.line_total = sen_to_decimal(computed_line_total_sen)
+            net_total_sen += computed_line_total_sen
 
-        self.net_total = net_total
-        self.tax_total = flt(self.tax_total)
-        self.rounding_adjustment = flt(getattr(self, "rounding_adjustment", 0) or 0)
-        self.grand_total = (
-            flt(self.net_total) + flt(self.tax_total) + flt(self.rounding_adjustment)
+        tax_total_sen = _money_sen(
+            _optional_money_value(getattr(self, "tax_total", None)),
+            "FB Order tax_total",
         )
+        rounding_adjustment_sen = _money_sen(
+            _optional_money_value(getattr(self, "rounding_adjustment", None)),
+            "FB Order rounding_adjustment",
+        )
+        if tax_total_sen < 0:
+            frappe.throw(
+                "FB Order tax_total must be non-negative",
+                frappe.ValidationError,
+            )
+        grand_total_sen = net_total_sen + tax_total_sen + rounding_adjustment_sen
+        if grand_total_sen <= 0:
+            frappe.throw(
+                "FB Order grand_total must be greater than 0",
+                frappe.ValidationError,
+            )
+        self.net_total = sen_to_decimal(net_total_sen)
+        self.tax_total = sen_to_decimal(tax_total_sen)
+        self.rounding_adjustment = sen_to_decimal(rounding_adjustment_sen)
+        self.grand_total = sen_to_decimal(grand_total_sen)
 
     def validate_required_fields(self):
         required_order_fields = {
@@ -313,11 +369,23 @@ class FBOrder(BaseDocument):
                     frappe.ValidationError,
                 )
 
-            if flt(line.qty) <= 0:
+            line_label = self.describe_line(line_index, line)
+            _positive_integer_qty(line.qty, f"Order line {line_label} qty")
+            unit_price_sen = _money_sen(
+                _optional_money_value(getattr(line, "unit_price", None)),
+                f"Order line {line_label} unit_price",
+            )
+            modifier_total_sen = _money_sen(
+                _optional_money_value(getattr(line, "modifier_total", None)),
+                f"Order line {line_label} modifier_total",
+            )
+            discount_amount_sen = _money_sen(
+                _optional_money_value(getattr(line, "discount_amount", None)),
+                f"Order line {line_label} discount_amount",
+            )
+            if unit_price_sen < 0 or discount_amount_sen < 0:
                 frappe.throw(
-                    "Order line {0} must have qty greater than 0".format(
-                        self.describe_line(line_index, line)
-                    ),
+                    f"Order line {line_label} unit price and discount must be non-negative",
                     frappe.ValidationError,
                 )
 
@@ -327,44 +395,76 @@ class FBOrder(BaseDocument):
                     "Payment row {0} is missing payment_method".format(payment_index),
                     frappe.ValidationError,
                 )
-            if flt(payment.amount) <= 0:
+            payment_amount_sen = _money_sen(
+                getattr(payment, "amount", None),
+                f"Payment row {payment_index} amount",
+            )
+            if payment_amount_sen <= 0:
                 frappe.throw(
                     "Payment row {0} must have amount greater than 0".format(
                         payment_index
                     ),
                     frappe.ValidationError,
                 )
+            payment.amount = sen_to_decimal(payment_amount_sen)
+            for fieldname in ("tendered_amount", "change_amount"):
+                field_value = getattr(payment, fieldname, None)
+                if field_value is None or field_value == "":
+                    continue
+                field_value_sen = _money_sen(
+                    field_value,
+                    f"Payment row {payment_index} {fieldname}",
+                )
+                if field_value_sen < 0:
+                    frappe.throw(
+                        f"Payment row {payment_index} {fieldname} must be non-negative",
+                        frappe.ValidationError,
+                    )
+                setattr(payment, fieldname, sen_to_decimal(field_value_sen))
 
     def validate_order_totals(self):
-        expected_net_total = sum(flt(line.line_total) for line in self.items)
-        if abs(flt(self.net_total) - expected_net_total) > 0.0001:
+        expected_net_total_sen = sum(
+            _money_sen(line.line_total, f"FB Order item {index} line_total")
+            for index, line in enumerate(self.items, start=1)
+        )
+        net_total_sen = _money_sen(self.net_total, "FB Order net_total")
+        if net_total_sen != expected_net_total_sen:
             frappe.throw(
                 "FB Order net_total {0} does not match summed line totals {1}".format(
-                    flt(self.net_total), expected_net_total
+                    sen_to_decimal(net_total_sen),
+                    sen_to_decimal(expected_net_total_sen),
                 ),
                 frappe.ValidationError,
             )
 
-        expected_grand_total = (
-            expected_net_total
-            + flt(self.tax_total)
-            + flt(getattr(self, "rounding_adjustment", 0) or 0)
+        tax_total_sen = _money_sen(self.tax_total, "FB Order tax_total")
+        rounding_adjustment_sen = _money_sen(
+            _optional_money_value(getattr(self, "rounding_adjustment", None)),
+            "FB Order rounding_adjustment",
         )
-        if abs(flt(self.grand_total) - expected_grand_total) > 0.0001:
+        expected_grand_total_sen = (
+            expected_net_total_sen + tax_total_sen + rounding_adjustment_sen
+        )
+        grand_total_sen = _money_sen(self.grand_total, "FB Order grand_total")
+        if grand_total_sen != expected_grand_total_sen:
             frappe.throw(
                 "FB Order grand_total {0} does not match net_total plus tax_total plus rounding_adjustment {1}".format(
-                    flt(self.grand_total), expected_grand_total
+                    sen_to_decimal(grand_total_sen),
+                    sen_to_decimal(expected_grand_total_sen),
                 ),
                 frappe.ValidationError,
             )
 
-        payment_total = sum(
-            flt(payment.amount) for payment in self.get("payments") or []
+        payment_rows = list(self.get("payments") or [])
+        payment_total_sen = sum(
+            _money_sen(payment.amount, f"FB Order payment {index} amount")
+            for index, payment in enumerate(payment_rows, start=1)
         )
-        if payment_total and abs(payment_total - flt(self.grand_total)) > 0.0001:
+        if payment_rows and payment_total_sen != grand_total_sen:
             frappe.throw(
                 "FB Order payment total {0} does not match grand_total {1}".format(
-                    payment_total, flt(self.grand_total)
+                    sen_to_decimal(payment_total_sen),
+                    sen_to_decimal(grand_total_sen),
                 ),
                 frappe.ValidationError,
             )
@@ -413,13 +513,27 @@ class FBOrder(BaseDocument):
         return line_resolutions
 
     def resolve_recipe_for_line(self, line_index: int, line) -> DocumentLike:
+        has_explicit_sale_recipe = bool(line.recipe and line.recipe_version)
         if line.recipe:
             recipe_doc = frappe.get_cached_doc("FB Recipe", line.recipe)
         else:
             recipe_doc = self.find_default_recipe_for_item(line.item)
             line.recipe = recipe_doc.name
 
-        if recipe_doc.status != "Active":
+        if has_explicit_sale_recipe and int(recipe_doc.version_no) != int(
+            line.recipe_version
+        ):
+            frappe.throw(
+                "Order line {0} recipe {1} version changed: sale used {2}, ERP has {3}".format(
+                    self.describe_line(line_index, line),
+                    recipe_doc.name,
+                    line.recipe_version,
+                    recipe_doc.version_no,
+                ),
+                frappe.ValidationError,
+            )
+
+        if recipe_doc.status != "Active" and not has_explicit_sale_recipe:
             frappe.throw(
                 "Order line {0} references inactive recipe {1}".format(
                     self.describe_line(line_index, line), recipe_doc.name
@@ -446,9 +560,11 @@ class FBOrder(BaseDocument):
                 frappe.ValidationError,
             )
 
-        if not self.recipe_is_effective(recipe_doc):
+        if not self.recipe_is_effective(
+            recipe_doc, getattr(self, "sale_datetime", None)
+        ):
             frappe.throw(
-                "Order line {0} recipe {1} is not effective at submit time".format(
+                "Order line {0} recipe {1} is not effective at the original sale time".format(
                     self.describe_line(line_index, line), recipe_doc.name
                 ),
                 frappe.ValidationError,
@@ -481,20 +597,27 @@ class FBOrder(BaseDocument):
             "FB Recipe",
             filters={
                 "sellable_item": item_code,
-                "status": "Active",
                 "company": self.company,
             },
             pluck="name",
+            order_by="version_no desc",
         )
         effective_candidates = []
         for candidate_name in candidate_names:
             recipe_doc = frappe.get_cached_doc("FB Recipe", candidate_name)
-            if self.recipe_is_effective(recipe_doc):
+            is_historical_version = bool(
+                recipe_doc.status != "Active" and recipe_doc.effective_to
+            )
+            if (
+                recipe_doc.status == "Active" or is_historical_version
+            ) and self.recipe_is_effective(
+                recipe_doc, getattr(self, "sale_datetime", None)
+            ):
                 effective_candidates.append(recipe_doc)
 
         if not effective_candidates:
             frappe.throw(
-                "No active FB Recipe was found for item {0} in company {1}".format(
+                "No FB Recipe effective at the original sale time was found for item {0} in company {1}".format(
                     item_code, self.company
                 ),
                 frappe.ValidationError,
@@ -510,8 +633,12 @@ class FBOrder(BaseDocument):
 
         return effective_candidates[0]
 
-    def recipe_is_effective(self, recipe_doc: DocumentLike) -> bool:
-        submit_time = now_datetime()
+    def recipe_is_effective(
+        self, recipe_doc: DocumentLike, at_time: Any | None = None
+    ) -> bool:
+        submit_time = frappe_utils.get_datetime(
+            at_time or getattr(self, "sale_datetime", None) or now_datetime()
+        )
         if recipe_doc.effective_from and submit_time < recipe_doc.effective_from:
             return False
         if recipe_doc.effective_to and submit_time > recipe_doc.effective_to:
@@ -566,7 +693,13 @@ class FBOrder(BaseDocument):
             )
             modifier_doc = frappe.get_cached_doc("FB Modifier", selected_row.modifier)
 
-            if not int(modifier_group_doc.active):
+            has_explicit_sale_recipe = bool(
+                getattr(line, "recipe", None)
+                and getattr(line, "recipe_version", None)
+                and getattr(self, "request_fingerprint", None)
+            )
+
+            if not int(modifier_group_doc.active) and not has_explicit_sale_recipe:
                 frappe.throw(
                     "Order line {0} selected inactive modifier group {1}".format(
                         self.describe_line(line_index, line), modifier_group_doc.name
@@ -574,7 +707,7 @@ class FBOrder(BaseDocument):
                     frappe.ValidationError,
                 )
 
-            if not int(modifier_doc.active):
+            if not int(modifier_doc.active) and not has_explicit_sale_recipe:
                 frappe.throw(
                     "Order line {0} selected inactive modifier {1}".format(
                         self.describe_line(line_index, line), modifier_doc.name
@@ -592,7 +725,17 @@ class FBOrder(BaseDocument):
                     frappe.ValidationError,
                 )
 
-            selected_row.price_adjustment = flt(modifier_doc.price_adjustment)
+            submitted_price_adjustment = getattr(
+                selected_row, "price_adjustment", None
+            )
+            if submitted_price_adjustment in (None, ""):
+                submitted_price_adjustment = modifier_doc.price_adjustment
+            selected_row.price_adjustment = sen_to_decimal(
+                _money_sen(
+                    _optional_money_value(submitted_price_adjustment),
+                    f"FB Modifier {modifier_doc.name} sale price_adjustment",
+                )
+            )
             selected_row.instruction_text = (
                 selected_row.instruction_text or modifier_doc.instruction_text
             )
@@ -670,7 +813,15 @@ class FBOrder(BaseDocument):
         recipe_doc: DocumentLike,
         selected_modifiers: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        scale_factor = flt(line.qty) / flt(recipe_doc.default_serving_qty or 1)
+        default_serving_qty = flt(recipe_doc.default_serving_qty)
+        if not isfinite(default_serving_qty) or default_serving_qty <= 0:
+            frappe.throw(
+                "Order line {0} recipe {1} requires default_serving_qty greater than 0".format(
+                    self.describe_line(line_index, line), recipe_doc.name
+                ),
+                frappe.ValidationError,
+            )
+        scale_factor = flt(line.qty) / default_serving_qty
         resolved_components = []
 
         for component_index, component_row in enumerate(recipe_doc.components, start=1):
@@ -778,7 +929,79 @@ class FBOrder(BaseDocument):
                 frappe.ValidationError,
             )
 
+        self.validate_resolved_components(
+            line_index=line_index,
+            line=line,
+            resolved_components=resolved_components,
+        )
         return resolved_components
+
+    def validate_resolved_components(
+        self,
+        *,
+        line_index: int,
+        line: DocumentLike,
+        resolved_components: list[dict[str, Any]],
+    ) -> None:
+        item_stock_metadata: dict[str, tuple[str, int]] = {}
+        for component_index, component in enumerate(resolved_components, start=1):
+            label = "Order line {0} resolved component {1}".format(
+                self.describe_line(line_index, line),
+                component_index,
+            )
+            item_code = cstr(component.get("item")).strip()
+            uom = cstr(component.get("uom")).strip()
+            qty = flt(component.get("qty"))
+            if not item_code or not uom or not isfinite(qty) or qty <= 0:
+                frappe.throw(
+                    f"{label} requires item, UOM, and positive quantity",
+                    frappe.ValidationError,
+                )
+            if not int(component.get("affects_stock") or 0):
+                continue
+
+            stock_qty = flt(component.get("stock_qty"))
+            stock_uom = cstr(component.get("stock_uom")).strip()
+            warehouse = cstr(component.get("warehouse") or self.booth_warehouse).strip()
+            if not stock_uom or not warehouse or not isfinite(stock_qty) or stock_qty <= 0:
+                frappe.throw(
+                    f"{label} affects stock and requires warehouse, Stock UOM, and positive Stock Qty",
+                    frappe.ValidationError,
+                )
+
+            if item_code not in item_stock_metadata:
+                item_values = frappe.db.get_value(
+                    "Item",
+                    item_code,
+                    ["stock_uom", "is_stock_item"],
+                    as_dict=True,
+                )
+                if not item_values:
+                    frappe.throw(
+                        f"{label} Item {item_code} was not found",
+                        frappe.ValidationError,
+                    )
+                if isinstance(item_values, dict):
+                    item_stock_metadata[item_code] = (
+                        cstr(item_values.get("stock_uom")).strip(),
+                        int(item_values.get("is_stock_item") or 0),
+                    )
+                else:
+                    item_stock_metadata[item_code] = (
+                        cstr(getattr(item_values, "stock_uom", None)).strip(),
+                        int(getattr(item_values, "is_stock_item", 0) or 0),
+                    )
+            item_stock_uom, is_stock_item = item_stock_metadata[item_code]
+            if not is_stock_item:
+                frappe.throw(
+                    f"{label} Item {item_code} must be a stock Item",
+                    frappe.ValidationError,
+                )
+            if stock_uom != item_stock_uom:
+                frappe.throw(
+                    f"{label} Stock UOM {stock_uom} does not match Item stock UOM {item_stock_uom or '(missing)'}",
+                    frappe.ValidationError,
+                )
 
     def build_modifier_component(
         self, modifier_doc: DocumentLike, line_index: int, line
@@ -815,7 +1038,7 @@ class FBOrder(BaseDocument):
             "stock_uom": modifier_doc.qty_uom,
             "warehouse": self.booth_warehouse,
             "source_reference": modifier_doc.name,
-            "affects_stock": int(modifier_doc.affects_stock or 1),
+            "affects_stock": 1 if int(modifier_doc.affects_stock or 0) else 0,
             "affects_cogs": 1,
             "remarks": modifier_doc.instruction_text,
         }
@@ -929,7 +1152,10 @@ class FBOrder(BaseDocument):
                 {
                     "modifier_group": entry["row"].modifier_group,
                     "modifier": entry["row"].modifier,
-                    "price_adjustment": flt(entry["row"].price_adjustment),
+                    "price_adjustment_sen": _money_sen(
+                        _optional_money_value(entry["row"].price_adjustment),
+                        "FB selected modifier price_adjustment",
+                    ),
                 }
                 for entry in selected_modifiers
             ],

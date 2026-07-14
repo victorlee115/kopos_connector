@@ -20,6 +20,9 @@
         "reason_text",
         "return_to_stock",
         "status",
+        "request_fingerprint",
+        "approval_token_id",
+        "approved_by_manager",
         "settlement_section",
         "settlement_doctype",
         "settlement_document",
@@ -100,6 +103,27 @@
             "in_list_view": 1,
             "label": "Status",
             "options": "Draft\nSubmitted\nCancelled"
+        },
+        {
+            "fieldname": "request_fingerprint",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Canonical Request Fingerprint",
+            "read_only": 1
+        },
+        {
+            "fieldname": "approval_token_id",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Manager Approval Token ID",
+            "read_only": 1
+        },
+        {
+            "fieldname": "approved_by_manager",
+            "fieldtype": "Link",
+            "label": "Approved By Manager",
+            "options": "User",
+            "read_only": 1
         },
         {
             "fieldname": "settlement_section",

@@ -47,6 +47,8 @@ class MutableDoc(SimpleNamespace):
         if rows is None:
             rows = []
             setattr(self, key, rows)
+        if self.doctype == "Sales Invoice" and key == "items":
+            value = {**value, "net_amount": value["amount"]}
         row = MutableDoc(doctype=f"{self.doctype} {key.title()}", **value)
         rows.append(row)
         return row
@@ -57,6 +59,7 @@ class MutableDoc(SimpleNamespace):
 
     def submit(self) -> "MutableDoc":
         self.submit_calls += 1
+        self.docstatus = 1
         return self
 
     def db_set(
@@ -85,10 +88,12 @@ def make_fb_order(*, device_id: str = "DEVICE-1") -> MutableDoc:
         booth_warehouse="Main Warehouse - KC",
         tax_total=0,
         rounding_adjustment=0,
+        net_total=12,
         grand_total=12,
         items=[
             make_doc(
                 item="LATTE",
+                line_id="LINE-1",
                 item_name_snapshot="Latte",
                 qty=1,
                 unit_price=12,
@@ -96,7 +101,16 @@ def make_fb_order(*, device_id: str = "DEVICE-1") -> MutableDoc:
                 selected_modifiers=[],
             )
         ],
-        payments=[],
+        payments=[
+            make_doc(
+                source_payment_id="PAY-1",
+                payment_method="Cash",
+                amount=12,
+                tendered_amount=12,
+                change_amount=0,
+                settlement_status="verified",
+            )
+        ],
     )
 
 
@@ -107,7 +121,18 @@ def install_sales_invoice_fakes(monkeypatch: pytest.MonkeyPatch) -> MutableDoc:
         items=[],
         taxes=[],
         payments=[],
+        docstatus=0,
+        is_return=0,
+        update_stock=0,
+        net_total=12,
+        grand_total=12,
+        total_taxes_and_charges=0,
         rounded_total=0,
+        disable_rounded_total=0,
+        write_off_amount=0,
+        paid_amount=0,
+        change_amount=0,
+        outstanding_amount=0,
     )
 
     monkeypatch.setattr(
@@ -156,6 +181,14 @@ def install_sales_invoice_fakes(monkeypatch: pytest.MonkeyPatch) -> MutableDoc:
         "get_meta",
         lambda doctype: SimpleNamespace(has_field=lambda fieldname: True),
         raising=False,
+    )
+    monkeypatch.setattr(
+        sales_invoice_service,
+        "_resolve_mode_of_payment_context",
+        lambda mode_of_payment, company: {
+            "account": "Cash - KC",
+            "type": "Cash",
+        },
     )
     return invoice
 

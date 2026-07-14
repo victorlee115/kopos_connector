@@ -71,7 +71,59 @@ def filter_visible_allowed_modifier_groups(
 
 class FBModifierGroup(Document):
     def validate(self) -> None:
+        self.validate_published_operational_definition_is_immutable()
         self.validate_parent_modifier_dependency()
+
+    def validate_published_operational_definition_is_immutable(self) -> None:
+        is_new = getattr(self, "is_new", None)
+        if (callable(is_new) and is_new()) or not getattr(self, "name", None):
+            return
+        get_before_save = getattr(self, "get_doc_before_save", None)
+        if not callable(get_before_save):
+            return
+        previous = get_before_save()
+        if not previous:
+            return
+        is_published = bool(getattr(previous, "active", 0))
+        if not is_published and not _modifier_group_is_referenced(self.name):
+            return
+        immutable_fields = (
+            "selection_type",
+            "is_required",
+            "min_selection",
+            "max_selection",
+            "parent_modifier",
+        )
+        changed_fields = [
+            fieldname
+            for fieldname in immutable_fields
+            if getattr(previous, fieldname, None) != getattr(self, fieldname, None)
+        ]
+        if changed_fields:
+            frappe.throw(
+                "FB Modifier Group {0} has already been published or referenced; create a new group instead of changing operational field(s): {1}".format(
+                    self.name,
+                    ", ".join(changed_fields),
+                ),
+                frappe.ValidationError,
+            )
+
+    def before_rename(self, old: str, new: str, merge: bool = False) -> None:
+        del new, merge
+        if bool(getattr(self, "active", 0)) or _modifier_group_is_referenced(old):
+            frappe.throw(
+                f"Published or referenced FB Modifier Group {old} cannot be renamed",
+                frappe.ValidationError,
+            )
+
+    def on_trash(self) -> None:
+        if bool(getattr(self, "active", 0)) or _modifier_group_is_referenced(
+            self.name
+        ):
+            frappe.throw(
+                f"Published or referenced FB Modifier Group {self.name} cannot be deleted",
+                frappe.ValidationError,
+            )
 
     def validate_parent_modifier_dependency(self) -> None:
         current_group_name = _get_group_identifier(self)
@@ -105,3 +157,16 @@ class FBModifierGroup(Document):
                 if next_modifier_name
                 else ""
             )
+
+
+def _modifier_group_is_referenced(group_name: str) -> bool:
+    return bool(
+        frappe.db.exists(
+            "FB Allowed Modifier Group",
+            {"modifier_group": group_name},
+        )
+        or frappe.db.exists(
+            "FB Selected Modifier",
+            {"modifier_group": group_name},
+        )
+    )

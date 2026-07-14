@@ -8,6 +8,7 @@
     "document_type": "Document",
     "engine": "InnoDB",
     "field_order": [
+        "source_payment_id",
         "payment_method",
         "payment_channel_code",
         "amount",
@@ -15,9 +16,24 @@
         "tendered_amount",
         "change_amount",
         "reference_no",
-        "external_transaction_id"
+        "external_transaction_id",
+        "is_manual_confirmation",
+        "maybank_qr_transaction",
+        "settlement_status",
+        "suspense_account",
+        "manual_qr_reconciliation",
+        "reconciliation_idempotency_key",
+        "manual_confirmation_evidence_json"
     ],
     "fields": [
+        {
+            "description": "Canonical local POS payment.id captured with the sale; unique within its FB Order",
+            "fieldname": "source_payment_id",
+            "fieldtype": "Data",
+            "label": "Source Payment ID",
+            "read_only": 1,
+            "search_index": 1
+        },
         {
             "fieldname": "payment_method",
             "fieldtype": "Link",
@@ -61,6 +77,62 @@
             "fieldname": "external_transaction_id",
             "fieldtype": "Data",
             "label": "External Transaction ID"
+        },
+        {
+            "default": "0",
+            "fieldname": "is_manual_confirmation",
+            "fieldtype": "Check",
+            "hidden": 1,
+            "label": "Manual Confirmation",
+            "read_only": 1
+        },
+        {
+            "fieldname": "maybank_qr_transaction",
+            "fieldtype": "Link",
+            "hidden": 1,
+            "label": "Maybank QR Transaction",
+            "options": "Maybank QR Transaction",
+            "read_only": 1
+        },
+        {
+            "default": "verified",
+            "fieldname": "settlement_status",
+            "fieldtype": "Select",
+            "hidden": 1,
+            "label": "Settlement Status",
+            "options": "verified\npending_reconciliation\nreconciled\nreconciliation_failed",
+            "read_only": 1
+        },
+        {
+            "fieldname": "suspense_account",
+            "fieldtype": "Link",
+            "hidden": 1,
+            "label": "Suspense Account",
+            "options": "Account",
+            "read_only": 1
+        },
+        {
+            "fieldname": "manual_qr_reconciliation",
+            "fieldtype": "Link",
+            "hidden": 1,
+            "label": "Manual QR Reconciliation",
+            "options": "Manual QR Reconciliation",
+            "read_only": 1
+        },
+        {
+            "fieldname": "reconciliation_idempotency_key",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Reconciliation Idempotency Key",
+            "read_only": 1
+        },
+        {
+            "fieldname": "manual_confirmation_evidence_json",
+            "fieldtype": "Code",
+            "hidden": 1,
+            "label": "Manual Confirmation Evidence",
+            "options": "JSON",
+            "read_only": 1
         }
     ],
     "istable": 1,

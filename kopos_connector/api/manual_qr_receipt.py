@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from collections.abc import Iterable
 from typing import Any, cast
@@ -46,13 +48,15 @@ RECONCILIATION_FAILED_REASONS = {
     "customer_dispute",
     "other",
 }
+MAYBANK_TRANSACTION_DOCTYPE = "Maybank QR Transaction"
+MANUAL_QR_RECONCILIATION_DOCTYPE = "Manual QR Reconciliation"
 
 
 @frappe.whitelist(methods=["GET"])
 def list_pending_manual_qr_reconciliations() -> list[dict[str, Any]]:
     _require_back_office_manager()
-    rows = frappe.get_all(
-        "Maybank QR Transaction",
+    maybank_rows = frappe.get_all(
+        MAYBANK_TRANSACTION_DOCTYPE,
         filters={"manual_reconciliation_status": PENDING_RECONCILIATION_STATUS},
         fields=[
             "name",
@@ -60,6 +64,8 @@ def list_pending_manual_qr_reconciliations() -> list[dict[str, Any]]:
             "device_id",
             "sale_amount_sen",
             "created_at",
+            "business_date",
+            "provider",
             "manual_reconciliation_status",
             "receipt_file",
             "receipt_uploaded_at",
@@ -73,10 +79,36 @@ def list_pending_manual_qr_reconciliations() -> list[dict[str, Any]]:
         ],
         order_by="created_at asc",
     )
+    manual_rows = frappe.get_all(
+        MANUAL_QR_RECONCILIATION_DOCTYPE,
+        filters={"status": PENDING_RECONCILIATION_STATUS},
+        fields=[
+            "name",
+            "provider_session_id",
+            "device_id",
+            "amount_sen",
+            "created_at",
+            "business_date",
+            "status",
+            "payment_reference",
+            "evidence_kind",
+            "receipt_file",
+            "receipt_uploaded_at",
+            "receipt_idempotency_key",
+            "receipt_payment_id",
+            "receipt_order_id",
+            "receipt_amount_sen",
+            "fb_order",
+            "sales_invoice",
+            "reconciliation_idempotency_key",
+            "evidence_json",
+        ],
+        order_by="created_at asc",
+    )
     return [
         _manual_reconciliation_row(row)
-        for row in rows
-        if _has_manual_receipt_evidence(row)
+        for row in [*maybank_rows, *manual_rows]
+        if _has_manual_receipt_evidence(row) or _is_static_reconciliation(row)
     ]
 
 
@@ -88,28 +120,64 @@ def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> dict[str, list[dict[
     if not requests:
         return {"statuses": []}
 
+    maybank_refnos = [
+        request["transaction_refno"]
+        for request in requests
+        if not _is_static_reference(request["transaction_refno"])
+    ]
+    static_refnos = [
+        request["transaction_refno"]
+        for request in requests
+        if _is_static_reference(request["transaction_refno"])
+    ]
+    rows: list[Any] = []
     filters: dict[str, Any] = {
-        "transaction_refno": ["in", [request["transaction_refno"] for request in requests]]
+        "transaction_refno": ["in", maybank_refnos]
     }
     if device_id:
         filters["device_id"] = device_id
 
-    rows = frappe.get_all(
-        "Maybank QR Transaction",
-        filters=filters,
-        fields=[
-            "transaction_refno",
-            "device_id",
-            "receipt_payment_id",
-            "manual_reconciliation_status",
-            "reconciled_by",
-            "reconciled_at",
-            "reconciliation_note",
-            "reconciliation_failed_reason",
-        ],
-    )
+    if maybank_refnos:
+        rows.extend(
+            frappe.get_all(
+                MAYBANK_TRANSACTION_DOCTYPE,
+                filters=filters,
+                fields=[
+                    "transaction_refno",
+                    "device_id",
+                    "receipt_payment_id",
+                    "manual_reconciliation_status",
+                    "reconciled_by",
+                    "reconciled_at",
+                    "reconciliation_note",
+                    "reconciliation_failed_reason",
+                ],
+            )
+        )
+    if static_refnos:
+        manual_filters: dict[str, Any] = {
+            "provider_session_id": ["in", static_refnos]
+        }
+        if device_id:
+            manual_filters["device_id"] = device_id
+        rows.extend(
+            frappe.get_all(
+                MANUAL_QR_RECONCILIATION_DOCTYPE,
+                filters=manual_filters,
+                fields=[
+                    "provider_session_id",
+                    "device_id",
+                    "receipt_payment_id",
+                    "status",
+                    "reconciled_by",
+                    "reconciled_at",
+                    "reconciliation_note",
+                    "reconciliation_failed_reason",
+                ],
+            )
+        )
     rows_by_refno = {
-        cstr(_row_value(row, "transaction_refno")).strip(): row for row in rows
+        _record_reference(row): row for row in rows
     }
 
     return {
@@ -122,22 +190,31 @@ def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> dict[str, list[dict[
 
 @frappe.whitelist(methods=["POST"])
 def mark_manual_qr_reconciled(**kwargs: Any) -> dict[str, str]:
+    try:
+        return _mark_manual_qr_reconciled(**kwargs)
+    except Exception:
+        frappe.db.rollback()
+        raise
+
+
+def _mark_manual_qr_reconciled(**kwargs: Any) -> dict[str, str]:
     payload = _collect_reconciliation_payload(kwargs, required_fields=("note",))
     txn = _load_pending_reconciliation_transaction(payload["transaction_refno"])
     _validate_reconciliation_bank_match(txn, payload)
     reconciled_at = now_datetime()
 
     frappe.db.set_value(
-        "Maybank QR Transaction",
+        _record_doctype(txn),
         txn.name,
         {
-            "manual_reconciliation_status": RECONCILED_STATUS,
+            _record_status_field(txn): RECONCILED_STATUS,
             "reconciled_by": payload["manager_id"],
             "reconciled_at": reconciled_at,
             "reconciliation_note": payload["note"],
             "reconciliation_failed_reason": None,
         },
     )
+    _update_static_payment_settlement(txn, RECONCILED_STATUS)
     _write_reconciliation_comment(
         txn,
         action=RECONCILED_STATUS,
@@ -151,6 +228,14 @@ def mark_manual_qr_reconciled(**kwargs: Any) -> dict[str, str]:
 
 @frappe.whitelist(methods=["POST"])
 def mark_manual_qr_reconciliation_failed(**kwargs: Any) -> dict[str, str]:
+    try:
+        return _mark_manual_qr_reconciliation_failed(**kwargs)
+    except Exception:
+        frappe.db.rollback()
+        raise
+
+
+def _mark_manual_qr_reconciliation_failed(**kwargs: Any) -> dict[str, str]:
     payload = _collect_reconciliation_payload(kwargs, required_fields=("reason", "note"))
     reason = payload["reason"]
     if reason not in RECONCILIATION_FAILED_REASONS:
@@ -161,16 +246,17 @@ def mark_manual_qr_reconciliation_failed(**kwargs: Any) -> dict[str, str]:
     reconciled_at = now_datetime()
 
     frappe.db.set_value(
-        "Maybank QR Transaction",
+        _record_doctype(txn),
         txn.name,
         {
-            "manual_reconciliation_status": RECONCILIATION_FAILED_STATUS,
+            _record_status_field(txn): RECONCILIATION_FAILED_STATUS,
             "reconciliation_failed_reason": reason,
             "reconciled_by": payload["manager_id"],
             "reconciled_at": reconciled_at,
             "reconciliation_note": payload["note"],
         },
     )
+    _update_static_payment_settlement(txn, RECONCILIATION_FAILED_STATUS)
     _write_reconciliation_comment(
         txn,
         action=RECONCILIATION_FAILED_STATUS,
@@ -186,22 +272,25 @@ def mark_manual_qr_reconciliation_failed(**kwargs: Any) -> dict[str, str]:
 def upload_manual_qr_receipt(**kwargs: Any) -> dict[str, str | None]:
     payload: dict[str, str] = {}
     transaction_name = ""
+    transaction_doctype = ""
 
     try:
         payload = _collect_payload(kwargs)
+        device = _resolve_authorized_device(payload["device_id"])
         uploaded_file = _get_uploaded_file()
         content, mime_type = _read_and_validate_jpeg(uploaded_file)
         file_hash = hashlib.sha256(content).hexdigest()
 
-        device = _resolve_authorized_device(payload["device_id"])
         txn = _load_and_validate_transaction(payload, device)
         transaction_name = cstr(getattr(txn, "name", None)).strip()
+        transaction_doctype = _record_doctype(txn)
 
         existing_response = _resolve_existing_idempotency(payload, file_hash)
         if existing_response:
             _write_audit_log(
                 "duplicate",
                 transaction_name=transaction_name,
+                transaction_doctype=transaction_doctype,
                 device_id=payload["device_id"],
                 idempotency_key=payload["idempotency_key"],
                 message="Manual QR receipt upload returned existing File",
@@ -216,6 +305,7 @@ def upload_manual_qr_receipt(**kwargs: Any) -> dict[str, str | None]:
         _write_audit_log(
             "success",
             transaction_name=transaction_name,
+            transaction_doctype=transaction_doctype,
             device_id=payload["device_id"],
             idempotency_key=payload["idempotency_key"],
             message="Manual QR receipt uploaded",
@@ -225,10 +315,12 @@ def upload_manual_qr_receipt(**kwargs: Any) -> dict[str, str | None]:
         _write_audit_log(
             "failed",
             transaction_name=transaction_name,
+            transaction_doctype=transaction_doctype,
             device_id=payload.get("device_id"),
             idempotency_key=payload.get("idempotency_key"),
             message=sanitized_error_message(exc),
         )
+        frappe.db.rollback()
         raise
 
 
@@ -272,8 +364,7 @@ def _collect_reconciliation_payload(
     for fieldname in required:
         if not payload[fieldname]:
             frappe.throw(_("{0} is required").format(fieldname), frappe.ValidationError)
-    if cint(payload["amount_sen"]) <= 0:
-        frappe.throw(_("amount_sen must be greater than zero"), frappe.ValidationError)
+    payload["amount_sen"] = str(_parse_positive_amount_sen(payload["amount_sen"]))
     session_user = cstr(getattr(frappe.session, "user", None)).strip()
     if payload["manager_id"] != session_user:
         frappe.throw(
@@ -377,10 +468,7 @@ def _manual_reconciliation_status_row(
         or None,
         "provider_session_id": request["transaction_refno"],
         "transaction_refno": request["transaction_refno"],
-        "reconciliation_status": cstr(
-            _row_value(source, "manual_reconciliation_status")
-        ).strip()
-        or None,
+        "reconciliation_status": _record_status(source) or None,
         "reconciled_by": cstr(_row_value(source, "reconciled_by")).strip() or None,
         "reconciled_at": cstr(_row_value(source, "reconciled_at")).strip() or None,
         "reconciliation_note": cstr(_row_value(source, "reconciliation_note")).strip()
@@ -400,22 +488,36 @@ def _has_manual_receipt_evidence(row: Any) -> bool:
 
 
 def _load_pending_reconciliation_transaction(transaction_refno: str) -> Any:
+    is_static = _is_static_reference(transaction_refno)
+    doctype = (
+        MANUAL_QR_RECONCILIATION_DOCTYPE
+        if is_static
+        else MAYBANK_TRANSACTION_DOCTYPE
+    )
+    reference_field = "provider_session_id" if is_static else "transaction_refno"
     txn_name = frappe.db.get_value(
-        "Maybank QR Transaction",
-        {"transaction_refno": transaction_refno},
-        "name",
+        doctype, {reference_field: transaction_refno}, "name"
     )
     if not txn_name:
-        frappe.throw(_("Maybank QR Transaction was not found"), frappe.ValidationError)
+        frappe.throw(_("QR reconciliation record was not found"), frappe.ValidationError)
 
-    txn = frappe.get_doc("Maybank QR Transaction", txn_name)
-    status = cstr(getattr(txn, "manual_reconciliation_status", None)).strip()
+    frappe.db.sql(
+        f"SELECT name FROM `tab{doctype}` WHERE name = %s FOR UPDATE",
+        (txn_name,),
+    )
+    txn = frappe.get_doc(doctype, txn_name)
+    status = _record_status(txn)
     if status != PENDING_RECONCILIATION_STATUS:
         frappe.throw(
-            _("Maybank QR Transaction is not pending manual reconciliation"),
+            _("QR reconciliation record is not pending manual reconciliation"),
             frappe.ValidationError,
         )
-    if not _has_manual_receipt_evidence(txn):
+    if is_static and not cstr(getattr(txn, "fb_order_payment", None)).strip():
+        frappe.throw(
+            _("Manual QR Reconciliation payment row is missing"),
+            frappe.ValidationError,
+        )
+    if not _has_manual_receipt_evidence(txn) and not is_static:
         frappe.throw(
             _("Maybank QR Transaction has no manual receipt evidence"),
             frappe.ValidationError,
@@ -424,9 +526,12 @@ def _load_pending_reconciliation_transaction(transaction_refno: str) -> Any:
 
 
 def _validate_reconciliation_bank_match(txn: Any, payload: dict[str, str]) -> None:
-    if cint(_transaction_amount_sen(txn)) != cint(payload["amount_sen"]):
+    if _parse_positive_amount_sen(
+        _transaction_amount_sen(txn),
+        fieldname="QR reconciliation record amount_sen",
+    ) != _parse_positive_amount_sen(payload["amount_sen"]):
         frappe.throw(
-            _("amount_sen does not match Maybank QR Transaction"),
+            _("amount_sen does not match QR reconciliation record"),
             frappe.ValidationError,
         )
 
@@ -434,28 +539,90 @@ def _validate_reconciliation_bank_match(txn: Any, payload: dict[str, str]) -> No
     request_business_date = _business_date_string(payload["business_date"])
     if transaction_business_date != request_business_date:
         frappe.throw(
-            _("business_date does not match Maybank QR Transaction"),
+            _("business_date does not match QR reconciliation record"),
             frappe.ValidationError,
         )
 
     if cstr(getattr(txn, "device_id", None)).strip() != payload["device_id"]:
         frappe.throw(
-            _("device_id does not match Maybank QR Transaction"),
+            _("device_id does not match QR reconciliation record"),
             frappe.ValidationError,
         )
 
-    if cstr(getattr(txn, "provider", None)).strip() != payload["provider"]:
+    expected_provider = "static_qr" if _is_static_reconciliation(txn) else cstr(
+        getattr(txn, "provider", None)
+    ).strip()
+    if expected_provider != payload["provider"]:
         frappe.throw(
-            _("provider does not match Maybank QR Transaction"),
+            _("provider does not match QR reconciliation record"),
             frappe.ValidationError,
         )
 
 
 def _transaction_amount_sen(txn: Any) -> Any:
-    amount_sen = getattr(txn, "amount_sen", None)
+    amount_sen = _row_value(txn, "amount_sen")
     if amount_sen is not None:
         return amount_sen
-    return getattr(txn, "sale_amount_sen", None)
+    return _row_value(txn, "sale_amount_sen")
+
+
+def _is_static_reference(value: Any) -> bool:
+    return cstr(value).strip().startswith("static-")
+
+
+def _is_static_reconciliation(row: Any) -> bool:
+    return (
+        cstr(_row_value(row, "doctype")).strip()
+        == MANUAL_QR_RECONCILIATION_DOCTYPE
+        or bool(cstr(_row_value(row, "provider_session_id")).strip())
+    )
+
+
+def _record_doctype(row: Any) -> str:
+    return (
+        MANUAL_QR_RECONCILIATION_DOCTYPE
+        if _is_static_reconciliation(row)
+        else MAYBANK_TRANSACTION_DOCTYPE
+    )
+
+
+def _record_reference(row: Any) -> str:
+    fieldname = (
+        "provider_session_id"
+        if _is_static_reconciliation(row)
+        else "transaction_refno"
+    )
+    return cstr(_row_value(row, fieldname)).strip()
+
+
+def _record_status(row: Any) -> str:
+    fieldname = "status" if _is_static_reconciliation(row) else (
+        "manual_reconciliation_status"
+    )
+    return cstr(_row_value(row, fieldname)).strip()
+
+
+def _record_status_field(row: Any) -> str:
+    return "status" if _is_static_reconciliation(row) else (
+        "manual_reconciliation_status"
+    )
+
+
+def _update_static_payment_settlement(row: Any, settlement_status: str) -> None:
+    if not _is_static_reconciliation(row):
+        return
+    payment_row = cstr(_row_value(row, "fb_order_payment")).strip()
+    if not payment_row:
+        frappe.throw(
+            _("Manual QR Reconciliation payment row is missing"),
+            frappe.ValidationError,
+        )
+    frappe.db.set_value(
+        "FB Order Payment",
+        payment_row,
+        {"settlement_status": settlement_status},
+        update_modified=False,
+    )
 
 
 def _business_date_string(value: Any) -> str:
@@ -470,13 +637,20 @@ def _business_date_string(value: Any) -> str:
 
 def _manual_reconciliation_row(row: Any) -> dict[str, Any]:
     return {
-        "transaction_refno": cstr(_row_value(row, "transaction_refno")).strip(),
+        "transaction_refno": _record_reference(row),
         "device_id": cstr(_row_value(row, "device_id")).strip(),
-        "sale_amount_sen": cint(_row_value(row, "sale_amount_sen")),
+        "sale_amount_sen": cint(_transaction_amount_sen(row)),
         "created_at": _row_value(row, "created_at"),
-        "manual_reconciliation_status": cstr(
-            _row_value(row, "manual_reconciliation_status")
-        ).strip(),
+        "business_date": _business_date_string(_row_value(row, "business_date")),
+        "provider": (
+            "static_qr"
+            if _is_static_reconciliation(row)
+            else cstr(_row_value(row, "provider")).strip()
+        ),
+        "payment_reference": cstr(_row_value(row, "payment_reference")).strip()
+        or None,
+        "evidence_kind": cstr(_row_value(row, "evidence_kind")).strip() or None,
+        "manual_reconciliation_status": _record_status(row),
         "receipt_file": cstr(_row_value(row, "receipt_file")).strip() or None,
         "receipt_uploaded_at": _row_value(row, "receipt_uploaded_at"),
         "receipt_idempotency_key": cstr(
@@ -489,7 +663,11 @@ def _manual_reconciliation_row(row: Any) -> dict[str, Any]:
         "receipt_amount_sen": cint(_row_value(row, "receipt_amount_sen")) or None,
         "fb_order": cstr(_row_value(row, "fb_order")).strip() or None,
         "sales_invoice": cstr(_row_value(row, "sales_invoice")).strip() or None,
-        "idempotency_key": cstr(_row_value(row, "idempotency_key")).strip() or None,
+        "idempotency_key": cstr(
+            _row_value(row, "idempotency_key")
+            or _row_value(row, "reconciliation_idempotency_key")
+        ).strip()
+        or None,
     }
 
 
@@ -504,7 +682,7 @@ def _write_reconciliation_comment(
 ) -> None:
     payload = {
         "action": action,
-        "transaction_refno": cstr(getattr(txn, "transaction_refno", None)).strip(),
+        "transaction_refno": _record_reference(txn),
         "manager_id": manager_id,
         "note": note,
         "reason": reason,
@@ -514,7 +692,7 @@ def _write_reconciliation_comment(
         {
             "doctype": "Comment",
             "comment_type": "Info",
-            "reference_doctype": "Maybank QR Transaction",
+            "reference_doctype": _record_doctype(txn),
             "reference_name": cstr(getattr(txn, "name", None)).strip(),
             "content": frappe.as_json(payload),
         }
@@ -545,8 +723,7 @@ def _collect_payload(kwargs: dict[str, Any]) -> dict[str, str]:
         if not value:
             frappe.throw(_("{0} is required").format(fieldname), frappe.ValidationError)
 
-    if cint(payload["amount_sen"]) <= 0:
-        frappe.throw(_("amount_sen must be greater than zero"), frappe.ValidationError)
+    payload["amount_sen"] = str(_parse_positive_amount_sen(payload["amount_sen"]))
 
     if len(payload["idempotency_key"]) > 140:
         frappe.throw(_("idempotency_key is too long"), frappe.ValidationError)
@@ -588,8 +765,8 @@ def _read_and_validate_jpeg(uploaded_file: Any) -> tuple[bytes, str]:
     if mime_type not in JPEG_MIME_TYPES:
         frappe.throw(_("receipt file must be image/jpeg"), frappe.ValidationError)
 
-    content = _read_file_bytes(uploaded_file)
     max_bytes = _get_max_receipt_bytes()
+    content = _read_file_bytes(uploaded_file, max_bytes=max_bytes)
     if len(content) > max_bytes:
         frappe.throw(_("receipt file exceeds the maximum allowed size"), frappe.ValidationError)
     if not content.startswith(JPEG_MAGIC):
@@ -597,17 +774,16 @@ def _read_and_validate_jpeg(uploaded_file: Any) -> tuple[bytes, str]:
     return content, mime_type
 
 
-def _read_file_bytes(uploaded_file: Any) -> bytes:
-    read = getattr(uploaded_file, "read", None)
-    if callable(read):
-        content = read()
-    else:
-        stream = getattr(uploaded_file, "stream", None)
-        stream_read = getattr(stream, "read", None)
-        if not callable(stream_read):
-            frappe.throw(_("receipt file could not be read"), frappe.ValidationError)
-            return b""
-        content = stream_read()
+def _read_file_bytes(uploaded_file: Any, *, max_bytes: int) -> bytes:
+    stream = getattr(uploaded_file, "stream", None)
+    read = getattr(stream, "read", None)
+    if not callable(read):
+        read = getattr(uploaded_file, "read", None)
+    if not callable(read):
+        frappe.throw(_("receipt file could not be read"), frappe.ValidationError)
+        return b""
+
+    content = read(max_bytes + 1)
 
     if isinstance(content, str):
         content_bytes = content.encode("utf-8")
@@ -649,26 +825,76 @@ def _resolve_authorized_device(request_device_id: str) -> Any:
 
 
 def _load_and_validate_transaction(payload: dict[str, str], device: Any) -> Any:
+    is_static = _is_static_reference(payload["transaction_refno"])
+    doctype = (
+        MANUAL_QR_RECONCILIATION_DOCTYPE
+        if is_static
+        else MAYBANK_TRANSACTION_DOCTYPE
+    )
+    reference_field = "provider_session_id" if is_static else "transaction_refno"
     txn_name = frappe.db.get_value(
-        "Maybank QR Transaction",
-        {"transaction_refno": payload["transaction_refno"]},
+        doctype,
+        {reference_field: payload["transaction_refno"]},
         "name",
     )
     if not txn_name:
-        frappe.throw(_("Maybank QR Transaction was not found"), frappe.ValidationError)
+        frappe.throw(_("QR reconciliation record was not found"), frappe.ValidationError)
 
-    txn = frappe.get_doc("Maybank QR Transaction", txn_name)
-    if cstr(getattr(txn, "transaction_refno", None)).strip() != payload["transaction_refno"]:
-        frappe.throw(_("transaction_refno does not match target transaction"), frappe.ValidationError)
+    frappe.db.sql(
+        f"SELECT name FROM `tab{doctype}` WHERE name = %s FOR UPDATE",
+        (txn_name,),
+    )
+    txn = frappe.get_doc(doctype, txn_name)
+    if _record_reference(txn) != payload["transaction_refno"]:
+        frappe.throw(_("transaction_refno does not match target record"), frappe.ValidationError)
     if cstr(getattr(txn, "device_id", None)).strip() != payload["device_id"]:
-        frappe.throw(_("Maybank QR Transaction belongs to another device"), frappe.ValidationError)
-    if cint(getattr(txn, "sale_amount_sen", 0)) != cint(payload["amount_sen"]):
-        frappe.throw(_("amount_sen does not match Maybank QR Transaction"), frappe.ValidationError)
+        frappe.throw(_("QR reconciliation record belongs to another device"), frappe.ValidationError)
+    if _parse_positive_amount_sen(
+        _transaction_amount_sen(txn),
+        fieldname="QR reconciliation record amount_sen",
+    ) != _parse_positive_amount_sen(payload["amount_sen"]):
+        frappe.throw(_("amount_sen does not match QR reconciliation record"), frappe.ValidationError)
 
     _validate_device_business_context(device, payload)
-    _validate_provider_context(txn)
-    _validate_transaction_window(txn, payload["captured_at"])
+    if is_static:
+        if cstr(getattr(txn, "company", None)).strip() != payload["company"]:
+            frappe.throw(_("company does not match QR reconciliation record"), frappe.ValidationError)
+        if cstr(getattr(txn, "currency", None)).strip().upper() != payload["currency"]:
+            frappe.throw(_("currency does not match QR reconciliation record"), frappe.ValidationError)
+        _validate_static_receipt_capture(txn, payload["captured_at"])
+    else:
+        _validate_provider_context(txn)
+        _validate_transaction_window(txn, payload["captured_at"])
     return txn
+
+
+def _validate_static_receipt_capture(txn: Any, captured_at: str) -> None:
+    if _record_status(txn) != PENDING_RECONCILIATION_STATUS:
+        frappe.throw(
+            _("Manual QR Reconciliation is not pending"),
+            frappe.ValidationError,
+        )
+    raw_evidence = cstr(getattr(txn, "evidence_json", None)).strip()
+    try:
+        evidence = json.loads(raw_evidence)
+    except (TypeError, ValueError):
+        frappe.throw(
+            _("Manual QR Reconciliation evidence is invalid"),
+            frappe.ValidationError,
+        )
+        return
+    if not isinstance(evidence, dict) or not cstr(evidence.get("captured_at")).strip():
+        frappe.throw(
+            _("Manual QR Reconciliation evidence captured_at is missing"),
+            frappe.ValidationError,
+        )
+    expected_capture = _coerce_site_datetime(evidence["captured_at"])
+    actual_capture = _coerce_site_datetime(captured_at)
+    if actual_capture != expected_capture:
+        frappe.throw(
+            _("captured_at does not match Manual QR Reconciliation evidence"),
+            frappe.ValidationError,
+        )
 
 
 def _validate_device_business_context(device: Any, payload: dict[str, str]) -> None:
@@ -733,15 +959,20 @@ def _coerce_site_datetime(value: Any) -> datetime:
 def _resolve_existing_idempotency(
     payload: dict[str, str], file_hash: str
 ) -> dict[str, str | None] | None:
+    doctype = (
+        MANUAL_QR_RECONCILIATION_DOCTYPE
+        if _is_static_reference(payload["transaction_refno"])
+        else MAYBANK_TRANSACTION_DOCTYPE
+    )
     existing_name = frappe.db.get_value(
-        "Maybank QR Transaction",
+        doctype,
         {"receipt_idempotency_key": payload["idempotency_key"]},
         "name",
     )
     if not existing_name:
         return None
 
-    existing = frappe.get_doc("Maybank QR Transaction", existing_name)
+    existing = frappe.get_doc(doctype, existing_name)
     _validate_existing_receipt_claim(existing, payload, file_hash)
 
     receipt_file = cstr(getattr(existing, "receipt_file", None)).strip()
@@ -751,7 +982,13 @@ def _resolve_existing_idempotency(
     file_row = frappe.db.get_value(
         "File",
         receipt_file,
-        ["name", "file_name", "file_url"],
+        [
+            "name",
+            "file_name",
+            "file_url",
+            "attached_to_doctype",
+            "attached_to_name",
+        ],
         as_dict=True,
     )
     if not file_row:
@@ -761,13 +998,16 @@ def _resolve_existing_idempotency(
         "file_name": cstr(_row_value(file_row, "file_name")),
         "file_url": cstr(_row_value(file_row, "file_url")) or None,
         "file_hash": cstr(getattr(existing, "receipt_file_hash", None)).strip(),
+        "attached_to_doctype": cstr(
+            _row_value(file_row, "attached_to_doctype")
+        ).strip(),
+        "attached_to_name": cstr(_row_value(file_row, "attached_to_name")).strip(),
     }
 
 
 def _validate_existing_receipt_claim(existing: Any, payload: dict[str, str], file_hash: str) -> None:
     expected = {
         "device_id": payload["device_id"],
-        "transaction_refno": payload["transaction_refno"],
         "receipt_payment_id": payload["payment_id"],
         "receipt_order_id": payload["order_id"],
         "receipt_amount_sen": cstr(cint(payload["amount_sen"])),
@@ -781,19 +1021,24 @@ def _validate_existing_receipt_claim(existing: Any, payload: dict[str, str], fil
                 _("idempotency_key was already used for a different receipt upload"),
                 frappe.ValidationError,
             )
+    if _record_reference(existing) != payload["transaction_refno"]:
+        frappe.throw(
+            _("idempotency_key was already used for a different receipt upload"),
+            frappe.ValidationError,
+        )
 
 
 def _claim_receipt_idempotency(txn: Any, payload: dict[str, str], file_hash: str) -> None:
     existing_key = cstr(getattr(txn, "receipt_idempotency_key", None)).strip()
     if existing_key and existing_key != payload["idempotency_key"]:
-        frappe.throw(_("Maybank QR Transaction already has a receipt upload"), frappe.ValidationError)
+        frappe.throw(_("QR reconciliation record already has a receipt upload"), frappe.ValidationError)
 
     if existing_key:
         _validate_existing_receipt_claim(txn, payload, file_hash)
         return
 
     frappe.db.set_value(
-        "Maybank QR Transaction",
+        _record_doctype(txn),
         txn.name,
         {
             "receipt_idempotency_key": payload["idempotency_key"],
@@ -810,11 +1055,12 @@ def _claim_receipt_idempotency(txn: Any, payload: dict[str, str], file_hash: str
 
 
 def _create_private_file(txn: Any, file_name: str, content: bytes) -> Any:
+    doctype = _record_doctype(txn)
     file_doc = frappe.get_doc(
         {
             "doctype": "File",
             "file_name": file_name,
-            "attached_to_doctype": "Maybank QR Transaction",
+            "attached_to_doctype": doctype,
             "attached_to_name": txn.name,
             "is_private": 1,
             "content": content,
@@ -828,7 +1074,7 @@ def _attach_receipt_file(
     txn: Any, file_doc: Any, payload: dict[str, str], file_hash: str
 ) -> None:
     frappe.db.set_value(
-        "Maybank QR Transaction",
+        _record_doctype(txn),
         txn.name,
         {
             "receipt_file": cstr(getattr(file_doc, "name", None)).strip(),
@@ -841,7 +1087,7 @@ def _attach_receipt_file(
             "receipt_file_name": payload["file_name"],
             "receipt_file_hash": file_hash,
             "receipt_captured_at": _coerce_site_datetime(payload["captured_at"]),
-            "manual_reconciliation_status": PENDING_RECONCILIATION_STATUS,
+            _record_status_field(txn): PENDING_RECONCILIATION_STATUS,
         },
         update_modified=False,
     )
@@ -850,9 +1096,13 @@ def _attach_receipt_file(
 def _file_response(file_doc: Any, file_hash: str) -> dict[str, str | None]:
     return {
         "status": "ok",
-        "file_name": cstr(getattr(file_doc, "file_name", None)).strip(),
-        "file_url": cstr(getattr(file_doc, "file_url", None)).strip() or None,
+        "file_name": cstr(_row_value(file_doc, "file_name")).strip(),
+        "file_url": cstr(_row_value(file_doc, "file_url")).strip() or None,
         "file_hash": file_hash,
+        "attached_to_doctype": cstr(
+            _row_value(file_doc, "attached_to_doctype")
+        ).strip(),
+        "attached_to_name": cstr(_row_value(file_doc, "attached_to_name")).strip(),
     }
 
 
@@ -878,6 +1128,20 @@ def _sanitize_file_name(file_name: str) -> str:
     return safe_name
 
 
+def _parse_positive_amount_sen(value: Any, *, fieldname: str = "amount_sen") -> int:
+    try:
+        amount = Decimal(cstr(value).strip())
+    except (InvalidOperation, ValueError):
+        frappe.throw(_("{0} must be an integer").format(fieldname), frappe.ValidationError)
+        return 0
+    if not amount.is_finite() or amount != amount.to_integral_value():
+        frappe.throw(_("{0} must be an integer").format(fieldname), frappe.ValidationError)
+    amount_sen = int(amount)
+    if amount_sen <= 0:
+        frappe.throw(_("{0} must be greater than zero").format(fieldname), frappe.ValidationError)
+    return amount_sen
+
+
 def _row_value(row: Any, fieldname: str) -> Any:
     if isinstance(row, dict):
         return row.get(fieldname)
@@ -888,6 +1152,7 @@ def _write_audit_log(
     outcome: str,
     *,
     transaction_name: str,
+    transaction_doctype: str,
     device_id: str | None,
     idempotency_key: str | None,
     message: str,
@@ -906,7 +1171,8 @@ def _write_audit_log(
                 {
                     "doctype": "Comment",
                     "comment_type": "Info",
-                    "reference_doctype": "Maybank QR Transaction",
+                    "reference_doctype": transaction_doctype
+                    or MAYBANK_TRANSACTION_DOCTYPE,
                     "reference_name": transaction_name,
                     "content": frappe.as_json(log_payload),
                 }

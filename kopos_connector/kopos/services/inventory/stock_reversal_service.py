@@ -87,6 +87,24 @@ def create_reversal_stock_entry(fb_return_event: Any) -> str | None:
                 ["fb_return_event", "custom_fb_return_event"],
                 return_doc.name,
             )
+            _set_if_present(
+                stock_entry,
+                ["custom_fb_order"],
+                _value(return_doc, "fb_order"),
+            )
+            original_invoice_name = _value(
+                return_doc, "original_sales_invoice"
+            )
+            original_invoice = (
+                frappe.get_doc("Sales Invoice", original_invoice_name)
+                if original_invoice_name
+                else None
+            )
+            _set_if_present(
+                stock_entry,
+                ["custom_fb_shift"],
+                _value(original_invoice, "custom_fb_shift"),
+            )
 
             for item_row in items_to_receive:
                 stock_entry.append("items", item_row)

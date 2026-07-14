@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from io import BytesIO
@@ -20,6 +21,7 @@ JPEG_BYTES = b"\xff\xd8\xff\xe0receipt-image"
 @dataclass
 class UploadEnv:
     transactions: dict[str, SimpleNamespace] = field(default_factory=dict)
+    manual_reconciliations: dict[str, SimpleNamespace] = field(default_factory=dict)
     files: dict[str, Any] = field(default_factory=dict)
     comments: list[SimpleNamespace] = field(default_factory=list)
     file_inserts: int = 0
@@ -31,8 +33,8 @@ class UploadedFile:
         self.mimetype = mimetype
         self.content_type = mimetype
 
-    def read(self) -> bytes:
-        return self.stream.read()
+    def read(self, size: int = -1) -> bytes:
+        return self.stream.read(size)
 
 
 @pytest.fixture
@@ -67,6 +69,7 @@ def receipt_module(monkeypatch):
         device_id="DEVICE-B",
         amount_sen=1200,
     )
+    env.manual_reconciliations["MQR-1"] = build_manual_reconciliation()
 
     def fake_get_value(
         doctype: str,
@@ -79,6 +82,19 @@ def receipt_module(monkeypatch):
                 for txn in env.transactions.values():
                     if all(getattr(txn, key, None) == value for key, value in filters.items()):
                         return getattr(txn, fieldname) if isinstance(fieldname, str) else txn
+                return None
+        if doctype == "Manual QR Reconciliation":
+            if isinstance(filters, dict):
+                for reconciliation in env.manual_reconciliations.values():
+                    if all(
+                        getattr(reconciliation, key, None) == value
+                        for key, value in filters.items()
+                    ):
+                        return (
+                            getattr(reconciliation, fieldname)
+                            if isinstance(fieldname, str)
+                            else reconciliation
+                        )
                 return None
         if doctype == "File":
             file_doc = env.files.get(str(filters))
@@ -97,8 +113,12 @@ def receipt_module(monkeypatch):
         values: dict[str, Any],
         update_modified: bool = True,
     ) -> None:
-        assert doctype == "Maybank QR Transaction"
-        txn = env.transactions[name]
+        records = (
+            env.manual_reconciliations
+            if doctype == "Manual QR Reconciliation"
+            else env.transactions
+        )
+        txn = records[name]
         for key, value in values.items():
             setattr(txn, key, value)
 
@@ -111,9 +131,19 @@ def receipt_module(monkeypatch):
                 return FakeCommentDoc(env, payload)
         if len(args) >= 2 and args[0] == "Maybank QR Transaction":
             return env.transactions[str(args[1])]
+        if len(args) >= 2 and args[0] == "Manual QR Reconciliation":
+            return env.manual_reconciliations[str(args[1])]
         raise AssertionError(f"unexpected get_doc call: {args!r} {kwargs!r}")
 
     monkeypatch.setattr(frappe.db, "get_value", fake_get_value, raising=False)
+    locked_transactions: list[str] = []
+
+    def fake_sql(query: str, values: tuple[Any, ...] = (), **_kwargs: Any) -> list[Any]:
+        if "FOR UPDATE" in query:
+            locked_transactions.append(str(values[0]))
+        return []
+
+    monkeypatch.setattr(frappe.db, "sql", fake_sql, raising=False)
     monkeypatch.setattr(frappe.db, "set_value", fake_set_value, raising=False)
     monkeypatch.setattr(
         frappe.db,
@@ -150,7 +180,13 @@ def receipt_module(monkeypatch):
         "get_authenticated_device_doc",
         lambda: device,
     )
-    return SimpleNamespace(module=manual_qr_receipt, env=env, frappe=frappe, device=device)
+    return SimpleNamespace(
+        module=manual_qr_receipt,
+        env=env,
+        frappe=frappe,
+        device=device,
+        locked_transactions=locked_transactions,
+    )
 
 
 def test_upload_attaches_private_file_to_matching_transaction(receipt_module):
@@ -165,6 +201,8 @@ def test_upload_attaches_private_file_to_matching_transaction(receipt_module):
         "file_name": "receipt.jpg",
         "file_url": "/private/files/receipt.jpg",
         "file_hash": expected_hash,
+        "attached_to_doctype": "Maybank QR Transaction",
+        "attached_to_name": "MBQR-TXN-1",
     }
     assert file_doc.is_private == 1
     assert file_doc.attached_to_doctype == "Maybank QR Transaction"
@@ -174,6 +212,85 @@ def test_upload_attaches_private_file_to_matching_transaction(receipt_module):
     assert txn.receipt_idempotency_key == "upload-key-1"
     assert txn.manual_reconciliation_status == "pending_reconciliation"
     assert len(receipt_module.env.comments) == 1
+    assert receipt_module.locked_transactions == ["MBQR-TXN-1"]
+
+
+def test_static_qr_upload_attaches_to_manual_reconciliation(receipt_module):
+    result = receipt_module.module.upload_manual_qr_receipt(
+        **valid_payload(
+            transaction_refno="static-session-1",
+            idempotency_key="static-upload-key-1",
+        )
+    )
+
+    reconciliation = receipt_module.env.manual_reconciliations["MQR-1"]
+    file_doc = receipt_module.env.files[reconciliation.receipt_file]
+
+    assert result["status"] == "ok"
+    assert result["attached_to_doctype"] == "Manual QR Reconciliation"
+    assert result["attached_to_name"] == "MQR-1"
+    assert file_doc.attached_to_doctype == "Manual QR Reconciliation"
+    assert file_doc.attached_to_name == "MQR-1"
+    assert receipt_module.env.comments[-1].reference_doctype == (
+        "Manual QR Reconciliation"
+    )
+    assert reconciliation.status == "pending_reconciliation"
+    assert receipt_module.locked_transactions == ["MQR-1"]
+
+
+def test_authentication_happens_before_receipt_bytes_are_read(receipt_module, monkeypatch):
+    class ReadMustNotRun:
+        mimetype = "image/jpeg"
+        content_type = "image/jpeg"
+
+        def read(self, _size: int = -1) -> bytes:
+            raise AssertionError("unauthorized upload body was read")
+
+    monkeypatch.setattr(
+        receipt_module.frappe,
+        "request",
+        SimpleNamespace(files={"file": ReadMustNotRun()}),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        receipt_module.module,
+        "get_authenticated_device_doc",
+        lambda: (_ for _ in ()).throw(receipt_module.frappe.ValidationError("denied")),
+    )
+
+    with pytest.raises(receipt_module.frappe.ValidationError, match="denied"):
+        receipt_module.module.upload_manual_qr_receipt(**valid_payload())
+
+
+def test_receipt_reader_is_bounded_to_configured_limit_plus_one(receipt_module, monkeypatch):
+    read_sizes: list[int] = []
+
+    class OversizedStream:
+        mimetype = "image/jpeg"
+        content_type = "image/jpeg"
+
+        def __init__(self) -> None:
+            self.stream = self
+
+        def read(self, size: int = -1) -> bytes:
+            read_sizes.append(size)
+            return JPEG_BYTES + (b"x" * 10)
+
+        def seek(self, _position: int) -> None:
+            return None
+
+    monkeypatch.setattr(receipt_module.frappe, "conf", {"kopos_manual_qr_receipt_max_bytes": 8}, raising=False)
+    monkeypatch.setattr(
+        receipt_module.frappe,
+        "request",
+        SimpleNamespace(files={"file": OversizedStream()}),
+        raising=False,
+    )
+
+    with pytest.raises(receipt_module.frappe.ValidationError, match="maximum allowed size"):
+        receipt_module.module.upload_manual_qr_receipt(**valid_payload())
+
+    assert read_sizes == [9]
 
 
 def test_wrong_device_is_rejected(receipt_module):
@@ -186,6 +303,18 @@ def test_wrong_device_is_rejected(receipt_module):
     assert receipt_module.env.file_inserts == 0
 
 
+def test_fractional_amount_sen_is_rejected(receipt_module):
+    with pytest.raises(
+        receipt_module.frappe.ValidationError,
+        match="amount_sen must be an integer",
+    ):
+        receipt_module.module.upload_manual_qr_receipt(
+            **valid_payload(amount_sen="1200.9")
+        )
+
+    assert receipt_module.env.file_inserts == 0
+
+
 def test_duplicate_idempotent_upload_returns_existing_file(receipt_module):
     first = receipt_module.module.upload_manual_qr_receipt(**valid_payload())
     second = receipt_module.module.upload_manual_qr_receipt(**valid_payload())
@@ -195,6 +324,13 @@ def test_duplicate_idempotent_upload_returns_existing_file(receipt_module):
 
 
 def test_non_jpeg_file_is_rejected(receipt_module, monkeypatch):
+    rollbacks: list[bool] = []
+    monkeypatch.setattr(
+        receipt_module.frappe.db,
+        "rollback",
+        lambda: rollbacks.append(True),
+        raising=False,
+    )
     monkeypatch.setattr(
         receipt_module.frappe,
         "request",
@@ -207,6 +343,7 @@ def test_non_jpeg_file_is_rejected(receipt_module, monkeypatch):
 
     assert "image/jpeg" in str(excinfo.value)
     assert receipt_module.env.file_inserts == 0
+    assert rollbacks == [True]
 
 
 def test_oversize_file_is_rejected(receipt_module, monkeypatch):
@@ -283,6 +420,37 @@ def build_transaction(
         receipt_captured_at=None,
         receipt_uploaded_at=None,
         manual_reconciliation_status="",
+    )
+
+
+def build_manual_reconciliation() -> SimpleNamespace:
+    return SimpleNamespace(
+        doctype="Manual QR Reconciliation",
+        name="MQR-1",
+        provider_session_id="static-session-1",
+        device_id="DEVICE-A",
+        amount_sen=1200,
+        company="KoPOS Cafe",
+        currency="MYR",
+        business_date="2026-03-13",
+        status="pending_reconciliation",
+        evidence_captured_at=datetime(2026, 3, 13, 18, 5, 0),
+        evidence_json=json.dumps(
+            {"captured_at": "2026-03-13T18:05:00"},
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        created_at=datetime(2026, 3, 13, 18, 5, 1),
+        receipt_file=None,
+        receipt_idempotency_key=None,
+        receipt_idempotency_fingerprint=None,
+        receipt_payment_id=None,
+        receipt_order_id=None,
+        receipt_amount_sen=None,
+        receipt_file_name=None,
+        receipt_file_hash=None,
+        receipt_captured_at=None,
+        receipt_uploaded_at=None,
     )
 
 

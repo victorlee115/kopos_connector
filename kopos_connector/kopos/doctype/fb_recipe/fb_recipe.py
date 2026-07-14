@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from importlib import import_module
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 frappe = import_module("frappe")
 Document = import_module("frappe.model.document").Document
@@ -20,7 +21,45 @@ class FBRecipe(Document):
     def validate(self) -> None:
         self.validate_effective_dates()
         self.validate_version()
+        self.validate_used_version_is_immutable()
         self.validate_modifier_groups()
+
+    def validate_used_version_is_immutable(self) -> None:
+        """Require a new version once a recipe may have reached a tablet."""
+
+        is_new = getattr(self, "is_new", None)
+        if (callable(is_new) and is_new()) or not getattr(self, "name", None):
+            return
+        get_before_save = getattr(self, "get_doc_before_save", None)
+        if not callable(get_before_save):
+            return
+        previous = get_before_save()
+        if not previous:
+            return
+        is_published = getattr(previous, "status", None) in {"Active", "Retired"}
+        is_used = _recipe_is_used(self.name)
+        if not is_published and not is_used:
+            return
+        if _recipe_definition_snapshot(previous) != _recipe_definition_snapshot(self):
+            frappe.throw(
+                f"FB Recipe {self.name} has already been published or used by a sale; create a new recipe version instead of changing its definition",
+                frappe.ValidationError,
+            )
+
+    def before_rename(self, old: str, new: str, merge: bool = False) -> None:
+        del new, merge
+        if self.status in {"Active", "Retired"} or _recipe_is_used(old):
+            frappe.throw(
+                f"Published or used FB Recipe {old} cannot be renamed; create a new recipe version",
+                frappe.ValidationError,
+            )
+
+    def on_trash(self) -> None:
+        if self.status in {"Active", "Retired"} or _recipe_is_used(self.name):
+            frappe.throw(
+                f"Published or used FB Recipe {self.name} cannot be deleted",
+                frappe.ValidationError,
+            )
 
     def validate_effective_dates(self) -> None:
         if self.effective_from and self.effective_to:
@@ -52,9 +91,63 @@ class FBRecipe(Document):
         if self.status != "Active":
             return
 
-        for row in self.get("components") or []:
+        _require_positive_decimal(self.yield_qty, "Yield Qty")
+        _require_positive_decimal(self.default_serving_qty, "Default Serving Qty")
+        if not self.yield_uom:
+            frappe.throw("Yield UOM is required for an active recipe")
+        if not self.default_serving_uom:
+            frappe.throw("Default Serving UOM is required for an active recipe")
+
+        components = list(self.get("components") or [])
+        if not components:
+            frappe.throw("An active FB Recipe must define at least one component")
+        for row_index, row in enumerate(components, start=1):
             if not row.item:
                 frappe.throw("Each recipe component must define an Item")
+            _require_positive_decimal(
+                row.qty,
+                f"Recipe component {row_index} Qty",
+            )
+            if not row.uom:
+                frappe.throw(f"Recipe component {row_index} UOM is required")
+
+            stock_qty_value = (
+                row.stock_qty
+                if row.stock_qty is not None and row.stock_qty != ""
+                else row.qty
+            )
+            _require_positive_decimal(
+                stock_qty_value,
+                f"Recipe component {row_index} Stock Qty",
+            )
+            if not cint(row.affects_stock):
+                continue
+
+            item_values = frappe.db.get_value(
+                "Item",
+                row.item,
+                ["stock_uom", "is_stock_item"],
+                as_dict=True,
+            )
+            if not item_values:
+                frappe.throw(f"Recipe component Item {row.item} was not found")
+            item_stock_uom = getattr(item_values, "stock_uom", None)
+            if isinstance(item_values, dict):
+                item_stock_uom = item_values.get("stock_uom")
+                is_stock_item = cint(item_values.get("is_stock_item"))
+            else:
+                is_stock_item = cint(getattr(item_values, "is_stock_item", None))
+            if not is_stock_item:
+                frappe.throw(
+                    f"Recipe component {row.item} affects stock and must be a stock Item"
+                )
+            resolved_stock_uom = row.stock_uom or row.uom
+            if not resolved_stock_uom:
+                frappe.throw(f"Recipe component {row_index} Stock UOM is required")
+            if not item_stock_uom or resolved_stock_uom != item_stock_uom:
+                frappe.throw(
+                    f"Recipe component {row.item} Stock UOM must match Item stock UOM {item_stock_uom or '(missing)'}"
+                )
 
         active_filters = {
             "sellable_item": self.sellable_item,
@@ -162,4 +255,78 @@ def _date_ranges_overlap(
     return (
         normalized_start_a <= normalized_end_b
         and normalized_start_b <= normalized_end_a
+    )
+
+
+def _recipe_is_used(recipe_name: str) -> bool:
+    return bool(
+        frappe.db.exists("FB Order Line", {"recipe": recipe_name})
+        or frappe.db.exists("FB Resolved Sale", {"recipe": recipe_name})
+    )
+
+
+def _require_positive_decimal(value: Any, label: str) -> Decimal:
+    try:
+        parsed = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError) as error:
+        frappe.throw(f"{label} must be a finite number greater than 0")
+        raise AssertionError("frappe.throw must raise") from error
+    if not parsed.is_finite() or parsed <= 0:
+        frappe.throw(f"{label} must be a finite number greater than 0")
+    return parsed
+
+
+_COMPONENT_SNAPSHOT_FIELDS = (
+    "item",
+    "component_type",
+    "qty",
+    "uom",
+    "stock_qty",
+    "stock_uom",
+    "is_optional",
+    "is_substitutable",
+    "substitution_key",
+    "affects_stock",
+    "affects_cogs",
+    "loss_factor_pct",
+    "sort_order",
+)
+_MODIFIER_GROUP_SNAPSHOT_FIELDS = (
+    "modifier_group",
+    "required",
+    "override_min_selection",
+    "override_max_selection",
+    "default_modifier",
+    "display_order",
+    "always_prompt",
+)
+
+
+def _recipe_definition_snapshot(recipe: Any) -> tuple[Any, ...]:
+    return (
+        getattr(recipe, "sellable_item", None),
+        getattr(recipe, "company", None),
+        cint(getattr(recipe, "version_no", None)),
+        getattr(recipe, "recipe_type", None),
+        getattr(recipe, "yield_qty", None),
+        getattr(recipe, "yield_uom", None),
+        getattr(recipe, "default_serving_qty", None),
+        getattr(recipe, "default_serving_uom", None),
+        _child_rows_snapshot(
+            getattr(recipe, "components", None) or [],
+            _COMPONENT_SNAPSHOT_FIELDS,
+        ),
+        _child_rows_snapshot(
+            getattr(recipe, "allowed_modifier_groups", None) or [],
+            _MODIFIER_GROUP_SNAPSHOT_FIELDS,
+        ),
+    )
+
+
+def _child_rows_snapshot(
+    rows: list[Any], fieldnames: tuple[str, ...]
+) -> tuple[tuple[Any, ...], ...]:
+    return tuple(
+        tuple(getattr(row, fieldname, None) for fieldname in fieldnames)
+        for row in rows
     )

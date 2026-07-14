@@ -1034,6 +1034,9 @@ class ShiftSyncTests(unittest.TestCase):
             "action": "open_shift",
             "manager_id": "manager@example.com",
             "shift_id": "SHIFT-1",
+            "resource_id": "SHIFT-1",
+            "amount_sen": 5000,
+            "context_hash": manager_approval.canonical_context_hash({"reason": ""}),
             "issued_at": current_time - 60,
             "expires_at": current_time + 300,
             "token_id": "reused-token-id-123",
@@ -1053,7 +1056,12 @@ class ShiftSyncTests(unittest.TestCase):
                 manager_approval, "_get_signing_secret", return_value="test-secret"
             ),
             patch.object(manager_approval.time, "time", return_value=current_time),
-            patch.object(manager_approval, "_is_token_reused", return_value=True),
+            patch.object(
+                manager_approval,
+                "_load_approval_for_update",
+                return_value={"name": "reused-token-id-123", "status": "consumed"},
+            ),
+            patch.object(manager_approval, "_validate_persisted_approval"),
         ):
             signature = manager_approval._create_token_signature(payload)
             token = manager_approval._encode_token(payload, signature)

@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 frappe = importlib.import_module("frappe")
 frappe_utils = importlib.import_module("frappe.utils")
 
+from kopos_connector.kopos.api.money_contract import (
+    LEGACY_DECIMAL_MONEY_CONTRACT_VERSION,
+    MAX_SAFE_INTEGER,
+    MoneyContractValidationError,
+    parse_positive_integer_quantity,
+    parse_wire_money_sen,
+    persisted_money_to_sen,
+    require_money_contract_version,
+    sen_to_decimal,
+)
 from kopos_connector.kopos.services.orders.sale_datetime import (
     validate_submit_sale_datetime,
     validate_submit_sale_datetime_bounds,
@@ -81,13 +93,21 @@ def submit_order() -> dict[str, Any]:
 
 
 def submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    validated = _validate_submit_order_payload(payload)
-    existing_name = _get_existing_fb_order_name(validated["external_idempotency_key"])
+    normalized = _normalize_submit_order_payload(payload)
+    existing_name = _get_existing_fb_order_name(normalized["external_idempotency_key"])
     if existing_name:
         order_doc = frappe.get_doc("FB Order", existing_name)
+        _validate_existing_order_fingerprint(normalized, order_doc)
         return _build_submit_response("duplicate", order_doc)
 
+    validated = _validate_new_submit_order_state(normalized)
     try:
+        _validate_submit_shift(
+            shift_name=validated["shift"],
+            device_id=validated["device_id"],
+            staff_id=validated["staff_id"],
+            lock=True,
+        )
         order_doc = _build_fb_order(validated)
         order_doc.insert(ignore_permissions=True)
         order_doc.submit()
@@ -98,6 +118,7 @@ def submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
         if existing_name:
             order_doc = frappe.get_doc("FB Order", existing_name)
+            _validate_existing_order_fingerprint(normalized, order_doc)
             return _build_submit_response("duplicate", order_doc)
         raise
 
@@ -179,6 +200,7 @@ def before_submit_fb_order(doc, method: str | None = None) -> None:
         shift_name=cstr(doc.shift),
         device_id=cstr(doc.device_id),
         staff_id=cstr(doc.staff_id),
+        lock=True,
     )
     doc.status = "Submitted"
     _set_default_order_statuses(doc)
@@ -230,11 +252,139 @@ def _coerce_mapping(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _require_money_contract_version(payload: Mapping[str, Any]) -> str:
+    try:
+        return require_money_contract_version(payload)
+    except MoneyContractValidationError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+    raise AssertionError("unreachable")
+
+
+def _parse_wire_money_sen(
+    row: Mapping[str, Any],
+    *,
+    version: str,
+    sen_field: str,
+    legacy_fields: tuple[str, ...],
+    required: bool = True,
+    default: int = 0,
+) -> int:
+    try:
+        return parse_wire_money_sen(
+            row,
+            version=version,
+            sen_field=sen_field,
+            legacy_fields=legacy_fields,
+            required=required,
+            default=default,
+        )
+    except MoneyContractValidationError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+    raise AssertionError("unreachable")
+
+
+def _parse_positive_integer_quantity(value: Any, fieldname: str) -> int:
+    try:
+        return parse_positive_integer_quantity(value, fieldname)
+    except MoneyContractValidationError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+    raise AssertionError("unreachable")
+
+
+def _require_safe_sen(value: int, fieldname: str) -> int:
+    if abs(value) > MAX_SAFE_INTEGER:
+        frappe.throw(f"{fieldname} exceeds the safe integer range", frappe.ValidationError)
+    return value
+
+
+def _checked_sen_sum(values: Any, fieldname: str) -> int:
+    return _require_safe_sen(sum(values), fieldname)
+
+
+def _normalize_optional_identifier(
+    value: Any,
+    fieldname: str,
+    *,
+    present: bool,
+) -> str | None:
+    if not present:
+        return None
+    if not isinstance(value, str):
+        frappe.throw(
+            f"{fieldname} must be a non-empty trimmed string",
+            frappe.ValidationError,
+        )
+    normalized = value.strip()
+    if not normalized or normalized != value:
+        frappe.throw(
+            f"{fieldname} must be a non-empty trimmed string",
+            frappe.ValidationError,
+        )
+    if len(normalized) > 140:
+        frappe.throw(f"{fieldname} is too long", frappe.ValidationError)
+    return normalized
+
+
+def _normalize_optional_tax_rate(
+    value: Any,
+    *,
+    present: bool,
+) -> Decimal | None:
+    if not present:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        frappe.throw(
+            "order.tax_rate must be a finite decimal rate between 0 and 1",
+            frappe.ValidationError,
+        )
+    try:
+        rate = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        frappe.throw(
+            "order.tax_rate must be a finite decimal rate between 0 and 1",
+            frappe.ValidationError,
+        )
+    if not rate.is_finite() or rate < 0 or rate > 1:
+        frappe.throw(
+            "order.tax_rate must be a finite decimal rate between 0 and 1",
+            frappe.ValidationError,
+        )
+    canonical = rate.normalize()
+    if canonical == 0:
+        canonical = Decimal("0")
+    if canonical.as_tuple().exponent < -6:
+        frappe.throw(
+            "order.tax_rate supports at most 6 decimal places",
+            frappe.ValidationError,
+        )
+    return canonical
+
+
+def _persisted_money_sen(value: Any, fieldname: str) -> int:
+    try:
+        return persisted_money_to_sen(value, fieldname)
+    except MoneyContractValidationError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+    raise AssertionError("unreachable")
+
+
 def _validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate a new order, including mutable ERP references.
+
+    The public submit path intentionally normalizes and fingerprints the request
+    before calling this stateful phase so an accepted request can be reconciled
+    after a timeout even when its shift has subsequently closed.
+    """
+
+    return _validate_new_submit_order_state(_normalize_submit_order_payload(payload))
+
+
+def _normalize_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     order_value = payload.get("order")
-    order_payload: dict[str, Any] = (
-        dict(order_value) if isinstance(order_value, Mapping) else {}
-    )
+    if not isinstance(order_value, Mapping):
+        frappe.throw("order must be a JSON object", frappe.ValidationError)
+    order_payload = dict(order_value)
+    money_contract_version = _require_money_contract_version(payload)
     order_id = cstr(payload.get("order_id") or order_payload.get("id"))
     idempotency_key = cstr(payload.get("idempotency_key"))
     source = cstr(payload.get("source") or "API")
@@ -247,17 +397,20 @@ def _validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     customer = cstr(payload.get("customer")) or None
     event_project = cstr(payload.get("event_project")) or None
     notes = cstr(payload.get("notes") or order_payload.get("notes")) or None
+    catalog_version = _normalize_optional_identifier(
+        payload.get("catalog_version"),
+        "catalog_version",
+        present="catalog_version" in payload,
+    )
+    display_number = cstr(order_payload.get("display_number"))
+    order_type = cstr(order_payload.get("order_type"))
+    tax_rate = _normalize_optional_tax_rate(
+        order_payload.get("tax_rate"),
+        present="tax_rate" in order_payload,
+    )
     sale_datetime_value = order_payload.get("created_at")
-    items = (
-        payload.get("items")
-        if isinstance(payload.get("items"), list)
-        else order_payload.get("items")
-    )
-    payments = (
-        payload.get("payments")
-        if isinstance(payload.get("payments"), list)
-        else order_payload.get("payments")
-    )
+    items = order_payload.get("items")
+    payments = order_payload.get("payments")
 
     if not order_id:
         frappe.throw("order_id is required", frappe.ValidationError)
@@ -275,10 +428,16 @@ def _validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         frappe.throw("company is required", frappe.ValidationError)
     if not currency:
         frappe.throw("currency is required", frappe.ValidationError)
+    if not display_number:
+        frappe.throw("order.display_number is required", frappe.ValidationError)
+    if not order_type:
+        frappe.throw("order.order_type is required", frappe.ValidationError)
     if not isinstance(items, list) or not items:
-        frappe.throw("items must contain at least one row", frappe.ValidationError)
+        frappe.throw("order.items must contain at least one row", frappe.ValidationError)
     if not isinstance(payments, list) or not payments:
-        frappe.throw("payments must contain at least one row", frappe.ValidationError)
+        frappe.throw(
+            "order.payments must contain at least one row", frappe.ValidationError
+        )
 
     sale_datetime = validate_submit_sale_datetime(sale_datetime_value)
 
@@ -286,63 +445,114 @@ def _validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     payment_rows = payments if isinstance(payments, list) else []
 
     validated_items = [
-        _validate_order_item(row, index) for index, row in enumerate(item_rows, start=1)
+        _normalize_order_item(row, index, money_contract_version)
+        for index, row in enumerate(item_rows, start=1)
     ]
     validated_payments = [
-        _validate_order_payment(row, index)
+        _normalize_order_payment(row, index, money_contract_version)
         for index, row in enumerate(payment_rows, start=1)
     ]
-
-    net_total = sum(flt(row["line_total"]) for row in validated_items)
-    tax_total = flt(payload.get("tax_total") or order_payload.get("tax_amount"))
-    rounding_adjustment = flt(
-        payload.get("rounding_adjustment")
-        or payload.get("rounding_adj")
-        or order_payload.get("rounding_adjustment")
-        or order_payload.get("rounding_adj")
-    )
-    grand_total = flt(payload.get("grand_total") or order_payload.get("total"))
-    expected_total = net_total + tax_total + rounding_adjustment
-    if grand_total <= 0:
-        grand_total = expected_total
-    if abs(expected_total - grand_total) > 0.0001:
+    payment_ids = [
+        row["payment_id"] for row in validated_payments if row["payment_id"]
+    ]
+    if len(payment_ids) != len(set(payment_ids)):
         frappe.throw(
-            "grand_total must equal net_total plus tax_total",
+            "order.payments payment_id values must be unique within the order",
             frappe.ValidationError,
         )
 
-    paid_total = sum(flt(row["amount"]) for row in validated_payments)
-    if abs(paid_total - grand_total) > 0.0001:
-        frappe.throw("payments total must equal grand_total", frappe.ValidationError)
+    totals_payload = dict(order_payload)
+    for fieldname in (
+        "subtotal",
+        "net_total",
+        "tax_amount",
+        "tax_total",
+        "rounding_adjustment",
+        "rounding_adj",
+        "total",
+        "grand_total",
+    ):
+        if fieldname in payload:
+            totals_payload[fieldname] = payload[fieldname]
 
-    shift_name = _resolve_fb_shift_name(shift)
-    if not shift_name:
-        frappe.throw(f"shift {shift} was not found", frappe.ValidationError)
-    assert shift_name is not None
-    shift_doc = _validate_submit_shift(
-        shift_name=shift_name,
-        device_id=device_id,
-        staff_id=staff_id,
+    net_total_sen = _parse_wire_money_sen(
+        totals_payload,
+        version=money_contract_version,
+        sen_field="subtotal_sen",
+        legacy_fields=("subtotal", "net_total"),
     )
-    validate_submit_sale_datetime_bounds(
-        sale_datetime,
-        shift_name=shift_name,
-        shift_opened_at=getattr(shift_doc, "opened_at", None),
+    tax_total_sen = _parse_wire_money_sen(
+        totals_payload,
+        version=money_contract_version,
+        sen_field="tax_amount_sen",
+        legacy_fields=("tax_amount", "tax_total"),
     )
-    _require_doc("Warehouse", booth_warehouse, "booth_warehouse")
-    _require_doc("Company", company, "company")
-    _require_doc("User", staff_id, "staff_id")
-    if customer:
-        _require_doc("Customer", customer, "customer")
-    if event_project:
-        _require_doc("Project", event_project, "event_project")
+    rounding_adjustment_sen = _parse_wire_money_sen(
+        totals_payload,
+        version=money_contract_version,
+        sen_field="rounding_adjustment_sen",
+        legacy_fields=("rounding_adjustment", "rounding_adj"),
+        required=False,
+        default=0,
+    )
+    grand_total_sen = _parse_wire_money_sen(
+        totals_payload,
+        version=money_contract_version,
+        sen_field="total_sen",
+        legacy_fields=("total", "grand_total"),
+    )
 
-    return {
+    summed_line_total_sen = _checked_sen_sum(
+        (row["line_total_sen"] for row in validated_items),
+        "order item total",
+    )
+    if net_total_sen < 0:
+        frappe.throw("order.subtotal_sen must be 0 or greater", frappe.ValidationError)
+    if tax_total_sen < 0:
+        frappe.throw("order.tax_amount_sen must be 0 or greater", frappe.ValidationError)
+    if tax_rate is not None:
+        expected_tax_total_sen = int(
+            (Decimal(net_total_sen) * tax_rate).quantize(
+                Decimal("1"),
+                rounding=ROUND_HALF_UP,
+            )
+        )
+        if expected_tax_total_sen != tax_total_sen:
+            frappe.throw(
+                "order.tax_amount_sen must equal subtotal_sen multiplied by order.tax_rate, rounded to sen",
+                frappe.ValidationError,
+            )
+    if grand_total_sen <= 0:
+        frappe.throw("order.total_sen must be greater than 0", frappe.ValidationError)
+    if summed_line_total_sen != net_total_sen:
+        frappe.throw(
+            "order.subtotal_sen must equal summed line totals",
+            frappe.ValidationError,
+        )
+    expected_total_sen = _checked_sen_sum(
+        (net_total_sen, tax_total_sen, rounding_adjustment_sen),
+        "order calculated total",
+    )
+    if expected_total_sen != grand_total_sen:
+        frappe.throw(
+            "order.total_sen must equal subtotal_sen plus tax_amount_sen plus rounding_adjustment_sen",
+            frappe.ValidationError,
+        )
+
+    paid_total_sen = _checked_sen_sum(
+        (row["amount_sen"] for row in validated_payments),
+        "order payment total",
+    )
+    if paid_total_sen != grand_total_sen:
+        frappe.throw("payments total must equal order.total_sen", frappe.ValidationError)
+
+    normalized = {
+        "money_contract_version": money_contract_version,
         "order_id": order_id,
         "external_idempotency_key": idempotency_key,
         "source": source,
         "device_id": device_id,
-        "shift": shift_name,
+        "shift": shift,
         "staff_id": staff_id,
         "booth_warehouse": booth_warehouse,
         "company": company,
@@ -350,114 +560,196 @@ def _validate_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "customer": customer,
         "event_project": event_project,
         "notes": notes,
+        "catalog_version": catalog_version,
+        "display_number": display_number,
+        "order_type": order_type,
         "sale_datetime": sale_datetime,
-        "net_total": net_total,
-        "tax_total": tax_total,
-        "rounding_adjustment": rounding_adjustment,
-        "grand_total": grand_total,
+        "net_total_sen": net_total_sen,
+        "tax_total_sen": tax_total_sen,
+        "tax_rate": tax_rate,
+        "rounding_adjustment_sen": rounding_adjustment_sen,
+        "grand_total_sen": grand_total_sen,
         "items": validated_items,
         "payments": validated_payments,
     }
+    normalized["request_fingerprint"] = _canonical_order_request_fingerprint(normalized)
+    return normalized
 
 
-def _validate_order_item(value: Any, index: int) -> dict[str, Any]:
+def _validate_new_submit_order_state(normalized: dict[str, Any]) -> dict[str, Any]:
+    shift_name = _resolve_fb_shift_name(normalized["shift"])
+    if not shift_name:
+        frappe.throw(f"shift {normalized['shift']} was not found", frappe.ValidationError)
+    assert shift_name is not None
+    shift_doc = _validate_submit_shift(
+        shift_name=shift_name,
+        device_id=normalized["device_id"],
+        staff_id=normalized["staff_id"],
+    )
+    validate_submit_sale_datetime_bounds(
+        normalized["sale_datetime"],
+        shift_name=shift_name,
+        shift_opened_at=getattr(shift_doc, "opened_at", None),
+    )
+    _require_doc("Warehouse", normalized["booth_warehouse"], "booth_warehouse")
+    _require_doc("Company", normalized["company"], "company")
+    _require_doc("User", normalized["staff_id"], "staff_id")
+    if normalized["customer"]:
+        _require_doc("Customer", normalized["customer"], "customer")
+    if normalized["event_project"]:
+        _require_doc("Project", normalized["event_project"], "event_project")
+
+    validated = dict(normalized)
+    validated["shift"] = shift_name
+    validated["net_total"] = sen_to_decimal(normalized["net_total_sen"])
+    validated["tax_total"] = sen_to_decimal(normalized["tax_total_sen"])
+    validated["rounding_adjustment"] = sen_to_decimal(
+        normalized["rounding_adjustment_sen"]
+    )
+    validated["grand_total"] = sen_to_decimal(normalized["grand_total_sen"])
+    validated["items"] = [
+        _resolve_order_item(row, index)
+        for index, row in enumerate(normalized["items"], start=1)
+    ]
+    validated["payments"] = [
+        _resolve_order_payment(row, index)
+        for index, row in enumerate(normalized["payments"], start=1)
+    ]
+    return validated
+
+
+def _normalize_order_item(
+    value: Any,
+    index: int,
+    money_contract_version: str,
+) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         frappe.throw(f"items[{index}] must be an object", frappe.ValidationError)
 
-    line_id = cstr(
-        value.get("line_id") or value.get("backend_line_uuid") or f"LINE-{index}"
-    )
+    line_id = cstr(value.get("line_id") or value.get("backend_line_uuid"))
     item_code = cstr(value.get("item") or value.get("item_code"))
-    qty = flt(value.get("qty"))
+    qty = _parse_positive_integer_quantity(value.get("qty"), f"items[{index}].qty")
     uom = cstr(value.get("uom"))
-    unit_price = flt(value.get("unit_price") or value.get("rate"))
-    modifier_total = flt(value.get("modifier_total"))
-    discount_amount = flt(value.get("discount_amount"))
-    line_total = flt(value.get("line_total") or value.get("amount"))
+    unit_price_sen = _parse_wire_money_sen(
+        value,
+        version=money_contract_version,
+        sen_field="unit_price_sen",
+        legacy_fields=("unit_price", "rate"),
+    )
+    modifier_total_sen = _parse_wire_money_sen(
+        value,
+        version=money_contract_version,
+        sen_field="modifier_total_sen",
+        legacy_fields=("modifier_total",),
+        required=False,
+        default=0,
+    )
+    discount_amount_sen = _parse_wire_money_sen(
+        value,
+        version=money_contract_version,
+        sen_field="discount_amount_sen",
+        legacy_fields=("discount_amount",),
+        required=False,
+        default=0,
+    )
+    line_total_sen = _parse_wire_money_sen(
+        value,
+        version=money_contract_version,
+        sen_field="line_total_sen",
+        legacy_fields=("line_total", "amount"),
+    )
     remarks = cstr(value.get("remarks")) or None
     recipe = cstr(value.get("recipe")) or None
-    recipe_version = cint(value.get("recipe_version")) or None
+    raw_recipe_version = value.get("recipe_version")
+    recipe_version = (
+        _parse_positive_integer_quantity(
+            raw_recipe_version,
+            f"items[{index}].recipe_version",
+        )
+        if raw_recipe_version not in (None, "")
+        else None
+    )
     backend_line_uuid = cstr(value.get("backend_line_uuid")) or None
-    modifiers = value.get("selected_modifiers") or value.get("modifiers") or []
+    modifiers = value.get("modifiers", value.get("selected_modifiers", []))
 
+    if not line_id:
+        frappe.throw(f"items[{index}].line_id is required", frappe.ValidationError)
     if not item_code:
         frappe.throw(f"items[{index}].item_code is required", frappe.ValidationError)
-    if qty <= 0:
+    if bool(recipe) != (recipe_version is not None):
         frappe.throw(
-            f"items[{index}].qty must be greater than 0", frappe.ValidationError
-        )
-    if unit_price < 0:
-        frappe.throw(
-            f"items[{index}].unit_price must be 0 or greater",
+            f"items[{index}].recipe and recipe_version must be provided together",
             frappe.ValidationError,
         )
-    if modifier_total < 0:
+    if unit_price_sen < 0:
         frappe.throw(
-            f"items[{index}].modifier_total must be 0 or greater",
+            f"items[{index}].unit_price_sen must be 0 or greater",
             frappe.ValidationError,
         )
-    if discount_amount < 0:
+    if discount_amount_sen < 0:
         frappe.throw(
-            f"items[{index}].discount_amount must be 0 or greater",
+            f"items[{index}].discount_amount_sen must be 0 or greater",
             frappe.ValidationError,
         )
-    if line_total <= 0:
+    if line_total_sen <= 0:
         frappe.throw(
-            f"items[{index}].line_total must be greater than 0",
+            f"items[{index}].line_total_sen must be greater than 0",
             frappe.ValidationError,
         )
-
-    item_doc = frappe.get_doc("Item", item_code)
-    resolved_uom = uom or cstr(getattr(item_doc, "stock_uom", None))
-    if not resolved_uom:
-        frappe.throw(f"items[{index}].uom is required", frappe.ValidationError)
-    if not frappe.db.exists("UOM", resolved_uom):
-        frappe.throw(f"UOM {resolved_uom} was not found", frappe.ValidationError)
-    if recipe and not frappe.db.exists("FB Recipe", recipe):
-        frappe.throw(f"FB Recipe {recipe} was not found", frappe.ValidationError)
+    if not isinstance(modifiers, list):
+        frappe.throw(f"items[{index}].modifiers must be an array", frappe.ValidationError)
 
     validated_modifiers = [
-        _validate_selected_modifier(row, index, modifier_index)
+        _normalize_selected_modifier(
+            row,
+            index,
+            modifier_index,
+            money_contract_version,
+        )
         for modifier_index, row in enumerate(modifiers, start=1)
     ]
-    resolved_modifier_total = sum(
-        flt(row["price_adjustment"]) for row in validated_modifiers
+    resolved_modifier_total_sen = _checked_sen_sum(
+        (row["price_adjustment_sen"] for row in validated_modifiers),
+        f"items[{index}] modifier total",
     )
-    if abs(modifier_total - resolved_modifier_total) > 0.0001:
+    if modifier_total_sen != resolved_modifier_total_sen:
         frappe.throw(
-            f"items[{index}].modifier_total must equal summed FB modifier price adjustments",
+            f"items[{index}].modifier_total_sen must equal summed modifier price adjustments",
             frappe.ValidationError,
         )
 
-    expected_total = (unit_price + modifier_total) * qty - discount_amount
-    if abs(expected_total - line_total) > 0.0001:
+    expected_total_sen = (unit_price_sen + modifier_total_sen) * qty
+    expected_total_sen -= discount_amount_sen
+    _require_safe_sen(expected_total_sen, f"items[{index}] calculated total")
+    if expected_total_sen != line_total_sen:
         frappe.throw(
-            f"items[{index}].line_total does not match qty, pricing, and discount",
+            f"items[{index}].line_total_sen does not match qty, pricing, modifiers, and discount",
             frappe.ValidationError,
         )
 
     return {
         "line_id": line_id,
         "backend_line_uuid": backend_line_uuid,
-        "item": item_doc.name,
-        "item_name_snapshot": cstr(getattr(item_doc, "item_name", None))
-        or item_doc.name,
+        "item_code": item_code,
+        "submitted_item_name": cstr(value.get("item_name")) or None,
         "qty": qty,
-        "uom": resolved_uom,
-        "unit_price": unit_price,
-        "modifier_total": resolved_modifier_total,
-        "discount_amount": discount_amount,
-        "line_total": line_total,
+        "uom": uom or None,
+        "unit_price_sen": unit_price_sen,
+        "modifier_total_sen": resolved_modifier_total_sen,
+        "discount_amount_sen": discount_amount_sen,
+        "line_total_sen": line_total_sen,
         "recipe": recipe,
         "recipe_version": recipe_version,
-        "is_recipe_managed": 1 if recipe else 0,
         "remarks": remarks,
         "selected_modifiers": validated_modifiers,
     }
 
 
-def _validate_selected_modifier(
-    value: Any, item_index: int, modifier_index: int
+def _normalize_selected_modifier(
+    value: Any,
+    item_index: int,
+    modifier_index: int,
+    money_contract_version: str,
 ) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         frappe.throw(
@@ -467,11 +759,14 @@ def _validate_selected_modifier(
 
     modifier_group = cstr(value.get("modifier_group"))
     modifier = cstr(value.get("modifier"))
-    price_adjustment = flt(value.get("price_adjustment"))
+    price_adjustment_sen = _parse_wire_money_sen(
+        value,
+        version=money_contract_version,
+        sen_field="price_adjustment_sen",
+        legacy_fields=("price_adjustment", "price", "base_price"),
+    )
     instruction_text = cstr(value.get("instruction_text")) or None
     sort_order = cint(value.get("sort_order"))
-    affects_stock = cint(value.get("affects_stock"))
-    affects_recipe = cint(value.get("affects_recipe"))
 
     if not modifier_group:
         frappe.throw(
@@ -484,80 +779,423 @@ def _validate_selected_modifier(
             frappe.ValidationError,
         )
 
-    field_prefix = f"items[{item_index}].selected_modifiers[{modifier_index}]"
-    _get_required_fb_modifier_doc(
-        "FB Modifier Group",
-        modifier_group,
-        f"{field_prefix}.modifier_group",
-    )
-    modifier_doc = _get_required_fb_modifier_doc(
-        "FB Modifier",
-        modifier,
-        f"{field_prefix}.modifier",
-    )
-    if cstr(getattr(modifier_doc, "modifier_group", None)) != modifier_group:
-        frappe.throw(
-            f"{field_prefix}.modifier {modifier} does not belong to FB Modifier Group {modifier_group}",
-            frappe.ValidationError,
-        )
-
     return {
         "modifier_group": modifier_group,
         "modifier": modifier,
-        "price_adjustment": flt(getattr(modifier_doc, "price_adjustment", 0)),
-        "instruction_text": instruction_text
-        or cstr(getattr(modifier_doc, "instruction_text", None))
-        or None,
-        "sort_order": sort_order or cint(getattr(modifier_doc, "display_order", 0)),
-        "affects_stock": 1 if cint(getattr(modifier_doc, "affects_stock", 0)) else 0,
-        "affects_recipe": 1 if cint(getattr(modifier_doc, "affects_recipe", 0)) else 0,
+        "price_adjustment_sen": price_adjustment_sen,
+        "instruction_text": instruction_text,
+        "sort_order": sort_order,
     }
 
 
-def _validate_order_payment(value: Any, index: int) -> dict[str, Any]:
+def _normalize_order_payment(
+    value: Any,
+    index: int,
+    money_contract_version: str,
+) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         frappe.throw(f"payments[{index}] must be an object", frappe.ValidationError)
 
-    payment_method = _resolve_mode_of_payment_name(
-        cstr(value.get("payment_method") or value.get("method"))
+    payment_id = _normalize_optional_identifier(
+        value.get("payment_id"),
+        f"payments[{index}].payment_id",
+        present="payment_id" in value,
     )
-    amount = flt(value.get("amount"))
-    tendered_amount = flt(value.get("tendered_amount"))
-    change_amount = flt(value.get("change_amount"))
+    payment_method = cstr(value.get("payment_method") or value.get("method"))
+    amount_sen = _parse_wire_money_sen(
+        value,
+        version=money_contract_version,
+        sen_field="amount_sen",
+        legacy_fields=("amount",),
+    )
+    tendered_amount_sen = _parse_wire_money_sen(
+        value,
+        version=money_contract_version,
+        sen_field="tendered_amount_sen",
+        legacy_fields=("tendered_amount",),
+        required=False,
+        default=0,
+    )
+    change_amount_sen = _parse_wire_money_sen(
+        value,
+        version=money_contract_version,
+        sen_field="change_amount_sen",
+        legacy_fields=("change_amount",),
+        required=False,
+        default=0,
+    )
     payment_channel_code = cstr(value.get("payment_channel_code")) or None
     reference_no = cstr(value.get("reference_no")) or None
     external_transaction_id = cstr(value.get("external_transaction_id")) or None
+    manual_confirmation_evidence = value.get("manual_confirmation_evidence")
+    normalized_channel = cstr(payment_channel_code).strip().lower()
+    manual_evidence = (
+        _validate_static_qr_evidence(
+            manual_confirmation_evidence,
+            index=index,
+            reference_no=reference_no,
+            external_transaction_id=external_transaction_id,
+        )
+        if normalized_channel == "static_qr"
+        else None
+    )
 
     if not payment_method:
         frappe.throw(
             f"payments[{index}].payment_method is required", frappe.ValidationError
         )
-    if amount <= 0:
+    if amount_sen <= 0:
         frappe.throw(
-            f"payments[{index}].amount must be greater than 0", frappe.ValidationError
-        )
-    if tendered_amount < 0:
-        frappe.throw(
-            f"payments[{index}].tendered_amount must be 0 or greater",
+            f"payments[{index}].amount_sen must be greater than 0",
             frappe.ValidationError,
         )
-    if change_amount < 0:
+    if tendered_amount_sen < 0:
         frappe.throw(
-            f"payments[{index}].change_amount must be 0 or greater",
+            f"payments[{index}].tendered_amount_sen must be 0 or greater",
+            frappe.ValidationError,
+        )
+    if change_amount_sen < 0:
+        frappe.throw(
+            f"payments[{index}].change_amount_sen must be 0 or greater",
+            frappe.ValidationError,
+        )
+    tendered_present = "tendered_amount_sen" in value or "tendered_amount" in value
+    change_present = "change_amount_sen" in value or "change_amount" in value
+    if (
+        tendered_present
+        and change_present
+        and tendered_amount_sen - change_amount_sen != amount_sen
+    ):
+        frappe.throw(
+            f"payments[{index}] tendered minus change must equal amount_sen",
             frappe.ValidationError,
         )
 
-    _require_doc("Mode of Payment", payment_method, "payment_method")
+    _validate_payment_channel_binding(payment_method, payment_channel_code, index)
+    normalized_channel_token = _normalize_token(payment_channel_code)
+    if normalized_channel_token == "static qr" and normalized_channel != "static_qr":
+        frappe.throw(
+            f"payments[{index}].payment_channel_code must be static_qr",
+            frappe.ValidationError,
+        )
 
     return {
+        "payment_id": payment_id,
         "payment_method": payment_method,
         "payment_channel_code": payment_channel_code,
-        "amount": amount,
-        "tendered_amount": tendered_amount,
-        "change_amount": change_amount,
+        "amount_sen": amount_sen,
+        "tendered_amount_sen": tendered_amount_sen,
+        "change_amount_sen": change_amount_sen,
         "reference_no": reference_no,
         "external_transaction_id": external_transaction_id,
+        "is_manual_confirmation": 1 if manual_evidence else 0,
+        "manual_confirmation_evidence_json": (
+            json.dumps(manual_evidence, sort_keys=True, separators=(",", ":"))
+            if manual_evidence
+            else None
+        ),
+        "reconciliation_idempotency_key": (
+            cstr(manual_evidence.get("reconciliation_idempotency_key"))
+            if manual_evidence
+            else None
+        ),
+        "settlement_status": (
+            "pending_reconciliation" if manual_evidence else "verified"
+        ),
     }
+
+
+def _resolve_order_item(value: dict[str, Any], index: int) -> dict[str, Any]:
+    item_doc = frappe.get_doc("Item", value["item_code"])
+    resolved_uom = value["uom"] or cstr(getattr(item_doc, "stock_uom", None))
+    if not resolved_uom:
+        frappe.throw(f"items[{index}].uom is required", frappe.ValidationError)
+    if not frappe.db.exists("UOM", resolved_uom):
+        frappe.throw(f"UOM {resolved_uom} was not found", frappe.ValidationError)
+    if value["recipe"] and not frappe.db.exists("FB Recipe", value["recipe"]):
+        frappe.throw(
+            f"FB Recipe {value['recipe']} was not found", frappe.ValidationError
+        )
+
+    resolved_modifiers = [
+        _resolve_selected_modifier(row, index, modifier_index)
+        for modifier_index, row in enumerate(value["selected_modifiers"], start=1)
+    ]
+    return {
+        "line_id": value["line_id"],
+        "backend_line_uuid": value["backend_line_uuid"],
+        "item": item_doc.name,
+        "item_name_snapshot": value["submitted_item_name"]
+        or cstr(getattr(item_doc, "item_name", None))
+        or item_doc.name,
+        "qty": value["qty"],
+        "uom": resolved_uom,
+        "unit_price": sen_to_decimal(value["unit_price_sen"]),
+        "modifier_total": sen_to_decimal(value["modifier_total_sen"]),
+        "discount_amount": sen_to_decimal(value["discount_amount_sen"]),
+        "line_total": sen_to_decimal(value["line_total_sen"]),
+        "recipe": value["recipe"],
+        "recipe_version": value["recipe_version"],
+        "is_recipe_managed": 1 if value["recipe"] else 0,
+        "remarks": value["remarks"],
+        "selected_modifiers": resolved_modifiers,
+    }
+
+
+def _resolve_selected_modifier(
+    value: dict[str, Any], item_index: int, modifier_index: int
+) -> dict[str, Any]:
+    field_prefix = f"items[{item_index}].modifiers[{modifier_index}]"
+    _get_required_fb_modifier_doc(
+        "FB Modifier Group",
+        value["modifier_group"],
+        f"{field_prefix}.modifier_group",
+    )
+    modifier_doc = _get_required_fb_modifier_doc(
+        "FB Modifier",
+        value["modifier"],
+        f"{field_prefix}.modifier",
+    )
+    if cstr(getattr(modifier_doc, "modifier_group", None)) != value["modifier_group"]:
+        frappe.throw(
+            f"{field_prefix}.modifier {value['modifier']} does not belong to FB Modifier Group {value['modifier_group']}",
+            frappe.ValidationError,
+        )
+
+    return {
+        "modifier_group": value["modifier_group"],
+        "modifier": value["modifier"],
+        # Preserve the authenticated sale snapshot. Current catalog pricing may
+        # legitimately differ by the time an offline order reaches ERP.
+        "price_adjustment": sen_to_decimal(value["price_adjustment_sen"]),
+        "instruction_text": value["instruction_text"]
+        or cstr(getattr(modifier_doc, "instruction_text", None))
+        or None,
+        "sort_order": value["sort_order"]
+        or cint(getattr(modifier_doc, "display_order", 0)),
+        "affects_stock": 1
+        if cint(getattr(modifier_doc, "affects_stock", 0))
+        else 0,
+        "affects_recipe": 1
+        if cint(getattr(modifier_doc, "affects_recipe", 0))
+        else 0,
+    }
+
+
+def _resolve_order_payment(value: dict[str, Any], index: int) -> dict[str, Any]:
+    payment_method = _resolve_mode_of_payment_name(value["payment_method"])
+    _validate_payment_channel_binding(
+        payment_method,
+        value["payment_channel_code"],
+        index,
+    )
+    _require_doc("Mode of Payment", payment_method, "payment_method")
+    resolved = dict(value)
+    resolved["source_payment_id"] = resolved.pop("payment_id", None)
+    resolved["payment_method"] = payment_method
+    resolved["amount"] = sen_to_decimal(value["amount_sen"])
+    resolved["tendered_amount"] = sen_to_decimal(value["tendered_amount_sen"])
+    resolved["change_amount"] = sen_to_decimal(value["change_amount_sen"])
+    resolved.pop("amount_sen", None)
+    resolved.pop("tendered_amount_sen", None)
+    resolved.pop("change_amount_sen", None)
+    return resolved
+
+
+def _validate_payment_channel_binding(
+    payment_method: str,
+    payment_channel_code: str | None,
+    index: int,
+) -> None:
+    normalized_payment_method = _normalize_token(payment_method)
+    normalized_channel_token = _normalize_token(payment_channel_code)
+    supported_qr_channels = {"maybank", "maybank qr", "static qr"}
+    if (
+        normalized_channel_token in supported_qr_channels
+        and normalized_payment_method != "duitnow qr"
+    ):
+        frappe.throw(
+            f"payments[{index}].payment_channel_code requires DuitNow QR",
+            frappe.ValidationError,
+        )
+    if (
+        normalized_payment_method == "duitnow qr"
+        and normalized_channel_token not in supported_qr_channels
+    ):
+        frappe.throw(
+            f"payments[{index}].payment_channel_code is required for DuitNow QR",
+            frappe.ValidationError,
+        )
+
+
+# Compatibility helpers for internal callers and focused tests. Public requests
+# must still declare their money contract at the payload root.
+def _validate_order_item(value: Any, index: int) -> dict[str, Any]:
+    normalized = _normalize_order_item(
+        value,
+        index,
+        LEGACY_DECIMAL_MONEY_CONTRACT_VERSION,
+    )
+    return _resolve_order_item(normalized, index)
+
+
+def _validate_selected_modifier(
+    value: Any, item_index: int, modifier_index: int
+) -> dict[str, Any]:
+    normalized = _normalize_selected_modifier(
+        value,
+        item_index,
+        modifier_index,
+        LEGACY_DECIMAL_MONEY_CONTRACT_VERSION,
+    )
+    return _resolve_selected_modifier(normalized, item_index, modifier_index)
+
+
+def _validate_order_payment(value: Any, index: int) -> dict[str, Any]:
+    normalized = _normalize_order_payment(
+        value,
+        index,
+        LEGACY_DECIMAL_MONEY_CONTRACT_VERSION,
+    )
+    return _resolve_order_payment(normalized, index)
+
+
+def _validate_static_qr_evidence(
+    value: Any,
+    *,
+    index: int,
+    reference_no: str | None,
+    external_transaction_id: str | None,
+) -> dict[str, Any]:
+    prefix = f"payments[{index}].manual_confirmation_evidence"
+    if not isinstance(value, Mapping) or not value:
+        frappe.throw(
+            f"{prefix} is required for static_qr",
+            frappe.ValidationError,
+        )
+
+    evidence = dict(value)
+    required_fields = (
+        "evidence_kind",
+        "captured_at",
+        "upload_status",
+        "reconciliation_status",
+        "local_confirmed_at",
+        "local_confirmed_by",
+        "local_confirmation_reference",
+        "reconciliation_idempotency_key",
+        "evidence_captured_device_id",
+    )
+    for fieldname in required_fields:
+        if not cstr(evidence.get(fieldname)).strip():
+            frappe.throw(
+                f"{prefix}.{fieldname} is required",
+                frappe.ValidationError,
+            )
+
+    reconciliation_status = cstr(evidence.get("reconciliation_status")).strip()
+    if reconciliation_status not in {
+        "pending_reconciliation",
+        "erp_reconciliation_pending",
+    }:
+        frappe.throw(
+            f"{prefix}.reconciliation_status must be pending reconciliation",
+            frappe.ValidationError,
+        )
+
+    evidence_kind = cstr(evidence.get("evidence_kind")).strip()
+    if evidence_kind not in {
+        "receipt_photo",
+        "reference",
+        "no_receipt_acknowledgement",
+    }:
+        frappe.throw(
+            f"{prefix}.evidence_kind is invalid",
+            frappe.ValidationError,
+        )
+
+    for fieldname in ("captured_at", "local_confirmed_at"):
+        try:
+            frappe_utils.get_datetime(evidence.get(fieldname))
+        except Exception:
+            frappe.throw(
+                f"{prefix}.{fieldname} is invalid",
+                frappe.ValidationError,
+            )
+
+    idempotency_key = cstr(evidence.get("reconciliation_idempotency_key")).strip()
+    if len(idempotency_key) > 140:
+        frappe.throw(
+            f"{prefix}.reconciliation_idempotency_key is too long",
+            frappe.ValidationError,
+        )
+
+    provider_session = cstr(external_transaction_id).strip()
+    if not provider_session.startswith("static-"):
+        frappe.throw(
+            f"payments[{index}].external_transaction_id must be a static_qr session",
+            frappe.ValidationError,
+        )
+
+    evidence_reference = cstr(evidence.get("local_confirmation_reference")).strip()
+    if reference_no and evidence_reference != cstr(reference_no).strip():
+        frappe.throw(
+            f"{prefix}.local_confirmation_reference does not match reference_no",
+            frappe.ValidationError,
+        )
+
+    upload_status = cstr(evidence.get("upload_status")).strip()
+    if evidence_kind == "receipt_photo":
+        if not cstr(evidence.get("local_uri")).strip():
+            frappe.throw(f"{prefix}.local_uri is required", frappe.ValidationError)
+        if cstr(evidence.get("local_uri")).strip().lower().startswith("data:"):
+            frappe.throw(
+                f"{prefix}.local_uri must not contain inline image data",
+                frappe.ValidationError,
+            )
+        if cstr(evidence.get("mime_type")).strip().lower() not in {
+            "image/jpeg",
+            "image/pjpeg",
+        }:
+            frappe.throw(
+                f"{prefix}.mime_type must be image/jpeg",
+                frappe.ValidationError,
+            )
+        if upload_status not in {
+            "upload_pending",
+            "uploading",
+            "uploaded",
+            "upload_failed",
+        }:
+            frappe.throw(
+                f"{prefix}.upload_status is invalid for receipt evidence",
+                frappe.ValidationError,
+            )
+    elif evidence_kind == "no_receipt_acknowledgement":
+        if evidence.get("no_receipt_acknowledged") is not True:
+            frappe.throw(
+                f"{prefix}.no_receipt_acknowledged must be true",
+                frappe.ValidationError,
+            )
+        if not cstr(evidence.get("no_receipt_reason_code")).strip():
+            frappe.throw(
+                f"{prefix}.no_receipt_reason_code is required",
+                frappe.ValidationError,
+            )
+        if upload_status != "not_required":
+            frappe.throw(
+                f"{prefix}.upload_status must be not_required",
+                frappe.ValidationError,
+            )
+    elif upload_status not in {"not_required", "uploaded"}:
+        frappe.throw(
+            f"{prefix}.upload_status is invalid for reference evidence",
+            frappe.ValidationError,
+        )
+
+    evidence["reconciliation_idempotency_key"] = idempotency_key
+    evidence["reconciliation_status"] = "pending_reconciliation"
+    return evidence
 
 
 PAYMENT_METHOD_ALIASES = {
@@ -628,7 +1266,11 @@ def _resolve_mode_of_payment_name(requested_mode: str) -> str:
 def _build_fb_order(validated: dict[str, Any]):
     order_doc = frappe.new_doc("FB Order")
     order_doc.order_id = validated["order_id"]
+    order_doc.display_number = validated["display_number"]
+    order_doc.order_type = validated["order_type"]
+    order_doc.catalog_version = validated["catalog_version"]
     order_doc.external_idempotency_key = validated["external_idempotency_key"]
+    order_doc.request_fingerprint = validated["request_fingerprint"]
     order_doc.source = validated["source"]
     order_doc.sale_datetime = validated["sale_datetime"]
     order_doc.device_id = validated["device_id"]
@@ -644,6 +1286,7 @@ def _build_fb_order(validated: dict[str, Any]):
     order_doc.stock_status = "Pending"
     order_doc.net_total = validated["net_total"]
     order_doc.tax_total = validated["tax_total"]
+    order_doc.tax_rate = validated["tax_rate"]
     if hasattr(order_doc, "rounding_adjustment"):
         order_doc.rounding_adjustment = validated["rounding_adjustment"]
     order_doc.grand_total = validated["grand_total"]
@@ -677,7 +1320,52 @@ def _build_fb_order(validated: dict[str, Any]):
     return order_doc
 
 
+def _canonical_order_request_fingerprint(validated: dict[str, Any]) -> str:
+    canonical = {
+        key: value
+        for key, value in validated.items()
+        if key not in {"money_contract_version", "request_fingerprint"}
+    }
+    message = json.dumps(
+        canonical,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_canonical_json_value,
+    )
+    return hashlib.sha256(message.encode("utf-8")).hexdigest()
+
+
+def _canonical_json_value(value: Any) -> str:
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return cstr(isoformat())
+    return cstr(value)
+
+
+def _validate_existing_order_fingerprint(
+    validated: dict[str, Any], order_doc: Any
+) -> None:
+    existing_fingerprint = cstr(
+        getattr(order_doc, "request_fingerprint", None)
+    ).strip()
+    if not existing_fingerprint:
+        frappe.throw(
+            "Existing FB Order has no request fingerprint; idempotent retry cannot be verified",
+            frappe.ValidationError,
+        )
+    if existing_fingerprint != validated["request_fingerprint"]:
+        frappe.throw(
+            "idempotency_key was already used with a different canonical FB Order payload",
+            frappe.ValidationError,
+        )
+
+
 def _set_selected_modifiers_payload(line, modifiers: list[dict[str, Any]]) -> None:
+    append = getattr(line, "append", None)
+    if callable(append):
+        for modifier in modifiers:
+            append("selected_modifiers", modifier)
+        return
     setattr(
         line,
         "_selected_modifiers_payload",
@@ -884,7 +1572,7 @@ def _validate_fb_order_doc(doc) -> None:
             frappe.ValidationError,
         )
 
-    line_total_sum = 0.0
+    line_total_values_sen: list[int] = []
     for index, row in enumerate(doc.get("items") or [], start=1):
         if not cstr(getattr(row, "line_id", None)):
             frappe.throw(
@@ -892,50 +1580,84 @@ def _validate_fb_order_doc(doc) -> None:
             )
         if not cstr(getattr(row, "item", None)):
             frappe.throw(f"FB Order item {index} requires item", frappe.ValidationError)
-        if flt(getattr(row, "qty", None)) <= 0:
-            frappe.throw(
-                f"FB Order item {index} requires qty greater than 0",
-                frappe.ValidationError,
-            )
-        if flt(getattr(row, "line_total", None)) <= 0:
+        _parse_positive_integer_quantity(
+            getattr(row, "qty", None), f"FB Order item {index} qty"
+        )
+        line_total_sen = _persisted_money_sen(
+            getattr(row, "line_total", None),
+            f"FB Order item {index} line_total",
+        )
+        if line_total_sen <= 0:
             frappe.throw(
                 f"FB Order item {index} requires line_total greater than 0",
                 frappe.ValidationError,
             )
-        line_total_sum += flt(row.line_total)
+        line_total_values_sen.append(line_total_sen)
 
-    payment_total = 0.0
+    payment_values_sen: list[int] = []
+    source_payment_ids: set[str] = set()
     for index, row in enumerate(doc.get("payments") or [], start=1):
         if not cstr(getattr(row, "payment_method", None)):
             frappe.throw(
                 f"FB Order payment {index} requires payment_method",
                 frappe.ValidationError,
             )
-        if flt(getattr(row, "amount", None)) <= 0:
+        amount_sen = _persisted_money_sen(
+            getattr(row, "amount", None),
+            f"FB Order payment {index} amount",
+        )
+        if amount_sen <= 0:
             frappe.throw(
                 f"FB Order payment {index} requires amount greater than 0",
                 frappe.ValidationError,
             )
-        payment_total += flt(row.amount)
+        source_payment_id = str(
+            getattr(row, "source_payment_id", None) or ""
+        ).strip()
+        if source_payment_id:
+            if len(source_payment_id) > 140:
+                frappe.throw(
+                    f"FB Order payment {index} source_payment_id is too long",
+                    frappe.ValidationError,
+                )
+            if source_payment_id in source_payment_ids:
+                frappe.throw(
+                    "FB Order payment source_payment_id values must be unique within the order",
+                    frappe.ValidationError,
+                )
+            source_payment_ids.add(source_payment_id)
+        payment_values_sen.append(amount_sen)
 
-    if abs(line_total_sum - flt(doc.net_total)) > 0.0001:
+    line_total_sum_sen = _checked_sen_sum(
+        line_total_values_sen, "FB Order line total"
+    )
+    payment_total_sen = _checked_sen_sum(
+        payment_values_sen, "FB Order payment total"
+    )
+    net_total_sen = _persisted_money_sen(doc.net_total, "FB Order net_total")
+    tax_total_sen = _persisted_money_sen(doc.tax_total, "FB Order tax_total")
+    rounding_adjustment_sen = _persisted_money_sen(
+        getattr(doc, "rounding_adjustment", 0) or 0,
+        "FB Order rounding_adjustment",
+    )
+    grand_total_sen = _persisted_money_sen(
+        doc.grand_total, "FB Order grand_total"
+    )
+
+    if line_total_sum_sen != net_total_sen:
         frappe.throw(
             "FB Order net_total must equal summed line totals", frappe.ValidationError
         )
-    if (
-        abs(
-            flt(doc.net_total)
-            + flt(doc.tax_total)
-            + flt(getattr(doc, "rounding_adjustment", 0) or 0)
-            - flt(doc.grand_total)
-        )
-        > 0.0001
-    ):
+    calculated_total_sen = _checked_sen_sum(
+        (net_total_sen, tax_total_sen, rounding_adjustment_sen),
+        "FB Order calculated total",
+    )
+    if calculated_total_sen != grand_total_sen:
         frappe.throw(
             "FB Order grand_total must equal net_total plus tax_total plus rounding_adjustment",
             frappe.ValidationError,
         )
-    if abs(payment_total - flt(doc.grand_total)) > 0.0001:
+    if payment_total_sen != grand_total_sen:
         frappe.throw(
             "FB Order payments total must equal grand_total",
             frappe.ValidationError,
@@ -1148,10 +1870,11 @@ def _retry_projection_target(
         }
 
     if _projection_can_remain_pending(source_doc, source_doctype, projection_type):
-        _update_projection_log(log, "Pending", None, None)
+        # There is no stock target to create; this is a completed no-op.
+        _update_projection_log(log, "Succeeded", None, None)
         return {
             "projection_type": projection_type,
-            "state": "Pending",
+            "state": "Succeeded",
             "target_name": None,
             "log": log.name,
         }
@@ -1388,6 +2111,12 @@ def _require_doc(doctype: str, name: str, field_label: str) -> None:
         frappe.throw(f"{field_label} {name} was not found", frappe.ValidationError)
 
 
+def _row_value(row: Any, fieldname: str) -> Any:
+    if isinstance(row, Mapping):
+        return row.get(fieldname)
+    return getattr(row, fieldname, None)
+
+
 def _get_required_fb_modifier_doc(doctype: str, name: str, field_label: str):
     identifier = cstr(name)
     if _looks_like_legacy_kopos_modifier_identifier(identifier):
@@ -1414,8 +2143,33 @@ def _resolve_fb_shift_name(value: str) -> str | None:
     return frappe.db.get_value("FB Shift", {"shift_code": value}, "name")
 
 
-def _validate_submit_shift(*, shift_name: str, device_id: str, staff_id: str) -> Any:
+def _validate_submit_shift(
+    *, shift_name: str, device_id: str, staff_id: str, lock: bool = False
+) -> Any:
+    locked_rows: list[Any] = []
+    if lock:
+        locked_rows = frappe.db.sql(
+            """
+            SELECT name, device_id, staff_id, status, opened_at, closed_at
+            FROM `tabFB Shift`
+            WHERE name = %s
+            FOR UPDATE
+            """,
+            (shift_name,),
+            as_dict=True,
+        )
     shift_doc = frappe.get_doc("FB Shift", shift_name)
+    if locked_rows:
+        for fieldname in (
+            "device_id",
+            "staff_id",
+            "status",
+            "opened_at",
+            "closed_at",
+        ):
+            locked_value = _row_value(locked_rows[0], fieldname)
+            if locked_value is not None:
+                setattr(shift_doc, fieldname, locked_value)
     shift_device_id = cstr(getattr(shift_doc, "device_id", None))
     shift_staff_id = cstr(getattr(shift_doc, "staff_id", None))
     shift_status = cstr(getattr(shift_doc, "status", None))

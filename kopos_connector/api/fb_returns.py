@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from decimal import Decimal
 from typing import Any
 
 import frappe
@@ -13,6 +14,12 @@ from kopos_connector.kopos.services.operations.return_guard_service import (
     aggregate_return_lines,
     lock_and_validate_return_quantities,
 )
+from kopos_connector.utils.manager_approval import (
+    build_sales_invoice_approval_scope,
+    canonical_context_hash,
+    load_consumed_manager_approval_proof,
+    verify_manager_approval_token,
+)
 
 
 REFUND_METHODS = {"cash", "qr", "card", "voucher"}
@@ -22,11 +29,16 @@ REFUND_METHODS = {"cash", "qr", "card", "voucher"}
 def process_return() -> dict[str, Any]:
     payload = _get_request_payload()
     require_device_context(device_id=cstr(payload.get("device_id")))
-    return process_return_payload(payload)
+    return process_return_payload(payload, require_manager_approval=True)
 
 
-def process_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def process_return_payload(
+    payload: dict[str, Any], *, require_manager_approval: bool = False
+) -> dict[str, Any]:
     validated = _validate_payload(payload)
+    scope = _build_refund_approval_scope(validated)
+    request_fingerprint = _return_request_fingerprint(validated, scope)
+    validated["request_fingerprint"] = request_fingerprint
     lock_and_validate_return_quantities(
         validated["return_id"],
         validated["lines"],
@@ -42,12 +54,46 @@ def process_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
         ensure_existing_return_event_settlement(return_doc)
         return_doc.reload()
-        return _serialize_return_response("duplicate", return_doc)
-    return_doc = _build_return_event(validated)
-    return_doc.insert(ignore_permissions=True)
-    return_doc.submit()
+        return _serialize_return_response(
+            "duplicate",
+            return_doc,
+            require_approval_proof=require_manager_approval,
+        )
+    approval: dict[str, Any] | None = None
+    if require_manager_approval:
+        approval = verify_manager_approval_token(
+            cstr(validated.get("manager_approval_token")).strip(),
+            device_id=scope["device_id"],
+            staff_id=scope["staff_id"],
+            action="refund_order",
+            shift_id=scope["shift_id"],
+            resource_id=scope["resource_id"],
+            amount_sen=scope["amount_sen"],
+            context_hash=scope["context_hash"],
+            idempotency_key=validated["return_id"],
+        )
+    return_doc = _build_return_event(validated, approval=approval)
+    try:
+        return_doc.insert(ignore_permissions=True)
+        return_doc.submit()
+    except frappe.DuplicateEntryError:
+        frappe.db.rollback()
+        existing_return = _get_existing_return_name_current(validated["return_id"])
+        if not existing_return:
+            raise
+        return_doc = frappe.get_doc("FB Return Event", existing_return)
+        _validate_existing_return_matches(validated, return_doc)
     return_doc.reload()
-    return _serialize_return_response("ok", return_doc)
+    return _serialize_return_response(
+        "duplicate" if existing_return else "ok",
+        return_doc,
+        require_approval_proof=require_manager_approval,
+    )
+
+
+def build_refund_approval_scope(payload: dict[str, Any]) -> dict[str, Any]:
+    validated = _validate_payload(payload)
+    return _build_refund_approval_scope(validated)
 
 
 def _get_request_payload() -> dict[str, Any]:
@@ -88,6 +134,7 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     refund_method = cstr(payload.get("refund_method")).strip().lower()
     return_to_stock = 1 if cint(payload.get("return_to_stock")) else 0
     lines = payload.get("lines")
+    manager_approval_token = cstr(payload.get("manager_approval_token")).strip()
 
     if not return_id:
         frappe.throw("return_id is required", frappe.ValidationError)
@@ -170,7 +217,40 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             f"Sales Invoice {original_sales_invoice} was not found",
             frappe.ValidationError,
         )
+    locked_cash_shift = _lock_sales_invoice_cash_shift(original_sales_invoice)
+    locked_invoices = frappe.db.sql(
+        """
+        SELECT
+            name, docstatus, is_return, custom_fb_order,
+            custom_fb_device_id, custom_fb_shift, grand_total
+        FROM `tabSales Invoice`
+        WHERE name = %s
+        FOR UPDATE
+        """,
+        (original_sales_invoice,),
+        as_dict=True,
+    )
     original_invoice = frappe.get_doc("Sales Invoice", original_sales_invoice)
+    if locked_invoices:
+        for fieldname in (
+            "docstatus",
+            "is_return",
+            "custom_fb_order",
+            "custom_fb_device_id",
+            "custom_fb_shift",
+            "grand_total",
+        ):
+            locked_value = _row_value(locked_invoices[0], fieldname)
+            if locked_value is not None:
+                setattr(original_invoice, fieldname, locked_value)
+    invoice_cash_shift = cstr(
+        getattr(original_invoice, "custom_fb_shift", None)
+    ).strip()
+    if not locked_cash_shift or invoice_cash_shift != locked_cash_shift:
+        frappe.throw(
+            f"Sales Invoice {original_sales_invoice} has no stable FB Shift cash scope; retry after repairing its shift link",
+            frappe.ValidationError,
+        )
     _validate_original_invoice(original_invoice, original_sales_invoice, device_id)
     resolved_fb_order = _resolve_fb_order(original_invoice, fb_order)
     if fb_order and resolved_fb_order and fb_order != resolved_fb_order:
@@ -199,10 +279,28 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "refund_method": refund_method,
         "return_to_stock": return_to_stock,
         "lines": validated_lines,
+        "manager_approval_token": manager_approval_token,
     }
 
 
-def _build_return_event(validated: dict[str, Any]):
+def _lock_sales_invoice_cash_shift(sales_invoice: str) -> str:
+    """Lock the shift before the invoice to keep refund cash ordering stable."""
+    from kopos_connector.kopos.services.accounting.return_invoice_service import (
+        lock_fb_shift_cash_scope,
+    )
+
+    shift_name = cstr(
+        frappe.db.get_value("Sales Invoice", sales_invoice, "custom_fb_shift")
+    ).strip()
+    if not shift_name:
+        return ""
+    lock_fb_shift_cash_scope(shift_name)
+    return shift_name
+
+
+def _build_return_event(
+    validated: dict[str, Any], *, approval: dict[str, Any] | None = None
+):
     doc = frappe.new_doc("FB Return Event")
     doc.return_id = validated["return_id"]
     doc.fb_order = validated["fb_order"]
@@ -211,10 +309,79 @@ def _build_return_event(validated: dict[str, Any]):
     doc.reason_text = validated["reason_text"]
     doc.refund_method = validated["refund_method"]
     doc.return_to_stock = validated["return_to_stock"]
+    doc.request_fingerprint = validated["request_fingerprint"]
+    if approval:
+        doc.approval_token_id = approval["token_id"]
+        doc.approved_by_manager = approval["manager_id"]
     doc.status = "Draft"
     for line in validated["lines"]:
         doc.append("lines", line)
     return doc
+
+
+def _build_refund_approval_scope(validated: dict[str, Any]) -> dict[str, Any]:
+    invoice = frappe.get_doc(
+        "Sales Invoice", validated["original_sales_invoice"]
+    )
+    scope = build_sales_invoice_approval_scope(
+        invoice,
+        context=_return_approval_context(validated),
+    )
+    if scope["device_id"] != validated["device_id"]:
+        frappe.throw(
+            "Refund device_id does not match the ERP Sales Invoice",
+            frappe.ValidationError,
+        )
+    if validated.get("fb_order") and scope["fb_order"] != validated["fb_order"]:
+        frappe.throw(
+            "Refund FB Order does not match the ERP Sales Invoice",
+            frappe.ValidationError,
+        )
+    return scope
+
+
+def _return_approval_context(validated: dict[str, Any]) -> dict[str, Any]:
+    lines = sorted(
+        (
+            {
+                "original_resolved_sale": cstr(
+                    line["original_resolved_sale"]
+                ).strip(),
+                "qty_returned": _canonical_decimal(line["qty_returned"]),
+            }
+            for line in validated["lines"]
+        ),
+        key=lambda line: line["original_resolved_sale"],
+    )
+    return {
+        "reason_code": cstr(validated["reason_code"]).strip(),
+        "reason_text": cstr(validated.get("reason_text")).strip() or None,
+        "refund_method": cstr(validated["refund_method"]).strip().lower(),
+        "return_to_stock": cint(validated["return_to_stock"]),
+        "lines": lines,
+    }
+
+
+def _return_request_fingerprint(
+    validated: dict[str, Any], scope: dict[str, Any]
+) -> str:
+    return canonical_context_hash(
+        {
+            "return_id": validated["return_id"],
+            "device_id": scope["device_id"],
+            "staff_id": scope["staff_id"],
+            "shift_id": scope["shift_id"],
+            "resource_id": scope["resource_id"],
+            "amount_sen": scope["amount_sen"],
+            "fb_order": scope["fb_order"],
+            "context": _return_approval_context(validated),
+        }
+    )
+
+
+def _canonical_decimal(value: Any) -> str:
+    amount = Decimal(cstr(value).strip())
+    return format(amount.normalize(), "f")
 
 
 def _validate_original_invoice(
@@ -270,6 +437,19 @@ def _validate_return_lines_belong_to_invoice(
 
 
 def _validate_existing_return_matches(validated: dict[str, Any], return_doc: Any) -> None:
+    existing_fingerprint = cstr(
+        getattr(return_doc, "request_fingerprint", None)
+    ).strip()
+    if not existing_fingerprint:
+        frappe.throw(
+            "Existing FB Return Event has no request fingerprint; retry cannot be verified",
+            frappe.ValidationError,
+        )
+    if existing_fingerprint != validated["request_fingerprint"]:
+        frappe.throw(
+            "return_id was already used with a different canonical payload",
+            frappe.ValidationError,
+        )
     existing_invoice = cstr(getattr(return_doc, "original_sales_invoice", None)).strip()
     if existing_invoice and existing_invoice != validated["original_sales_invoice"]:
         frappe.throw(
@@ -359,7 +539,12 @@ def _validate_full_return_lines(
         )
 
 
-def _serialize_return_response(status: str, return_doc: Any) -> dict[str, Any]:
+def _serialize_return_response(
+    status: str,
+    return_doc: Any,
+    *,
+    require_approval_proof: bool = False,
+) -> dict[str, Any]:
     from kopos_connector.kopos.services.accounting.return_settlement_service import (
         assert_return_settlement_posted,
     )
@@ -388,7 +573,7 @@ def _serialize_return_response(status: str, return_doc: Any) -> dict[str, Any]:
             frappe.ValidationError,
         )
 
-    return {
+    response = {
         "status": status,
         "return_event": return_doc.name,
         "return_sales_invoice": return_sales_invoice,
@@ -402,6 +587,23 @@ def _serialize_return_response(status: str, return_doc: Any) -> dict[str, Any]:
             if cstr(getattr(line, "reversal_stock_entry", None))
         ],
     }
+    if require_approval_proof:
+        response.update(
+            load_consumed_manager_approval_proof(
+                approval_token_id=cstr(
+                    getattr(return_doc, "approval_token_id", None)
+                ).strip(),
+                approval_manager_id=cstr(
+                    getattr(return_doc, "approved_by_manager", None)
+                ).strip(),
+                action="refund_order",
+                idempotency_key=cstr(getattr(return_doc, "return_id", None)).strip(),
+                resource_id=cstr(
+                    getattr(return_doc, "original_sales_invoice", None)
+                ).strip(),
+            )
+        )
+    return response
 
 
 def _row_value(row: Any, fieldname: str) -> Any:

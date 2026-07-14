@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -23,6 +23,12 @@ flt = frappe_utils.flt
 now_datetime = frappe_utils.now_datetime
 
 from kopos_connector.api.devices import elevate_device_api_user, get_device_doc
+from kopos_connector.kopos.api.money_contract import (
+    MoneyContractValidationError,
+    parse_sen,
+    persisted_money_to_sen,
+    sen_to_decimal,
+)
 from kopos_connector.utils.diagnostics import log_sanitized_error, sanitized_error_message
 
 
@@ -459,6 +465,60 @@ def _set_custom_field_value(doc: Any, fieldname: str, value: Any) -> None:
     setattr(doc, fieldname, value)
 
 
+def _shift_request_fingerprint(
+    operation: str,
+    request_scope: dict[str, Any],
+) -> str:
+    """Hash the exact canonical wire scope used by an open/close mutation."""
+    message = json.dumps(
+        {"operation": operation, **request_scope},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(message.encode("utf-8")).hexdigest()
+
+
+def _validate_shift_retry_proof(
+    shift: Any,
+    *,
+    operation: str,
+    idempotency_key: str,
+    request_fingerprint: str,
+) -> None:
+    if operation not in {"open", "close"}:
+        raise ValueError(f"Unsupported shift retry operation: {operation}")
+    persisted_key = cstr(
+        _doc_value(shift, f"{operation}_idempotency_key")
+    ).strip()
+    persisted_fingerprint = cstr(
+        _doc_value(shift, f"{operation}_request_fingerprint")
+    ).strip()
+    if not persisted_key or not persisted_fingerprint:
+        frappe.throw(
+            _(
+                "Existing FB Shift has no verifiable KoPOS {0} idempotency proof"
+            ).format(operation),
+            frappe.ValidationError,
+        )
+    if persisted_key != idempotency_key:
+        completed_action = "opened" if operation == "open" else "closed"
+        frappe.throw(
+            _(
+                "FB Shift was already {0} with another idempotency_key"
+            ).format(completed_action),
+            frappe.ValidationError,
+        )
+    if persisted_fingerprint != request_fingerprint:
+        frappe.throw(
+            _(
+                "idempotency_key was already used with a different {0} shift payload"
+            ).format(operation),
+            frappe.ValidationError,
+        )
+
+
 def _ensure_fb_shift_for_kopos_shift(
     *,
     shift_id: str,
@@ -468,6 +528,8 @@ def _ensure_fb_shift_for_kopos_shift(
     warehouse: str,
     opening_amount: Decimal,
     opened_at: Any | None,
+    open_idempotency_key: str,
+    open_request_fingerprint: str,
     remarks: str | None = None,
     manager_id: str | None = None,
 ) -> str:
@@ -489,14 +551,50 @@ def _ensure_fb_shift_for_kopos_shift(
         else frappe.new_doc("FB Shift")
     )
 
-    if not shift_name:
-        shift_doc.shift_code = shift_code
+    if shift_name:
+        locked_shift = _lock_fb_shift(cstr(shift_name))
+        if locked_shift:
+            for fieldname in (
+                "device_id",
+                "staff_id",
+                "status",
+                "open_idempotency_key",
+                "open_request_fingerprint",
+            ):
+                locked_value = _doc_value(locked_shift, fieldname)
+                if locked_value is not None:
+                    setattr(shift_doc, fieldname, locked_value)
+        if cstr(getattr(shift_doc, "device_id", None)).strip() != cstr(
+            device_id
+        ).strip() or cstr(getattr(shift_doc, "staff_id", None)).strip() != cstr(
+            staff_id
+        ).strip():
+            frappe.throw(
+                _("shift_id is already bound to another device or staff user"),
+                frappe.ValidationError,
+            )
+        if cstr(getattr(shift_doc, "status", None)).strip() != "Open":
+            frappe.throw(
+                _("Existing FB Shift cannot be reopened through open_shift"),
+                frappe.ValidationError,
+            )
+        _validate_shift_retry_proof(
+            shift_doc,
+            operation="open",
+            idempotency_key=open_idempotency_key,
+            request_fingerprint=open_request_fingerprint,
+        )
+        return cstr(shift_doc.name)
+
+    shift_doc.shift_code = shift_code
 
     shift_doc.device_id = cstr(device_id).strip()
     shift_doc.staff_id = cstr(staff_id).strip()
     shift_doc.company = cstr(company).strip()
     shift_doc.warehouse = booth_warehouse
     shift_doc.status = "Open"
+    shift_doc.open_idempotency_key = open_idempotency_key
+    shift_doc.open_request_fingerprint = open_request_fingerprint
     shift_doc.opening_float = opening_amount
     shift_doc.expected_cash = opening_amount
     if remarks:
@@ -506,10 +604,7 @@ def _ensure_fb_shift_for_kopos_shift(
     if opened_at:
         shift_doc.opened_at = opened_at
 
-    if shift_name:
-        shift_doc.save(ignore_permissions=True)
-    else:
-        shift_doc.insert(ignore_permissions=True)
+    shift_doc.insert(ignore_permissions=True)
 
     return cstr(shift_doc.name)
 
@@ -522,6 +617,26 @@ def _find_fb_shift_name(shift_id: str) -> str | None:
         return frappe.db.get_value("FB Shift", {"shift_code": shift_code}, "name")
     except Exception:
         return None
+
+
+def _find_fb_shift_for_update(shift_id: str) -> Any | None:
+    shift_code = cstr(shift_id).strip()
+    if not shift_code:
+        return None
+    rows = frappe.db.sql(
+        """
+        SELECT name, shift_code, device_id, staff_id, status
+             , open_idempotency_key, open_request_fingerprint
+             , close_idempotency_key, close_request_fingerprint
+        FROM `tabFB Shift`
+        WHERE shift_code = %s
+        LIMIT 1
+        FOR UPDATE
+        """,
+        (shift_code,),
+        as_dict=True,
+    )
+    return rows[0] if rows else None
 
 
 def _resolve_fb_shift_reference(value: str | None) -> str | None:
@@ -563,6 +678,10 @@ def _verify_manager_approval_token_optional(
     staff_id: str,
     action: str,
     shift_id: str | None = None,
+    resource_id: str | None = None,
+    amount_sen: Any = 0,
+    context_hash: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any] | None:
     """
     Verify a manager approval token (optional, backward-compatible).
@@ -596,6 +715,10 @@ def _verify_manager_approval_token_optional(
         staff_id=staff_id,
         action=action,
         shift_id=shift_id,
+        resource_id=resource_id,
+        amount_sen=amount_sen,
+        context_hash=context_hash,
+        idempotency_key=idempotency_key,
     )
 
 
@@ -617,6 +740,56 @@ def _record_manager_approval(doc: Any, manager_id: str) -> None:
     existing_remarks = cstr(getattr(doc, "remarks", "") or "")
     if "Approved by manager:" not in existing_remarks:
         doc.remarks = f"{existing_remarks}\nApproved by manager: {manager_id}".strip()
+
+
+def _lock_open_shift_scope(device_doc: Any, staff_id: str) -> None:
+    device_name = cstr(getattr(device_doc, "name", None)).strip()
+    if not device_name:
+        frappe.throw(_("KoPOS Device name is required"), frappe.ValidationError)
+    frappe.db.sql(
+        "SELECT name FROM `tabKoPOS Device` WHERE name = %s FOR UPDATE",
+        (device_name,),
+    )
+    frappe.db.sql(
+        "SELECT name FROM `tabUser` WHERE name = %s FOR UPDATE",
+        (cstr(staff_id).strip(),),
+    )
+
+
+def _lock_fb_shift(shift_name: str) -> Any | None:
+    rows = frappe.db.sql(
+        """
+        SELECT
+            name, shift_code, device_id, staff_id, status, opened_at,
+            closed_at, expected_cash, opening_float,
+            open_idempotency_key, open_request_fingerprint,
+            close_idempotency_key, close_request_fingerprint
+        FROM `tabFB Shift`
+        WHERE name = %s
+        FOR UPDATE
+        """,
+        (cstr(shift_name).strip(),),
+        as_dict=True,
+    )
+    return rows[0] if rows else None
+
+
+def _find_open_shift_conflicts_for_update(
+    device_id: str, staff_id: str
+) -> list[Any]:
+    rows = frappe.db.sql(
+        """
+        SELECT name, device_id, staff_id
+        FROM `tabFB Shift`
+        WHERE status = 'Open'
+          AND (device_id = %s OR staff_id = %s)
+        ORDER BY name
+        FOR UPDATE
+        """,
+        (cstr(device_id).strip(), cstr(staff_id).strip()),
+        as_dict=True,
+    )
+    return list(rows or [])
 
 
 def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -641,14 +814,14 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Dict with status and FB Shift name
     """
-    idempotency_key = frappe.utils.cstr(payload.get("idempotency_key"))
-    device_id = frappe.utils.cstr(payload.get("device_id"))
-    staff_id = frappe.utils.cstr(payload.get("staff_id"))
-    shift_id = frappe.utils.cstr(payload.get("shift_id"))
+    idempotency_key = frappe.utils.cstr(payload.get("idempotency_key")).strip()
+    device_id = frappe.utils.cstr(payload.get("device_id")).strip()
+    staff_id = frappe.utils.cstr(payload.get("staff_id")).strip()
+    shift_id = frappe.utils.cstr(payload.get("shift_id")).strip()
     opening_float_sen = _parse_non_negative_sen(
         payload.get("opening_float_sen", 0), "opening_float_sen"
     )
-    opened_at = frappe.utils.cstr(payload.get("opened_at"))
+    opened_at = frappe.utils.cstr(payload.get("opened_at")).strip()
     manager_approval_token = payload.get("manager_approval_token")  # Optional
 
     if not idempotency_key:
@@ -695,23 +868,43 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     opening_amount = Decimal(opening_float_sen) / Decimal(100)
+    open_request_fingerprint = _shift_request_fingerprint(
+        "open",
+        {
+            "idempotency_key": idempotency_key,
+            "device_id": device_id,
+            "staff_id": staff_id,
+            "shift_id": shift_id,
+            "opening_float_sen": opening_float_sen,
+            "opened_at": opened_at or None,
+            "reason": cstr(payload.get("reason")).strip() or None,
+        },
+    )
 
     # Phase 1 & 2: Validate device user assignment, active status, ERP user enabled,
     # and can_open_shift permission
     resolve_and_validate_device_user(device_doc, staff_id, require_open_shift=True)
+    _lock_open_shift_scope(device_doc, staff_id)
 
-    # Phase 5: Verify manager approval token if provided
-    # Currently OPTIONAL for backward compatibility, but logs when missing
-    manager_approval = _verify_manager_approval_token_optional(
-        manager_approval_token,
-        device_id=device_id,
-        staff_id=staff_id,
-        action="open_shift",
-        shift_id=shift_id,
-    )
-
-    existing_shift = _find_fb_shift_name(shift_id)
-    if existing_shift:
+    existing_shift_row = _find_fb_shift_for_update(shift_id)
+    if existing_shift_row:
+        existing_shift = cstr(_doc_value(existing_shift_row, "name")).strip()
+        if cstr(_doc_value(existing_shift_row, "device_id")).strip() != device_id:
+            frappe.throw(
+                _("shift_id is already used by another device"),
+                frappe.ValidationError,
+            )
+        if cstr(_doc_value(existing_shift_row, "staff_id")).strip() != staff_id:
+            frappe.throw(
+                _("shift_id is already used by another staff user"),
+                frappe.ValidationError,
+            )
+        _validate_shift_retry_proof(
+            existing_shift_row,
+            operation="open",
+            idempotency_key=idempotency_key,
+            request_fingerprint=open_request_fingerprint,
+        )
         return {
             "status": "duplicate",
             "fb_shift": existing_shift,
@@ -719,18 +912,33 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "message": _("Shift already opened"),
         }
 
-    existing_open = frappe.db.get_value(
-        "FB Shift",
-        {"device_id": device_id, "staff_id": staff_id, "status": "Open"},
-        "name",
+    for conflict in _find_open_shift_conflicts_for_update(device_id, staff_id):
+        if cstr(_doc_value(conflict, "device_id")).strip() == device_id:
+            frappe.throw(
+                _("An open shift already exists on device {0}").format(device_id),
+                frappe.ValidationError,
+            )
+        if cstr(_doc_value(conflict, "staff_id")).strip() == staff_id:
+            frappe.throw(
+                _("User {0} already has an open shift").format(staff_id),
+                frappe.ValidationError,
+            )
+
+    from kopos_connector.utils.manager_approval import canonical_context_hash
+
+    manager_approval = _verify_manager_approval_token_optional(
+        manager_approval_token,
+        device_id=device_id,
+        staff_id=staff_id,
+        action="open_shift",
+        shift_id=shift_id,
+        resource_id=shift_id,
+        amount_sen=opening_float_sen,
+        context_hash=canonical_context_hash(
+            {"reason": cstr(payload.get("reason")).strip()}
+        ),
+        idempotency_key=idempotency_key,
     )
-    if existing_open:
-        frappe.throw(
-            _("An open shift already exists for user {0} on device {1}").format(
-                staff_id, device_id
-            ),
-            frappe.ValidationError,
-        )
 
     period_start = _normalize_offline_event_datetime(opened_at, "opened_at")
 
@@ -748,6 +956,8 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         warehouse=warehouse,
         opening_amount=opening_amount,
         opened_at=period_start,
+        open_idempotency_key=idempotency_key,
+        open_request_fingerprint=open_request_fingerprint,
         remarks=remarks,
         manager_id=manager_approval["manager_id"] if manager_approval else None,
     )
@@ -771,22 +981,11 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _parse_non_negative_sen(value: Any, fieldname: str) -> int:
-    raw_value = cstr(value if value is not None else 0).strip() or "0"
     try:
-        amount = Decimal(raw_value)
-    except (InvalidOperation, ValueError) as error:
-        frappe.throw(
-            _("{0} must be an integer number of sen").format(fieldname),
-            frappe.ValidationError,
-        )
-        raise ValueError(f"Invalid {fieldname}") from error
-
-    if not amount.is_finite() or amount != amount.to_integral_value():
-        frappe.throw(
-            _("{0} must be an integer number of sen").format(fieldname),
-            frappe.ValidationError,
-        )
-    amount_sen = int(amount)
+        amount_sen = parse_sen(0 if value is None else value, fieldname)
+    except MoneyContractValidationError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+        raise AssertionError("frappe.throw must raise") from error
     if amount_sen < 0:
         frappe.throw(
             _("{0} must be non-negative").format(fieldname),
@@ -795,20 +994,38 @@ def _parse_non_negative_sen(value: Any, fieldname: str) -> int:
     return amount_sen
 
 
+def _persisted_money_sen(value: Any, fieldname: str) -> int:
+    try:
+        return persisted_money_to_sen(
+            0 if value is None or value == "" else value,
+            fieldname,
+        )
+    except MoneyContractValidationError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+        raise AssertionError("frappe.throw must raise") from error
+
+
 def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Close a KoPOS F&B shift using the true offline event time.
 
     Past closed_at values are preserved after site-timezone normalization. Values
     materially in the future or before the persisted FB Shift opened_at are rejected.
     """
-    idempotency_key = frappe.utils.cstr(payload.get("idempotency_key"))
-    device_id = frappe.utils.cstr(payload.get("device_id"))
-    staff_id = frappe.utils.cstr(payload.get("staff_id"))
-    shift_id = frappe.utils.cstr(payload.get("shift_id"))
-    fb_shift = frappe.utils.cstr(payload.get("fb_shift")) or None
-    counted_cash_sen = flt(payload.get("counted_cash_sen", 0))
-    discrepancy_note = frappe.utils.cstr(payload.get("discrepancy_note") or "")
-    closed_at = frappe.utils.cstr(payload.get("closed_at"))
+    idempotency_key = frappe.utils.cstr(payload.get("idempotency_key")).strip()
+    device_id = frappe.utils.cstr(payload.get("device_id")).strip()
+    staff_id = frappe.utils.cstr(payload.get("staff_id")).strip()
+    shift_id = frappe.utils.cstr(payload.get("shift_id")).strip()
+    fb_shift = frappe.utils.cstr(payload.get("fb_shift")).strip() or None
+    counted_cash_value = payload.get("counted_cash_sen")
+    if counted_cash_value is None:
+        frappe.throw(_("counted_cash_sen is required"), frappe.ValidationError)
+    counted_cash_sen = _parse_non_negative_sen(
+        counted_cash_value, "counted_cash_sen"
+    )
+    discrepancy_note = frappe.utils.cstr(
+        payload.get("discrepancy_note") or ""
+    ).strip()
+    closed_at = frappe.utils.cstr(payload.get("closed_at")).strip()
 
     if not idempotency_key:
         frappe.throw(_("idempotency_key is required"), frappe.ValidationError)
@@ -818,9 +1035,6 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         frappe.throw(_("staff_id is required"), frappe.ValidationError)
     if not shift_id:
         frappe.throw(_("shift_id is required"), frappe.ValidationError)
-    if counted_cash_sen < 0:
-        frappe.throw(_("counted_cash_sen must be non-negative"), frappe.ValidationError)
-
     device_doc = get_device_doc(device_id=device_id)
     if not device_doc:
         frappe.throw(
@@ -852,20 +1066,41 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
             _("No open FB Shift found for device {0}").format(device_id),
             frappe.ValidationError,
         )
+    close_request_fingerprint = _shift_request_fingerprint(
+        "close",
+        {
+            "idempotency_key": idempotency_key,
+            "device_id": device_id,
+            "staff_id": staff_id,
+            "shift_id": shift_id,
+            "fb_shift": fb_shift,
+            "counted_cash_sen": counted_cash_sen,
+            "closed_at": closed_at or None,
+            "discrepancy_note": discrepancy_note or None,
+        },
+    )
 
     with elevate_device_api_user():
+        locked_shift = _lock_fb_shift(fb_shift)
         shift_doc = frappe.get_doc("FB Shift", fb_shift)
-        if getattr(shift_doc, "status", None) == "Closed":
-            return {
-                "status": "duplicate",
-                "fb_shift": fb_shift,
-                "message": _("Shift already closed"),
-            }
-        if getattr(shift_doc, "status", None) != "Open":
-            frappe.throw(
-                _("FB Shift {0} is not open").format(fb_shift),
-                frappe.ValidationError,
-            )
+        if locked_shift:
+            for fieldname in (
+                "shift_code",
+                "device_id",
+                "staff_id",
+                "status",
+                "opened_at",
+                "closed_at",
+                "expected_cash",
+                "opening_float",
+                "open_idempotency_key",
+                "open_request_fingerprint",
+                "close_idempotency_key",
+                "close_request_fingerprint",
+            ):
+                locked_value = _doc_value(locked_shift, fieldname)
+                if locked_value is not None:
+                    setattr(shift_doc, fieldname, locked_value)
         if frappe.utils.cstr(getattr(shift_doc, "device_id", "")) != device_id:
             frappe.throw(
                 _("FB Shift {0} does not belong to device {1}").format(
@@ -887,6 +1122,24 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 ),
                 frappe.ValidationError,
             )
+        if getattr(shift_doc, "status", None) == "Closed":
+            _validate_shift_retry_proof(
+                shift_doc,
+                operation="close",
+                idempotency_key=idempotency_key,
+                request_fingerprint=close_request_fingerprint,
+            )
+            return {
+                "status": "duplicate",
+                "fb_shift": fb_shift,
+                "shift_id": shift_id,
+                "message": _("Shift already closed"),
+            }
+        if getattr(shift_doc, "status", None) != "Open":
+            frappe.throw(
+                _("FB Shift {0} is not open").format(fb_shift),
+                frappe.ValidationError,
+            )
 
         from kopos_connector.kopos.doctype.fb_shift.fb_shift import (
             validate_shift_can_close,
@@ -897,7 +1150,7 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         period_end = _normalize_offline_event_datetime(closed_at, "closed_at")
         _validate_closed_at_not_before_opened_at(shift_doc, period_end)
 
-        counted_amount = flt(counted_cash_sen) / 100
+        counted_amount = sen_to_decimal(counted_cash_sen)
 
         remarks = (
             f"KoPOS idempotency_key: {idempotency_key}\n"
@@ -909,9 +1162,16 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
         shift_doc.closed_at = period_end
         shift_doc.counted_cash = counted_amount
+        shift_doc.close_idempotency_key = idempotency_key
+        shift_doc.close_request_fingerprint = close_request_fingerprint
         shift_doc.remarks = _append_remarks(getattr(shift_doc, "remarks", None), remarks)
-        expected_cash = flt(getattr(shift_doc, "expected_cash", 0))
-        shift_doc.cash_variance = counted_amount - expected_cash
+        expected_cash_sen = _persisted_money_sen(
+            getattr(shift_doc, "expected_cash", 0),
+            f"FB Shift {fb_shift} expected_cash",
+        )
+        shift_doc.cash_variance = sen_to_decimal(
+            counted_cash_sen - expected_cash_sen
+        )
         shift_doc.status = "Closing"
         _save_doc(shift_doc)
 

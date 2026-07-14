@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 from datetime import timedelta
 from typing import Any
@@ -39,17 +40,28 @@ return value
 
 
 def ensure_device_api_credentials(
-    device_doc, rotate: bool | int | str = False
+    device_doc,
+    rotate: bool | int | str = False,
 ) -> dict[str, str]:
     should_rotate = bool(cint(rotate))
+    if should_rotate:
+        _reject_live_credential_rotation()
     resolved_user = _ensure_device_api_user(device_doc)
     frappe.db.commit()
     api_key_value = cstr(frappe.db.get_value("User", resolved_user, "api_key")).strip()
     api_secret_value = _read_device_api_secret(resolved_user)
 
-    if should_rotate or not api_key_value or not api_secret_value:
-        if should_rotate:
-            _delete_stale_device_api_secret(resolved_user)
+    if bool(api_key_value) != bool(api_secret_value):
+        frappe.throw(
+            _(
+                "KoPOS device API credentials are incomplete. Use the support-led "
+                "safe reset procedure; automatic replacement could disconnect an "
+                "active terminal."
+            ),
+            frappe.ValidationError,
+        )
+
+    if not api_key_value and not api_secret_value:
         api_key_value = cstr(frappe.generate_hash(length=15)).strip()
         api_secret_value = cstr(frappe.generate_hash(length=32)).strip()
         frappe.db.set_value("User", resolved_user, "api_key", api_key_value)
@@ -101,7 +113,11 @@ def create_device_provisioning_qr(
     if device_doc is None:
         frappe.throw(_("KoPOS Device is required"), frappe.ValidationError)
         raise ValueError("KoPOS Device is required")
-    credentials = ensure_device_api_credentials(device_doc, rotate=rotate_credentials)
+    should_rotate = bool(cint(rotate_credentials))
+    if should_rotate:
+        _reject_live_credential_rotation()
+
+    credentials = ensure_device_api_credentials(device_doc)
     payload = create_pos_provisioning(
         device=device_doc.name,
         erpnext_url=erpnext_url,
@@ -183,6 +199,13 @@ def create_pos_provisioning(
         api_key=api_key_value,
         api_secret=api_secret_value,
     )
+    provisioning_user = cstr(getattr(device_doc, "api_user", None)).strip()
+    if not provisioning_user:
+        frappe.throw(
+            _("KoPOS Device has no provisioning API user"),
+            frappe.ValidationError,
+        )
+    setup_payload["provisioning_user"] = provisioning_user
     setup_payload["erpnext_url"] = base_url
     if cstr(device_name).strip():
         setup_payload["device_name"] = cstr(device_name).strip()
@@ -201,6 +224,12 @@ def create_pos_provisioning(
         "setup": setup_payload,
     }
 
+    provisioning_link = (
+        f"kopos://provision?base_url={quote(base_url, safe='')}"
+        f"&token={quote(token, safe='')}"
+    )
+    provisioning_qr_svg = get_qr_svg_code(provisioning_link).decode()
+
     _persist_cached_value(
         _cache_key(token),
         json.dumps(cache_payload, sort_keys=True, separators=(",", ":")),
@@ -212,11 +241,9 @@ def create_pos_provisioning(
         "token": token,
         "issued_at": cache_payload["issued_at"],
         "expires_at": expires_at,
-        "provisioning_url": f"kopos://provision?base_url={quote(base_url, safe='')}&token={quote(token, safe='')}",
-        "provisioning_link": f"kopos://provision?base_url={quote(base_url, safe='')}&token={quote(token, safe='')}",
-        "provisioning_qr_svg": get_qr_svg_code(
-            f"kopos://provision?base_url={quote(base_url, safe='')}&token={quote(token, safe='')}"
-        ).decode(),
+        "provisioning_url": provisioning_link,
+        "provisioning_link": provisioning_link,
+        "provisioning_qr_svg": provisioning_qr_svg,
         "setup_preview": {
             "device": device_doc.name,
             "device_id": cstr(device_doc.device_id).strip(),
@@ -246,12 +273,92 @@ def redeem_pos_provisioning(token: str | None = None) -> dict[str, Any]:
         raise RuntimeError("Provisioning token cache payload is invalid") from error
     if not isinstance(payload, dict):
         raise RuntimeError("Provisioning token cache payload is invalid")
+    setup = payload.get("setup")
+    if not isinstance(setup, dict):
+        frappe.throw(
+            _("Provisioning token setup is invalid; request a new setup QR"),
+            frappe.ValidationError,
+        )
+    _validate_cached_provisioning_setup(setup)
     return {
         "status": "ok",
         "issued_at": payload.get("issued_at"),
         "expires_at": payload.get("expires_at"),
-        "setup": payload.get("setup") or {},
+        "setup": setup,
     }
+
+
+def _validate_cached_provisioning_setup(setup: dict[str, Any]) -> None:
+    """Reject consumed cache payloads that no longer match ERP authority."""
+    device_id = cstr(setup.get("device_id")).strip()
+    provisioning_user = cstr(setup.get("provisioning_user")).strip()
+    api_key = cstr(setup.get("api_key")).strip()
+    api_secret = cstr(setup.get("api_secret")).strip()
+    if not device_id or not provisioning_user or not api_key or not api_secret:
+        frappe.throw(
+            _("Provisioning token credentials are incomplete; request a new setup QR"),
+            frappe.ValidationError,
+        )
+
+    device_doc = get_device_doc(device_id=device_id)
+    if device_doc is None or not cint(getattr(device_doc, "enabled", 0)):
+        frappe.throw(
+            _("Provisioning token device is disabled or unavailable; request a new setup QR"),
+            frappe.ValidationError,
+        )
+    if cstr(getattr(device_doc, "api_user", None)).strip() != provisioning_user:
+        frappe.throw(
+            _("Provisioning token credentials are stale; request a new setup QR"),
+            frappe.ValidationError,
+        )
+
+    cached_config_version = cint(setup.get("config_version") or 0)
+    current_config_version = cint(getattr(device_doc, "config_version", 0))
+    if cached_config_version <= 0 or cached_config_version != current_config_version:
+        frappe.throw(
+            _("Provisioning token device configuration is stale; request a new setup QR"),
+            frappe.ValidationError,
+        )
+
+    current_api_key = cstr(
+        frappe.db.get_value("User", provisioning_user, "api_key")
+    ).strip()
+    current_api_secret = _read_device_api_secret(provisioning_user)
+    if not hmac.compare_digest(current_api_key, api_key) or not hmac.compare_digest(
+        current_api_secret, api_secret
+    ):
+        frappe.throw(
+            _("Provisioning token credentials are stale; request a new setup QR"),
+            frappe.ValidationError,
+        )
+
+    # Re-serialize current authority as a final active-user/config preflight. The
+    # cached token has already been atomically removed, so any mismatch is
+    # fail-closed and cannot be replayed.
+    current_setup = serialize_device_config(device_doc)
+    cached_users = setup.get("users")
+    if (
+        not isinstance(cached_users, list)
+        or not cached_users
+        or cached_users != current_setup.get("users")
+    ):
+        frappe.throw(
+            _(
+                "Provisioning token device users are stale or inactive; request a new setup QR"
+            ),
+            frappe.ValidationError,
+        )
+
+
+def _reject_live_credential_rotation() -> None:
+    frappe.throw(
+        _(
+            "Live device credential rotation is disabled in this release. "
+            "Use the support-led safe reset procedure so the current terminal "
+            "is drained and revoked before issuing replacement credentials."
+        ),
+        frappe.ValidationError,
+    )
 
 
 def get_device_config(device_id: str | None = None) -> dict[str, Any]:
@@ -326,6 +433,15 @@ def _delete_unconfirmed_cached_value(cache: Any, storage_key: Any) -> None:
         delete_direct(storage_key)
     except Exception as error:
         log_sanitized_error("KoPOS unconfirmed provisioning token cleanup failed", error)
+
+
+def _delete_cached_value(key: str) -> None:
+    if not key:
+        return
+    cache = frappe.cache()
+    make_key = getattr(cache, "make_key", None)
+    storage_key = make_key(key) if callable(make_key) else key
+    _delete_unconfirmed_cached_value(cache, storage_key)
 
 
 def _consume_cached_value(key: str) -> str | None:

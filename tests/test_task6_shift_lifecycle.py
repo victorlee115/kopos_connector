@@ -39,6 +39,7 @@ class MutableShift(SimpleNamespace):
 
 def _submit_payload() -> dict[str, Any]:
     return {
+        "money_contract_version": "sen_v1",
         "order_id": "ORDER-1",
         "idempotency_key": "idem-1",
         "device_id": "DEVICE-1",
@@ -47,10 +48,29 @@ def _submit_payload() -> dict[str, Any]:
         "booth_warehouse": "WH-1",
         "company": "JiJi",
         "currency": "MYR",
-        "grand_total": 10.0,
-        "order": {"created_at": "2026-03-13T18:00:00"},
-        "items": [{"item_code": "ITEM-1"}],
-        "payments": [{"payment_method": "Cash"}],
+        "order": {
+            "display_number": "ORDER-1",
+            "order_type": "takeaway",
+            "created_at": "2026-03-13T18:00:00",
+            "subtotal_sen": 1000,
+            "tax_amount_sen": 0,
+            "rounding_adjustment_sen": 0,
+            "total_sen": 1000,
+            "items": [
+                {
+                    "line_id": "LINE-1",
+                    "item_code": "ITEM-1",
+                    "item_name": "Item 1",
+                    "qty": 1,
+                    "unit_price_sen": 1000,
+                    "modifier_total_sen": 0,
+                    "discount_amount_sen": 0,
+                    "line_total_sen": 1000,
+                    "modifiers": [],
+                }
+            ],
+            "payments": [{"payment_method": "Cash", "amount_sen": 1000}],
+        },
     }
 
 
@@ -59,7 +79,7 @@ def _patch_submit_dependencies(monkeypatch: pytest.MonkeyPatch, shift_status: st
 
     monkeypatch.setattr(
         fb_orders,
-        "_validate_order_item",
+        "_resolve_order_item",
         lambda _row, _index: {
             "line_id": "LINE-1",
             "backend_line_uuid": None,
@@ -80,7 +100,7 @@ def _patch_submit_dependencies(monkeypatch: pytest.MonkeyPatch, shift_status: st
     )
     monkeypatch.setattr(
         fb_orders,
-        "_validate_order_payment",
+        "_resolve_order_payment",
         lambda _row, _index: {"payment_method": "Cash", "amount": 10.0},
     )
     monkeypatch.setattr(fb_orders, "_resolve_fb_shift_name", lambda _value: "FB-SHIFT-1")
@@ -150,6 +170,39 @@ def _close_payload() -> dict[str, Any]:
         "counted_cash_sen": 1250,
         "closed_at": "2026-03-13T18:05:00",
     }
+
+
+def _patch_open_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+    existing_shift: SimpleNamespace,
+) -> None:
+    monkeypatch.setattr(shifts, "get_device_doc", lambda device_id: _device_doc())
+    monkeypatch.setattr(
+        shifts.frappe.db,
+        "get_value",
+        lambda doctype, *_args, **_kwargs: 1
+        if doctype in {"KoPOS Device", "User"}
+        else None,
+    )
+    monkeypatch.setattr(
+        shifts.frappe.db,
+        "exists",
+        lambda doctype, *_args, **_kwargs: doctype == "User",
+    )
+    monkeypatch.setattr(
+        shifts.frappe,
+        "get_cached_doc",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            company="JiJi",
+            warehouse="WH-1",
+        ),
+    )
+    monkeypatch.setattr(shifts, "_lock_open_shift_scope", lambda *_args: None)
+    monkeypatch.setattr(
+        shifts,
+        "_find_fb_shift_for_update",
+        lambda _shift_id: existing_shift,
+    )
 
 
 def _patch_close_dependencies(
@@ -372,6 +425,174 @@ def test_close_shift_payload_all_posted_transitions_open_to_closing_to_closed(
     assert shift_doc.cash_variance == 2.5
 
 
+@pytest.mark.parametrize(
+    "invalid_counted_cash_sen",
+    [1.5, "1.5", float("nan"), float("inf"), "NaN", "Infinity"],
+)
+def test_close_shift_rejects_non_integer_or_non_finite_counted_cash_sen(
+    invalid_counted_cash_sen: object,
+) -> None:
+    payload = _close_payload()
+    payload["counted_cash_sen"] = invalid_counted_cash_sen
+
+    with pytest.raises(
+        shifts.frappe.ValidationError,
+        match="counted_cash_sen must be an integer number of sen",
+    ):
+        shifts.close_shift_payload(payload)
+
+
+@pytest.mark.parametrize("missing_value", [None, "missing"])
+def test_close_shift_requires_explicit_counted_cash_sen(missing_value: object) -> None:
+    payload = _close_payload()
+    if missing_value == "missing":
+        payload.pop("counted_cash_sen")
+    else:
+        payload["counted_cash_sen"] = None
+
+    with pytest.raises(
+        shifts.frappe.ValidationError,
+        match="counted_cash_sen is required",
+    ):
+        shifts.close_shift_payload(payload)
+
+
+def test_open_shift_duplicate_requires_exact_idempotency_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "idempotency_key": "open-idem-1",
+        "device_id": "DEVICE-1",
+        "staff_id": "staff@example.test",
+        "shift_id": "SHIFT-1",
+        "opening_float_sen": 1000,
+        "opened_at": "2026-03-13T18:00:00",
+    }
+    fingerprint = shifts._shift_request_fingerprint(
+        "open",
+        {
+            "idempotency_key": "open-idem-1",
+            "device_id": "DEVICE-1",
+            "staff_id": "staff@example.test",
+            "shift_id": "SHIFT-1",
+            "opening_float_sen": 1000,
+            "opened_at": "2026-03-13T18:00:00",
+            "reason": None,
+        },
+    )
+    existing = SimpleNamespace(
+        name="FB-SHIFT-1",
+        device_id="DEVICE-1",
+        staff_id="staff@example.test",
+        open_idempotency_key="open-idem-1",
+        open_request_fingerprint=fingerprint,
+    )
+    _patch_open_dependencies(monkeypatch, existing)
+
+    assert shifts.open_shift_payload(dict(payload)) == {
+        "status": "duplicate",
+        "fb_shift": "FB-SHIFT-1",
+        "shift_id": "SHIFT-1",
+        "message": "Shift already opened",
+    }
+
+    conflicting_payload = dict(payload)
+    conflicting_payload["opening_float_sen"] = 2000
+    with pytest.raises(
+        shifts.frappe.ValidationError,
+        match="different open shift payload",
+    ):
+        shifts.open_shift_payload(conflicting_payload)
+
+    conflicting_key = dict(payload)
+    conflicting_key["idempotency_key"] = "open-idem-2"
+    with pytest.raises(
+        shifts.frappe.ValidationError,
+        match="another idempotency_key",
+    ):
+        shifts.open_shift_payload(conflicting_key)
+
+
+def test_close_shift_duplicate_requires_exact_idempotency_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shift_doc = _patch_close_dependencies(
+        monkeypatch,
+        order_rows=[],
+        projection_rows=[],
+    )
+    payload = _close_payload()
+
+    assert shifts.close_shift_payload(dict(payload))["status"] == "ok"
+    assert shift_doc.close_idempotency_key == "close-idem-1"
+    assert len(shift_doc.close_request_fingerprint) == 64
+    assert shifts.close_shift_payload(dict(payload))["status"] == "duplicate"
+
+    conflicting_payload = dict(payload)
+    conflicting_payload["counted_cash_sen"] = 1300
+    with pytest.raises(
+        shifts.frappe.ValidationError,
+        match="different close shift payload",
+    ):
+        shifts.close_shift_payload(conflicting_payload)
+
+    conflicting_key = dict(payload)
+    conflicting_key["idempotency_key"] = "close-idem-2"
+    with pytest.raises(
+        shifts.frappe.ValidationError,
+        match="another idempotency_key",
+    ):
+        shifts.close_shift_payload(conflicting_key)
+
+
+def test_legacy_open_shift_fails_closed_for_open_retry_but_accepts_first_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_open = SimpleNamespace(
+        name="FB-SHIFT-1",
+        device_id="DEVICE-1",
+        staff_id="staff@example.test",
+        open_idempotency_key="c" * 64,
+        open_request_fingerprint="a" * 64,
+    )
+    _patch_open_dependencies(monkeypatch, legacy_open)
+    with pytest.raises(
+        shifts.frappe.ValidationError,
+        match="another idempotency_key",
+    ):
+        shifts.open_shift_payload(
+            {
+                "idempotency_key": "open-idem-original-unknown",
+                "device_id": "DEVICE-1",
+                "staff_id": "staff@example.test",
+                "shift_id": "SHIFT-1",
+                "opening_float_sen": 1000,
+                "opened_at": "2026-03-13T18:00:00",
+            }
+        )
+
+    shift_doc = _patch_close_dependencies(
+        monkeypatch,
+        order_rows=[],
+        projection_rows=[],
+    )
+    shift_doc.open_idempotency_key = legacy_open.open_idempotency_key
+    shift_doc.open_request_fingerprint = legacy_open.open_request_fingerprint
+    shift_doc.close_idempotency_key = None
+    shift_doc.close_request_fingerprint = None
+
+    assert shifts.close_shift_payload(_close_payload())["status"] == "ok"
+    assert shifts.close_shift_payload(_close_payload())["status"] == "duplicate"
+
+    conflict = _close_payload()
+    conflict["discrepancy_note"] = "different retry"
+    with pytest.raises(
+        shifts.frappe.ValidationError,
+        match="different close shift payload",
+    ):
+        shifts.close_shift_payload(conflict)
+
+
 def test_no_order_shift_closes_at_opening_float_without_variance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -395,3 +616,72 @@ def test_no_order_shift_closes_at_opening_float_without_variance(
     assert shift_doc.expected_cash == 10.0
     assert shift_doc.counted_cash == 10.0
     assert shift_doc.cash_variance == 0.0
+
+
+def test_order_submission_locks_and_rechecks_shift_before_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_submit_dependencies(monkeypatch, "Open")
+    sql_calls: list[str] = []
+
+    class OrderDoc:
+        name = "FB-ORDER-1"
+
+        def insert(self, ignore_permissions: bool = False) -> None:
+            assert ignore_permissions is True
+
+        def submit(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        fb_orders.frappe.db,
+        "sql",
+        lambda query, params, **kwargs: sql_calls.append(query) or [],
+    )
+    monkeypatch.setattr(fb_orders, "_build_fb_order", lambda validated: OrderDoc())
+    monkeypatch.setattr(
+        fb_orders,
+        "_build_submit_response",
+        lambda status, order: {"status": status, "fb_order": order.name},
+    )
+
+    assert fb_orders.submit_order_payload(_submit_payload()) == {
+        "status": "ok",
+        "fb_order": "FB-ORDER-1",
+    }
+    assert any("tabFB Shift" in query and "FOR UPDATE" in query for query in sql_calls)
+
+
+def test_close_shift_locks_shift_row_before_status_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_close_dependencies(monkeypatch, order_rows=[], projection_rows=[])
+    sql_calls: list[str] = []
+    monkeypatch.setattr(
+        shifts.frappe.db,
+        "sql",
+        lambda query, params, **kwargs: sql_calls.append(query) or [],
+    )
+
+    shifts.close_shift_payload(_close_payload())
+
+    assert sql_calls
+    assert "tabFB Shift" in sql_calls[0]
+    assert "FOR UPDATE" in sql_calls[0]
+
+
+def test_open_shift_scope_locks_device_and_staff_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sql_calls: list[str] = []
+    monkeypatch.setattr(
+        shifts.frappe.db,
+        "sql",
+        lambda query, params, **kwargs: sql_calls.append(query) or [],
+    )
+
+    shifts._lock_open_shift_scope(_device_doc(), "staff@example.test")
+
+    assert len(sql_calls) == 2
+    assert "tabKoPOS Device" in sql_calls[0] and "FOR UPDATE" in sql_calls[0]
+    assert "tabUser" in sql_calls[1] and "FOR UPDATE" in sql_calls[1]

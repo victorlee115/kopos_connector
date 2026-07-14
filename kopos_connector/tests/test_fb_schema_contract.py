@@ -30,6 +30,10 @@ class TestFBSchemaContract(unittest.TestCase):
         self.assertTrue(
             {
                 "shift_code",
+                "open_idempotency_key",
+                "open_request_fingerprint",
+                "close_idempotency_key",
+                "close_request_fingerprint",
                 "device_id",
                 "staff_id",
                 "warehouse",
@@ -53,6 +57,7 @@ class TestFBSchemaContract(unittest.TestCase):
             {
                 "order_id",
                 "external_idempotency_key",
+                "request_fingerprint",
                 "sale_datetime",
                 "shift",
                 "staff_id",
@@ -275,10 +280,39 @@ class TestFBSchemaContract(unittest.TestCase):
                 "reason_code",
                 "return_to_stock",
                 "status",
+                "request_fingerprint",
+                "approval_token_id",
+                "approved_by_manager",
                 "lines",
             }.issubset(names)
         )
         self.assertEqual(doc.get("is_submittable"), 1)
+
+    def test_manager_approval_schema_is_durable_and_non_deletable(self):
+        doc = load_doctype("kopos_manager_approval")
+        names = fieldnames(doc)
+        self.assertTrue(
+            {
+                "token_id",
+                "status",
+                "token_digest",
+                "device_id",
+                "staff_id",
+                "manager_id",
+                "authorization_mode",
+                "action",
+                "shift_id",
+                "resource_id",
+                "amount_sen",
+                "context_hash",
+                "expires_at",
+                "consumed_at",
+                "consumed_idempotency_key",
+            }.issubset(names)
+        )
+        self.assertTrue(
+            all(not permission.get("delete") for permission in doc["permissions"])
+        )
 
     def test_fb_remake_event_schema(self):
         doc = load_doctype("fb_remake_event")

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from pathlib import Path
 
 
 ERP_ROOT = Path(__file__).resolve().parents[1]
-WORKSPACE_ROOT = ERP_ROOT.parents[2]
+WORKSPACE_ROOT = ERP_ROOT.parents[1]
 POS_ROOT = WORKSPACE_ROOT / "JiJiPOS" / "kopos"
-TS_ROOT = POS_ROOT / "src"
+TS_ROOT = Path(os.environ.get("KOPOS_TYPESCRIPT_ROOT", POS_ROOT / "src"))
 
 
 class TestFBPublicContracts(unittest.TestCase):
@@ -85,6 +86,10 @@ class TestFBPublicContracts(unittest.TestCase):
             self.assertIn(field, content)
 
     def test_typescript_contracts_include_required_fields(self):
+        if not TS_ROOT.exists():
+            self.skipTest(
+                "TypeScript contract checkout is not present; the cross-repository CI gate supplies KOPOS_TYPESCRIPT_ROOT"
+            )
         contracts = (TS_ROOT / "services" / "api" / "fb-contracts.ts").read_text()
         types = (TS_ROOT / "types" / "fb-types.ts").read_text()
         for token in [

@@ -12,6 +12,8 @@ from kopos_connector.api.maybank_qr import (
     UNKNOWN_STATUS,
     _extract_status_entry,
     _update_txn_status,
+    _validate_status_entry_identity,
+    _validate_status_response,
 )
 from kopos_connector.services.maybank.client import MaybankClient
 from kopos_connector.utils.diagnostics import redacted_json
@@ -56,6 +58,11 @@ def poll_pending_maybank_transactions() -> None:
                 "created_at",
                 "expires_at",
                 "poll_count",
+                "sale_amount_sen",
+                "outlet_id",
+                "currency",
+                "device_id",
+                "provider",
             ],
             order_by="expires_at asc, last_polled_at asc",
             limit=POLL_SCAN_BATCH_SIZE,
@@ -161,7 +168,6 @@ def _touch_poll_attempt(txn_name: str, now, payload: object) -> None:
         "UPDATE `tabMaybank QR Transaction` SET last_polled_at = %s, poll_count = poll_count + 1, raw_response = %s WHERE name = %s",
         (now, redacted_json(payload), txn_name),
     )
-    frappe.db.commit()
 
 
 def _sweep_stale_pending_transactions(client: MaybankClient, now) -> set[str]:
@@ -180,6 +186,11 @@ def _sweep_stale_pending_transactions(client: MaybankClient, now) -> set[str]:
             "created_at",
             "expires_at",
             "poll_count",
+            "sale_amount_sen",
+            "outlet_id",
+            "currency",
+            "device_id",
+            "provider",
         ],
         order_by="expires_at asc, last_polled_at asc",
         limit=POLL_BATCH_SIZE,
@@ -217,7 +228,14 @@ def _poll_single(client: MaybankClient, txn: dict, now=None) -> None:
         )
         raise
 
-    entry = _extract_status_entry(result)
+    try:
+        _validate_status_response(result)
+        entry = _extract_status_entry(result)
+        if entry is not None:
+            raw_status = _validate_status_entry_identity(txn, entry)
+    except Exception:
+        _touch_poll_attempt(txn.name, current_now, result)
+        raise
     if entry is None:
         frappe.log_error(
             f"Maybank empty response for {txn.transaction_refno}",
@@ -226,12 +244,10 @@ def _poll_single(client: MaybankClient, txn: dict, now=None) -> None:
         _touch_poll_attempt(txn.name, current_now, {"status": "empty", "raw": result})
         return
 
-    raw_status = cint(entry.get("status", 0))
     new_status = STATUS_MAP.get(str(raw_status), UNKNOWN_STATUS)
 
     if new_status != txn.status:
         _update_txn_status(txn.name, new_status, raw_status, result)
-        frappe.db.commit()
     elif (
         expired
         and txn.status in ("pending", "scanned")
@@ -243,7 +259,6 @@ def _poll_single(client: MaybankClient, txn: dict, now=None) -> None:
         )
         if past_grace:
             _update_txn_status(txn.name, "timeout", raw_status, result)
-            frappe.db.commit()
         else:
             _touch_poll_attempt(txn.name, current_now, result)
     else:

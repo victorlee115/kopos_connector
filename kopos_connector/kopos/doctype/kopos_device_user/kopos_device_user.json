@@ -15,6 +15,9 @@
   "default_cashier",
   "pin",
   "pin_hash",
+  "pin_failed_attempts",
+  "pin_last_failed_at",
+  "pin_locked_until",
   "can_manager_override",
   "can_refund",
   "can_void",
@@ -53,6 +56,7 @@
    "fieldname": "pin",
    "fieldtype": "Password",
    "label": "PIN",
+   "permlevel": 1,
    "description": "Enter a 4-digit PIN to rotate the stored hash"
   },
   {
@@ -60,6 +64,32 @@
    "fieldtype": "Small Text",
    "hidden": 1,
    "label": "PIN Hash",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "pin_failed_attempts",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "PIN Failed Attempts",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "pin_last_failed_at",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "PIN Last Failed At",
+   "permlevel": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "pin_locked_until",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "PIN Locked Until",
+   "permlevel": 1,
    "read_only": 1
   },
   {
