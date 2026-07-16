@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -118,6 +119,11 @@ def test_submit_order_wrapper_executes_fb_target(monkeypatch: Any) -> None:
         lambda device_id, **scope: None,
     )
     monkeypatch.setattr(
+        api,
+        "lock_device_for_operational_mutation",
+        lambda device_id: None,
+    )
+    monkeypatch.setattr(
         fb_orders,
         "submit_order_payload",
         lambda payload: captured.update({"payload": payload})
@@ -162,7 +168,11 @@ def test_process_refund_wrapper_executes_fb_return_target(monkeypatch: Any) -> N
             "lines": [],
         },
     )
-    monkeypatch.setattr(api, "require_device_context", lambda device_id: None)
+    monkeypatch.setattr(
+        api,
+        "lock_device_for_operational_mutation",
+        lambda device_id: None,
+    )
     monkeypatch.setattr(
         api.frappe.db,
         "get_value",
@@ -214,7 +224,11 @@ def test_void_order_wrapper_executes_sales_invoice_void_target(monkeypatch: Any)
             "sales_invoice": "SINV-1",
         },
     )
-    monkeypatch.setattr(api, "require_device_context", lambda device_id: None)
+    monkeypatch.setattr(
+        api,
+        "lock_device_for_operational_mutation",
+        lambda device_id: None,
+    )
     monkeypatch.setattr(
         api,
         "_process_sales_invoice_void_payload",
@@ -289,3 +303,76 @@ def test_get_refund_reasons_does_not_import_legacy_orders(monkeypatch: Any) -> N
         {"code": "pricing_error", "label": "Pricing error"},
         {"code": "other", "label": "Other"},
     ]
+
+
+def test_promotion_snapshot_response_adds_utc_time_outside_immutable_payload(
+    monkeypatch: Any,
+) -> None:
+    api = importlib.import_module("kopos_connector.api")
+    captured: dict[str, Any] = {}
+    payload = {
+        "pos_profile": "KoPOS Main",
+        "promotions": [
+            {
+                "promotion_id": "PROMO-1",
+                "discount_type": "percentage",
+                "discount_value": 10.0,
+                "min_amount": 0.0,
+            }
+        ],
+        "snapshot_hash": "a" * 64,
+        "snapshot_version": "KOPOS-PROMO-AAAAAAAAAAAAAAAA",
+        "source": "published",
+    }
+    immutable_before = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    monkeypatch.setattr(api, "require_device_context", lambda device_id: None)
+    monkeypatch.setattr(api, "mark_device_seen", lambda device_id: None)
+    monkeypatch.setattr(api, "get_promotion_snapshot_payload", lambda **_kwargs: payload)
+    monkeypatch.setattr(api, "_utc_server_time", lambda: "2026-07-15T03:04:05.678Z")
+    monkeypatch.setattr(
+        api,
+        "_write_response",
+        lambda response, http_status_code=200: captured.update(
+            {"response": response, "http_status_code": http_status_code}
+        ),
+    )
+
+    api.get_promotion_snapshot(device_id="DEVICE-1")
+
+    assert captured["response"]["server_time"] == "2026-07-15T03:04:05.678Z"
+    assert captured["response"]["snapshot_hash"] == "a" * 64
+    assert "server_time" not in payload
+    assert json.dumps(payload, sort_keys=True, separators=(",", ":")) == immutable_before
+
+
+def test_unavailable_promotion_snapshot_response_includes_utc_time(
+    monkeypatch: Any,
+) -> None:
+    api = importlib.import_module("kopos_connector.api")
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(api, "require_device_context", lambda device_id: None)
+    monkeypatch.setattr(api, "mark_device_seen", lambda device_id: None)
+    monkeypatch.setattr(
+        api,
+        "get_promotion_snapshot_payload",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(api, "_utc_server_time", lambda: "2026-07-15T03:04:05.678Z")
+    monkeypatch.setattr(
+        api,
+        "_write_response",
+        lambda response, http_status_code=200: captured.update(
+            {"response": response, "http_status_code": http_status_code}
+        ),
+    )
+
+    api.get_promotion_snapshot(device_id="DEVICE-1")
+
+    assert captured["response"] == {
+        "status": "unavailable",
+        "reason": "no_published_snapshot",
+        "message": "No promotion snapshot has been published for this POS profile",
+        "server_time": "2026-07-15T03:04:05.678Z",
+    }

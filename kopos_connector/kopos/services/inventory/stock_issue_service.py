@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -25,7 +26,16 @@ def create_ingredient_stock_entry(fb_order: Any, resolved_sales: Any) -> str | N
         return None
 
     resolved_sale_docs = _coerce_resolved_sales(resolved_sales)
+    projection_id = _stock_issue_projection_id(order_doc)
     existing_entry = _get_existing_reference(order_doc, "ingredient_stock_entry")
+    if not existing_entry:
+        existing_entry = frappe.db.get_value(
+            "Stock Entry",
+            {"custom_fb_projection_id": projection_id},
+            "name",
+        )
+    if not existing_entry:
+        existing_entry = _find_legacy_stock_issue(order_doc)
     if existing_entry:
         existing_doc = _coerce_doc("Stock Entry", existing_entry)
         if not existing_doc:
@@ -38,7 +48,9 @@ def create_ingredient_stock_entry(fb_order: Any, resolved_sales: Any) -> str | N
             resolved_sale_docs,
             existing_doc,
         )
-        return existing_entry
+        _set_source_reference(order_doc, "ingredient_stock_entry", existing_entry)
+        _set_source_reference(order_doc, "stock_status", "Posted")
+        return str(existing_entry)
 
     if not resolved_sale_docs:
         return None
@@ -62,6 +74,11 @@ def create_ingredient_stock_entry(fb_order: Any, resolved_sales: Any) -> str | N
             stock_entry.set_posting_time = 1
             stock_entry.remarks = _build_stock_entry_remarks(order_doc, resolved_sale_docs)
 
+            _set_if_present(
+                stock_entry,
+                ["custom_fb_projection_id"],
+                projection_id,
+            )
             _set_if_present(stock_entry, ["custom_fb_order"], order_doc.name)
             _set_if_present(stock_entry, ["custom_fb_shift"], _value(order_doc, "shift"))
             _set_if_present(
@@ -237,6 +254,15 @@ def _validate_stock_entry_equivalence(
             f"Recovered Stock Entry {stock_entry_name} belongs to another FB Order",
             frappe.ValidationError,
         )
+    actual_projection_id = str(
+        _value(stock_entry, "custom_fb_projection_id") or ""
+    ).strip()
+    expected_projection_id = _stock_issue_projection_id(order_doc)
+    if actual_projection_id and actual_projection_id != expected_projection_id:
+        frappe.throw(
+            f"Recovered Stock Entry {stock_entry_name} has the wrong F&B projection identity",
+            frappe.ValidationError,
+        )
     if str(_value(stock_entry, "custom_fb_shift") or "").strip() != str(
         _value(order_doc, "shift") or ""
     ).strip():
@@ -365,6 +391,41 @@ def _set_source_reference(doc: Any, fieldname: str, value: Any) -> None:
     except Exception:
         setattr(doc, fieldname, value)
         doc.save(ignore_permissions=True)
+
+
+def _stock_issue_projection_id(order_doc: Any) -> str:
+    order_name = str(_value(order_doc, "name") or "").strip()
+    if not order_name:
+        raise ValueError("FB Order name is required for stock projection idempotency")
+    readable = f"fb-order:{order_name}:stock-issue"
+    if len(readable) <= 140:
+        return readable
+    digest = hashlib.sha256(order_name.encode("utf-8")).hexdigest()
+    return f"fb-order:{digest}:stock-issue"
+
+
+def _find_legacy_stock_issue(order_doc: Any) -> str | None:
+    """Recover a pre-projection-id Material Issue without creating a duplicate."""
+
+    rows = frappe.get_all(
+        "Stock Entry",
+        filters={
+            "custom_fb_order": str(_value(order_doc, "name") or "").strip(),
+            "purpose": "Material Issue",
+            "docstatus": 1,
+        },
+        fields=["name"],
+        order_by="creation asc",
+        limit_page_length=2,
+    )
+    if len(rows) > 1:
+        frappe.throw(
+            f"FB Order {_value(order_doc, 'name')} has multiple submitted stock issues; manual reconciliation is required",
+            frappe.ValidationError,
+        )
+    if not rows:
+        return None
+    return str(_value(rows[0], "name") or "") or None
 
 
 def _make_savepoint(prefix: str) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,6 +15,130 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 install_fake_frappe_modules()
 
 smoke = importlib.import_module("kopos_connector.smoke")
+
+
+def test_maybank_smoke_policy_treats_paid_at_as_observation_time() -> None:
+    policy = smoke._maybank_qr_policy()
+    contract = smoke._maybank_qr_contract()
+
+    assert policy["provider_paid_is_authoritative"] is True
+    assert policy["paid_at_semantics"] == "first_provider_paid_observation_at_erp"
+    assert policy["expiry_grace_is_acceptance_gate"] is False
+    assert contract == {
+        "version": "provider_paid_observation_v1",
+        "provider_paid_status_code": 1,
+        "provider_paid_is_authoritative": True,
+        "provider_paid_at_available": False,
+        "provider_paid_at_source": "not_supplied_by_provider_status_contract",
+        "provider_status_observed_at_field": "paid_at",
+        "qr_expiry_is_not_settlement_rejection": True,
+    }
+
+
+def test_maybank_dump_proves_late_authenticated_paid_consumption(
+    monkeypatch,
+) -> None:
+    transaction = {
+        "name": "MBQR-LATE-1",
+        "transaction_refno": "PROVIDER-LATE-1",
+        "status": "paid",
+        "maybank_status": 1,
+        "sale_amount": "12.50",
+        "sale_amount_sen": 1250,
+        "fb_order": "FB-ORDER-LATE-1",
+        "sales_invoice": "SINV-LATE-1",
+        "outlet_id": "OUTLET-1",
+        "device_id": "SMOKE-TAB-A001",
+        "provider": "maybank_qr",
+        "currency": "MYR",
+        "idempotency_key": "late-idempotency-1",
+        "request_fingerprint": "f" * 64,
+        "consumption_key": "FB-ORDER-LATE-1",
+        "invoice_consumption_key": "SINV-LATE-1",
+        "paid_at": datetime(2026, 7, 16, 20, 0, 0),
+        "consumed_at": datetime(2026, 7, 16, 20, 0, 1),
+        "expires_at": datetime(2026, 7, 16, 12, 0, 0),
+        "last_polled_at": datetime(2026, 7, 16, 20, 0, 0),
+    }
+    payment = {
+        "name": "PAY-LATE-1",
+        "parent": "FB-ORDER-LATE-1",
+        "source_payment_id": "mobile-payment-late-1",
+        "amount": "12.50",
+        "external_transaction_id": "PROVIDER-LATE-1",
+        "maybank_qr_transaction": "MBQR-LATE-1",
+    }
+
+    def get_rows(doctype, **_kwargs):
+        if doctype == "Maybank QR Transaction":
+            return [dict(transaction)]
+        if doctype == "FB Order Payment":
+            return [dict(payment)]
+        raise AssertionError(f"unexpected smoke query: {doctype}")
+
+    monkeypatch.setattr(smoke, "_get_rows", get_rows)
+
+    rows = smoke._collect_maybank_qr_transactions("SMOKE-TAB-A001")
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["provider_paid_at"] is None
+    assert row["provider_status_observed_at"] == transaction["paid_at"]
+    assert row["paid_observed_seconds_after_expiry"] == 8 * 60 * 60
+    assert row["provider_paid_authoritative"] is True
+    assert row["provider_identity_evidence_complete"] is True
+    assert row["one_time_consumption_evidence_complete"] is True
+    assert row["late_authenticated_paid_accepted"] is True
+
+
+def test_delayed_maybank_smoke_requires_explicit_mock_developer_context(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        smoke.frappe,
+        "conf",
+        SimpleNamespace(allow_maybank_mock=0, developer_mode=1),
+        raising=False,
+    )
+
+    try:
+        smoke._require_maybank_mock_smoke_context()
+    except smoke.frappe.ValidationError as error:
+        assert "allow_maybank_mock=1" in str(error)
+    else:
+        raise AssertionError("smoke context must fail closed without explicit opt-in")
+
+    monkeypatch.setattr(
+        smoke.frappe,
+        "conf",
+        SimpleNamespace(allow_maybank_mock=1, developer_mode=1),
+        raising=False,
+    )
+    smoke._require_maybank_mock_smoke_context()
+
+
+def test_delayed_maybank_smoke_refuses_non_smoke_outlet(monkeypatch) -> None:
+    writes: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        smoke.frappe.db,
+        "get_single_value",
+        lambda *_args: "LIVE-OUTLET-DO-NOT-TOUCH",
+    )
+    monkeypatch.setattr(
+        smoke.frappe.db,
+        "set_single_value",
+        lambda *args: writes.append(args),
+        raising=False,
+    )
+
+    try:
+        smoke._ensure_smoke_maybank_outlet()
+    except smoke.frappe.ValidationError as error:
+        assert "refuses to overwrite" in str(error)
+    else:
+        raise AssertionError("smoke helper must refuse a non-smoke outlet")
+
+    assert writes == []
 
 
 def _passing_state() -> dict[str, Any]:
@@ -498,18 +623,22 @@ def test_manual_qr_evidence_exposes_tablet_payment_id(monkeypatch) -> None:
 def test_device_and_invoice_item_dump_include_accounting_configuration(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(
-        smoke.frappe,
-        "get_cached_doc",
-        lambda doctype, name: SimpleNamespace(
-            doctype=doctype,
-            name=name,
-            company="JiJi Cafe",
-            customer="Walk-in Customer",
-            warehouse="Main - JC",
-            currency="MYR",
-        ),
+    profile_values = {
+        "company": "JiJi Cafe",
+        "customer": "Walk-in Customer",
+        "warehouse": "Main - JC",
+        "currency": "MYR",
+        "custom_kopos_enable_sst": 0,
+        "custom_kopos_sst_rate": 8,
+    }
+    profile = SimpleNamespace(
+        doctype="POS Profile",
+        name="Counter 1",
+        **profile_values,
+        as_dict=lambda: dict(profile_values),
     )
+    monkeypatch.setattr(smoke.frappe, "get_cached_doc", lambda *_args: profile)
+    monkeypatch.setattr(smoke.frappe, "get_doc", lambda *_args: profile)
 
     profile = smoke._collect_device_profile_evidence(
         SimpleNamespace(pos_profile="Counter 1")
@@ -544,6 +673,9 @@ def test_device_and_invoice_item_dump_include_accounting_configuration(
         "pos_profile_customer": "Walk-in Customer",
         "pos_profile_warehouse": "Main - JC",
         "pos_profile_currency": "MYR",
+        "pos_profile_sst_enabled": False,
+        "pos_profile_sst_rate_percent": 8.0,
+        "device_config_tax_rate": 0.0,
     }
     assert items[0]["income_account"] == "Sales - JC"
     assert items[0]["cost_center"] == "Main - JC"

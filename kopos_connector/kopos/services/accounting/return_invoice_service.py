@@ -21,6 +21,16 @@ from kopos_connector.utils.diagnostics import (
 )
 
 
+PROMOTION_INVOICE_FIELDS = (
+    "custom_kopos_pricing_mode",
+    "custom_kopos_promotion_snapshot_version",
+    "custom_kopos_promotion_snapshot_hash",
+    "custom_kopos_promotion_reconciliation_status",
+    "custom_kopos_promotion_payload",
+)
+PROMOTION_ITEM_FIELD = "custom_kopos_promotion_allocation"
+
+
 def create_return_sales_invoice(fb_return_event: Any) -> str | None:
     return_doc = _coerce_doc("FB Return Event", fb_return_event)
     if not return_doc:
@@ -51,6 +61,7 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
         )
 
         _copy_invoice_dimensions(original_invoice, return_invoice)
+        _copy_promotion_provenance(original_invoice, return_invoice)
         if hasattr(return_invoice, "custom_fb_idempotency_key"):
             return_invoice.custom_fb_idempotency_key = None
         return_invoice.is_pos = 0
@@ -210,6 +221,86 @@ def _copy_invoice_dimensions(original_invoice: Any, return_invoice: Any) -> None
             setattr(return_invoice, fieldname, getattr(original_invoice, fieldname))
 
 
+def _copy_promotion_provenance(
+    original_invoice: Any,
+    return_invoice: Any,
+) -> None:
+    """Restore immutable promotion evidence omitted by standard no-copy mapping."""
+    for fieldname in PROMOTION_INVOICE_FIELDS:
+        if hasattr(original_invoice, fieldname):
+            setattr(return_invoice, fieldname, _value(original_invoice, fieldname))
+
+    original_items = list(_value(original_invoice, "items") or [])
+    return_items = list(_value(return_invoice, "items") or [])
+    if len(original_items) != len(return_items):
+        frappe.throw(
+            "Cannot preserve promotion provenance: standard return item count "
+            "differs from the original Sales Invoice",
+            frappe.ValidationError,
+        )
+
+    unmatched_original_items = list(original_items)
+    for return_item in return_items:
+        original_item = _match_original_promotion_item(
+            return_item,
+            unmatched_original_items,
+        )
+        if original_item is None:
+            frappe.throw(
+                "Cannot preserve promotion provenance: return item has no unique "
+                "original Sales Invoice item",
+                frappe.ValidationError,
+            )
+        setattr(
+            return_item,
+            PROMOTION_ITEM_FIELD,
+            _value(original_item, PROMOTION_ITEM_FIELD),
+        )
+        unmatched_original_items.remove(original_item)
+
+
+def _match_original_promotion_item(
+    return_item: Any,
+    original_items: list[Any],
+) -> Any | None:
+    original_item_name = cstr(_value(return_item, "sales_invoice_item")).strip()
+    if original_item_name:
+        matching_by_name = [
+            item
+            for item in original_items
+            if cstr(_value(item, "name")).strip() == original_item_name
+        ]
+        if len(matching_by_name) == 1:
+            return matching_by_name[0]
+        if len(matching_by_name) > 1:
+            frappe.throw(
+                "Cannot preserve promotion provenance: Sales Invoice Item reference "
+                f"{original_item_name} is ambiguous",
+                frappe.ValidationError,
+            )
+
+    for fieldname, label in (
+        ("custom_fb_order_line_ref", "FB Order line reference"),
+        ("custom_fb_resolved_sale", "FB Resolved Sale reference"),
+    ):
+        reference = cstr(_value(return_item, fieldname)).strip()
+        if not reference:
+            continue
+        matching_items = [
+            item
+            for item in original_items
+            if cstr(_value(item, fieldname)).strip() == reference
+        ]
+        if len(matching_items) == 1:
+            return matching_items[0]
+        if len(matching_items) > 1:
+            frappe.throw(
+                f"Cannot preserve promotion provenance: {label} {reference} is ambiguous",
+                frappe.ValidationError,
+            )
+    return None
+
+
 def lock_fb_shift_cash_scope(shift_name: Any) -> Any:
     """Serialize every cash-affecting mutation for one FB Shift."""
     shift = cstr(shift_name).strip()
@@ -238,23 +329,16 @@ def refresh_fb_shift_cash(shift_name: Any) -> None:
     if not shift:
         return
 
-    shift_row = lock_fb_shift_cash_scope(shift)
-    total_cash_sen = _get_locked_shift_sales_cash_sen(shift)
-    total_cash_sen += _get_locked_shift_return_cash_adjustment_sen(shift)
-
-    opening_float_sen = _money_to_sen(
-        _value(shift_row, "opening_float"), f"FB Shift {shift} opening_float"
-    )
-    expected_cash_sen = opening_float_sen + total_cash_sen
+    shift_row, cash = _calculate_locked_fb_shift_cash(shift)
     updates: dict[str, Decimal] = {
-        "expected_cash": _sen_to_amount(expected_cash_sen)
+        "expected_cash": cash["expected_cash"]
     }
     if _value(shift_row, "counted_cash") is not None:
         counted_cash_sen = _money_to_sen(
             _value(shift_row, "counted_cash"), f"FB Shift {shift} counted_cash"
         )
         updates["cash_variance"] = _sen_to_amount(
-            counted_cash_sen - expected_cash_sen
+            counted_cash_sen - cash["expected_cash_sen"]
         )
     frappe.db.set_value(
         "FB Shift",
@@ -262,6 +346,43 @@ def refresh_fb_shift_cash(shift_name: Any) -> None:
         updates,
         update_modified=False,
     )
+
+
+def calculate_fb_shift_cash(shift_name: Any) -> dict[str, Decimal]:
+    """Return exact, accounting-backed shift cash while holding reconciliation locks."""
+
+    shift = cstr(shift_name).strip()
+    if not shift:
+        frappe.throw("FB Shift is required for cash reconciliation", frappe.ValidationError)
+    _shift_row, cash = _calculate_locked_fb_shift_cash(shift)
+    return {
+        "opening_float": cash["opening_float"],
+        "cash_sales": cash["cash_sales"],
+        "cash_refunds": cash["cash_refunds"],
+        "net_cash": cash["net_cash"],
+        "expected_cash": cash["expected_cash"],
+    }
+
+
+def _calculate_locked_fb_shift_cash(
+    shift: str,
+) -> tuple[Any, dict[str, Any]]:
+    shift_row = lock_fb_shift_cash_scope(shift)
+    cash_sales_sen = _get_locked_shift_sales_cash_sen(shift)
+    cash_return_adjustment_sen = _get_locked_shift_return_cash_adjustment_sen(shift)
+    opening_float_sen = _money_to_sen(
+        _value(shift_row, "opening_float"), f"FB Shift {shift} opening_float"
+    )
+    net_cash_sen = cash_sales_sen + cash_return_adjustment_sen
+    expected_cash_sen = opening_float_sen + net_cash_sen
+    return shift_row, {
+        "opening_float": _sen_to_amount(opening_float_sen),
+        "cash_sales": _sen_to_amount(cash_sales_sen),
+        "cash_refunds": _sen_to_amount(abs(cash_return_adjustment_sen)),
+        "net_cash": _sen_to_amount(net_cash_sen),
+        "expected_cash": _sen_to_amount(expected_cash_sen),
+        "expected_cash_sen": expected_cash_sen,
+    }
 
 
 def _get_locked_shift_sales_cash_sen(shift: str) -> int:

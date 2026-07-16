@@ -9,7 +9,7 @@ from typing import Any
 import frappe
 from frappe.utils import cint, cstr, flt
 
-from kopos_connector.api.devices import require_device_context
+from kopos_connector.api.devices import lock_device_for_operational_mutation
 from kopos_connector.kopos.services.operations.return_guard_service import (
     aggregate_return_lines,
     lock_and_validate_return_quantities,
@@ -28,7 +28,7 @@ REFUND_METHODS = {"cash", "qr", "card", "voucher"}
 @frappe.whitelist(methods=["POST"])
 def process_return() -> dict[str, Any]:
     payload = _get_request_payload()
-    require_device_context(device_id=cstr(payload.get("device_id")))
+    lock_device_for_operational_mutation(device_id=cstr(payload.get("device_id")))
     return process_return_payload(payload, require_manager_approval=True)
 
 

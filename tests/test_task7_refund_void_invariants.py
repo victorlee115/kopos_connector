@@ -158,7 +158,11 @@ def test_public_process_refund_rejects_cross_device_before_return_event(monkeypa
             "return_to_stock": False,
         },
     )
-    monkeypatch.setattr(api, "require_device_context", lambda device_id: None)
+    monkeypatch.setattr(
+        api,
+        "lock_device_for_operational_mutation",
+        lambda device_id: None,
+    )
     monkeypatch.setattr(
         api,
         "_write_response",
@@ -199,7 +203,11 @@ def test_public_refund_rolls_back_when_settlement_proof_fails(monkeypatch):
             "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 1}],
         },
     )
-    monkeypatch.setattr(api, "require_device_context", lambda device_id: None)
+    monkeypatch.setattr(
+        api,
+        "lock_device_for_operational_mutation",
+        lambda device_id: None,
+    )
     monkeypatch.setattr(
         fb_returns,
         "process_return_payload",
@@ -331,7 +339,7 @@ def test_direct_return_route_requires_device_before_return_event(monkeypatch):
     )
     monkeypatch.setattr(
         fb_returns,
-        "require_device_context",
+        "lock_device_for_operational_mutation",
         lambda device_id: (_ for _ in ()).throw(
             fb_returns.frappe.ValidationError("device_id is required")
         ),

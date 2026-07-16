@@ -1067,9 +1067,11 @@ def get_tax_rate_value(
     return flt(profile_data.get("custom_kopos_sst_rate") or 8) / 100
 
 
-def get_item_modifiers_payload(item_code: str) -> list[ERPRecord]:
+def get_item_modifiers_payload(
+    item_code: str, company: str | None = None
+) -> list[ERPRecord]:
     """Return modifier groups with active options for a single item."""
-    group_ids = get_item_modifier_groups(item_code)
+    group_ids = get_item_modifier_groups(item_code, company=company)
     if not group_ids:
         return []
 

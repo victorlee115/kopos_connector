@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -65,6 +66,207 @@ def test_smoke_asserts_sale_datetime_on_invoice_and_stock_projection() -> None:
     )
 
 
+def test_smoke_business_gate_requires_myr_device_invoice_payment_and_gl() -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    state = {
+        "device": {
+            "pos_profile_currency": "MYR",
+            "pos_profile_company": smoke.SMOKE_COMPANY_NAME,
+        },
+        "data": {
+            "fb_shifts": [],
+            "fb_orders": [
+                {
+                    "name": "FB-ORDER-MYR",
+                    "status": "Submitted",
+                    "company": smoke.SMOKE_COMPANY_NAME,
+                    "currency": "MYR",
+                }
+            ],
+            "sales_invoices": [
+                {
+                    "name": "SINV-MYR",
+                    "docstatus": 1,
+                    "is_return": False,
+                    "company": smoke.SMOKE_COMPANY_NAME,
+                    "currency": "MYR",
+                    "items": [{}],
+                    "payments": [
+                        {
+                            "account": "Cash - KMY",
+                            "account_currency": "MYR",
+                        }
+                    ],
+                    "gl_entries": [
+                        {
+                            "account": "Cash - KMY",
+                            "account_currency": "MYR",
+                        }
+                    ],
+                }
+            ],
+            "ingredient_stock_entries": [],
+            "return_records": [],
+            "void_records": [],
+            "projection_statuses": {"failed": []},
+            "legacy_active_paths": {},
+            "idempotency": {},
+            "order_history": {},
+        },
+    }
+
+    result = smoke.build_smoke_business_assertions(state)
+
+    for assertion in (
+        "provisioned_device_currency_is_myr",
+        "fb_order_currency_is_myr",
+        "sales_invoice_currency_is_myr",
+        "sales_invoice_payment_currency_is_myr",
+        "sales_invoice_gl_currency_is_myr",
+    ):
+        assert result["assertions"][assertion] is True
+
+
+def test_smoke_company_contract_is_dedicated_malaysia_myr() -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    assert smoke.SMOKE_COMPANY_NAME == "KoPOS Malaysia Sdn Bhd"
+    assert smoke.SMOKE_COMPANY_ABBR == "KMY"
+    assert smoke.SMOKE_COMPANY_COUNTRY == "Malaysia"
+    assert smoke.SMOKE_COMPANY_CURRENCY == "MYR"
+
+
+def test_existing_smoke_device_refresh_disables_training_mode(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+    from kopos_connector.utils import pin
+
+    class ExistingDevice:
+        def __init__(self) -> None:
+            self.allow_training_mode = 1
+            self.device_users: list[dict[str, Any]] = []
+            self.printers: list[dict[str, Any]] = []
+            self.saved = False
+
+        def append(self, fieldname: str, row: dict[str, Any]) -> None:
+            getattr(self, fieldname).append(row)
+
+        def save(self, *, ignore_permissions: bool) -> None:
+            assert ignore_permissions is True
+            self.saved = True
+
+    device = ExistingDevice()
+    monkeypatch.setattr(smoke, "_ensure_frappe_user", lambda *args: None)
+    monkeypatch.setattr(smoke, "_build_smoke_device_printers", lambda: [])
+    monkeypatch.setattr(pin, "hash_pin", lambda value: f"hash:{value}")
+    monkeypatch.setattr(
+        frappe.db,
+        "exists",
+        lambda doctype, filters: "KOPOS-DEVICE-001",
+    )
+    monkeypatch.setattr(frappe, "get_doc", lambda *args: device)
+
+    result = smoke._ensure_kopos_device(
+        smoke.SMOKE_DEVICE_ID,
+        "KoPOS Smoke Profile",
+        smoke.SMOKE_COMPANY_NAME,
+    )
+
+    assert result is device
+    assert device.allow_training_mode == smoke.SMOKE_ALLOW_TRAINING_MODE == 0
+    assert device.saved is True
+
+
+def test_new_smoke_device_is_created_with_training_mode_disabled(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+    from kopos_connector.utils import pin
+
+    captured: dict[str, Any] = {}
+
+    class NewDevice:
+        def __init__(self) -> None:
+            self.inserted = False
+
+        def insert(self, *, ignore_permissions: bool) -> None:
+            assert ignore_permissions is True
+            self.inserted = True
+
+    device = NewDevice()
+
+    def fake_get_doc(values: dict[str, Any]) -> NewDevice:
+        captured.update(values)
+        return device
+
+    monkeypatch.setattr(smoke, "_ensure_frappe_user", lambda *args: None)
+    monkeypatch.setattr(smoke, "_build_smoke_device_printers", lambda: [])
+    monkeypatch.setattr(pin, "hash_pin", lambda value: f"hash:{value}")
+    monkeypatch.setattr(frappe.db, "exists", lambda *args, **kwargs: False)
+    monkeypatch.setattr(frappe, "get_doc", fake_get_doc)
+
+    result = smoke._ensure_kopos_device(
+        smoke.SMOKE_DEVICE_ID,
+        "KoPOS Smoke Profile",
+        smoke.SMOKE_COMPANY_NAME,
+    )
+
+    assert result is device
+    assert captured["allow_training_mode"] == smoke.SMOKE_ALLOW_TRAINING_MODE == 0
+    assert device.inserted is True
+
+
+def test_smoke_dump_exposes_disabled_training_policy(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    device = SimpleNamespace(
+        api_user="",
+        enabled=1,
+        allow_training_mode="0",
+        pos_profile="KoPOS Smoke Profile",
+        config_version=9,
+    )
+    monkeypatch.setattr(
+        frappe.db,
+        "get_value",
+        lambda *args, **kwargs: "KOPOS-DEVICE-001",
+    )
+    monkeypatch.setattr(frappe, "get_doc", lambda *args, **kwargs: device)
+    monkeypatch.setattr(
+        frappe,
+        "local",
+        SimpleNamespace(site="test-site.local"),
+    )
+    monkeypatch.setattr(
+        smoke,
+        "_collect_device_profile_evidence",
+        lambda doc: {"pos_profile_warehouse": "KoPOS Store - KMY"},
+    )
+    monkeypatch.setattr(
+        smoke,
+        "_collect_smoke_business_state",
+        lambda *args, **kwargs: {},
+    )
+
+    result = smoke.dump_smoke_state()
+
+    assert result["device"]["allow_training_mode"] is False
+
+
 def test_smoke_rejects_projection_posted_on_sync_date_instead_of_sale_date() -> None:
     install_fake_frappe_modules()
 
@@ -96,6 +298,80 @@ def test_smoke_rejects_closed_shift_timestamp_before_open_timestamp() -> None:
             "closed_at": "2026-07-11 09:59:59",
         }
     ) is False
+
+
+def test_smoke_business_gate_proves_modifier_audit_and_totals() -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    history_key = "history-smoke-order-1"
+    state = {
+        "fb_shifts": [],
+        "fb_orders": [
+            {
+                "name": "FB-ORDER-MODIFIER",
+                "status": "Submitted",
+                "external_idempotency_key": history_key,
+                "sales_invoice": "SINV-MODIFIER",
+                "grand_total": "14.00",
+                "items": [
+                    {
+                        "line_id": "LINE-MODIFIER",
+                        "modifier_total": "2.00",
+                        "line_total": "14.00",
+                        "resolved_sale": "FB-RESOLVED-MODIFIER",
+                        "selected_modifiers": [
+                            {
+                                "modifier": "SMOKE-FB-SIZE-LARGE",
+                                "price_adjustment": "2.00",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        "sales_invoices": [
+            {
+                "name": "SINV-MODIFIER",
+                "docstatus": 1,
+                "is_return": False,
+                "grand_total": "14.00",
+                "items": [
+                    {
+                        "order_line_ref": "LINE-MODIFIER",
+                        "amount": "14.00",
+                        "modifier_total": "2.00",
+                        "has_modifiers": True,
+                        "modifiers_json": (
+                            '{"modifiers":[{"id":"SMOKE-FB-SIZE-LARGE",'
+                            '"price_adjustment_sen":200}]}'
+                        ),
+                    }
+                ],
+                "payments": [{}],
+            }
+        ],
+        "ingredient_stock_entries": [],
+        "return_records": [],
+        "void_records": [],
+        "projection_statuses": {"failed": []},
+        "legacy_active_paths": {},
+        "idempotency": {
+            "duplicate_sales_invoice_keys": [],
+            "sales_invoice_counts_by_idempotency_key": {history_key: 1},
+        },
+        "order_history": {"invoice_count": 1},
+    }
+
+    result = smoke.build_smoke_business_assertions(
+        state,
+        expected_idempotency_keys=[history_key],
+    )
+
+    assert result["assertions"]["modifier_resolved_sale_audit_proven"] is True
+    assert result["assertions"]["modifier_sales_invoice_audit_proven"] is True
+    assert result["assertions"]["modifier_order_and_invoice_totals_proven"] is True
 
 
 def test_reliability_drink_item_code_matches_t16_submit_payload() -> None:
@@ -133,6 +409,255 @@ def test_existing_recipe_is_repointed_to_reliability_item_code() -> None:
 
     assert changed is True
     assert recipe.sellable_item == "SMOKE-STRAWBERRY-001"
+
+
+def test_smoke_recipe_uses_company_specific_code_instead_of_mutating_published_recipe(
+    monkeypatch,
+) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    monkeypatch.setattr(
+        frappe.db,
+        "exists",
+        lambda doctype, name: smoke.DEMO_RECIPE_CODE
+        if doctype == "FB Recipe" and name == smoke.DEMO_RECIPE_CODE
+        else False,
+    )
+
+    def fake_get_value(doctype: str, name: str, fieldname: str) -> str | None:
+        if (doctype, name, fieldname) == (
+            "FB Recipe",
+            smoke.DEMO_RECIPE_CODE,
+            "company",
+        ):
+            return "Wind Power LLC"
+        if (doctype, name, fieldname) == (
+            "Company",
+            smoke.SMOKE_COMPANY_NAME,
+            "abbr",
+        ):
+            return smoke.SMOKE_COMPANY_ABBR
+        return None
+
+    monkeypatch.setattr(frappe.db, "get_value", fake_get_value)
+
+    assert smoke._demo_recipe_code_for_company(smoke.SMOKE_COMPANY_NAME) == (
+        f"{smoke.DEMO_RECIPE_CODE}-{smoke.SMOKE_COMPANY_ABBR}"
+    )
+
+
+def test_smoke_recipe_keeps_base_code_for_same_company(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    monkeypatch.setattr(
+        frappe.db,
+        "exists",
+        lambda doctype, name: smoke.DEMO_RECIPE_CODE
+        if doctype == "FB Recipe" and name == smoke.DEMO_RECIPE_CODE
+        else False,
+    )
+    monkeypatch.setattr(
+        frappe.db,
+        "get_value",
+        lambda doctype, name, fieldname: smoke.SMOKE_COMPANY_NAME
+        if (doctype, name, fieldname)
+        == ("FB Recipe", smoke.DEMO_RECIPE_CODE, "company")
+        else None,
+    )
+
+    assert (
+        smoke._demo_recipe_code_for_company(smoke.SMOKE_COMPANY_NAME)
+        == smoke.DEMO_RECIPE_CODE
+    )
+
+
+def test_smoke_recipe_components_pin_stock_units_before_frappe_defaults() -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    components = smoke._build_demo_recipe_components()
+
+    assert len(components) == 4
+    assert all(component["stock_qty"] == component["qty"] for component in components)
+    assert all(component["stock_uom"] == component["uom"] for component in components)
+    assert components[0]["stock_uom"] == "Gram"
+    assert components[1]["stock_uom"] == "Millilitre"
+
+
+def test_existing_smoke_recipe_repairs_component_stock_quantities_and_units() -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    class Recipe:
+        def __init__(self) -> None:
+            self.components = [
+                SimpleNamespace(
+                    item=smoke.DEMO_MATCHA_ITEM,
+                    component_type="Ingredient",
+                    qty=smoke.DEMO_MATCHA_QTY_PER_ORDER,
+                    uom="Gram",
+                    stock_qty=1,
+                    stock_uom="Nos",
+                    affects_stock=1,
+                    affects_cogs=1,
+                )
+            ]
+
+        def get(self, fieldname: str) -> list[Any] | None:
+            if fieldname == "components":
+                return self.components
+            return None
+
+        def set(self, fieldname: str, value: list[Any]) -> None:
+            setattr(self, fieldname, value)
+
+        def append(self, fieldname: str, value: dict[str, Any]) -> None:
+            getattr(self, fieldname).append(SimpleNamespace(**value))
+
+    recipe = Recipe()
+
+    changed = smoke._ensure_demo_recipe_components(recipe)
+
+    assert changed is True
+    assert len(recipe.components) == 4
+    assert recipe.components[0].stock_qty == smoke.DEMO_MATCHA_QTY_PER_ORDER
+    assert recipe.components[0].stock_uom == "Gram"
+    assert recipe.components[1].stock_qty == smoke.DEMO_STRAWBERRY_QTY_PER_ORDER
+    assert recipe.components[1].stock_uom == "Millilitre"
+
+
+def test_existing_smoke_recipe_components_are_idempotent_when_correct() -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    components = [SimpleNamespace(**row) for row in smoke._build_demo_recipe_components()]
+    recipe = SimpleNamespace(get=lambda fieldname: components)
+
+    assert smoke._ensure_demo_recipe_components(recipe) is False
+
+
+def test_smoke_seed_defines_manual_selectable_erp_promotion() -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    values = smoke._build_demo_promotion_values("KoPOS Smoke Profile")
+
+    assert values["promotion_name"] == "SMOKE-MANUAL-10-PCT"
+    assert values["display_label"] == "Smoke 10% Off"
+    assert values["activation_mode"] == "manual_selectable"
+    assert values["offline_allowed"] == 1
+    assert values["discount_type"] == "percentage"
+    assert values["discount_value"] == 10
+    assert values["eligible_items"] == [{"item_code": "SMOKE-STRAWBERRY-001"}]
+    assert values["eligible_pos_profiles"] == [
+        {"pos_profile": "KoPOS Smoke Profile"}
+    ]
+
+
+def test_smoke_dump_exposes_release_safe_authoritative_promotion_snapshot(
+    monkeypatch,
+) -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    captured: dict[str, Any] = {}
+    snapshot_payload = {
+        "snapshot_version": "KOPOS-PROMO-SMOKE",
+        "snapshot_hash": "a" * 64,
+        "pos_profile": "KoPOS Smoke Profile",
+        "promotions": [
+            {
+                "promotion_id": "SMOKE-MANUAL-10-PCT",
+                "promotion_name": "SMOKE-MANUAL-10-PCT",
+                "promotion_type": "item_discount",
+                "activation_mode": "manual_selectable",
+                "discount_type": "percentage",
+                "discount_value": 10,
+                "eligible_items": ["SMOKE-STRAWBERRY-001"],
+                "selected_pos_profiles": ["KoPOS Smoke Profile"],
+                "internal_rule_state": "must-not-leak",
+            }
+        ],
+        "internal_snapshot_state": "must-not-leak",
+    }
+
+    def fake_get_rows(
+        doctype: str,
+        *,
+        filters: dict[str, Any] | None = None,
+        fields: list[str] | None = None,
+        order_by: str | None = None,
+    ) -> list[dict[str, Any]]:
+        captured.update(
+            {
+                "doctype": doctype,
+                "filters": filters,
+                "fields": fields,
+                "order_by": order_by,
+            }
+        )
+        return [
+            {
+                "name": "KOPOS-PROMO-SMOKE",
+                "status": "Published",
+                "pos_profile": "KoPOS Smoke Profile",
+                "published_at": "2026-07-12 08:59:00",
+                "effective_from": "2026-07-12 08:59:00",
+                "snapshot_hash": "a" * 64,
+                "snapshot_version": "KOPOS-PROMO-SMOKE",
+                "promotion_count": 1,
+                "snapshot_payload": json.dumps(snapshot_payload),
+            }
+        ]
+
+    monkeypatch.setattr(smoke, "_get_rows", fake_get_rows)
+
+    result = smoke._collect_promotion_snapshots(
+        [{"promotion_snapshot_version": "KOPOS-PROMO-SMOKE"}]
+    )
+
+    assert captured["doctype"] == "KoPOS Promotion Snapshot"
+    assert captured["filters"] == {
+        "snapshot_version": ["in", ["KOPOS-PROMO-SMOKE"]]
+    }
+    assert result == [
+        {
+            "name": "KOPOS-PROMO-SMOKE",
+            "status": "Published",
+            "pos_profile": "KoPOS Smoke Profile",
+            "published_at": "2026-07-12 08:59:00",
+            "effective_from": "2026-07-12 08:59:00",
+            "snapshot_hash": "a" * 64,
+            "snapshot_version": "KOPOS-PROMO-SMOKE",
+            "promotion_count": 1,
+            "source": "published_snapshot",
+            "promotions": [
+                {
+                    "promotion_id": "SMOKE-MANUAL-10-PCT",
+                    "promotion_name": "SMOKE-MANUAL-10-PCT",
+                    "promotion_type": "item_discount",
+                    "activation_mode": "manual_selectable",
+                    "discount_type": "percentage",
+                    "discount_value": 10,
+                    "eligible_items": ["SMOKE-STRAWBERRY-001"],
+                    "selected_pos_profiles": ["KoPOS Smoke Profile"],
+                }
+            ],
+        }
+    ]
 
 
 def test_reliability_item_code_does_not_require_duplicate_barcode_row() -> None:
@@ -203,6 +728,7 @@ def test_smoke_reset_skips_removed_legacy_device_fields(monkeypatch) -> None:
     from kopos_connector import smoke
 
     cleanup_calls: list[str] = []
+    credential_reset_calls: list[str] = []
 
     monkeypatch.setattr(
         frappe.db,
@@ -229,6 +755,11 @@ def test_smoke_reset_skips_removed_legacy_device_fields(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         smoke,
+        "_reset_smoke_device_api_credentials",
+        lambda device_name: credential_reset_calls.append(device_name),
+    )
+    monkeypatch.setattr(
+        smoke,
         "setup_full_smoke_data",
         lambda erpnext_url=None: {"erpnext_url": erpnext_url, "status": "reseeded"},
     )
@@ -237,10 +768,85 @@ def test_smoke_reset_skips_removed_legacy_device_fields(monkeypatch) -> None:
     result = smoke.reset_smoke_data(erpnext_url="https://erp.example.com")
 
     assert cleanup_calls == [smoke.SMOKE_DEVICE_ID]
+    assert credential_reset_calls == ["KOPOS-DEVICE-001"]
     assert result == {
         "erpnext_url": "https://erp.example.com",
         "status": "reseeded",
     }
+
+
+def test_smoke_reset_revokes_only_the_fixed_smoke_device_credentials(
+    monkeypatch,
+) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    state: dict[str, Any] = {
+        "api_key": "present",
+        "api_secret_present": True,
+    }
+    mutations: list[tuple[str, Any]] = []
+
+    def fake_get_value(doctype, name, fieldname):
+        if doctype == "KoPOS Device":
+            return smoke.SMOKE_DEVICE_API_USER
+        if doctype == "User" and fieldname == "api_key":
+            return state["api_key"]
+        return None
+
+    def fake_set_value(doctype, name, fieldname, value, **kwargs):
+        mutations.append((fieldname, value))
+        state["api_key"] = value
+
+    def fake_exists(doctype, filters):
+        if doctype == "User":
+            return True
+        if doctype == "__Auth":
+            return state["api_secret_present"]
+        return False
+
+    def fake_delete(doctype, filters):
+        mutations.append((doctype, dict(filters)))
+        state["api_secret_present"] = False
+
+    monkeypatch.setattr(frappe.db, "get_value", fake_get_value)
+    monkeypatch.setattr(frappe.db, "set_value", fake_set_value)
+    monkeypatch.setattr(frappe.db, "exists", fake_exists)
+    monkeypatch.setattr(frappe.db, "delete", fake_delete)
+    monkeypatch.setattr(frappe, "get_all", lambda *args, **kwargs: [])
+
+    smoke._reset_smoke_device_api_credentials("KOPOS-DEVICE-001")
+
+    assert state == {"api_key": None, "api_secret_present": False}
+    assert mutations[0] == ("api_key", None)
+    assert mutations[1][0] == "__Auth"
+
+
+def test_smoke_reset_rejects_non_smoke_device_api_user(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    monkeypatch.setattr(
+        frappe.db,
+        "get_value",
+        lambda doctype, name, fieldname: "merchant-terminal@example.com",
+    )
+    monkeypatch.setattr(
+        frappe.db,
+        "set_value",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("merchant credentials must not be changed")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="non-smoke device user"):
+        smoke._reset_smoke_device_api_credentials("KOPOS-DEVICE-001")
 
 
 def test_legacy_path_evidence_treats_removed_device_fields_as_inactive(
@@ -389,6 +995,20 @@ def test_smoke_reset_cleanup_deletes_stale_smoke_device_business_state(monkeypat
                 "device_id": "LIVE-TAB-001",
                 "shift_code": "merchant-shift",
                 "staff_id": "cashier@merchant.local",
+            },
+        ],
+        "Maybank QR Transaction": [
+            {
+                "name": "MBQR-SMOKE-STALE",
+                "device_id": smoke.SMOKE_DEVICE_ID,
+                "transaction_refno": "SMOKE-MOCK-MBQR-STALE",
+                "idempotency_key": "SMOKE-MBQR-STALE",
+            },
+            {
+                "name": "MBQR-LIVE",
+                "device_id": "LIVE-TAB-001",
+                "transaction_refno": "LIVE-MBQR-001",
+                "idempotency_key": "merchant-mbqr-idem-001",
             },
         ],
         "FB Return Event": [
@@ -649,6 +1269,7 @@ def test_smoke_reset_cleanup_deletes_stale_smoke_device_business_state(monkeypat
     assert ("Journal Entry", "JV-REFUND-STALE") in deleted
     assert ("Stock Entry", "STE-RETURN-STALE") in deleted
     assert ("Serial and Batch Bundle", "SABB-STALE") in deleted
+    assert ("Maybank QR Transaction", "MBQR-SMOKE-STALE") in deleted
     assert cancelled_stock_entries == ["STE-STALE", "STE-RETURN-STALE"]
     assert ("FB Projection Log", "PROJ-FAILED-ORDER") in deleted
     assert ("FB Projection Log", "PROJ-FAILED-SHIFT") in deleted
@@ -657,6 +1278,7 @@ def test_smoke_reset_cleanup_deletes_stale_smoke_device_business_state(monkeypat
     assert ("FB Shift", "FB-SHIFT-LIVE") not in deleted
     assert ("FB Order", "FB-ORDER-LIVE") not in deleted
     assert ("Sales Invoice", "SI-LIVE") not in deleted
+    assert ("Maybank QR Transaction", "MBQR-LIVE") not in deleted
     assert ("FB Projection Log", "PROJ-LIVE") not in deleted
     assert [row["name"] for row in tables["GL Entry"]] == ["GL-SI-LIVE"]
     assert [row["name"] for row in tables["Payment Ledger Entry"]] == [

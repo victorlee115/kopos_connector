@@ -1,42 +1,38 @@
 from __future__ import annotations
 
-from importlib import import_module
+from decimal import Decimal
 from unittest.mock import patch
 
-import pytest
-
-pytest.importorskip("frappe")
-
-frappe = import_module("frappe")
-FrappeTestCase = import_module("frappe.tests.utils").FrappeTestCase
+import frappe
+from frappe.tests.utils import FrappeTestCase
 
 from kopos_connector.kopos.doctype.fb_order.fb_order import FBOrder
+from kopos_connector.kopos.tests.frappe_test_fixtures import (
+    create_open_test_shift,
+    ensure_canonical_test_base,
+)
 
 
 class TestFBOrder(FrappeTestCase):
     def setUp(self):
-        self.company = frappe.defaults.get_defaults().get("company", "Test Company")
-        self.warehouse = "WH - Test Booth"
+        self.base = ensure_canonical_test_base()
+        self.company = self.base["company"]
+        self.warehouse = self.base["warehouse"]
+        self.item = self.base["item_code"]
         self.shift = self.create_test_shift()
 
+    def tearDown(self):
+        frappe.db.rollback()
+
     def create_test_shift(self):
-        shift = frappe.new_doc("FB Shift")
-        shift.shift_code = f"TEST-SHIFT-{frappe.generate_hash(length=8)}"
-        shift.device_id = "TEST-DEVICE-001"
-        shift.staff_id = frappe.session.user
-        shift.warehouse = self.warehouse
-        shift.company = self.company
-        shift.opening_float = 300.0
-        shift.status = "Open"
-        shift.insert()
-        return shift.name
+        return create_open_test_shift(prefix="KOPOS-ORDER-TEST").name
 
     def create_test_order(self):
         order = frappe.new_doc("FB Order")
         order.order_id = f"TEST-ORDER-{frappe.generate_hash(length=8)}"
         order.external_idempotency_key = f"IDEMP-{frappe.generate_hash(length=16)}"
         order.source = "API"
-        order.device_id = "TEST-DEVICE-001"
+        order.device_id = self.base["device_id"]
         order.shift = self.shift
         order.staff_id = frappe.session.user
         order.booth_warehouse = self.warehouse
@@ -50,7 +46,7 @@ class TestFBOrder(FrappeTestCase):
             "items",
             {
                 "line_id": "LINE-1",
-                "item": "TEST-ITEM",
+                "item": self.item,
                 "qty": 1.0,
                 "uom": "Nos",
                 "unit_price": 10.0,
@@ -80,7 +76,7 @@ class TestFBOrder(FrappeTestCase):
             "items",
             {
                 "line_id": "LINE-1",
-                "item": "TEST-ITEM",
+                "item": self.item,
                 "qty": 1.0,
                 "uom": "Nos",
                 "unit_price": 10.0,
@@ -98,7 +94,7 @@ class TestFBOrder(FrappeTestCase):
             "items",
             {
                 "line_id": "LINE-1",
-                "item": "TEST-ITEM",
+                "item": self.item,
                 "qty": 1.0,
                 "uom": "Nos",
                 "unit_price": 10.0,
@@ -120,7 +116,7 @@ class TestFBOrder(FrappeTestCase):
             "items",
             {
                 "line_id": "LINE-1",
-                "item": "TEST-ITEM-1",
+                "item": self.item,
                 "qty": 2.0,
                 "uom": "Nos",
                 "unit_price": 10.0,
@@ -133,22 +129,22 @@ class TestFBOrder(FrappeTestCase):
             "items",
             {
                 "line_id": "LINE-2",
-                "item": "TEST-ITEM-2",
+                "item": self.item,
                 "qty": 1.0,
                 "uom": "Nos",
                 "unit_price": 15.0,
                 "line_total": 15.0,
             },
         )
-        order.net_total = 36.0
+        order.net_total = 38.0
         order.tax_total = 0.0
-        order.grand_total = 36.0
-        order.append("payments", {"payment_method": "Cash", "amount": 36.0})
+        order.grand_total = 38.0
+        order.append("payments", {"payment_method": "Cash", "amount": 38.0})
 
         order.validate()
 
-        self.assertEqual(order.net_total, 36.0)
-        self.assertEqual(order.grand_total, 36.0)
+        self.assertEqual(order.net_total, Decimal("38.00"))
+        self.assertEqual(order.grand_total, Decimal("38.00"))
 
     def test_order_validation_payment_mismatch(self):
         order = self.create_test_order()
@@ -156,7 +152,7 @@ class TestFBOrder(FrappeTestCase):
             "items",
             {
                 "line_id": "LINE-1",
-                "item": "TEST-ITEM",
+                "item": self.item,
                 "qty": 1.0,
                 "uom": "Nos",
                 "unit_price": 10.0,
@@ -178,7 +174,7 @@ class TestFBOrder(FrappeTestCase):
             "items",
             {
                 "line_id": "LINE-1",
-                "item": "TEST-ITEM",
+                "item": self.item,
                 "qty": 1.0,
                 "uom": "Nos",
                 "unit_price": 12.0,
@@ -192,10 +188,10 @@ class TestFBOrder(FrappeTestCase):
 
         order.validate()
 
-        self.assertEqual(order.net_total, 12.0)
-        self.assertEqual(order.tax_total, 0.96)
-        self.assertEqual(order.rounding_adjustment, -0.01)
-        self.assertEqual(order.grand_total, 12.95)
+        self.assertEqual(order.net_total, Decimal("12.00"))
+        self.assertEqual(order.tax_total, Decimal("0.96"))
+        self.assertEqual(order.rounding_adjustment, Decimal("-0.01"))
+        self.assertEqual(order.grand_total, Decimal("12.95"))
 
     def test_order_line_required_fields(self):
         order = self.create_test_order()
@@ -203,7 +199,7 @@ class TestFBOrder(FrappeTestCase):
             "items",
             {
                 "line_id": "",
-                "item": "TEST-ITEM",
+                "item": self.item,
                 "qty": 1.0,
                 "uom": "Nos",
                 "unit_price": 10.0,
@@ -223,7 +219,7 @@ class TestFBOrder(FrappeTestCase):
             "items",
             {
                 "line_id": "LINE-1",
-                "item": "TEST-ITEM",
+                "item": self.item,
                 "qty": 0.0,
                 "uom": "Nos",
                 "unit_price": 10.0,
@@ -245,7 +241,7 @@ class TestFBOrder(FrappeTestCase):
             "items",
             {
                 "line_id": "LINE-1",
-                "item": "TEST-ITEM",
+                "item": self.item,
                 "qty": 1.0,
                 "uom": "Nos",
                 "unit_price": 10.0,
@@ -265,7 +261,7 @@ class TestFBOrder(FrappeTestCase):
             "items",
             {
                 "line_id": "LINE-1",
-                "item": "TEST-ITEM",
+                "item": self.item,
                 "qty": 1.0,
                 "uom": "Nos",
                 "unit_price": 10.0,
@@ -283,17 +279,24 @@ class TestFBOrder(FrappeTestCase):
 
     def test_submit_logs_advisory_stock_shortfall(self):
         order = self.create_submittable_test_order()
+        get_single_value = frappe.db.get_single_value
+
+        def get_test_single_value(doctype, fieldname, *args, **kwargs):
+            if (doctype, fieldname) == ("Stock Settings", "allow_negative_stock"):
+                return 1
+            return get_single_value(doctype, fieldname, *args, **kwargs)
+
         line_resolutions = [
             {
                 "resolved_components": [
                     {
-                        "item": "TEST-INGREDIENT",
+                        "item": self.item,
                         "warehouse": self.warehouse,
                         "stock_qty": 1.25,
                         "affects_stock": 1,
                     },
                     {
-                        "item": "TEST-INGREDIENT",
+                        "item": self.item,
                         "warehouse": self.warehouse,
                         "stock_qty": 0.75,
                         "affects_stock": 1,
@@ -309,7 +312,9 @@ class TestFBOrder(FrappeTestCase):
             patch.object(FBOrder, "create_resolved_sales", return_value=None),
             patch.object(FBOrder, "get_resolved_sales", return_value=[]),
             patch.object(
-                FBOrder, "create_projection_entry", side_effect=["INV-LOG", "STOCK-LOG"]
+                FBOrder,
+                "create_projection_entry",
+                side_effect=["INV-LOG", "STOCK-LOG", "SHIFT-LOG"],
             ),
             patch.object(FBOrder, "update_shift_expected_cash", return_value=None),
             patch(
@@ -327,6 +332,11 @@ class TestFBOrder(FrappeTestCase):
             patch(
                 "kopos_connector.kopos.services.inventory.warning_service.get_available_stock",
                 return_value=1.0,
+            ),
+            patch.object(
+                frappe.db,
+                "get_single_value",
+                side_effect=get_test_single_value,
             ),
         ):
             order.submit()
@@ -350,7 +360,7 @@ class TestFBOrder(FrappeTestCase):
         )
 
         self.assertEqual(len(logs), 1)
-        self.assertEqual(logs[0].item, "TEST-INGREDIENT")
+        self.assertEqual(logs[0].item, self.item)
         self.assertEqual(logs[0].warehouse, self.warehouse)
         self.assertEqual(logs[0].requested_qty, 2.0)
         self.assertEqual(logs[0].available_qty_before, 1.0)

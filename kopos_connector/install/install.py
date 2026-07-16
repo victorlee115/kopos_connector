@@ -56,6 +56,7 @@ def after_install():
         ensure_kopos_custom_fields(skip_if_missing_doctypes=True)
         create_fb_custom_fields()
         ensure_maybank_provider_device_id()
+        ensure_operational_composite_indexes()
     except Exception as e:
         frappe.log_error(
             title="KoPOS Connector: Post-install setup failed",
@@ -70,6 +71,66 @@ def after_migrate():
     ensure_kopos_custom_fields(skip_if_missing_doctypes=False)
     create_fb_custom_fields()
     ensure_maybank_provider_device_id()
+    ensure_operational_composite_indexes()
+
+
+def ensure_operational_composite_indexes() -> None:
+    """Keep device-scoped mutation/reset gates constant-footprint at high volume."""
+    index_specs = (
+        (
+            "KoPOS Device Safe Reset",
+            ["device_id", "status"],
+            "idx_kopos_safe_reset_device_status",
+        ),
+        (
+            "Maybank QR Transaction",
+            ["device_id", "status"],
+            "idx_kopos_maybank_device_status",
+        ),
+        (
+            "Maybank QR Transaction",
+            ["device_id", "manual_reconciliation_status"],
+            "idx_kopos_maybank_device_reconciliation",
+        ),
+        (
+            "Manual QR Reconciliation",
+            ["device_id", "status"],
+            "idx_kopos_manual_qr_device_status",
+        ),
+        (
+            "FB Order",
+            ["shift", "status"],
+            "idx_kopos_fb_order_shift_status",
+        ),
+        (
+            "FB Projection Log",
+            ["source_doctype", "source_name", "state", "projection_type"],
+            "idx_kopos_projection_source_state",
+        ),
+        (
+            "FB Projection Log",
+            ["state", "next_retry_at", "lease_expires_at"],
+            "idx_kopos_projection_retry_due",
+        ),
+        (
+            "Maybank QR Transaction",
+            ["status", "expires_at", "last_polled_at"],
+            "idx_kopos_maybank_poll_due",
+        ),
+        (
+            "Maybank QR Transaction",
+            ["device_id", "created_at"],
+            "idx_kopos_maybank_device_created",
+        ),
+        (
+            "FB Resolved Sale",
+            ["fb_order"],
+            "idx_kopos_resolved_sale_order",
+        ),
+    )
+    for doctype, fields, index_name in index_specs:
+        if frappe.db.exists("DocType", doctype):
+            frappe.db.add_index(doctype, fields, index_name=index_name)
 
 
 def ensure_maybank_provider_device_id() -> str:
@@ -231,6 +292,54 @@ def create_kopos_custom_fields():
                 "read_only": 1,
                 "hidden": 1,
                 "no_copy": 1,
+                "search_index": 1,
+            },
+            {
+                "fieldname": "custom_kopos_pricing_mode",
+                "label": "KoPOS Pricing Mode",
+                "fieldtype": "Data",
+                "insert_after": "custom_kopos_device_id",
+                "read_only": 1,
+                "hidden": 1,
+                "no_copy": 1,
+            },
+            {
+                "fieldname": "custom_kopos_promotion_snapshot_version",
+                "label": "KoPOS Promotion Snapshot Version",
+                "fieldtype": "Data",
+                "insert_after": "custom_kopos_pricing_mode",
+                "read_only": 1,
+                "hidden": 1,
+                "no_copy": 1,
+                "search_index": 1,
+            },
+            {
+                "fieldname": "custom_kopos_promotion_snapshot_hash",
+                "label": "KoPOS Promotion Snapshot Hash",
+                "fieldtype": "Data",
+                "insert_after": "custom_kopos_promotion_snapshot_version",
+                "read_only": 1,
+                "hidden": 1,
+                "no_copy": 1,
+                "search_index": 1,
+            },
+            {
+                "fieldname": "custom_kopos_promotion_reconciliation_status",
+                "label": "KoPOS Promotion Reconciliation Status",
+                "fieldtype": "Data",
+                "insert_after": "custom_kopos_promotion_snapshot_hash",
+                "read_only": 1,
+                "hidden": 1,
+                "no_copy": 1,
+            },
+            {
+                "fieldname": "custom_kopos_promotion_payload",
+                "label": "KoPOS Promotion Payload",
+                "fieldtype": "Long Text",
+                "insert_after": "custom_kopos_promotion_reconciliation_status",
+                "read_only": 1,
+                "hidden": 1,
+                "no_copy": 1,
             },
         ],
         "Sales Invoice Item": [
@@ -258,6 +367,15 @@ def create_kopos_custom_fields():
                 "insert_after": "custom_kopos_modifier_total",
                 "read_only": 1,
                 "search_index": 1,
+            },
+            {
+                "fieldname": "custom_kopos_promotion_allocation",
+                "label": "KoPOS Promotion Allocation",
+                "fieldtype": "Long Text",
+                "insert_after": "custom_kopos_has_modifiers",
+                "read_only": 1,
+                "hidden": 1,
+                "no_copy": 1,
             },
         ],
     }

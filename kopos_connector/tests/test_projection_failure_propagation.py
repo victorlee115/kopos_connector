@@ -87,13 +87,12 @@ def test_pending_projection_fetch_failure_is_not_an_empty_queue() -> None:
 
 
 def test_failed_projection_fetch_failure_is_not_an_empty_queue() -> None:
-    with patch.object(
-        log_service.frappe,
-        "get_all",
-        side_effect=RuntimeError("failed query failed"),
+    with patch(
+        "kopos_connector.kopos.services.projection.retry_service.retry_projection_failures",
+        side_effect=RuntimeError("retry worker failed"),
     ):
         with pytest.raises(
             ProjectionLogError,
-            match="Fetching failed projections failed: failed query failed",
+            match="Retrying failed projections failed: retry worker failed",
         ):
             retry_failed_projections()

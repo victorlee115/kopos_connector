@@ -296,19 +296,16 @@ class PromotionReviewWorkflowTests(unittest.TestCase):
         snapshot.snapshot_version = "KOPOS-PROMO-HASHONLY"
         snapshot.snapshot_hash = "hash-only-1234abcd"
 
-        with (
-            patch(
-                "frappe.db.exists",
-                return_value=False,
-            ),
-            patch(
-                "frappe.db.escape",
-                side_effect=lambda x: x,
-            ),
-            patch(
-                "frappe.db.sql",
-                return_value=[["POS-INV-HASH-REF"]],
-            ),
+        def canonical_reference_exists(doctype, filters):
+            if doctype == "Sales Invoice" and filters == {
+                "custom_kopos_promotion_snapshot_hash": "hash-only-1234abcd"
+            }:
+                return "SINV-HASH-REF"
+            return False
+
+        with patch(
+            "frappe.db.exists",
+            side_effect=canonical_reference_exists,
         ):
             with self.assertRaises(frappe.ValidationError):
                 snapshot.on_trash()

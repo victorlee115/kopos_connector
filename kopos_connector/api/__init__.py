@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 import frappe
@@ -16,13 +17,27 @@ from .catalog import (
     get_tax_rate_value,
 )
 from .devices import (
+    KOPOS_DEVICE_API_ROLE,
     elevate_device_api_user,
     get_authenticated_device_doc,
+    get_session_roles,
+    lock_device_for_operational_mutation,
     mark_device_seen,
     require_device_context,
     require_device_operational_scope,
     require_kopos_api_access,
     require_system_manager,
+)
+from .device_safe_reset import (
+    abandon_unregistered_device_safe_reset_request as abandon_unregistered_device_safe_reset_request_payload,
+    authorize_device_safe_reset as authorize_device_safe_reset_payload,
+    cancel_device_safe_reset as cancel_device_safe_reset_payload,
+    cancel_device_safe_reset_as_system_manager as cancel_safe_reset_as_manager_payload,
+    classify_device_safe_reset_request_registration as classify_safe_reset_request_registration_payload,
+    complete_device_safe_reset as complete_device_safe_reset_payload,
+    register_device_credential_recovery as register_device_credential_recovery_payload,
+    request_device_safe_reset as request_device_safe_reset_payload,
+    resolve_device_safe_reset_request as resolve_device_safe_reset_request_payload,
 )
 from .order_history import get_order_history_payload
 from .promotions import get_promotion_snapshot_payload
@@ -44,6 +59,11 @@ _REFUND_REASON_OPTIONS = {
     "other": "Other",
 }
 
+SAFE_RESET_REQUEST_REJECTED_NO_COMMIT = (
+    "SAFE_RESET_REQUEST_REJECTED_NO_COMMIT"
+)
+SAFE_RESET_REQUEST_LOOKUP_REQUIRED = "SAFE_RESET_REQUEST_LOOKUP_REQUIRED"
+
 
 def _write_response(payload: dict[str, Any], http_status_code: int = 200) -> None:
     frappe.local.response.update(payload)
@@ -52,12 +72,100 @@ def _write_response(payload: dict[str, Any], http_status_code: int = 200) -> Non
         frappe.local.response.pop(key, None)
 
 
+def _set_sensitive_response_headers() -> None:
+    """Prevent QR tokens and redeemed credentials from entering browser/proxy caches."""
+    headers = frappe.local.response.setdefault("headers", {})
+    if not isinstance(headers, dict):
+        headers = {}
+        frappe.local.response["headers"] = headers
+    headers.update(
+        {
+            "Cache-Control": "private, no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
+    )
+
+
 def _validation_error_payload(exc: frappe.ValidationError) -> dict[str, Any]:
     payload: dict[str, Any] = {"status": "error", "message": str(exc)}
     error_code = frappe.utils.cstr(getattr(exc, "error_code", None)).strip()
     if error_code:
         payload["error_code"] = error_code
     return payload
+
+
+def _utc_server_time() -> str:
+    """Return an authenticated clock anchor without changing snapshot identity."""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+        "+00:00", "Z"
+    )
+
+
+def _safe_reset_request_rejection_payload(
+    request_payload: Mapping[str, Any],
+    exc: frappe.ValidationError,
+    *,
+    checked_at: str,
+) -> dict[str, Any]:
+    """Bind an authoritative post-rollback rejection to its request identity."""
+    return {
+        "status": "rejected",
+        "error_code": SAFE_RESET_REQUEST_REJECTED_NO_COMMIT,
+        "message": str(exc),
+        "request_attempt_committed": False,
+        "request_registration_status": "not_found",
+        "local_release_authorized": False,
+        "recovery_action": "abandon_unregistered_device_safe_reset_request",
+        "safe_reset_protocol_version": request_payload.get(
+            "safe_reset_protocol_version"
+        ),
+        "request_id": request_payload.get("request_id"),
+        "device_id": request_payload.get("device_id"),
+        "previous_config_version": request_payload.get(
+            "previous_config_version"
+        ),
+        "reset_proof_sha256": request_payload.get("reset_proof_sha256"),
+        "export_sha256": request_payload.get("export_sha256"),
+        "export_content_sha256": request_payload.get(
+            "export_content_sha256"
+        ),
+        "export_byte_length": request_payload.get("export_byte_length"),
+        "checked_at": checked_at,
+    }
+
+
+def _safe_reset_request_lookup_required_payload(
+    request_payload: Mapping[str, Any],
+    exc: frappe.ValidationError,
+    *,
+    lookup_reason: str,
+) -> dict[str, Any]:
+    """Return a bound but deliberately non-releasable rejection response."""
+    return {
+        "status": "lookup_required",
+        "error_code": SAFE_RESET_REQUEST_LOOKUP_REQUIRED,
+        "message": str(exc),
+        "request_registration_status": "lookup_required",
+        "lookup_reason": lookup_reason,
+        "local_release_authorized": False,
+        "recovery_action": "abandon_unregistered_device_safe_reset_request",
+        "safe_reset_protocol_version": request_payload.get(
+            "safe_reset_protocol_version"
+        ),
+        "request_id": request_payload.get("request_id"),
+        "device_id": request_payload.get("device_id"),
+        "previous_config_version": request_payload.get(
+            "previous_config_version"
+        ),
+        "reset_proof_sha256": request_payload.get("reset_proof_sha256"),
+        "export_sha256": request_payload.get("export_sha256"),
+        "export_content_sha256": request_payload.get(
+            "export_content_sha256"
+        ),
+        "export_byte_length": request_payload.get("export_byte_length"),
+        "checked_at": _utc_server_time(),
+    }
 
 
 @frappe.whitelist(allow_guest=True)
@@ -104,11 +212,38 @@ def get_tax_rate(pos_profile: str | None = None, device_id: str | None = None) -
 
 
 @frappe.whitelist()
-def get_item_modifiers(item_code: str) -> None:
-    """Public KoPOS endpoint returning modifiers for a single item."""
-    require_kopos_api_access()
+def get_item_modifiers(item_code: str, device_id: str | None = None) -> None:
+    """Return item modifiers within the authenticated device's company scope."""
+    if device_id:
+        device_doc = require_device_context(device_id=device_id)
+    else:
+        authenticated_device = get_authenticated_device_doc()
+        device_doc = require_device_context(name=authenticated_device.name)
+
     with elevate_device_api_user():
-        _write_response({"modifier_groups": get_item_modifiers_payload(item_code)})
+        pos_profile_name = frappe.utils.cstr(
+            getattr(device_doc, "pos_profile", None)
+        ).strip()
+        if not pos_profile_name:
+            frappe.throw(
+                _("KoPOS Device has no POS Profile configured"),
+                frappe.ValidationError,
+            )
+        pos_profile = frappe.get_cached_doc("POS Profile", pos_profile_name)
+        company = frappe.utils.cstr(getattr(pos_profile, "company", None)).strip()
+        if not company:
+            frappe.throw(
+                _("KoPOS Device POS Profile has no company configured"),
+                frappe.ValidationError,
+            )
+        _write_response(
+            {
+                "modifier_groups": get_item_modifiers_payload(
+                    item_code,
+                    company=company,
+                )
+            }
+        )
 
 
 @frappe.whitelist()
@@ -147,13 +282,18 @@ def get_promotion_snapshot(
                     "status": "unavailable",
                     "reason": "no_published_snapshot",
                     "message": "No promotion snapshot has been published for this POS profile",
+                    "server_time": _utc_server_time(),
                 }
             )
         else:
-            _write_response(payload)
+            response_payload = dict(payload)
+            response_payload["server_time"] = _utc_server_time()
+            _write_response(response_payload)
     except frappe.ValidationError as exc:
+        frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
     except Exception as error:
+        frappe.db.rollback()
         log_sanitized_error("KoPOS get_promotion_snapshot failed", error)
         _write_response(
             {"status": "error", "message": "Failed to fetch promotion snapshot"},
@@ -165,6 +305,7 @@ def get_promotion_snapshot(
 def create_device_provisioning_qr(**kwargs: Any) -> None:
     """Create a one-click KoPOS provisioning QR using dedicated per-device credentials."""
     try:
+        _set_sensitive_response_headers()
         payload = _get_submit_payload(kwargs)
         _write_response(
             create_device_provisioning_qr_payload(
@@ -182,6 +323,7 @@ def create_device_provisioning_qr(**kwargs: Any) -> None:
 def create_pos_provisioning(**kwargs: Any) -> None:
     """Create a short-lived KoPOS provisioning link for QR-based setup."""
     try:
+        _set_sensitive_response_headers()
         payload = _get_submit_payload(kwargs)
         _write_response(
             create_pos_provisioning_payload(
@@ -206,13 +348,481 @@ def create_pos_provisioning(**kwargs: Any) -> None:
 def redeem_pos_provisioning(token: str | None = None, **kwargs: Any) -> None:
     """Redeem a one-time KoPOS provisioning link from a QR/deep link."""
     try:
+        _set_sensitive_response_headers()
         payload = _get_submit_payload(kwargs)
         token_value = token or payload.get("token")
         _write_response(
-            redeem_pos_provisioning_payload(token=frappe.utils.cstr(token_value))
+            redeem_pos_provisioning_payload(
+                token=frappe.utils.cstr(token_value),
+                safe_reset_protocol_version=payload.get(
+                    "safe_reset_protocol_version"
+                ),
+                reset_id=frappe.utils.cstr(payload.get("reset_id")),
+                request_id=frappe.utils.cstr(payload.get("request_id")),
+                approval_challenge_id=frappe.utils.cstr(
+                    payload.get("approval_challenge_id")
+                ),
+                approval_generation=payload.get("approval_generation"),
+                reset_proof_nonce=frappe.utils.cstr(
+                    payload.get("reset_proof_nonce")
+                ),
+                redemption_idempotency_key=frappe.utils.cstr(
+                    payload.get("redemption_idempotency_key")
+                ),
+                export_sha256=frappe.utils.cstr(payload.get("export_sha256")),
+                export_content_sha256=frappe.utils.cstr(
+                    payload.get("export_content_sha256")
+                ),
+                export_byte_length=payload.get("export_byte_length"),
+            )
         )
     except frappe.ValidationError as exc:
+        frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS provisioning redemption failed", error)
+        _write_response(
+            {"status": "error", "message": "Failed to redeem device provisioning"},
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
+def request_device_safe_reset(**kwargs: Any) -> None:
+    """Register immutable safe-reset evidence using the current device credential."""
+    payload: Mapping[str, Any] = kwargs
+    try:
+        payload = _get_submit_payload(kwargs)
+        _write_response(
+            request_device_safe_reset_payload(
+                safe_reset_protocol_version=payload.get(
+                    "safe_reset_protocol_version"
+                ),
+                request_id=frappe.utils.cstr(payload.get("request_id")),
+                device_id=frappe.utils.cstr(payload.get("device_id")),
+                reason=frappe.utils.cstr(payload.get("reason")),
+                export_sha256=frappe.utils.cstr(payload.get("export_sha256")),
+                export_content_sha256=frappe.utils.cstr(
+                    payload.get("export_content_sha256")
+                ),
+                export_byte_length=payload.get("export_byte_length"),
+                exported_at=payload.get("exported_at")
+                or payload.get("export_generated_at"),
+                drained_row_count=payload.get("drained_row_count"),
+                queue_evidence=payload.get("queue_evidence"),
+                migration_recovery_point_count=payload.get(
+                    "migration_recovery_point_count"
+                ),
+                migration_recovery_valid_point_count=payload.get(
+                    "migration_recovery_valid_point_count"
+                ),
+                migration_recovery_invalid_point_count=payload.get(
+                    "migration_recovery_invalid_point_count"
+                ),
+                migration_recovery_captured_pending_total=payload.get(
+                    "migration_recovery_captured_pending_total"
+                ),
+                migration_recovery_review_required=payload.get(
+                    "migration_recovery_review_required"
+                ),
+                previous_config_version=payload.get("previous_config_version"),
+                reset_proof_sha256=frappe.utils.cstr(
+                    payload.get("reset_proof_sha256")
+                ),
+                erp_base_url=frappe.utils.cstr(
+                    payload.get("erp_base_url") or payload.get("erp_origin")
+                ),
+                company=frappe.utils.cstr(payload.get("company")),
+                currency=frappe.utils.cstr(payload.get("currency")),
+                pos_profile=frappe.utils.cstr(payload.get("pos_profile")),
+                warehouse=frappe.utils.cstr(payload.get("warehouse")),
+            )
+        )
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        try:
+            registration_check = (
+                classify_safe_reset_request_registration_payload(
+                    safe_reset_protocol_version=payload.get(
+                        "safe_reset_protocol_version"
+                    ),
+                    device_id=frappe.utils.cstr(payload.get("device_id")),
+                    request_id=frappe.utils.cstr(payload.get("request_id")),
+                    reset_proof_sha256=frappe.utils.cstr(
+                        payload.get("reset_proof_sha256")
+                    ),
+                    export_sha256=frappe.utils.cstr(
+                        payload.get("export_sha256")
+                    ),
+                    export_content_sha256=frappe.utils.cstr(
+                        payload.get("export_content_sha256")
+                    ),
+                    export_byte_length=payload.get("export_byte_length"),
+                    previous_config_version=payload.get(
+                        "previous_config_version"
+                    ),
+                )
+            )
+        except frappe.ValidationError:
+            response_payload = _safe_reset_request_lookup_required_payload(
+                payload,
+                exc,
+                lookup_reason="verification_failed",
+            )
+        except Exception as resolution_error:
+            log_sanitized_error(
+                "KoPOS safe reset rejection resolution failed",
+                resolution_error,
+            )
+            response_payload = _safe_reset_request_lookup_required_payload(
+                payload,
+                exc,
+                lookup_reason="verification_unavailable",
+            )
+        else:
+            registration_status = registration_check.get(
+                "request_registration_status"
+            )
+            checked_at = registration_check.get("checked_at")
+            if registration_status == "not_found" and checked_at:
+                response_payload = _safe_reset_request_rejection_payload(
+                    payload,
+                    exc,
+                    checked_at=checked_at,
+                )
+            else:
+                response_payload = _safe_reset_request_lookup_required_payload(
+                    payload,
+                    exc,
+                    lookup_reason=registration_status or "verification_unavailable",
+                )
+        _write_response(response_payload, http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS safe reset request failed", error)
+        _write_response(
+            {"status": "error", "message": "Failed to register safe reset request"},
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
+def abandon_unregistered_device_safe_reset_request(**kwargs: Any) -> None:
+    """Durably fence an unacknowledged safe-reset request before local release."""
+    try:
+        _set_sensitive_response_headers()
+        payload = _get_submit_payload(kwargs)
+        _write_response(
+            abandon_unregistered_device_safe_reset_request_payload(
+                safe_reset_protocol_version=payload.get(
+                    "safe_reset_protocol_version"
+                ),
+                device_id=frappe.utils.cstr(payload.get("device_id")),
+                request_id=frappe.utils.cstr(payload.get("request_id")),
+                reason=frappe.utils.cstr(payload.get("reason")),
+                export_sha256=frappe.utils.cstr(payload.get("export_sha256")),
+                export_content_sha256=frappe.utils.cstr(
+                    payload.get("export_content_sha256")
+                ),
+                export_byte_length=payload.get("export_byte_length"),
+                exported_at=payload.get("exported_at")
+                or payload.get("export_generated_at"),
+                drained_row_count=payload.get("drained_row_count"),
+                queue_evidence=payload.get("queue_evidence"),
+                migration_recovery_point_count=payload.get(
+                    "migration_recovery_point_count"
+                ),
+                migration_recovery_valid_point_count=payload.get(
+                    "migration_recovery_valid_point_count"
+                ),
+                migration_recovery_invalid_point_count=payload.get(
+                    "migration_recovery_invalid_point_count"
+                ),
+                migration_recovery_captured_pending_total=payload.get(
+                    "migration_recovery_captured_pending_total"
+                ),
+                migration_recovery_review_required=payload.get(
+                    "migration_recovery_review_required"
+                ),
+                previous_config_version=payload.get("previous_config_version"),
+                reset_proof_sha256=frappe.utils.cstr(
+                    payload.get("reset_proof_sha256")
+                ),
+                erp_base_url=frappe.utils.cstr(
+                    payload.get("erp_base_url") or payload.get("erp_origin")
+                ),
+                company=frappe.utils.cstr(payload.get("company")),
+                currency=frappe.utils.cstr(payload.get("currency")),
+                pos_profile=frappe.utils.cstr(payload.get("pos_profile")),
+                warehouse=frappe.utils.cstr(payload.get("warehouse")),
+                cancellation_idempotency_key=frappe.utils.cstr(
+                    payload.get("cancellation_idempotency_key")
+                ),
+            )
+        )
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS safe reset abandonment failed", error)
+        _write_response(
+            {
+                "status": "error",
+                "message": "Failed to abandon unacknowledged safe reset request",
+            },
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
+def resolve_device_safe_reset_request(**kwargs: Any) -> None:
+    """Resolve whether an exact safe-reset request was registered by ERP."""
+    try:
+        payload = _get_submit_payload(kwargs)
+        _write_response(
+            resolve_device_safe_reset_request_payload(
+                safe_reset_protocol_version=payload.get(
+                    "safe_reset_protocol_version"
+                ),
+                device_id=frappe.utils.cstr(payload.get("device_id")),
+                request_id=frappe.utils.cstr(payload.get("request_id")),
+                reset_proof_sha256=frappe.utils.cstr(
+                    payload.get("reset_proof_sha256")
+                ),
+                export_sha256=frappe.utils.cstr(
+                    payload.get("export_sha256")
+                ),
+                export_content_sha256=frappe.utils.cstr(
+                    payload.get("export_content_sha256")
+                ),
+                export_byte_length=payload.get("export_byte_length"),
+                previous_config_version=payload.get(
+                    "previous_config_version"
+                ),
+            )
+        )
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS safe reset request resolution failed", error)
+        _write_response(
+            {
+                "status": "error",
+                "message": "Failed to resolve safe reset request",
+            },
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
+def register_device_credential_recovery(**kwargs: Any) -> None:
+    """System Manager registration for a tablet whose old credential is unavailable."""
+    try:
+        payload = _get_submit_payload(kwargs)
+        _write_response(
+            register_device_credential_recovery_payload(
+                safe_reset_protocol_version=payload.get(
+                    "safe_reset_protocol_version"
+                ),
+                confirmation=frappe.utils.cstr(payload.get("confirmation")),
+                request_id=frappe.utils.cstr(payload.get("request_id")),
+                device_id=frappe.utils.cstr(payload.get("device_id")),
+                reason=frappe.utils.cstr(payload.get("reason")),
+                export_sha256=frappe.utils.cstr(payload.get("export_sha256")),
+                export_content_sha256=frappe.utils.cstr(
+                    payload.get("export_content_sha256")
+                ),
+                export_byte_length=payload.get("export_byte_length"),
+                exported_at=payload.get("exported_at")
+                or payload.get("export_generated_at"),
+                drained_row_count=payload.get("drained_row_count"),
+                queue_evidence=payload.get("queue_evidence"),
+                migration_recovery_point_count=payload.get(
+                    "migration_recovery_point_count"
+                ),
+                migration_recovery_valid_point_count=payload.get(
+                    "migration_recovery_valid_point_count"
+                ),
+                migration_recovery_invalid_point_count=payload.get(
+                    "migration_recovery_invalid_point_count"
+                ),
+                migration_recovery_captured_pending_total=payload.get(
+                    "migration_recovery_captured_pending_total"
+                ),
+                migration_recovery_review_required=payload.get(
+                    "migration_recovery_review_required"
+                ),
+                previous_config_version=payload.get("previous_config_version"),
+                reset_proof_sha256=frappe.utils.cstr(
+                    payload.get("reset_proof_sha256")
+                ),
+                erp_base_url=frappe.utils.cstr(
+                    payload.get("erp_base_url") or payload.get("erp_origin")
+                ),
+                company=frappe.utils.cstr(payload.get("company")),
+                currency=frappe.utils.cstr(payload.get("currency")),
+                pos_profile=frappe.utils.cstr(payload.get("pos_profile")),
+                warehouse=frappe.utils.cstr(payload.get("warehouse")),
+                allow_stale_export=payload.get("allow_stale_export") or False,
+                stale_export_override_reason=frappe.utils.cstr(
+                    payload.get("stale_export_override_reason")
+                ),
+            )
+        )
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS credential recovery registration failed", error)
+        _write_response(
+            {
+                "status": "error",
+                "message": "Failed to register device credential recovery",
+            },
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
+def authorize_device_safe_reset(**kwargs: Any) -> None:
+    """Authorize or reissue a proof-bound safe-reset QR as a System Manager."""
+    try:
+        _set_sensitive_response_headers()
+        payload = _get_submit_payload(kwargs)
+        _write_response(
+            authorize_device_safe_reset_payload(
+                reset_id=frappe.utils.cstr(payload.get("reset_id")),
+                expires_in_seconds=payload.get("expires_in_seconds"),
+                erpnext_url=frappe.utils.cstr(payload.get("erpnext_url")),
+                migration_recovery_confirmation=frappe.utils.cstr(
+                    payload.get("migration_recovery_confirmation")
+                ),
+                migration_recovery_acknowledgement_reason=frappe.utils.cstr(
+                    payload.get("migration_recovery_acknowledgement_reason")
+                ),
+            )
+        )
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS safe reset authorization route failed", error)
+        _write_response(
+            {"status": "error", "message": "Failed to authorize safe reset"},
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
+def cancel_device_safe_reset(**kwargs: Any) -> None:
+    """Cancel a requested or authorized safe reset before credential rotation."""
+    try:
+        _set_sensitive_response_headers()
+        payload = _get_submit_payload(kwargs)
+        _write_response(
+            cancel_device_safe_reset_payload(
+                safe_reset_protocol_version=payload.get(
+                    "safe_reset_protocol_version"
+                ),
+                confirmation=frappe.utils.cstr(payload.get("confirmation")),
+                request_id=frappe.utils.cstr(payload.get("request_id")),
+                reset_id=frappe.utils.cstr(payload.get("reset_id")),
+                device_id=frappe.utils.cstr(payload.get("device_id")),
+                reason=frappe.utils.cstr(payload.get("reason")),
+                idempotency_key=frappe.utils.cstr(
+                    payload.get("idempotency_key")
+                ),
+                previous_config_version=payload.get("previous_config_version"),
+                reset_proof_sha256=frappe.utils.cstr(
+                    payload.get("reset_proof_sha256")
+                ),
+            )
+        )
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS safe reset cancellation failed", error)
+        _write_response(
+            {"status": "error", "message": "Failed to cancel safe reset"},
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
+def cancel_device_safe_reset_as_system_manager(**kwargs: Any) -> None:
+    """System Manager abandonment for a requested/authorized reset without rotation."""
+    try:
+        _set_sensitive_response_headers()
+        payload = _get_submit_payload(kwargs)
+        _write_response(
+            cancel_safe_reset_as_manager_payload(
+                safe_reset_protocol_version=payload.get(
+                    "safe_reset_protocol_version"
+                ),
+                confirmation=frappe.utils.cstr(payload.get("confirmation")),
+                reset_id=frappe.utils.cstr(payload.get("reset_id")),
+                reason=frappe.utils.cstr(payload.get("reason")),
+                idempotency_key=frappe.utils.cstr(
+                    payload.get("idempotency_key")
+                ),
+            )
+        )
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error(
+            "KoPOS System Manager safe reset cancellation failed",
+            error,
+        )
+        _write_response(
+            {"status": "error", "message": "Failed to cancel safe reset"},
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
+def complete_device_safe_reset(**kwargs: Any) -> None:
+    """Complete safe reset using the newly rotated device credential."""
+    try:
+        payload = _get_submit_payload(kwargs)
+        _write_response(
+            complete_device_safe_reset_payload(
+                safe_reset_protocol_version=payload.get(
+                    "safe_reset_protocol_version"
+                ),
+                device_id=frappe.utils.cstr(payload.get("device_id")),
+                reset_id=frappe.utils.cstr(payload.get("reset_id")),
+                new_config_version=payload.get("new_config_version"),
+                export_sha256=frappe.utils.cstr(payload.get("export_sha256")),
+                export_content_sha256=frappe.utils.cstr(
+                    payload.get("export_content_sha256")
+                ),
+                export_byte_length=payload.get("export_byte_length"),
+                completion_idempotency_key=frappe.utils.cstr(
+                    payload.get("completion_idempotency_key")
+                ),
+            )
+        )
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS safe reset completion failed", error)
+        _write_response(
+            {"status": "error", "message": "Failed to complete safe reset"},
+            http_status_code=500,
+        )
 
 
 @frappe.whitelist()
@@ -274,6 +884,9 @@ def submit_order(**kwargs: Any) -> None:
 
     try:
         payload = _get_submit_payload(kwargs)
+        lock_device_for_operational_mutation(
+            device_id=frappe.utils.cstr(payload.get("device_id"))
+        )
         require_device_operational_scope(
             frappe.utils.cstr(payload.get("device_id")),
             company=frappe.utils.cstr(payload.get("company")),
@@ -430,7 +1043,9 @@ def open_shift(**kwargs: Any) -> None:
 
     try:
         payload = _get_submit_payload(kwargs)
-        require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
+        lock_device_for_operational_mutation(
+            device_id=frappe.utils.cstr(payload.get("device_id"))
+        )
         result = open_shift_payload(payload)
         _write_response(result)
     except frappe.ValidationError as exc:
@@ -455,7 +1070,9 @@ def close_shift(**kwargs: Any) -> None:
 
     try:
         payload = _get_submit_payload(kwargs)
-        require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
+        lock_device_for_operational_mutation(
+            device_id=frappe.utils.cstr(payload.get("device_id"))
+        )
         result = close_shift_payload(payload)
         _write_response(result)
     except frappe.ValidationError as exc:
@@ -500,8 +1117,10 @@ def get_device_open_shift(device_id: str | None = None) -> None:
         else:
             _write_response({"status": "ok", "shift": None})
     except frappe.ValidationError as exc:
+        frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
     except Exception as error:
+        frappe.db.rollback()
         log_sanitized_error("KoPOS get_device_open_shift failed", error)
         _write_response(
             {
@@ -542,9 +1161,11 @@ def get_order_history(
         _write_response(result)
         return result
     except frappe.ValidationError as exc:
+        frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
         return {"status": "error", "message": str(exc)}
     except Exception as error:
+        frappe.db.rollback()
         log_sanitized_error("KoPOS get_order_history failed", error)
         _write_response(
             {
@@ -564,7 +1185,9 @@ def void_order(**kwargs: Any) -> None:
     """Public KoPOS endpoint for voiding a submitted Sales Invoice."""
     try:
         payload = _get_submit_payload(kwargs)
-        require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
+        lock_device_for_operational_mutation(
+            device_id=frappe.utils.cstr(payload.get("device_id"))
+        )
         result = _process_sales_invoice_void_payload(payload)
         _write_response(result)
     except frappe.ValidationError as exc:
@@ -910,7 +1533,9 @@ def process_refund(**kwargs: Any) -> None:
 
     try:
         payload = _get_submit_payload(kwargs)
-        require_device_context(device_id=frappe.utils.cstr(payload.get("device_id")))
+        lock_device_for_operational_mutation(
+            device_id=frappe.utils.cstr(payload.get("device_id"))
+        )
         result = process_return_payload(
             _to_public_fb_return_payload(payload),
             require_manager_approval=True,
@@ -1057,12 +1682,17 @@ def request_shift_manager_approval(**kwargs: Any) -> None:
     try:
         payload = _get_submit_payload(kwargs)
         requested_device_id = frappe.utils.cstr(payload.get("device_id")).strip()
-        if requested_device_id:
-            require_device_context(device_id=requested_device_id)
+        device_doc = lock_device_for_operational_mutation(
+            device_id=requested_device_id
+        )
         scope = _resolve_manager_approval_scope(payload)
-        device_doc = require_device_context(device_id=scope["device_id"])
-        if device_doc is None:
-            frappe.throw(_("KoPOS Device is required"), frappe.ValidationError)
+        if frappe.utils.cstr(getattr(device_doc, "device_id", None)).strip() != scope[
+            "device_id"
+        ]:
+            frappe.throw(
+                _("Manager approval scope belongs to another KoPOS Device"),
+                frappe.ValidationError,
+            )
         admin_approval = bool(frappe.utils.cint(payload.get("admin_approval")))
         manager_id = authorize_manager_for_device(
             device_doc,
@@ -1097,8 +1727,10 @@ def request_shift_manager_approval(**kwargs: Any) -> None:
             }
         )
     except frappe.ValidationError as exc:
+        frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
     except Exception as error:
+        frappe.db.rollback()
         log_sanitized_error("KoPOS request_shift_manager_approval failed", error)
         _write_response(
             {
@@ -1116,12 +1748,19 @@ def generate_maybank_qr(**kwargs: Any) -> None:
 
     try:
         payload = _get_submit_payload(kwargs)
-        require_device_operational_scope(
+        device_doc, _profile_doc = require_device_operational_scope(
             device_id=frappe.utils.cstr(payload.get("device_id")),
             currency="MYR",
         )
+        authority = _capture_maybank_device_authority(device_doc)
         payload["currency"] = "MYR"
-        _write_response(generate_maybank_qr_payload(payload))
+        result = generate_maybank_qr_payload(payload)
+        # Provider evidence is committed before acquiring the device fence. This
+        # keeps the irreversible network call outside the broad device lock while
+        # still denying a response if credentials/config changed in flight.
+        frappe.db.commit()
+        _revalidate_maybank_device_authority(authority)
+        _write_response(result)
     except frappe.ValidationError as exc:
         frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
@@ -1145,25 +1784,98 @@ def check_maybank_payment(
         require_kopos_api_access()
         resolved_device_id = frappe.utils.cstr(device_id).strip() or None
         if resolved_device_id:
-            device = require_device_context(device_id=resolved_device_id)
+            device, _profile_doc = require_device_operational_scope(
+                resolved_device_id,
+                currency="MYR",
+            )
             resolved_device_id = frappe.utils.cstr(getattr(device, "device_id", ""))
         else:
             device = get_authenticated_device_doc()
             resolved_device_id = frappe.utils.cstr(getattr(device, "device_id", ""))
+            device, _profile_doc = require_device_operational_scope(
+                resolved_device_id,
+                currency="MYR",
+            )
+        authority = _capture_maybank_device_authority(device)
         result = check_maybank_payment_payload(
             transaction_refno=frappe.utils.cstr(transaction_refno),
             device_id=resolved_device_id,
         )
+        frappe.db.commit()
+        _revalidate_maybank_device_authority(authority)
         # This endpoint remains GET-compatible for deployed tablets. Tell Frappe to
         # commit the validated on-demand poll writes at request completion.
         frappe.flags.commit = True
         _write_response(result)
     except frappe.ValidationError as exc:
+        frappe.db.rollback()
         _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
     except Exception as error:
+        frappe.db.rollback()
         log_sanitized_error("KoPOS check_maybank_payment failed", error)
         _write_response(
             {"status": "error", "message": "Failed to check payment status"},
+            http_status_code=500,
+        )
+
+
+def _capture_maybank_device_authority(device_doc: Any) -> dict[str, Any]:
+    return {
+        "name": frappe.utils.cstr(getattr(device_doc, "name", None)).strip(),
+        "device_id": frappe.utils.cstr(
+            getattr(device_doc, "device_id", None)
+        ).strip(),
+        "config_version": frappe.utils.cint(
+            getattr(device_doc, "config_version", 0)
+        ),
+    }
+
+
+def _revalidate_maybank_device_authority(authority: Mapping[str, Any]) -> None:
+    locked_device = lock_device_for_operational_mutation(
+        device_id=frappe.utils.cstr(authority.get("device_id"))
+    )
+    if (
+        frappe.utils.cstr(getattr(locked_device, "name", None)).strip()
+        != frappe.utils.cstr(authority.get("name")).strip()
+        or frappe.utils.cint(getattr(locked_device, "config_version", 0))
+        != frappe.utils.cint(authority.get("config_version"))
+    ):
+        frappe.throw(
+            _(
+                "KoPOS Device authority changed while the Maybank request was in flight; authenticate again"
+            ),
+            frappe.ValidationError,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
+def resolve_maybank_qr_generation(**kwargs: Any) -> None:
+    """Resolve an ambiguous provider generation using audited System Manager evidence."""
+    from .maybank_qr import resolve_maybank_qr_generation_payload
+
+    try:
+        require_system_manager()
+        if KOPOS_DEVICE_API_ROLE in get_session_roles():
+            frappe.throw(
+                _(
+                    "Maybank QR generation resolution requires a non-device System Manager session"
+                ),
+                frappe.ValidationError,
+            )
+        payload = _get_submit_payload(kwargs)
+        _write_response(resolve_maybank_qr_generation_payload(payload))
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS Maybank QR generation resolution failed", error)
+        _write_response(
+            {
+                "status": "error",
+                "message": "Failed to resolve ambiguous Maybank QR generation",
+            },
             http_status_code=500,
         )
 
@@ -1212,8 +1924,13 @@ def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> None:
 
 
 __all__ = [
+    "abandon_unregistered_device_safe_reset_request",
+    "authorize_device_safe_reset",
+    "cancel_device_safe_reset",
+    "cancel_device_safe_reset_as_system_manager",
     "check_maybank_payment",
     "close_shift",
+    "complete_device_safe_reset",
     "create_device_provisioning_qr",
     "create_pos_provisioning",
     "fetch_manual_qr_reconciliation_status",
@@ -1231,7 +1948,11 @@ __all__ = [
     "process_refund",
     "publish_promotion_snapshot",
     "redeem_pos_provisioning",
+    "register_device_credential_recovery",
+    "request_device_safe_reset",
+    "resolve_device_safe_reset_request",
     "request_shift_manager_approval",
+    "resolve_maybank_qr_generation",
     "review_promotion_reconciliation",
     "submit_order",
     "upload_manual_qr_receipt",

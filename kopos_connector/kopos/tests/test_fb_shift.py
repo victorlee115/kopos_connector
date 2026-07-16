@@ -4,11 +4,15 @@ import frappe
 from frappe.tests.utils import FrappeTestCase
 
 from kopos_connector.kopos.doctype.fb_shift.fb_shift import FBShift
+from kopos_connector.kopos.tests.frappe_test_fixtures import (
+    ensure_canonical_test_base,
+)
 
 
 class TestFBShift(FrappeTestCase):
     def setUp(self):
         self.cleanup_test_shifts()
+        self.base = ensure_canonical_test_base()
 
     def tearDown(self):
         self.cleanup_test_shifts()
@@ -24,11 +28,13 @@ class TestFBShift(FrappeTestCase):
         )
         shift.device_id = kwargs.get("device_id", "TEST-DEVICE-001")
         shift.staff_id = kwargs.get("staff_id", frappe.session.user)
-        shift.warehouse = kwargs.get("warehouse", "WH - Test Booth")
-        shift.company = kwargs.get(
-            "company", frappe.defaults.get_defaults().get("company", "Test Company")
-        )
+        shift.warehouse = kwargs.get("warehouse", self.base["warehouse"])
+        shift.company = kwargs.get("company", self.base["company"])
         shift.opening_float = kwargs.get("opening_float", 300.0)
+        if "expected_cash" in kwargs:
+            shift.expected_cash = kwargs["expected_cash"]
+        if "counted_cash" in kwargs:
+            shift.counted_cash = kwargs["counted_cash"]
         shift.status = kwargs.get("status", "Open")
         return shift
 

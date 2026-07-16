@@ -92,7 +92,8 @@
    "fieldtype": "Data",
    "label": "Device ID",
    "read_only": 1,
-   "reqd": 1
+   "reqd": 1,
+   "search_index": 1
   },
   {
    "fieldname": "staff_id",

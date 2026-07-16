@@ -3,6 +3,8 @@ from __future__ import annotations
 import frappe
 from frappe.tests.utils import FrappeTestCase
 
+from kopos_connector.kopos.tests.frappe_test_fixtures import modifier_doc
+
 
 class TestModifierEngine(FrappeTestCase):
     def setUp(self):
@@ -28,8 +30,9 @@ class TestModifierEngine(FrappeTestCase):
         )
 
         modifiers = [
-            frappe._dict(
+            modifier_doc(
                 {
+                    "doctype": "FB Modifier",
                     "name": "ADD-ITEM",
                     "kind": "Add",
                     "new_item": "EXTRA-ITEM",
@@ -69,8 +72,9 @@ class TestModifierEngine(FrappeTestCase):
         )
 
         modifiers = [
-            frappe._dict(
+            modifier_doc(
                 {
+                    "doctype": "FB Modifier",
                     "name": "OAT-MILK",
                     "kind": "Replace",
                     "target_substitution_key": "milk",
@@ -104,8 +108,9 @@ class TestModifierEngine(FrappeTestCase):
         )
 
         modifiers = [
-            frappe._dict(
+            modifier_doc(
                 {
+                    "doctype": "FB Modifier",
                     "name": "NO-SUGAR",
                     "kind": "Remove",
                     "target_item": "SUGAR",
@@ -134,8 +139,9 @@ class TestModifierEngine(FrappeTestCase):
         )
 
         modifiers = [
-            frappe._dict(
+            modifier_doc(
                 {
+                    "doctype": "FB Modifier",
                     "name": "DOUBLE-MATCHA",
                     "kind": "Scale",
                     "scale_percent": 200.0,
@@ -165,8 +171,9 @@ class TestModifierEngine(FrappeTestCase):
         )
 
         modifiers = [
-            frappe._dict(
+            modifier_doc(
                 {
+                    "doctype": "FB Modifier",
                     "name": "LESS-SWEET",
                     "kind": "Instruction Only",
                     "instruction_text": "Use half the sugar",
@@ -196,8 +203,9 @@ class TestModifierEngine(FrappeTestCase):
         )
 
         modifiers = [
-            frappe._dict(
+            modifier_doc(
                 {
+                    "doctype": "FB Modifier",
                     "name": "ADD-EXTRA",
                     "kind": "Add",
                     "new_item": "VANILLA",
@@ -206,8 +214,9 @@ class TestModifierEngine(FrappeTestCase):
                     "affects_recipe": 1,
                 }
             ),
-            frappe._dict(
+            modifier_doc(
                 {
+                    "doctype": "FB Modifier",
                     "name": "DOUBLE-ALL",
                     "kind": "Scale",
                     "scale_percent": 200.0,

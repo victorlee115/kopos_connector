@@ -101,6 +101,31 @@ def create_sales_invoice(fb_order: Any) -> str | None:
                 ["custom_fb_operational_status"],
                 _value(order_doc, "status") or "Submitted",
             )
+            _set_if_present(
+                invoice,
+                ["custom_kopos_pricing_mode"],
+                _value(order_doc, "pricing_mode"),
+            )
+            _set_if_present(
+                invoice,
+                ["custom_kopos_promotion_snapshot_version"],
+                _value(order_doc, "promotion_snapshot_version"),
+            )
+            _set_if_present(
+                invoice,
+                ["custom_kopos_promotion_snapshot_hash"],
+                _value(order_doc, "promotion_snapshot_hash"),
+            )
+            _set_if_present(
+                invoice,
+                ["custom_kopos_promotion_reconciliation_status"],
+                _value(order_doc, "promotion_reconciliation_status"),
+            )
+            _set_if_present(
+                invoice,
+                ["custom_kopos_promotion_payload"],
+                _value(order_doc, "promotion_payload_json"),
+            )
 
             for order_item in list(_value(order_doc, "items") or []):
                 item_code = _value(order_item, "item")
@@ -135,6 +160,10 @@ def create_sales_invoice(fb_order: Any) -> str | None:
                     "conversion_factor": 1,
                     "rate": rate,
                     "amount": line_total,
+                    # ERPNext accepts a zero sales rate, but marking the row as
+                    # free prevents price-list and minimum-selling-price logic
+                    # from replacing or rejecting a fully discounted line.
+                    "is_free_item": 1 if line_total == Decimal("0.00") else 0,
                     "warehouse": _value(order_doc, "booth_warehouse") or None,
                     "custom_fb_order_line_ref": _value(order_item, "line_id") or None,
                     "custom_fb_resolved_sale": _value(order_item, "resolved_sale")
@@ -166,6 +195,11 @@ def create_sales_invoice(fb_order: Any) -> str | None:
                     invoice_item,
                     ["custom_kopos_modifiers"],
                     modifier_snapshot,
+                )
+                _set_if_present(
+                    invoice_item,
+                    ["custom_kopos_promotion_allocation"],
+                    _value(order_item, "promotion_allocations_json") or "[]",
                 )
 
             if not invoice.items:
@@ -230,6 +264,23 @@ def _value(doc: Any, fieldname: str) -> Any:
     if hasattr(doc, fieldname):
         return getattr(doc, fieldname)
     return None
+
+
+def _canonical_json_value(value: Any, *, expected_type: type) -> str:
+    if value in (None, ""):
+        parsed: Any = expected_type()
+    elif isinstance(value, expected_type):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError("Persisted promotion evidence is invalid JSON") from error
+    else:
+        raise ValueError("Persisted promotion evidence has an invalid type")
+    if not isinstance(parsed, expected_type):
+        raise ValueError("Persisted promotion evidence has an invalid JSON shape")
+    return json.dumps(parsed, sort_keys=True, separators=(",", ":"))
 
 
 def _resolve_customer(order_doc: Any) -> str:
@@ -375,6 +426,35 @@ def _validate_sales_invoice_equivalence(order_doc: Any, invoice: Any) -> None:
         _value(order_doc, "external_idempotency_key"),
         f"Sales Invoice {invoice_name} has a different idempotency key",
     )
+    for invoice_field, order_field in (
+        ("custom_kopos_pricing_mode", "pricing_mode"),
+        (
+            "custom_kopos_promotion_snapshot_version",
+            "promotion_snapshot_version",
+        ),
+        ("custom_kopos_promotion_snapshot_hash", "promotion_snapshot_hash"),
+        (
+            "custom_kopos_promotion_reconciliation_status",
+            "promotion_reconciliation_status",
+        ),
+    ):
+        _validate_recovered_field(
+            invoice,
+            invoice_field,
+            _value(order_doc, order_field),
+            f"Sales Invoice {invoice_name} promotion provenance differs from FB Order",
+        )
+    if _canonical_json_value(
+        _value(invoice, "custom_kopos_promotion_payload"),
+        expected_type=dict,
+    ) != _canonical_json_value(
+        _value(order_doc, "promotion_payload_json"),
+        expected_type=dict,
+    ):
+        frappe.throw(
+            f"Sales Invoice {invoice_name} promotion payload differs from FB Order {order_doc.name}",
+            frappe.ValidationError,
+        )
     _validate_recovered_field(
         invoice,
         "company",
@@ -605,6 +685,17 @@ def _validate_invoice_item_equivalence(
                 f"Recovered Sales Invoice {invoice_name} item {line_ref} modifier total does not match FB Order",
                 frappe.ValidationError,
             )
+        if _canonical_json_value(
+            _value(invoice_item, "custom_kopos_promotion_allocation"),
+            expected_type=list,
+        ) != _canonical_json_value(
+            _value(order_item, "promotion_allocations_json"),
+            expected_type=list,
+        ):
+            frappe.throw(
+                f"Recovered Sales Invoice {invoice_name} item {line_ref} promotion allocation does not match FB Order",
+                frappe.ValidationError,
+            )
         expected_warehouse = str(
             _value(order_doc, "booth_warehouse") or ""
         ).strip()
@@ -767,8 +858,8 @@ def _resolve_line_rate(order_item: Any) -> Decimal:
         _value(order_item, "line_total"),
         "FB Order item line_total",
     )
-    if line_total_sen <= 0:
-        raise ValueError("FB Order item line_total must be greater than 0")
+    if line_total_sen < 0:
+        raise ValueError("FB Order item line_total must be 0 or greater")
     return sen_to_decimal(line_total_sen) / Decimal(qty)
 
 
@@ -880,7 +971,15 @@ def _resolve_mode_of_payment_context(
             f"Mode of Payment {mode_of_payment} is not configured for company {company}"
         )
     payment_meta = mode_info[0]
-    account = str(payment_meta.get("account") or "").strip()
+    # ERPNext v15 exposed this value as ``account`` in some call paths, while
+    # v16's get_mode_of_payment_info() returns the child-table field name
+    # ``default_account``. Accept both wire shapes so an otherwise valid POS
+    # tender cannot leave its FB Order posted without a Sales Invoice.
+    account = str(
+        payment_meta.get("account")
+        or payment_meta.get("default_account")
+        or ""
+    ).strip()
     if not account:
         raise ValueError(
             f"Mode of Payment {mode_of_payment} has no ledger account for company {company}"
@@ -1170,7 +1269,7 @@ def _build_invoice_remarks(order_doc: Any) -> str:
 
 
 def _build_modifier_snapshot(order_item: Any) -> str | None:
-    modifiers = list(_value(order_item, "selected_modifiers") or [])
+    modifiers = _get_order_item_modifier_rows(order_item)
     if not modifiers:
         return None
 
@@ -1200,6 +1299,34 @@ def _build_modifier_snapshot(order_item: Any) -> str | None:
     if not rows:
         return None
     return json.dumps({"modifiers": rows}, separators=(",", ":"))
+
+
+def _get_order_item_modifier_rows(order_item: Any) -> list[Any]:
+    persisted_rows = list(_value(order_item, "selected_modifiers") or [])
+    if persisted_rows:
+        return persisted_rows
+
+    # ERPNext v16 cannot persist a nested child table on FB Order Line. The
+    # submit path therefore carries the authenticated modifier selection on
+    # the child row until FB Resolved Sale is written.
+    transient_rows = getattr(order_item, "_selected_modifiers_payload", None)
+    if transient_rows:
+        return list(transient_rows)
+
+    # Projection retries reload the FB Order and lose transient attributes.
+    # FB Resolved Sale is the durable, canonical fallback for that path.
+    resolved_sale_name = _value(order_item, "resolved_sale")
+    if not resolved_sale_name:
+        return []
+    try:
+        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
+    except Exception as error:
+        raise RuntimeError(
+            "Unable to load linked FB Resolved Sale {0} for the Sales Invoice modifier audit snapshot".format(
+                resolved_sale_name
+            )
+        ) from error
+    return list(_value(resolved_sale, "selected_modifiers") or [])
 
 
 def _get_existing_reference(doc: Any, fieldname: str) -> str | None:

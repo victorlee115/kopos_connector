@@ -240,7 +240,12 @@ def build_sample_smoke_state() -> dict[str, object]:
     return {
         "status": "ready",
         "site": "test-site",
-        "device": {"device_id": "SMOKE-TAB-A001", "enabled": True},
+        "device": {
+            "device_id": "SMOKE-TAB-A001",
+            "enabled": True,
+            "pos_profile_company": "KoPOS Malaysia Sdn Bhd",
+            "pos_profile_currency": "MYR",
+        },
         "data": {
             "fb_shifts": [
                 {
@@ -268,6 +273,7 @@ def build_sample_smoke_state() -> dict[str, object]:
                     "ingredient_stock_entry": "STE-001",
                     "sale_datetime": "2026-07-12 00:30:45",
                     "grand_total": 12.0,
+                    "company": "KoPOS Malaysia Sdn Bhd",
                     "currency": "MYR",
                 }
             ],
@@ -282,11 +288,26 @@ def build_sample_smoke_state() -> dict[str, object]:
                     "outstanding_amount": 0.0,
                     "posting_date": "2026-07-12",
                     "posting_time": "00:30:45",
+                    "company": "KoPOS Malaysia Sdn Bhd",
+                    "currency": "MYR",
                     "custom_fb_order": "ORDER-001",
                     "custom_fb_shift": "SHIFT-001",
                     "custom_fb_idempotency_key": "idem-001",
                     "items": [{"item_code": "ITEM-COFFEE"}],
-                    "payments": [{"mode_of_payment": "Cash", "amount": 12.0}],
+                    "payments": [
+                        {
+                            "mode_of_payment": "Cash",
+                            "amount": 12.0,
+                            "account": "Cash - KMY",
+                            "account_currency": "MYR",
+                        }
+                    ],
+                    "gl_entries": [
+                        {
+                            "account": "Cash - KMY",
+                            "account_currency": "MYR",
+                        }
+                    ],
                 },
                 {
                     "name": "SI-RET-001",

@@ -8,36 +8,53 @@ from frappe.model.document import Document
 
 class KoPOSPromotionSnapshot(Document):
     def on_trash(self) -> None:
-        referenced_by_version = frappe.db.exists(
-            "POS Invoice",
-            {"custom_kopos_promotion_snapshot_version": self.snapshot_version},
-        )
-        if referenced_by_version:
-            frappe.throw(
-                _("Cannot delete snapshot {0}: Referenced by POS Invoice {1}").format(
-                    self.snapshot_version, referenced_by_version
-                ),
-                frappe.ValidationError,
-            )
+        snapshot_version = str(getattr(self, "snapshot_version", None) or "").strip()
+        snapshot_hash = str(getattr(self, "snapshot_hash", None) or "").strip()
 
-        if not self.snapshot_hash:
-            return
+        for doctype, version_field, hash_field in (
+            (
+                "FB Order",
+                "promotion_snapshot_version",
+                "promotion_snapshot_hash",
+            ),
+            (
+                "Sales Invoice",
+                "custom_kopos_promotion_snapshot_version",
+                "custom_kopos_promotion_snapshot_hash",
+            ),
+        ):
+            if snapshot_version:
+                referenced_by_version = frappe.db.exists(
+                    doctype,
+                    {version_field: snapshot_version},
+                )
+                if referenced_by_version:
+                    frappe.throw(
+                        _(
+                            "Cannot delete promotion snapshot {0}: "
+                            "referenced by {1} {2} via version"
+                        ).format(
+                            snapshot_version,
+                            doctype,
+                            referenced_by_version,
+                        ),
+                        frappe.ValidationError,
+                    )
 
-        hash_pattern = '%"snapshot_hash":"{0}"%'.format(
-            frappe.db.escape(self.snapshot_hash)
-        )
-        result = frappe.db.sql(
-            """
-            SELECT name FROM `tabPOS Invoice`
-            WHERE custom_kopos_promotion_payload LIKE %s
-            LIMIT 1
-            """,
-            (hash_pattern,),
-        )
-        if result and len(result) > 0 and len(result[0]) > 0:
-            frappe.throw(
-                _(
-                    "Cannot delete snapshot {0}: Referenced by POS Invoice {1} via hash"
-                ).format(self.snapshot_version, result[0][0]),
-                frappe.ValidationError,
-            )
+            if snapshot_hash:
+                referenced_by_hash = frappe.db.exists(
+                    doctype,
+                    {hash_field: snapshot_hash},
+                )
+                if referenced_by_hash:
+                    frappe.throw(
+                        _(
+                            "Cannot delete promotion snapshot {0}: "
+                            "referenced by {1} {2} via hash"
+                        ).format(
+                            snapshot_version,
+                            doctype,
+                            referenced_by_hash,
+                        ),
+                        frappe.ValidationError,
+                    )

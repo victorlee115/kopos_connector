@@ -103,12 +103,22 @@ before_uninstall = "kopos_connector.uninstall.before_uninstall"
 
 # Document event behavior is implemented directly in the DocType controllers.
 
+# POS Profile is an ERPNext-owned DocType, so extend its controller instead of
+# registering a second doc_events lifecycle.  The mixin invalidates managed
+# device configuration only when profile fields serialized to a tablet change.
+extend_doctype_class = {
+    "POS Profile": [
+        "kopos_connector.extensions.pos_profile.KoPOSPOSProfileConfigMixin",
+    ],
+}
+
 # Scheduled Tasks
 # ---------------
 
 scheduler_events = {
     "all": [
         "kopos_connector.tasks.poll_maybank.poll_pending_maybank_transactions",
+        "kopos_connector.kopos.services.projection.retry_service.retry_projection_failures",
     ],
 }
 

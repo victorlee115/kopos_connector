@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +12,596 @@ install_fake_frappe_modules()
 
 
 class TestFBOrderModifierValidation(unittest.TestCase):
+    def test_fully_discounted_line_normalizes_to_zero_sen(self):
+        from kopos_connector.kopos.api.fb_orders import _normalize_order_item
+
+        normalized = _normalize_order_item(
+            {
+                "line_id": "LINE-FREE-1",
+                "item_code": "ITEM-FREE-1",
+                "qty": 1,
+                "unit_price_sen": 1200,
+                "modifier_total_sen": 0,
+                "discount_amount_sen": 1200,
+                "line_total_sen": 0,
+                "promotion_allocations": [
+                    {
+                        "promotion_id": "PROMO-FREE-1",
+                        "amount_sen": 1200,
+                        "quantity": 1,
+                        "scope": "line",
+                    }
+                ],
+            },
+            1,
+            "sen_v1",
+        )
+
+        self.assertEqual(normalized["line_total_sen"], 0)
+        self.assertEqual(normalized["discount_amount_sen"], 1200)
+        self.assertEqual(
+            normalized["promotion_allocations"][0]["amount_sen"],
+            1200,
+        )
+
+    def test_negative_line_total_remains_invalid(self):
+        from kopos_connector.kopos.api.fb_orders import _normalize_order_item
+
+        with self.assertRaisesRegex(Exception, "line_total_sen must be 0 or greater"):
+            _normalize_order_item(
+                {
+                    "line_id": "LINE-NEGATIVE-1",
+                    "item_code": "ITEM-NEGATIVE-1",
+                    "qty": 1,
+                    "unit_price_sen": 1200,
+                    "modifier_total_sen": 0,
+                    "discount_amount_sen": 1201,
+                    "line_total_sen": -1,
+                },
+                1,
+                "sen_v1",
+            )
+
+    def test_percentage_discount_rounds_half_up_and_caps_at_free(self):
+        from kopos_connector.kopos.api.fb_orders import _snapshot_unit_discount_sen
+
+        self.assertEqual(
+            _snapshot_unit_discount_sen(
+                {
+                    "promotion_id": "PROMO-HALF-UP",
+                    "discount_type": "percentage",
+                    "discount_value": 10,
+                },
+                5,
+            ),
+            1,
+        )
+        self.assertEqual(
+            _snapshot_unit_discount_sen(
+                {
+                    "promotion_id": "PROMO-FREE",
+                    "discount_type": "percentage",
+                    "discount_value": 100,
+                },
+                1200,
+            ),
+            1200,
+        )
+        self.assertEqual(
+            _snapshot_unit_discount_sen(
+                {
+                    "promotion_id": "PROMO-OVER-100",
+                    "discount_type": "percentage",
+                    "discount_value": 150,
+                },
+                1200,
+            ),
+            1200,
+        )
+
+    def _stateful_promotion_fixture(self):
+        from kopos_connector.api.promotions import (
+            build_snapshot_version_from_hash,
+            compute_snapshot_content_hash,
+        )
+
+        rule = {
+            "promotion_id": "SMOKE-MANUAL-10-PCT",
+            "promotion_name": "SMOKE-MANUAL-10-PCT",
+            "promotion_type": "item_discount",
+            "activation_mode": "manual_selectable",
+            "offline_allowed": True,
+            "priority": 10,
+            "stacking_policy": "exclusive",
+            "discount_type": "percentage",
+            "discount_value": 10,
+            "valid_from": None,
+            "valid_upto": None,
+            "eligible_items": ["SMOKE-STRAWBERRY-001"],
+            "eligible_item_groups": [],
+            "selected_pos_profiles": ["KoPOS Smoke Profile"],
+            "min_qty": 1,
+            "min_amount": 0,
+        }
+        body = {
+            "pos_profile": "KoPOS Smoke Profile",
+            "promotions": [rule],
+        }
+        snapshot_hash = compute_snapshot_content_hash(body)
+        snapshot_version = build_snapshot_version_from_hash(snapshot_hash)
+        payload = {
+            **body,
+            "effective_from": "2026-07-12T08:59:00",
+            "published_at": "2026-07-12T08:59:00",
+            "snapshot_hash": snapshot_hash,
+            "snapshot_version": snapshot_version,
+        }
+        snapshot = SimpleNamespace(
+            snapshot_version=snapshot_version,
+            snapshot_hash=snapshot_hash,
+            pos_profile="KoPOS Smoke Profile",
+            status="Published",
+            promotion_count=1,
+            snapshot_payload=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        )
+        context = {
+            "snapshot_version": snapshot_version,
+            "snapshot_hash": snapshot_hash,
+            "snapshot_downloaded_at": "2026-07-12T09:00:00",
+            "snapshot_published_at": "2026-07-12T08:59:00",
+            "snapshot_effective_from": "2026-07-12T08:59:00",
+            "pricing_mode": "online_snapshot",
+            "restricted_mode": False,
+            "priced_at": "2026-07-12T10:01:00",
+            "offline_applied_promotion_ids": [],
+            "promotion_expiry_by_id": {"SMOKE-MANUAL-10-PCT": None},
+        }
+        normalized = {
+            "device_id": "SMOKE-TAB-A001",
+            "sale_datetime": datetime(2026, 7, 12, 10, 1),
+            "offline_priced": False,
+            "pricing_context": context,
+            "applied_promotions": [
+                {
+                    "promotion_id": "SMOKE-MANUAL-10-PCT",
+                    "promotion_name": "SMOKE-MANUAL-10-PCT",
+                    "promotion_type": "item_discount",
+                    "amount_sen": 120,
+                    "scope": "order",
+                    "source": "snapshot",
+                    "snapshot_version": snapshot_version,
+                    "snapshot_hash": snapshot_hash,
+                    "valid_from": None,
+                    "valid_upto": None,
+                    "offline_applied": False,
+                }
+            ],
+            "promotion_reconciliation_status": "matched",
+            "items": [
+                {
+                    "line_id": "LINE-1",
+                    "item_code": "SMOKE-STRAWBERRY-001",
+                    "qty": 1,
+                    "unit_price_sen": 1200,
+                    "discount_amount_sen": 120,
+                    "promotion_allocations": [
+                        {
+                            "promotion_id": "SMOKE-MANUAL-10-PCT",
+                            "amount_sen": 120,
+                            "quantity": 1,
+                            "scope": "line",
+                        }
+                    ],
+                }
+            ],
+        }
+        return normalized, snapshot, payload
+
+    @patch("kopos_connector.api.promotions.resolve_snapshot_pos_profile")
+    @patch("kopos_connector.api.promotions.get_snapshot_by_version")
+    def test_stateful_promotion_validation_recalculates_exact_ten_percent_sale(
+        self, mock_get_snapshot, mock_resolve_profile
+    ):
+        from kopos_connector.kopos.api.fb_orders import (
+            _validate_published_promotion_snapshot,
+        )
+
+        normalized, snapshot, _payload = self._stateful_promotion_fixture()
+        mock_resolve_profile.return_value = "KoPOS Smoke Profile"
+        mock_get_snapshot.return_value = snapshot
+
+        evidence = _validate_published_promotion_snapshot(normalized)
+
+        self.assertEqual(evidence["reconciliation"], {
+            "status": "matched",
+            "source": "published_snapshot",
+        })
+        self.assertEqual(evidence["applied_promotions"][0]["amount_sen"], 120)
+
+    @patch("kopos_connector.api.promotions.resolve_snapshot_pos_profile")
+    @patch("kopos_connector.api.promotions.get_snapshot_by_version")
+    def test_stateful_promotion_validation_compares_priced_at_as_same_instant(
+        self, mock_get_snapshot, mock_resolve_profile
+    ):
+        from kopos_connector.kopos.api.fb_orders import (
+            _validate_published_promotion_snapshot,
+        )
+
+        normalized, snapshot, _payload = self._stateful_promotion_fixture()
+        normalized["pricing_context"]["priced_at"] = "2026-07-12T02:01:00Z"
+        mock_resolve_profile.return_value = "KoPOS Smoke Profile"
+        mock_get_snapshot.return_value = snapshot
+
+        evidence = _validate_published_promotion_snapshot(normalized)
+
+        self.assertEqual(evidence["reconciliation"]["status"], "matched")
+
+    @patch("kopos_connector.api.promotions.resolve_snapshot_pos_profile")
+    @patch("kopos_connector.api.promotions.get_snapshot_by_version")
+    def test_stateful_promotion_validation_rejects_wrong_percentage_math(
+        self, mock_get_snapshot, mock_resolve_profile
+    ):
+        from kopos_connector.kopos.api.fb_orders import (
+            _validate_published_promotion_snapshot,
+        )
+
+        normalized, snapshot, _payload = self._stateful_promotion_fixture()
+        normalized["items"][0]["unit_price_sen"] = 1620
+        mock_resolve_profile.return_value = "KoPOS Smoke Profile"
+        mock_get_snapshot.return_value = snapshot
+
+        with self.assertRaisesRegex(Exception, "server-recalculated snapshot pricing"):
+            _validate_published_promotion_snapshot(normalized)
+
+    @patch("kopos_connector.api.promotions.resolve_snapshot_pos_profile")
+    @patch("kopos_connector.api.promotions.get_snapshot_by_version")
+    def test_stateful_promotion_validation_recomputes_snapshot_content_hash(
+        self, mock_get_snapshot, mock_resolve_profile
+    ):
+        from kopos_connector.kopos.api.fb_orders import (
+            _validate_published_promotion_snapshot,
+        )
+
+        normalized, snapshot, payload = self._stateful_promotion_fixture()
+        payload["promotions"][0]["discount_value"] = 99
+        snapshot.snapshot_payload = json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        mock_resolve_profile.return_value = "KoPOS Smoke Profile"
+        mock_get_snapshot.return_value = snapshot
+
+        with self.assertRaisesRegex(Exception, "persisted identity is inconsistent"):
+            _validate_published_promotion_snapshot(normalized)
+
+    @patch("kopos_connector.api.promotions.resolve_snapshot_pos_profile")
+    @patch("kopos_connector.api.promotions.get_snapshot_by_version")
+    def test_snapshot_priced_sale_without_promotion_keeps_authoritative_context(
+        self, mock_get_snapshot, mock_resolve_profile
+    ):
+        from kopos_connector.kopos.api.fb_orders import (
+            _validate_published_promotion_snapshot,
+        )
+
+        normalized, snapshot, _payload = self._stateful_promotion_fixture()
+        normalized["applied_promotions"] = []
+        normalized["pricing_context"]["promotion_expiry_by_id"] = {}
+        normalized["promotion_reconciliation_status"] = "not_applicable"
+        normalized["items"][0]["discount_amount_sen"] = 0
+        normalized["items"][0]["promotion_allocations"] = []
+        mock_resolve_profile.return_value = "KoPOS Smoke Profile"
+        mock_get_snapshot.return_value = snapshot
+
+        evidence = _validate_published_promotion_snapshot(normalized)
+
+        self.assertEqual(evidence["reconciliation"], {
+            "status": "not_applicable",
+            "source": "published_snapshot",
+        })
+        self.assertEqual(evidence["snapshot"]["snapshot_hash"], snapshot.snapshot_hash)
+
+    @patch("kopos_connector.api.promotions.resolve_snapshot_pos_profile")
+    @patch("kopos_connector.api.promotions.get_snapshot_by_version")
+    def test_restricted_manual_only_sale_keeps_snapshot_identity_without_promotions(
+        self, mock_get_snapshot, mock_resolve_profile
+    ):
+        from kopos_connector.kopos.api.fb_orders import (
+            _validate_published_promotion_snapshot,
+        )
+
+        normalized, snapshot, _payload = self._stateful_promotion_fixture()
+        normalized["pricing_context"].update(
+            {
+                "pricing_mode": "manual_only",
+                "restricted_mode": True,
+                "promotion_expiry_by_id": {},
+            }
+        )
+        normalized["applied_promotions"] = []
+        normalized["promotion_reconciliation_status"] = "not_applicable"
+        normalized["items"][0]["discount_amount_sen"] = 0
+        normalized["items"][0]["promotion_allocations"] = []
+        mock_resolve_profile.return_value = "KoPOS Smoke Profile"
+        mock_get_snapshot.return_value = snapshot
+
+        evidence = _validate_published_promotion_snapshot(normalized)
+
+        self.assertEqual(evidence["reconciliation"]["status"], "not_applicable")
+        self.assertEqual(evidence["snapshot"]["snapshot_hash"], snapshot.snapshot_hash)
+
+    @patch("kopos_connector.api.promotions.resolve_snapshot_pos_profile")
+    @patch("kopos_connector.api.promotions.get_snapshot_by_version")
+    def test_snapshot_priced_sale_cannot_omit_applicable_automatic_promotion(
+        self, mock_get_snapshot, mock_resolve_profile
+    ):
+        from kopos_connector.api.promotions import (
+            build_snapshot_version_from_hash,
+            compute_snapshot_content_hash,
+        )
+        from kopos_connector.kopos.api.fb_orders import (
+            _validate_published_promotion_snapshot,
+        )
+
+        normalized, snapshot, payload = self._stateful_promotion_fixture()
+        payload["promotions"][0]["activation_mode"] = "automatic"
+        snapshot_hash = compute_snapshot_content_hash(
+            {
+                "pos_profile": payload["pos_profile"],
+                "promotions": payload["promotions"],
+            }
+        )
+        snapshot_version = build_snapshot_version_from_hash(snapshot_hash)
+        payload["snapshot_hash"] = snapshot_hash
+        payload["snapshot_version"] = snapshot_version
+        snapshot.snapshot_hash = snapshot_hash
+        snapshot.snapshot_version = snapshot_version
+        snapshot.snapshot_payload = json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+        normalized["pricing_context"]["snapshot_hash"] = snapshot_hash
+        normalized["pricing_context"]["snapshot_version"] = snapshot_version
+        normalized["pricing_context"]["promotion_expiry_by_id"] = {}
+        normalized["applied_promotions"] = []
+        normalized["promotion_reconciliation_status"] = "not_applicable"
+        normalized["items"][0]["discount_amount_sen"] = 0
+        normalized["items"][0]["promotion_allocations"] = []
+        mock_resolve_profile.return_value = "KoPOS Smoke Profile"
+        mock_get_snapshot.return_value = snapshot
+
+        with self.assertRaisesRegex(
+            Exception,
+            "Applied promotion ids do not exactly match server-recalculated snapshot pricing",
+        ):
+            _validate_published_promotion_snapshot(normalized)
+
+    def test_offline_manual_only_sale_is_valid_without_a_promotion_snapshot(self):
+        from kopos_connector.kopos.api.fb_orders import (
+            _validate_offline_pricing_consistency,
+        )
+
+        _validate_offline_pricing_consistency(
+            True,
+            {"pricing_mode": "manual_only"},
+        )
+
+    def test_restricted_snapshot_context_requires_manual_only_mode(self):
+        from kopos_connector.kopos.api.fb_orders import _normalize_pricing_context
+
+        with self.assertRaisesRegex(
+            Exception,
+            "restricted promotion pricing must use manual_only pricing_mode",
+        ):
+            _normalize_pricing_context(
+                {
+                    "snapshot_version": "KOPOS-PROMO-AAAAAAAAAAAAAAAA",
+                    "snapshot_hash": "a" * 64,
+                    "pricing_mode": "offline_snapshot",
+                    "restricted_mode": True,
+                }
+            )
+
+    def test_no_promotion_sale_rejects_orphan_expiry_evidence(self):
+        from kopos_connector.kopos.api.fb_orders import (
+            _validate_normalized_promotion_evidence,
+        )
+
+        with self.assertRaisesRegex(
+            Exception,
+            "promotion expiry evidence requires applied_promotions",
+        ):
+            _validate_normalized_promotion_evidence(
+                {
+                    "offline_applied_promotion_ids": [],
+                    "promotion_expiry_by_id": {"PROMO-1": None},
+                },
+                [],
+                [{"promotion_allocations": []}],
+            )
+
+    def test_item_promotion_minimums_match_tablet_stacking_order(self):
+        from kopos_connector.kopos.api.fb_orders import (
+            _calculate_expected_snapshot_promotions,
+        )
+
+        normalized = {
+            "sale_datetime": datetime(2026, 7, 12, 10, 1),
+            "applied_promotions": [],
+            "items": [
+                {
+                    "item_code": "ITEM-A",
+                    "qty": 1,
+                    "unit_price_sen": 1000,
+                },
+                {
+                    "item_code": "ITEM-B",
+                    "qty": 1,
+                    "unit_price_sen": 1000,
+                },
+            ],
+        }
+        common = {
+            "promotion_name": "Automatic 10%",
+            "promotion_type": "item_discount",
+            "activation_mode": "automatic",
+            "offline_allowed": True,
+            "stacking_policy": "exclusive",
+            "discount_type": "percentage",
+            "discount_value": 10,
+            "valid_from": None,
+            "valid_upto": None,
+            "eligible_item_groups": [],
+            "selected_pos_profiles": ["KoPOS Smoke Profile"],
+            "min_amount": 0,
+        }
+        rules = [
+            {
+                **common,
+                "promotion_id": "PROMO-1",
+                "priority": 1,
+                "eligible_items": ["ITEM-A"],
+                "min_qty": 1,
+            },
+            {
+                **common,
+                "promotion_id": "PROMO-2",
+                "priority": 2,
+                "eligible_items": ["ITEM-A", "ITEM-B"],
+                "min_qty": 2,
+            },
+        ]
+
+        promotions, allocations = _calculate_expected_snapshot_promotions(
+            normalized,
+            rules,
+            "KoPOS Smoke Profile",
+        )
+
+        self.assertEqual(
+            [(row["promotion_id"], row["amount_sen"]) for row in promotions],
+            [("PROMO-1", 100), ("PROMO-2", 100)],
+        )
+        self.assertEqual(allocations[0][0]["promotion_id"], "PROMO-1")
+        self.assertEqual(allocations[1][0]["promotion_id"], "PROMO-2")
+
+    def test_snapshot_pricing_mode_must_match_offline_sale_provenance(self):
+        from kopos_connector.kopos.api.fb_orders import (
+            _validate_offline_pricing_consistency,
+        )
+
+        with self.assertRaisesRegex(Exception, "must be true for offline_snapshot"):
+            _validate_offline_pricing_consistency(
+                False,
+                {"pricing_mode": "offline_snapshot"},
+            )
+        with self.assertRaisesRegex(Exception, "must be false for online"):
+            _validate_offline_pricing_consistency(
+                True,
+                {"pricing_mode": "online_snapshot"},
+            )
+
+    def test_canonical_promotion_evidence_binds_exact_snapshot_and_allocation(self):
+        from kopos_connector.kopos.api.fb_orders import (
+            _normalize_applied_promotions,
+            _normalize_pricing_context,
+            _normalize_promotion_allocations,
+            _validate_normalized_promotion_evidence,
+        )
+
+        snapshot_hash = "a" * 64
+        pricing_context = _normalize_pricing_context(
+            {
+                "snapshot_version": "KOPOS-PROMO-AAAAAAAAAAAAAAAA",
+                "snapshot_hash": snapshot_hash,
+                "pricing_mode": "online_snapshot",
+                "restricted_mode": False,
+                "offline_applied_promotion_ids": [],
+                "promotion_expiry_by_id": {
+                    "SMOKE-MANUAL-10-PCT": None,
+                },
+            }
+        )
+        promotions = _normalize_applied_promotions(
+            [
+                {
+                    "promotion_id": "SMOKE-MANUAL-10-PCT",
+                    "promotion_name": "SMOKE-MANUAL-10-PCT",
+                    "promotion_type": "item_discount",
+                    "amount_sen": 120,
+                    "scope": "order",
+                    "source": "snapshot",
+                    "snapshot_version": "KOPOS-PROMO-AAAAAAAAAAAAAAAA",
+                    "snapshot_hash": snapshot_hash,
+                    "offline_applied": False,
+                }
+            ],
+            "sen_v1",
+        )
+        allocations = _normalize_promotion_allocations(
+            [
+                {
+                    "promotion_id": "SMOKE-MANUAL-10-PCT",
+                    "amount_sen": 120,
+                    "quantity": 1,
+                    "scope": "line",
+                }
+            ],
+            item_index=1,
+            money_contract_version="sen_v1",
+        )
+
+        status = _validate_normalized_promotion_evidence(
+            pricing_context,
+            promotions,
+            [
+                {
+                    "discount_amount_sen": 120,
+                    "promotion_allocations": allocations,
+                }
+            ],
+        )
+
+        self.assertEqual(status, "matched")
+        self.assertEqual(promotions[0]["amount_sen"], 120)
+        self.assertEqual(allocations[0]["amount_sen"], 120)
+
+    def test_canonical_promotion_evidence_rejects_total_mismatch(self):
+        from kopos_connector.kopos.api.fb_orders import (
+            _validate_normalized_promotion_evidence,
+        )
+
+        context = {
+            "snapshot_version": "KOPOS-PROMO-AAAAAAAAAAAAAAAA",
+            "snapshot_hash": "a" * 64,
+            "pricing_mode": "online_snapshot",
+            "restricted_mode": False,
+            "offline_applied_promotion_ids": [],
+        }
+        promotions = [
+            {
+                "promotion_id": "SMOKE-MANUAL-10-PCT",
+                "amount_sen": 120,
+                "snapshot_version": context["snapshot_version"],
+                "snapshot_hash": context["snapshot_hash"],
+                "offline_applied": False,
+            }
+        ]
+        items = [
+            {
+                "discount_amount_sen": 119,
+                "promotion_allocations": [
+                    {
+                        "promotion_id": "SMOKE-MANUAL-10-PCT",
+                        "amount_sen": 119,
+                    }
+                ],
+            }
+        ]
+
+        with self.assertRaisesRegex(
+            Exception,
+            "applied promotion totals must exactly match line allocations",
+        ):
+            _validate_normalized_promotion_evidence(context, promotions, items)
+
     def test_add_modifier_preserves_explicit_non_stock_effect(self):
         from kopos_connector.kopos.doctype.fb_order.fb_order import FBOrder
 

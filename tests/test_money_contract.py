@@ -154,6 +154,28 @@ def test_fb_order_calculates_and_validates_totals_in_integer_sen() -> None:
     assert order.grand_total == Decimal("10.96")
 
 
+def test_fb_order_keeps_fully_discounted_line_with_positive_order_total() -> None:
+    order = _make_money_only_fb_order()
+    order.items.insert(
+        0,
+        SimpleNamespace(
+            line_id="LINE-FREE-1",
+            qty=Decimal("1.000000"),
+            unit_price=Decimal("12.00"),
+            modifier_total=Decimal("0.00"),
+            discount_amount=Decimal("12.00"),
+            line_total=Decimal("99.99"),
+        ),
+    )
+
+    order.calculate_totals()
+    order.validate_order_totals()
+
+    assert order.items[0].line_total == Decimal("0.00")
+    assert order.net_total == Decimal("10.01")
+    assert order.grand_total == Decimal("10.96")
+
+
 def test_fb_order_rejects_fractional_sen_before_persisting_totals() -> None:
     order = _make_money_only_fb_order()
     order.items[0].unit_price = Decimal("3.341")

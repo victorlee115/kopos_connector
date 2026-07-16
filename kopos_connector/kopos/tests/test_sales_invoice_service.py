@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from contextlib import nullcontext
 from datetime import datetime
@@ -15,8 +16,10 @@ import frappe
 from kopos_connector.kopos.services.accounting.sales_invoice_service import (
     _apply_rounding,
     _append_payment_rows,
+    _build_modifier_snapshot,
     _resolve_line_rate,
     _resolve_customer,
+    _resolve_mode_of_payment_context,
     create_sales_invoice,
 )
 
@@ -75,8 +78,137 @@ class TestSalesInvoiceService(unittest.TestCase):
         order.save = lambda *args, **kwargs: None
         return order
 
+    def test_mode_of_payment_resolver_accepts_erpnext_v16_default_account(self):
+        import builtins
+        from types import SimpleNamespace
+
+        real_import = builtins.__import__
+        sales_invoice_module = SimpleNamespace(
+            get_mode_of_payment_info=lambda mode, company: [
+                {
+                    "default_account": "Cash - TC",
+                    "parent": mode,
+                    "type": "Cash",
+                    "company": company,
+                }
+            ]
+        )
+
+        def import_with_erpnext_v16_shape(
+            name, globals=None, locals=None, fromlist=(), level=0
+        ):
+            if name == "erpnext.accounts.doctype.sales_invoice.sales_invoice":
+                return sales_invoice_module
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=import_with_erpnext_v16_shape):
+            result = _resolve_mode_of_payment_context("Cash", self.company)
+
+        self.assertEqual(result, {"account": "Cash - TC", "type": "Cash"})
+
+    def test_modifier_snapshot_uses_v16_transient_child_payload(self):
+        order_item = frappe._dict({"selected_modifiers": []})
+        order_item._selected_modifiers_payload = [
+            frappe._dict(
+                {
+                    "modifier_group": "SMOKE-FB-SIZE",
+                    "modifier": "SMOKE-FB-SIZE-LARGE",
+                    "price_adjustment": Decimal("2.00"),
+                }
+            )
+        ]
+
+        with patch.object(
+            frappe.db,
+            "get_value",
+            return_value="Large",
+        ):
+            snapshot = _build_modifier_snapshot(order_item)
+
+        self.assertEqual(
+            json.loads(snapshot or "{}"),
+            {
+                "modifiers": [
+                    {
+                        "id": "SMOKE-FB-SIZE-LARGE",
+                        "name": "Large",
+                        "group_id": "SMOKE-FB-SIZE",
+                        "price_adjustment": "2.00",
+                        "price_adjustment_sen": 200,
+                    }
+                ]
+            },
+        )
+
+    def test_modifier_snapshot_uses_resolved_sale_after_projection_reload(self):
+        order_item = frappe._dict(
+            {
+                "selected_modifiers": [],
+                "resolved_sale": "FB-RESOLVED-SALE-1",
+            }
+        )
+        resolved_sale = frappe._dict(
+            {
+                "selected_modifiers": [
+                    frappe._dict(
+                        {
+                            "modifier_group": "SMOKE-FB-SIZE",
+                            "modifier": "SMOKE-FB-SIZE-LARGE",
+                            "price_adjustment": Decimal("2.00"),
+                        }
+                    )
+                ]
+            }
+        )
+
+        with (
+            patch.object(frappe, "get_doc", return_value=resolved_sale),
+            patch.object(frappe.db, "get_value", return_value="Large"),
+        ):
+            snapshot = _build_modifier_snapshot(order_item)
+
+        self.assertEqual(
+            json.loads(snapshot or "{}")["modifiers"][0]["id"],
+            "SMOKE-FB-SIZE-LARGE",
+        )
+
+    def test_modifier_snapshot_fails_if_linked_resolved_sale_cannot_be_loaded(self):
+        order_item = frappe._dict(
+            {
+                "selected_modifiers": [],
+                "resolved_sale": "FB-RESOLVED-SALE-MISSING",
+            }
+        )
+
+        with patch.object(
+            frappe,
+            "get_doc",
+            side_effect=RuntimeError("resolved sale storage unavailable"),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Unable to load linked FB Resolved Sale FB-RESOLVED-SALE-MISSING",
+            ):
+                _build_modifier_snapshot(order_item)
+
     def test_create_sales_invoice_carries_tax_and_rounding(self):
         order = self.make_fb_order_stub()
+        order["items"].append(
+            frappe._dict(
+                {
+                    "item": "E2E-MATCHA-LATTE-FREE",
+                    "line_id": "LINE-FREE-1",
+                    "item_name_snapshot": "E2E Matcha Latte Free",
+                    "qty": 1,
+                    "uom": "Nos",
+                    "unit_price": Decimal("12.00"),
+                    "modifier_total": Decimal("0.00"),
+                    "discount_amount": Decimal("12.00"),
+                    "line_total": Decimal("0.00"),
+                    "remarks": None,
+                }
+            )
+        )
 
         with (
             patch(
@@ -185,6 +317,10 @@ class TestSalesInvoiceService(unittest.TestCase):
         self.assertEqual(invoice.write_off_account, "Write Off - WP")
         self.assertEqual(invoice.write_off_cost_center, "Main - WP")
         self.assertEqual(invoice.payments[0].amount, Decimal("12.95"))
+        self.assertEqual(invoice["items"][0].is_free_item, 0)
+        self.assertEqual(invoice["items"][1].rate, Decimal("0.00"))
+        self.assertEqual(invoice["items"][1].amount, Decimal("0.00"))
+        self.assertEqual(invoice["items"][1].is_free_item, 1)
         bind_qr.assert_called_once_with(order, "SINV-CASH-001")
 
     def test_resolve_customer_falls_back_to_pos_profile_customer(self):
@@ -507,6 +643,19 @@ class TestSalesInvoiceService(unittest.TestCase):
 
         self.assertIsInstance(rate, Decimal)
         self.assertEqual(rate * Decimal("3"), Decimal("10.01"))
+
+    def test_line_rate_allows_fully_discounted_line(self):
+        line = frappe._dict(
+            {
+                "qty": 2,
+                "line_total": Decimal("0.00"),
+            }
+        )
+
+        rate = _resolve_line_rate(line)
+
+        self.assertIsInstance(rate, Decimal)
+        self.assertEqual(rate, Decimal("0.00"))
 
     def test_resolve_customer_falls_back_to_walk_in_customer(self):
         order = self.make_fb_order_stub()

@@ -20,6 +20,9 @@ MAYBANK_PAYMENT_CHANNELS = {"maybank", "maybank qr"}
 MAYBANK_MODE_OF_PAYMENT = "duitnow qr"
 STATIC_QR_PAYMENT_CHANNEL = "static qr"
 QR_PAYMENT_CHANNELS = MAYBANK_PAYMENT_CHANNELS | {STATIC_QR_PAYMENT_CHANNEL}
+# Retained in smoke evidence for backwards-compatible observation diagnostics.
+# This is not settlement authority: ``paid_at`` is the first time ERP observed
+# provider-paid state and can legitimately be later after a network/ERP outage.
 PAYMENT_EXPIRY_GRACE_SECONDS = 30
 
 
@@ -657,7 +660,7 @@ def _load_transaction_for_update(fieldname: str, value: str) -> Any | None:
     rows = frappe.db.sql(
         f"""
         SELECT
-            name, transaction_refno, status, sale_amount_sen,
+            name, transaction_refno, status, maybank_status, sale_amount_sen,
             device_id, outlet_id, currency, provider,
             expires_at, paid_at, fb_order, sales_invoice,
             consumption_key, invoice_consumption_key, consumed_at
@@ -689,6 +692,11 @@ def _validate_transaction_for_order(
     if cstr(_value(transaction, "status")).strip().lower() != "paid":
         frappe.throw(
             "Maybank QR transaction is not paid",
+            frappe.ValidationError,
+        )
+    if cstr(_value(transaction, "maybank_status")).strip() != "1":
+        frappe.throw(
+            "Maybank QR transaction lacks provider-paid status evidence",
             frappe.ValidationError,
         )
 
@@ -753,16 +761,21 @@ def _validate_transaction_for_order(
             "Maybank QR transaction payment or expiry timestamp is missing",
             frappe.ValidationError,
         )
-    paid_at = get_datetime(paid_at_value)
-    expires_at = get_datetime(expires_at_value)
-    expiry_with_grace = frappe_utils.add_to_date(
-        expires_at, seconds=PAYMENT_EXPIRY_GRACE_SECONDS
-    )
-    if paid_at > expiry_with_grace:
+    try:
+        get_datetime(paid_at_value)
+        get_datetime(expires_at_value)
+    except Exception as error:
         frappe.throw(
-            "Maybank QR transaction was paid after expiry",
+            "Maybank QR transaction payment or expiry timestamp is invalid",
             frappe.ValidationError,
         )
+        raise AssertionError("frappe.throw must raise") from error
+
+    # A provider-authenticated ``paid`` result is monetary truth. ``paid_at``
+    # records when ERP first observed that result, so comparing it with QR
+    # display expiry would reject genuine payments whenever polling was delayed
+    # by bad internet or an ERP outage. Preserve both timestamps for audit, but
+    # never synthesize a local non-payment decision from observation latency.
 
     order_name = cstr(_value(order_doc, "name")).strip()
     linked_order = cstr(_value(transaction, "fb_order")).strip()

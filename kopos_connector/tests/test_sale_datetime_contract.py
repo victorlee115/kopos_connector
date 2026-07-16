@@ -192,6 +192,27 @@ def test_fb_order_builder_persists_normalized_sale_datetime(monkeypatch: Any) ->
     assert built.sale_datetime == sale_datetime
 
 
+def test_nested_line_modifiers_use_transient_payload_on_frappe_v16_child() -> None:
+    class FrappeV16Child(SimpleNamespace):
+        _table_fieldnames: dict[str, str] = {}
+
+        def append(self, fieldname: str, value: dict[str, Any]) -> None:
+            raise AssertionError(
+                f"Frappe v16 child rows cannot append nested table {fieldname}"
+            )
+
+    line = FrappeV16Child()
+    modifier = {
+        "modifier_group": "SMOKE-FB-SIZE",
+        "modifier": "SMOKE-FB-SIZE-LARGE",
+        "price_adjustment": 2,
+    }
+
+    fb_orders._set_selected_modifiers_payload(line, [modifier])
+
+    assert [dict(row) for row in line._selected_modifiers_payload] == [modifier]
+
+
 def test_invoice_and_ingredient_stock_post_on_offline_sale_datetime() -> None:
     order = SimpleNamespace(
         name="FB-ORDER-1",

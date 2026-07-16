@@ -8,74 +8,32 @@ from kopos_connector.kopos.api.fb_orders import (
     retry_failed_projections,
     submit_order,
 )
+from kopos_connector.kopos.tests.frappe_test_fixtures import (
+    build_sen_v1_sale_payload,
+    create_open_test_shift,
+)
 
 
 class TestFBOrdersAPI(FrappeTestCase):
     def setUp(self):
-        self.cleanup_test_data()
-        self.company = frappe.defaults.get_defaults().get("company", "Test Company")
-        self.warehouse = "WH - Test Booth"
-        self.shift = self.create_test_shift()
+        frappe.set_user("Administrator")
+        self.shift = create_open_test_shift(
+            prefix="KOPOS-API-TEST", replenish_stock=True
+        )
 
     def tearDown(self):
-        self.cleanup_test_data()
+        frappe.db.rollback()
 
     def cleanup_test_data(self):
-        frappe.db.delete("FB Order", {"order_id": ("like", "TEST-%")})
-        frappe.db.delete("FB Shift", {"shift_code": ("like", "TEST-%")})
-        frappe.db.commit()
+        frappe.db.rollback()
 
     def create_test_shift(self):
-        shift = frappe.new_doc("FB Shift")
-        shift.shift_code = f"TEST-SHIFT-{frappe.generate_hash(length=8)}"
-        shift.device_id = "TEST-DEVICE-001"
-        shift.staff_id = frappe.session.user
-        shift.warehouse = self.warehouse
-        shift.company = self.company
-        shift.opening_float = 300.0
-        shift.status = "Open"
-        shift.insert()
-        return shift.name
+        return create_open_test_shift(prefix="KOPOS-API-TEST").name
 
     def test_submit_order_success(self):
         frappe.set_user("Administrator")
 
-        payload = {
-            "order_id": f"TEST-ORDER-{frappe.generate_hash(length=8)}",
-            "idempotency_key": f"IDEMP-{frappe.generate_hash(length=16)}",
-            "device_id": "TEST-DEVICE-001",
-            "shift_id": self.shift,
-            "staff_id": frappe.session.user,
-            "warehouse": self.warehouse,
-            "company": self.company,
-            "currency": "MYR",
-            "order": {
-                "display_number": "A001",
-                "order_type": "takeaway",
-                "created_at": frappe.utils.now(),
-                "items": [
-                    {
-                        "line_id": "LINE-1",
-                        "item_code": "TEST-ITEM",
-                        "item_name": "Test Item",
-                        "qty": 1,
-                        "rate": 10.0,
-                        "discount_amount": 0,
-                        "modifier_total": 0,
-                        "amount": 10.0,
-                        "modifiers": [],
-                    }
-                ],
-                "payments": [
-                    {
-                        "payment_method": "Cash",
-                        "amount": 10.0,
-                        "tendered_amount": 10.0,
-                        "change_amount": 0,
-                    }
-                ],
-            },
-        }
+        payload = build_sen_v1_sale_payload(self.shift, prefix="KOPOS-API-TEST")
 
         frappe.local.form_dict = payload
 
@@ -85,7 +43,7 @@ class TestFBOrdersAPI(FrappeTestCase):
             self.assertEqual(result["status"], "ok")
             self.assertIn("fb_order", result)
             self.assertIn("sales_invoice", result)
-            self.assertIn("stock_entry", result)
+            self.assertIn("ingredient_stock_entry", result)
         except Exception as e:
             self.fail(f"submit_order raised an exception: {e}")
 
@@ -94,42 +52,11 @@ class TestFBOrdersAPI(FrappeTestCase):
 
         idempotency_key = f"IDEMP-{frappe.generate_hash(length=16)}"
 
-        payload = {
-            "order_id": f"TEST-ORDER-{frappe.generate_hash(length=8)}",
-            "idempotency_key": idempotency_key,
-            "device_id": "TEST-DEVICE-001",
-            "shift_id": self.shift,
-            "staff_id": frappe.session.user,
-            "warehouse": self.warehouse,
-            "company": self.company,
-            "currency": "MYR",
-            "order": {
-                "display_number": "A001",
-                "order_type": "takeaway",
-                "created_at": frappe.utils.now(),
-                "items": [
-                    {
-                        "line_id": "LINE-1",
-                        "item_code": "TEST-ITEM",
-                        "item_name": "Test Item",
-                        "qty": 1,
-                        "rate": 10.0,
-                        "discount_amount": 0,
-                        "modifier_total": 0,
-                        "amount": 10.0,
-                        "modifiers": [],
-                    }
-                ],
-                "payments": [
-                    {
-                        "payment_method": "Cash",
-                        "amount": 10.0,
-                        "tendered_amount": 10.0,
-                        "change_amount": 0,
-                    }
-                ],
-            },
-        }
+        payload = build_sen_v1_sale_payload(
+            self.shift,
+            prefix="KOPOS-API-TEST",
+            idempotency_key=idempotency_key,
+        )
 
         frappe.local.form_dict = payload
 
@@ -147,42 +74,7 @@ class TestFBOrdersAPI(FrappeTestCase):
     def test_get_order_status(self):
         frappe.set_user("Administrator")
 
-        payload = {
-            "order_id": f"TEST-ORDER-{frappe.generate_hash(length=8)}",
-            "idempotency_key": f"IDEMP-{frappe.generate_hash(length=16)}",
-            "device_id": "TEST-DEVICE-001",
-            "shift_id": self.shift,
-            "staff_id": frappe.session.user,
-            "warehouse": self.warehouse,
-            "company": self.company,
-            "currency": "MYR",
-            "order": {
-                "display_number": "A001",
-                "order_type": "takeaway",
-                "created_at": frappe.utils.now(),
-                "items": [
-                    {
-                        "line_id": "LINE-1",
-                        "item_code": "TEST-ITEM",
-                        "item_name": "Test Item",
-                        "qty": 1,
-                        "rate": 10.0,
-                        "discount_amount": 0,
-                        "modifier_total": 0,
-                        "amount": 10.0,
-                        "modifiers": [],
-                    }
-                ],
-                "payments": [
-                    {
-                        "payment_method": "Cash",
-                        "amount": 10.0,
-                        "tendered_amount": 10.0,
-                        "change_amount": 0,
-                    }
-                ],
-            },
-        }
+        payload = build_sen_v1_sale_payload(self.shift, prefix="KOPOS-API-TEST")
 
         frappe.local.form_dict = payload
 

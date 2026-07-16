@@ -9,7 +9,7 @@ from frappe.model.document import Document
 from frappe.utils import cint, cstr
 
 from kopos_connector.api.devices import ensure_unique_device_api_user
-from kopos_connector.utils.pin import hash_pin
+from kopos_connector.utils.pin import hash_pin, is_supported_pin_hash
 
 
 class KoPOSDevice(Document):
@@ -116,6 +116,14 @@ class KoPOSDevice(Document):
             if not row.pin_hash:
                 frappe.throw(
                     _("User {0} must have a PIN configured").format(row.user),
+                    frappe.ValidationError,
+                )
+            if not is_supported_pin_hash(row.pin_hash):
+                frappe.throw(
+                    _(
+                        "User {0} has an unsupported PIN verifier; enter a new "
+                        "4-digit PIN and save the device"
+                    ).format(row.user),
                     frappe.ValidationError,
                 )
 

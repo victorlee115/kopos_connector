@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 import frappe
@@ -36,13 +38,23 @@ def create_projection_log(
         idempotency_key=idempotency_key,
     )
     if existing_log:
+        _validate_existing_payload_hash(existing_log, payload_hash)
         return existing_log
 
     savepoint = _make_savepoint("fb_projection_log")
 
     try:
         log_doc = frappe.new_doc("FB Projection Log")
-        log_doc.projection_id = frappe.generate_hash(length=16)
+        # ``projection_id`` is already database-unique.  Deriving it from the
+        # canonical projection identity turns that existing constraint into a
+        # concurrency fence: two workers racing to create the same projection
+        # cannot create two evidence rows.
+        log_doc.projection_id = _canonical_projection_id(
+            source_doctype,
+            source_name,
+            projection_type,
+            idempotency_key,
+        )
         log_doc.source_doctype = source_doctype
         log_doc.source_name = source_name
         log_doc.source_event_type = projection_type
@@ -63,6 +75,7 @@ def create_projection_log(
             idempotency_key=idempotency_key,
         )
         if duplicate_log:
+            _validate_existing_payload_hash(duplicate_log, payload_hash)
             return duplicate_log
         _log_error("Projection log creation failed")
         raise ProjectionLogError(
@@ -127,27 +140,27 @@ def get_pending_projections() -> list[dict[str, Any]]:
 
 
 def retry_failed_projections() -> list[dict[str, Any]]:
-    try:
-        failed_logs = frappe.get_all(
-            "FB Projection Log",
-            filters={"state": "Failed"},
-            fields=["name"],
-            order_by="modified asc",
-        )
-    except Exception as error:
-        _log_error("Fetching failed projections failed")
-        raise ProjectionLogError(
-            f"Fetching failed projections failed: {error}"
-        ) from error
+    """Run the real projection handlers instead of relabelling failed work.
 
-    retried: list[dict[str, Any]] = []
-    for row in failed_logs:
-        updated_name = update_projection_state(
-            row.get("name"), "Pending", None, None, None
+    The previous compatibility helper changed ``Failed`` rows to ``Pending``
+    without executing a projection.  The public retry path only selected
+    ``Failed`` rows, so that state-only mutation could strand work forever.
+    Keep the API name for callers, but delegate to the bounded recovery worker.
+    """
+
+    try:
+        from kopos_connector.kopos.services.projection.retry_service import (
+            retry_projection_failures,
         )
-        if updated_name:
-            retried.append({"name": updated_name})
-    return retried
+
+        return retry_projection_failures(force=True)
+    except ProjectionLogError:
+        raise
+    except Exception as error:
+        _log_error("Retrying failed projections failed")
+        raise ProjectionLogError(
+            f"Retrying failed projections failed: {error}"
+        ) from error
 
 
 def _find_existing_projection(
@@ -166,6 +179,37 @@ def _find_existing_projection(
 
     existing = frappe.db.get_value("FB Projection Log", filters, "name")
     return str(existing) if existing else None
+
+
+def _canonical_projection_id(
+    source_doctype: str,
+    source_name: str,
+    projection_type: str,
+    idempotency_key: str,
+) -> str:
+    canonical = json.dumps(
+        {
+            "idempotency_key": idempotency_key or None,
+            "projection_type": projection_type,
+            "source_doctype": source_doctype,
+            "source_name": source_name,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"kopos-proj-{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+
+
+def _validate_existing_payload_hash(log_name: str, payload_hash: str) -> None:
+    if not payload_hash:
+        return
+    existing_hash = frappe.db.get_value(
+        "FB Projection Log", log_name, "payload_hash"
+    )
+    if existing_hash and str(existing_hash) != str(payload_hash):
+        raise ProjectionLogError(
+            f"Projection identity {log_name} was reused with a different payload hash"
+        )
 
 
 def _stringify_error(error: Any) -> str | None:

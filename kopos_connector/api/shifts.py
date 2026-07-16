@@ -1147,6 +1147,26 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
         validate_shift_can_close(fb_shift)
 
+        # Rebuild expected cash under the already-held shift lock immediately
+        # before close.  This prevents stale cached totals from hiding a sale,
+        # cash change, void, or settled cash refund.
+        from kopos_connector.kopos.services.accounting.return_invoice_service import (
+            refresh_fb_shift_cash,
+        )
+
+        refresh_fb_shift_cash(fb_shift)
+        refreshed_expected_cash = frappe.db.get_value(
+            "FB Shift", fb_shift, "expected_cash"
+        )
+        if refreshed_expected_cash is None:
+            frappe.throw(
+                _("FB Shift {0} expected cash could not be reconciled").format(
+                    fb_shift
+                ),
+                frappe.ValidationError,
+            )
+        shift_doc.expected_cash = refreshed_expected_cash
+
         period_end = _normalize_offline_event_datetime(closed_at, "closed_at")
         _validate_closed_at_not_before_opened_at(shift_doc, period_end)
 

@@ -16,6 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 install_fake_frappe_modules()
 install_module = importlib.import_module("kopos_connector.install.install")
 shifts = importlib.import_module("kopos_connector.api.shifts")
+cash_service = importlib.import_module(
+    "kopos_connector.kopos.services.accounting.return_invoice_service"
+)
 
 
 def make_doc(**kwargs):
@@ -184,6 +187,7 @@ class ShiftSyncTests(unittest.TestCase):
                 "custom_kopos_modifiers",
                 "custom_kopos_modifier_total",
                 "custom_kopos_has_modifiers",
+                "custom_kopos_promotion_allocation",
             },
         )
 
@@ -329,6 +333,8 @@ class ShiftSyncTests(unittest.TestCase):
                 return 1
             if doctype == "User":
                 return 1  # enabled
+            if doctype == "FB Shift" and fieldname == "expected_cash":
+                return opening_entry.expected_cash
             return None
 
         with (
@@ -341,6 +347,7 @@ class ShiftSyncTests(unittest.TestCase):
             ),
             patch.object(shifts.frappe, "get_cached_doc", return_value=pos_profile),
             patch.object(shifts.frappe, "get_doc", side_effect=fake_get_doc),
+            patch.object(cash_service, "refresh_fb_shift_cash", return_value=None),
             patch.object(
                 shifts, "_find_fb_shift_name", return_value="FB-SHIFT-1"
             ) as find_open_mock,

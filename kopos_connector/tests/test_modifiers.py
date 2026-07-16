@@ -783,6 +783,11 @@ class TestCatalogApiElevation(unittest.TestCase):
         from kopos_connector.api import get_item_modifiers
 
         events = []
+        device = MagicMock()
+        device.name = "KOPOS-DEVICE-1"
+        device.pos_profile = "KoPOS Main"
+        pos_profile = MagicMock()
+        pos_profile.company = "KoPOS Malaysia Sdn Bhd"
 
         class ElevationContext:
             def __enter__(self):
@@ -793,12 +798,21 @@ class TestCatalogApiElevation(unittest.TestCase):
 
         with (
             patch(
-                "kopos_connector.api.require_kopos_api_access"
-            ) as require_kopos_api_access,
+                "kopos_connector.api.get_authenticated_device_doc",
+                return_value=device,
+            ) as get_authenticated_device_doc,
+            patch(
+                "kopos_connector.api.require_device_context",
+                return_value=device,
+            ) as require_device_context,
             patch(
                 "kopos_connector.api.elevate_device_api_user",
                 return_value=ElevationContext(),
             ),
+            patch(
+                "kopos_connector.api.frappe.get_cached_doc",
+                return_value=pos_profile,
+            ) as get_cached_doc,
             patch(
                 "kopos_connector.api.get_item_modifiers_payload",
                 return_value=[],
@@ -810,8 +824,13 @@ class TestCatalogApiElevation(unittest.TestCase):
         ):
             get_item_modifiers("ITEM-1")
 
-        require_kopos_api_access.assert_called_once_with()
-        get_item_modifiers_payload.assert_called_once_with("ITEM-1")
+        get_authenticated_device_doc.assert_called_once_with()
+        require_device_context.assert_called_once_with(name="KOPOS-DEVICE-1")
+        get_cached_doc.assert_called_once_with("POS Profile", "KoPOS Main")
+        get_item_modifiers_payload.assert_called_once_with(
+            "ITEM-1",
+            company="KoPOS Malaysia Sdn Bhd",
+        )
         self.assertEqual(events, ["enter", "exit"])
 
 

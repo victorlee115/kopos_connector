@@ -3,7 +3,7 @@ import json
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from .fake_frappe import install_fake_frappe_modules
 
@@ -68,6 +68,45 @@ class _FakeCache:
 
 
 class PosProvisioningTests(unittest.TestCase):
+    def test_existing_device_user_save_preserves_issued_api_secret(self):
+        device_doc = SimpleNamespace(
+            name="KOPOS-DEVICE-001",
+            device_id="tab-a-001",
+            device_name="Tablet A",
+            api_user="device@example.com",
+        )
+        user_doc = SimpleNamespace(
+            first_name="Tablet A",
+            set=MagicMock(),
+            save=MagicMock(),
+        )
+
+        with (
+            patch.object(provisioning, "_ensure_kopos_device_api_role"),
+            patch.object(provisioning, "ensure_unique_device_api_user"),
+            patch.object(provisioning.frappe.db, "exists", return_value=True),
+            patch.object(provisioning.frappe, "get_doc", return_value=user_doc),
+            patch.object(
+                provisioning,
+                "_read_device_api_secret",
+                side_effect=["issued-secret", "", "issued-secret"],
+            ),
+            patch.object(
+                provisioning,
+                "set_encrypted_password",
+            ) as set_encrypted_password_mock,
+        ):
+            resolved_user = provisioning._ensure_device_api_user(device_doc)
+
+        self.assertEqual(resolved_user, "device@example.com")
+        user_doc.save.assert_called_once_with(ignore_permissions=True)
+        set_encrypted_password_mock.assert_called_once_with(
+            "User",
+            "device@example.com",
+            "issued-secret",
+            "api_secret",
+        )
+
     def test_build_catalog_payload_filters_categories_to_saleable_items(self):
         with (
             patch.object(
@@ -456,13 +495,17 @@ class PosProvisioningTests(unittest.TestCase):
             pos_profile="Counter 1",
             config_version=3,
             api_user="device@example.com",
+            as_dict=lambda: {
+                "custom_kopos_enable_sst": 1,
+                "custom_kopos_sst_rate": 8,
+            },
         )
 
         with (
             patch.object(
                 smoke.frappe.db,
                 "get_value",
-                side_effect=["KOPOS-DEVICE-001", "api-key-123"],
+                side_effect=["KOPOS-DEVICE-001", "api-key-123", None],
             ),
             patch.object(smoke.frappe, "get_doc", return_value=fake_device),
             patch.object(smoke.frappe, "get_all", return_value=[]),

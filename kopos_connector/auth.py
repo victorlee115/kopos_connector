@@ -16,6 +16,14 @@ ALLOWED_DEVICE_API_PATHS = frozenset(
         "/api/method/kopos_connector.api.get_refund_reasons",
         "/api/method/kopos_connector.api.get_promotion_snapshot",
         "/api/method/kopos_connector.api.get_device_config",
+        "/api/method/kopos_connector.api.request_device_safe_reset",
+        (
+            "/api/method/kopos_connector.api."
+            "abandon_unregistered_device_safe_reset_request"
+        ),
+        "/api/method/kopos_connector.api.resolve_device_safe_reset_request",
+        "/api/method/kopos_connector.api.cancel_device_safe_reset",
+        "/api/method/kopos_connector.api.complete_device_safe_reset",
         "/api/method/kopos_connector.api.submit_order",
         "/api/method/kopos_connector.api.open_shift",
         "/api/method/kopos_connector.api.close_shift",
@@ -40,6 +48,22 @@ DEVICE_API_HTTP_METHODS = {
 DEVICE_API_HTTP_METHODS.update(
     {
         "/api/method/kopos_connector.api.submit_order": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.request_device_safe_reset": frozenset(
+            {"POST"}
+        ),
+        (
+            "/api/method/kopos_connector.api."
+            "abandon_unregistered_device_safe_reset_request"
+        ): frozenset({"POST"}),
+        "/api/method/kopos_connector.api.resolve_device_safe_reset_request": frozenset(
+            {"POST"}
+        ),
+        "/api/method/kopos_connector.api.cancel_device_safe_reset": frozenset(
+            {"POST"}
+        ),
+        "/api/method/kopos_connector.api.complete_device_safe_reset": frozenset(
+            {"POST"}
+        ),
         "/api/method/kopos_connector.api.open_shift": frozenset({"POST"}),
         "/api/method/kopos_connector.api.close_shift": frozenset({"POST"}),
         "/api/method/kopos_connector.api.get_order_history": frozenset({"POST"}),

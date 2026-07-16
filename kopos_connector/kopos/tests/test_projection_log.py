@@ -9,24 +9,45 @@ from kopos_connector.kopos.services.projection.log_service import (
     retry_failed_projections,
     update_projection_state,
 )
+from kopos_connector.kopos.tests.frappe_test_fixtures import create_open_test_shift
 
 
 class TestProjectionLogService(FrappeTestCase):
     def setUp(self):
         self.cleanup_test_logs()
+        self.shift = create_open_test_shift(prefix="KOPOS-PROJECTION-TEST")
 
     def tearDown(self):
-        self.cleanup_test_logs()
+        frappe.db.rollback()
 
     def cleanup_test_logs(self):
-        frappe.db.delete("FB Projection Log", {"source_doctype": "Test DocType"})
+        frappe.db.delete(
+            "FB Projection Log",
+            {"idempotency_key": ("like", "KOPOS-PROJECTION-TEST-%")},
+        )
+        frappe.db.delete(
+            "FB Shift",
+            {"shift_code": ("like", "KOPOS-PROJECTION-TEST-%")},
+        )
         frappe.db.commit()
 
+    def create_log(
+        self,
+        *,
+        projection_type="Sales Invoice",
+        idempotency_key,
+        payload_hash,
+    ):
+        return create_projection_log(
+            source_doctype="FB Shift",
+            source_name=self.shift.name,
+            projection_type=projection_type,
+            idempotency_key=f"KOPOS-PROJECTION-TEST-{idempotency_key}",
+            payload_hash=payload_hash,
+        )
+
     def test_create_projection_log(self):
-        log_name = create_projection_log(
-            source_doctype="Test DocType",
-            source_name="TEST-001",
-            projection_type="Sales Invoice",
+        log_name = self.create_log(
             idempotency_key="test-key-123",
             payload_hash="abc123",
         )
@@ -34,28 +55,22 @@ class TestProjectionLogService(FrappeTestCase):
         self.assertIsNotNone(log_name)
 
         log = frappe.get_doc("FB Projection Log", log_name)
-        self.assertEqual(log.source_doctype, "Test DocType")
-        self.assertEqual(log.source_name, "TEST-001")
+        self.assertEqual(log.source_doctype, "FB Shift")
+        self.assertEqual(log.source_name, self.shift.name)
         self.assertEqual(log.projection_type, "Sales Invoice")
         self.assertEqual(log.state, "Pending")
-        self.assertEqual(log.idempotency_key, "test-key-123")
+        self.assertEqual(log.idempotency_key, "KOPOS-PROJECTION-TEST-test-key-123")
         self.assertEqual(log.payload_hash, "abc123")
 
     def test_create_duplicate_log_returns_existing(self):
         idempotency_key = "duplicate-test-key"
 
-        log1 = create_projection_log(
-            source_doctype="Test DocType",
-            source_name="TEST-001",
-            projection_type="Sales Invoice",
+        log1 = self.create_log(
             idempotency_key=idempotency_key,
             payload_hash="abc123",
         )
 
-        log2 = create_projection_log(
-            source_doctype="Test DocType",
-            source_name="TEST-001",
-            projection_type="Sales Invoice",
+        log2 = self.create_log(
             idempotency_key=idempotency_key,
             payload_hash="abc123",
         )
@@ -63,10 +78,8 @@ class TestProjectionLogService(FrappeTestCase):
         self.assertEqual(log1, log2)
 
     def test_update_projection_state_to_success(self):
-        log_name = create_projection_log(
-            source_doctype="Test DocType",
-            source_name="TEST-002",
-            projection_type="Stock Issue",
+        log_name = self.create_log(
+            projection_type="FB Shift",
             idempotency_key="test-key-456",
             payload_hash="def456",
         )
@@ -74,8 +87,8 @@ class TestProjectionLogService(FrappeTestCase):
         updated = update_projection_state(
             log_name=log_name,
             state="Succeeded",
-            target_doctype="Stock Entry",
-            target_name="SE-001",
+            target_doctype="FB Shift",
+            target_name=self.shift.name,
             error=None,
         )
 
@@ -83,15 +96,12 @@ class TestProjectionLogService(FrappeTestCase):
 
         log = frappe.get_doc("FB Projection Log", log_name)
         self.assertEqual(log.state, "Succeeded")
-        self.assertEqual(log.target_doctype, "Stock Entry")
-        self.assertEqual(log.target_name, "SE-001")
+        self.assertEqual(log.target_doctype, "FB Shift")
+        self.assertEqual(log.target_name, self.shift.name)
         self.assertIsNone(log.last_error)
 
     def test_update_projection_state_to_failed(self):
-        log_name = create_projection_log(
-            source_doctype="Test DocType",
-            source_name="TEST-003",
-            projection_type="Sales Invoice",
+        log_name = self.create_log(
             idempotency_key="test-key-789",
             payload_hash="ghi789",
         )
@@ -107,13 +117,10 @@ class TestProjectionLogService(FrappeTestCase):
         log = frappe.get_doc("FB Projection Log", log_name)
         self.assertEqual(log.state, "Failed")
         self.assertEqual(log.last_error, "Connection timeout")
-        self.assertEqual(log.retry_count, 0)
+        self.assertEqual(log.retry_count, 1)
 
     def test_update_failed_increments_retry_count(self):
-        log_name = create_projection_log(
-            source_doctype="Test DocType",
-            source_name="TEST-004",
-            projection_type="Sales Invoice",
+        log_name = self.create_log(
             idempotency_key="test-key-retry",
             payload_hash="retry123",
         )
@@ -138,49 +145,39 @@ class TestProjectionLogService(FrappeTestCase):
         self.assertEqual(log.retry_count, 2)
 
     def test_get_pending_projections(self):
-        create_projection_log(
-            source_doctype="Test DocType",
-            source_name="PENDING-001",
-            projection_type="Sales Invoice",
+        pending_one = self.create_log(
             idempotency_key="pending-1",
             payload_hash="p1",
         )
 
-        create_projection_log(
-            source_doctype="Test DocType",
-            source_name="PENDING-002",
+        pending_two = self.create_log(
             projection_type="Stock Issue",
             idempotency_key="pending-2",
             payload_hash="p2",
         )
 
-        succeeded_log = create_projection_log(
-            source_doctype="Test DocType",
-            source_name="SUCCEEDED-001",
-            projection_type="Sales Invoice",
+        succeeded_log = self.create_log(
+            projection_type="FB Shift",
             idempotency_key="success-1",
             payload_hash="s1",
         )
         update_projection_state(
             log_name=succeeded_log,
             state="Succeeded",
-            target_doctype="Sales Invoice",
-            target_name="SI-001",
+            target_doctype="FB Shift",
+            target_name=self.shift.name,
             error=None,
         )
 
         pending = get_pending_projections()
-        pending_names = [p["source_name"] for p in pending]
+        pending_names = [p["name"] for p in pending]
 
-        self.assertIn("PENDING-001", pending_names)
-        self.assertIn("PENDING-002", pending_names)
-        self.assertNotIn("SUCCEEDED-001", pending_names)
+        self.assertIn(pending_one, pending_names)
+        self.assertIn(pending_two, pending_names)
+        self.assertNotIn(succeeded_log, pending_names)
 
-    def test_retry_failed_projections(self):
-        failed_log = create_projection_log(
-            source_doctype="Test DocType",
-            source_name="FAILED-001",
-            projection_type="Sales Invoice",
+    def test_retry_helper_never_relabels_unsupported_failure_as_pending(self):
+        failed_log = self.create_log(
             idempotency_key="failed-1",
             payload_hash="f1",
         )
@@ -194,7 +191,7 @@ class TestProjectionLogService(FrappeTestCase):
 
         retried = retry_failed_projections()
 
-        self.assertTrue(len(retried) > 0)
+        self.assertEqual(retried, [])
 
         log = frappe.get_doc("FB Projection Log", failed_log)
-        self.assertEqual(log.state, "Pending")
+        self.assertEqual(log.state, "Failed")

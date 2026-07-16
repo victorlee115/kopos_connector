@@ -30,6 +30,7 @@ from kopos_connector.kopos.api.money_contract import (
     MoneyContractValidationError,
     parse_sen,
 )
+from kopos_connector.utils.diagnostics import log_sanitized_error
 from kopos_connector.utils.pin import hash_pin, pin_hash_needs_upgrade, verify_pin
 
 # Token validity duration in seconds (default: 5 minutes)
@@ -40,9 +41,50 @@ MAX_TOKEN_TTL_SECONDS = 300
 MAX_PIN_FAILURES = 5
 PIN_FAILURE_WINDOW_SECONDS = 15 * 60
 PIN_LOCKOUT_SECONDS = 15 * 60
+PIN_RATE_LIMIT_KEY_PREFIX = "kopos:manager-pin-rate"
+PIN_RATE_LIMIT_CHECK_SCRIPT = """
+local locked_until = tonumber(redis.call('HGET', KEYS[1], 'locked_until') or '0')
+local now_epoch = tonumber(ARGV[1])
+if locked_until > now_epoch then
+    return {1, locked_until}
+end
+return {0, locked_until}
+"""
+PIN_RATE_LIMIT_FAILURE_SCRIPT = """
+local now_epoch = tonumber(ARGV[1])
+local window_seconds = tonumber(ARGV[2])
+local max_failures = tonumber(ARGV[3])
+local lockout_seconds = tonumber(ARGV[4])
+local window_started = tonumber(redis.call('HGET', KEYS[1], 'window_started') or '0')
+local failures = tonumber(redis.call('HGET', KEYS[1], 'failures') or '0')
+local locked_until = tonumber(redis.call('HGET', KEYS[1], 'locked_until') or '0')
+
+if locked_until > now_epoch then
+    redis.call('EXPIRE', KEYS[1], lockout_seconds)
+    return {failures, locked_until}
+end
+if window_started == 0 or now_epoch - window_started >= window_seconds then
+    window_started = now_epoch
+    failures = 0
+end
+failures = failures + 1
+locked_until = 0
+if failures >= max_failures then
+    locked_until = now_epoch + lockout_seconds
+end
+redis.call(
+    'HSET', KEYS[1],
+    'window_started', window_started,
+    'failures', failures,
+    'locked_until', locked_until
+)
+redis.call('EXPIRE', KEYS[1], math.max(window_seconds, lockout_seconds) + 60)
+return {failures, locked_until}
+"""
+PIN_RATE_LIMIT_CLEAR_SCRIPT = "return redis.call('DEL', KEYS[1])"
 DUMMY_PIN_HASH = (
-    "scrypt$16384$kopos-manager-dummy-salt$"
-    "97ca11876995df638917d7cf94bab567f988e90924b2be4c46de8d95f27e086c"
+    "scrypt$16384$d00df00dd00df00dd00df00dd00df00d$"
+    "a28eea15d5b67089f17e4daa3f10a436ba9b6d1dd25ca3eb1e6fafe21e3e59c8"
 )
 APPROVAL_DOCTYPE = "KoPOS Manager Approval"
 ACTION_PERMISSION_FIELDS = {
@@ -219,23 +261,27 @@ def authorize_manager_for_device(
 
     resolved_manager = cstr(manager_id).strip()
     raw_pin = cstr(manager_pin).strip()
-    if not resolved_manager or not raw_pin:
-        verify_pin(raw_pin, DUMMY_PIN_HASH)
-        frappe.throw(_("Manager credentials are invalid"), frappe.ValidationError)
-
     device_name = cstr(getattr(device_doc, "name", None)).strip()
     if not device_name or not cint(getattr(device_doc, "enabled", 0)):
         frappe.throw(_("KoPOS Device is disabled or invalid"), frappe.ValidationError)
 
+    limiter_identity = resolved_manager or "<missing-manager>"
+    _assert_manager_pin_rate_limit(device_name, limiter_identity)
+    if not resolved_manager or not raw_pin:
+        verify_pin(raw_pin, DUMMY_PIN_HASH)
+        _record_manager_pin_rate_limit_failure(device_name, limiter_identity)
+        frappe.throw(_("Manager credentials are invalid"), frappe.ValidationError)
     manager_row = _load_manager_row_for_update(device_name, resolved_manager)
     if not manager_row:
         verify_pin(raw_pin, DUMMY_PIN_HASH)
+        _record_manager_pin_rate_limit_failure(device_name, resolved_manager)
         frappe.throw(_("Manager credentials are invalid"), frappe.ValidationError)
 
     if not cint(_row_value(manager_row, "active")) or not cint(
         _row_value(manager_row, "can_manager_override")
     ):
         verify_pin(raw_pin, cstr(_row_value(manager_row, "pin_hash")) or DUMMY_PIN_HASH)
+        _record_manager_pin_rate_limit_failure(device_name, resolved_manager)
         frappe.throw(_("Manager credentials are invalid"), frappe.ValidationError)
 
     now = now_datetime()
@@ -248,10 +294,12 @@ def authorize_manager_for_device(
 
     pin_hash = cstr(_row_value(manager_row, "pin_hash")).strip()
     if not verify_pin(raw_pin, pin_hash):
+        _record_manager_pin_rate_limit_failure(device_name, resolved_manager)
         _record_failed_pin_attempt(manager_row, now)
         frappe.throw(_("Manager credentials are invalid"), frappe.ValidationError)
 
     _validate_enabled_erp_user(resolved_manager)
+    _clear_manager_pin_rate_limit(device_name, resolved_manager)
     _validate_device_manager_action_permission(manager_row, action)
 
     updates: dict[str, Any] = {
@@ -261,28 +309,65 @@ def authorize_manager_for_device(
     }
     if pin_hash_needs_upgrade(pin_hash):
         updates["pin_hash"] = hash_pin(raw_pin)
+    _persist_successful_manager_pin_verification(device_doc, manager_row, updates)
+    return resolved_manager
+
+
+def _persist_successful_manager_pin_verification(
+    device_doc: Any,
+    manager_row: Any,
+    updates: dict[str, Any],
+) -> None:
+    """Persist PIN state and version any verifier change in one transaction."""
     frappe.db.set_value(
         "KoPOS Device User",
         _row_value(manager_row, "name"),
         updates,
         update_modified=False,
     )
-    return resolved_manager
+    if "pin_hash" not in updates:
+        return
+
+    device_name = cstr(getattr(device_doc, "name", None)).strip()
+    if not device_name:
+        frappe.throw(
+            _("KoPOS Device is required for PIN verifier rotation"),
+            frappe.ValidationError,
+        )
+    locked_version = _row_value(manager_row, "device_config_version")
+    current_version = cint(
+        locked_version
+        if locked_version is not None
+        else getattr(device_doc, "config_version", 0)
+    )
+    next_version = max(1, current_version) + 1
+    frappe.db.set_value(
+        "KoPOS Device",
+        device_name,
+        {"config_version": next_version},
+        update_modified=True,
+    )
+    device_doc.config_version = next_version
 
 
 def _load_manager_row_for_update(device_name: str, manager_id: str) -> Any | None:
     rows = frappe.db.sql(
         """
         SELECT
-            name, user, active, can_manager_override, pin_hash,
-            pin_failed_attempts, pin_last_failed_at, pin_locked_until,
-            can_void, can_refund
-        FROM `tabKoPOS Device User`
-        WHERE parent = %s
-          AND parenttype = 'KoPOS Device'
-          AND parentfield = 'device_users'
-          AND user = %s
-        ORDER BY name
+            device_user.name, device_user.user, device_user.active,
+            device_user.can_manager_override, device_user.pin_hash,
+            device_user.pin_failed_attempts, device_user.pin_last_failed_at,
+            device_user.pin_locked_until, device_user.can_void,
+            device_user.can_refund,
+            device.config_version AS device_config_version
+        FROM `tabKoPOS Device User` AS device_user
+        INNER JOIN `tabKoPOS Device` AS device
+            ON device.name = device_user.parent
+        WHERE device_user.parent = %s
+          AND device_user.parenttype = 'KoPOS Device'
+          AND device_user.parentfield = 'device_users'
+          AND device_user.user = %s
+        ORDER BY device_user.name
         LIMIT 2
         FOR UPDATE
         """,
@@ -313,6 +398,11 @@ def _validate_enabled_erp_user(user_id: str) -> None:
 
 
 def _record_failed_pin_attempt(manager_row: Any, now: Any) -> None:
+    """Mirror Redis security state for Desk visibility.
+
+    Redis is authoritative because endpoint error handling rolls this database write
+    back. The atomic Redis limiter above deliberately survives that rollback.
+    """
     attempts = cint(_row_value(manager_row, "pin_failed_attempts"))
     last_failed_at = _optional_datetime(_row_value(manager_row, "pin_last_failed_at"))
     if not last_failed_at or (now - last_failed_at).total_seconds() >= (
@@ -335,6 +425,112 @@ def _record_failed_pin_attempt(manager_row: Any, now: Any) -> None:
         },
         update_modified=False,
     )
+
+
+def _manager_pin_rate_limit_key(device_name: str, manager_id: str) -> str:
+    site = cstr(getattr(getattr(frappe, "local", None), "site", None)).strip()
+    identity = f"{site}\0{device_name}\0{manager_id}".encode("utf-8")
+    return f"{PIN_RATE_LIMIT_KEY_PREFIX}:{hashlib.sha256(identity).hexdigest()}"
+
+
+def _atomic_manager_pin_rate_limit_eval(
+    script: str,
+    device_name: str,
+    manager_id: str,
+    *arguments: int,
+) -> Any:
+    try:
+        cache = frappe.cache()
+        make_key = getattr(cache, "make_key", None)
+        eval_script = getattr(cache, "eval", None)
+        if not callable(make_key) or not callable(eval_script):
+            raise RuntimeError("Redis atomic scripting is unavailable")
+        key = make_key(_manager_pin_rate_limit_key(device_name, manager_id))
+        return eval_script(script, 1, key, *arguments)
+    except Exception as error:
+        log_sanitized_error("KoPOS manager PIN rate limiter unavailable", error)
+        frappe.throw(
+            _("Manager PIN verification is temporarily unavailable"),
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw must raise") from error
+
+
+def _parse_rate_limit_result(result: Any, operation: str) -> tuple[int, int]:
+    if not isinstance(result, (list, tuple)) or len(result) != 2:
+        frappe.throw(
+            _("Manager PIN verification is temporarily unavailable"),
+            frappe.ValidationError,
+        )
+    try:
+        first = int(result[0])
+        second = int(result[1])
+    except (TypeError, ValueError) as error:
+        log_sanitized_error(
+            f"KoPOS manager PIN {operation} returned invalid Redis state",
+            error,
+        )
+        frappe.throw(
+            _("Manager PIN verification is temporarily unavailable"),
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw must raise") from error
+    return first, second
+
+
+def _assert_manager_pin_rate_limit(device_name: str, manager_id: str) -> None:
+    now_epoch = int(time.time())
+    locked, locked_until = _parse_rate_limit_result(
+        _atomic_manager_pin_rate_limit_eval(
+            PIN_RATE_LIMIT_CHECK_SCRIPT,
+            device_name,
+            manager_id,
+            now_epoch,
+        ),
+        "check",
+    )
+    if locked or locked_until > now_epoch:
+        frappe.throw(
+            _("Manager PIN is temporarily locked; try again later"),
+            frappe.ValidationError,
+        )
+
+
+def _record_manager_pin_rate_limit_failure(
+    device_name: str,
+    manager_id: str,
+) -> None:
+    _parse_rate_limit_result(
+        _atomic_manager_pin_rate_limit_eval(
+            PIN_RATE_LIMIT_FAILURE_SCRIPT,
+            device_name,
+            manager_id,
+            int(time.time()),
+            PIN_FAILURE_WINDOW_SECONDS,
+            MAX_PIN_FAILURES,
+            PIN_LOCKOUT_SECONDS,
+        ),
+        "failure update",
+    )
+
+
+def _clear_manager_pin_rate_limit(device_name: str, manager_id: str) -> None:
+    result = _atomic_manager_pin_rate_limit_eval(
+        PIN_RATE_LIMIT_CLEAR_SCRIPT,
+        device_name,
+        manager_id,
+    )
+    try:
+        int(result)
+    except (TypeError, ValueError) as error:
+        log_sanitized_error(
+            "KoPOS manager PIN limiter clear returned invalid Redis state",
+            error,
+        )
+        frappe.throw(
+            _("Manager PIN verification is temporarily unavailable"),
+            frappe.ValidationError,
+        )
 
 
 def _optional_datetime(value: Any) -> Any | None:

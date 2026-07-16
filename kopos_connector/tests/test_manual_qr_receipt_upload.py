@@ -180,6 +180,11 @@ def receipt_module(monkeypatch):
         "get_authenticated_device_doc",
         lambda: device,
     )
+    monkeypatch.setattr(
+        manual_qr_receipt,
+        "lock_device_for_operational_mutation",
+        lambda device_id: device,
+    )
     return SimpleNamespace(
         module=manual_qr_receipt,
         env=env,
@@ -254,8 +259,10 @@ def test_authentication_happens_before_receipt_bytes_are_read(receipt_module, mo
     )
     monkeypatch.setattr(
         receipt_module.module,
-        "get_authenticated_device_doc",
-        lambda: (_ for _ in ()).throw(receipt_module.frappe.ValidationError("denied")),
+        "lock_device_for_operational_mutation",
+        lambda device_id: (_ for _ in ()).throw(
+            receipt_module.frappe.ValidationError("denied")
+        ),
     )
 
     with pytest.raises(receipt_module.frappe.ValidationError, match="denied"):

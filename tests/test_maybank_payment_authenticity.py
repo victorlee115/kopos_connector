@@ -54,6 +54,7 @@ def _transaction(**overrides: Any) -> dict[str, Any]:
         "name": "MBQR-1",
         "transaction_refno": "MB-REF-1",
         "status": "paid",
+        "maybank_status": 1,
         "sale_amount_sen": 1250,
         "device_id": "DEVICE-1",
         "outlet_id": "OUTLET-1",
@@ -191,13 +192,10 @@ def test_rejects_wrong_device(monkeypatch):
         ({"outlet_id": "OUTLET-2"}, "outlet does not match"),
         ({"currency": "USD"}, "currency does not match"),
         ({"provider": "other_provider"}, "provider is invalid"),
-        (
-            {"paid_at": datetime(2026, 3, 13, 18, 6, 31)},
-            "paid after expiry",
-        ),
+        ({"maybank_status": 2}, "lacks provider-paid status evidence"),
     ],
 )
-def test_rejects_wrong_transaction_scope_or_expiry(
+def test_rejects_wrong_transaction_scope_or_provider_evidence(
     monkeypatch, transaction_overrides, message
 ):
     _install_transaction_db(monkeypatch, _transaction(**transaction_overrides))
@@ -206,10 +204,10 @@ def test_rejects_wrong_transaction_scope_or_expiry(
         service.claim_paid_maybank_transaction(_order())
 
 
-def test_accepts_provider_paid_success_within_expiry_grace(monkeypatch):
+def test_accepts_provider_paid_success_observed_after_network_outage(monkeypatch):
     transaction = _transaction(
         expires_at=datetime(2026, 3, 13, 18, 6, 0),
-        paid_at=datetime(2026, 3, 13, 18, 6, 30),
+        paid_at=datetime(2026, 3, 14, 2, 6, 30),
     )
     _install_transaction_db(monkeypatch, transaction)
 

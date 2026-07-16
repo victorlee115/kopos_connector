@@ -51,7 +51,8 @@
             "fieldname": "fb_order",
             "fieldtype": "Link",
             "label": "FB Order",
-            "options": "FB Order"
+            "options": "FB Order",
+            "search_index": 1
         },
         {
             "fieldname": "original_sales_invoice",

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
 from urllib.parse import quote
@@ -141,8 +143,17 @@ def create_pos_provisioning(
     device_name: str | None = None,
     device_prefix: str | None = None,
     expires_in_seconds: int | str | None = None,
+    safe_reset_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     require_system_manager()
+    if safe_reset_metadata is not None:
+        frappe.throw(
+            _(
+                "Legacy single-phase safe reset provisioning is rejected; use the "
+                "two-phase safe reset approval protocol"
+            ),
+            frappe.ValidationError,
+        )
 
     api_key_value = cstr(api_key).strip()
     api_secret_value = cstr(api_secret).strip()
@@ -207,6 +218,12 @@ def create_pos_provisioning(
         )
     setup_payload["provisioning_user"] = provisioning_user
     setup_payload["erpnext_url"] = base_url
+    normalized_safe_reset_metadata = _normalize_safe_reset_metadata(
+        safe_reset_metadata,
+        setup_config_version=cint(setup_payload.get("config_version") or 0),
+    )
+    if normalized_safe_reset_metadata is not None:
+        setup_payload.update(normalized_safe_reset_metadata)
     if cstr(device_name).strip():
         setup_payload["device_name"] = cstr(device_name).strip()
     if cstr(device_prefix).strip():
@@ -228,6 +245,12 @@ def create_pos_provisioning(
         f"kopos://provision?base_url={quote(base_url, safe='')}"
         f"&token={quote(token, safe='')}"
     )
+    if normalized_safe_reset_metadata is not None:
+        provisioning_link += (
+            "&provisioning_mode=safe_reset"
+            f"&request_id={quote(normalized_safe_reset_metadata['request_id'], safe='')}"
+            f"&reset_id={quote(normalized_safe_reset_metadata['reset_id'], safe='')}"
+        )
     provisioning_qr_svg = get_qr_svg_code(provisioning_link).decode()
 
     _persist_cached_value(
@@ -236,7 +259,7 @@ def create_pos_provisioning(
         ttl_seconds,
     )
 
-    return {
+    response = {
         "status": "ok",
         "token": token,
         "issued_at": cache_payload["issued_at"],
@@ -256,9 +279,55 @@ def create_pos_provisioning(
             "device_prefix": setup_payload.get("device_prefix"),
         },
     }
+    if normalized_safe_reset_metadata is not None:
+        response.update(normalized_safe_reset_metadata)
+    return response
 
 
-def redeem_pos_provisioning(token: str | None = None) -> dict[str, Any]:
+def redeem_pos_provisioning(
+    token: str | None = None,
+    safe_reset_protocol_version: Any = None,
+    reset_id: str | None = None,
+    request_id: str | None = None,
+    approval_challenge_id: str | None = None,
+    approval_generation: Any = None,
+    reset_proof_nonce: str | None = None,
+    redemption_idempotency_key: str | None = None,
+    export_sha256: str | None = None,
+    export_content_sha256: str | None = None,
+    export_byte_length: Any = None,
+) -> dict[str, Any]:
+    safe_reset_values = (
+        safe_reset_protocol_version,
+        reset_id,
+        request_id,
+        approval_challenge_id,
+        approval_generation,
+        reset_proof_nonce,
+        redemption_idempotency_key,
+        export_sha256,
+        export_content_sha256,
+        export_byte_length,
+    )
+    if any(value is not None and cstr(value).strip() for value in safe_reset_values):
+        from kopos_connector.api.device_safe_reset import (
+            redeem_device_safe_reset_approval,
+        )
+
+        return redeem_device_safe_reset_approval(
+            safe_reset_protocol_version=safe_reset_protocol_version,
+            token=token,
+            reset_id=reset_id,
+            request_id=request_id,
+            approval_challenge_id=approval_challenge_id,
+            approval_generation=approval_generation,
+            reset_proof_nonce=reset_proof_nonce,
+            redemption_idempotency_key=redemption_idempotency_key,
+            export_sha256=export_sha256,
+            export_content_sha256=export_content_sha256,
+            export_byte_length=export_byte_length,
+        )
+
     token_value = cstr(token).strip()
     if not token_value:
         frappe.throw(_("Provisioning token is required"))
@@ -267,25 +336,41 @@ def redeem_pos_provisioning(token: str | None = None) -> dict[str, Any]:
     if not cached:
         frappe.throw(_("Provisioning token is invalid or expired"))
 
-    try:
-        payload = json.loads(cached)
-    except (json.JSONDecodeError, TypeError) as error:
-        raise RuntimeError("Provisioning token cache payload is invalid") from error
-    if not isinstance(payload, dict):
-        raise RuntimeError("Provisioning token cache payload is invalid")
-    setup = payload.get("setup")
-    if not isinstance(setup, dict):
+    payload, setup = _decode_cached_provisioning_payload(cached)
+    _validate_cached_provisioning_setup(setup)
+    provisioning_mode = cstr(setup.get("provisioning_mode")).strip()
+    if provisioning_mode:
         frappe.throw(
-            _("Provisioning token setup is invalid; request a new setup QR"),
+            _(
+                "Legacy or unsupported provisioning token mode is rejected; request "
+                "a current setup QR"
+            ),
             frappe.ValidationError,
         )
-    _validate_cached_provisioning_setup(setup)
     return {
         "status": "ok",
         "issued_at": payload.get("issued_at"),
         "expires_at": payload.get("expires_at"),
         "setup": setup,
     }
+
+
+def _normalize_safe_reset_metadata(
+    metadata: Mapping[str, Any] | None,
+    *,
+    setup_config_version: int,
+) -> dict[str, Any] | None:
+    if metadata is None:
+        return None
+    del setup_config_version
+    frappe.throw(
+        _(
+            "Legacy single-phase safe reset provisioning metadata is rejected; "
+            "use safe reset protocol version 2"
+        ),
+        frappe.ValidationError,
+    )
+    raise ValueError("Legacy safe reset provisioning is rejected")
 
 
 def _validate_cached_provisioning_setup(setup: dict[str, Any]) -> None:
@@ -444,6 +529,18 @@ def _delete_cached_value(key: str) -> None:
     _delete_unconfirmed_cached_value(cache, storage_key)
 
 
+def _peek_cached_value(key: str) -> str | None:
+    """Read a token without consuming it so proof checks cannot burn a valid QR."""
+    cache = frappe.cache()
+    make_key = getattr(cache, "make_key", None)
+    get_direct = getattr(cache, "get", None)
+    if not callable(make_key) or not callable(get_direct):
+        raise RuntimeError(
+            "Frappe Redis cache does not support atomic token consumption or token prevalidation"
+        )
+    return _decode_cached_value(get_direct(make_key(key)))
+
+
 def _consume_cached_value(key: str) -> str | None:
     """Atomically fetch and delete a raw JSON token payload from Redis."""
     cache = frappe.cache()
@@ -461,12 +558,38 @@ def _consume_cached_value(key: str) -> str | None:
         return None
     if isinstance(raw_value, str):
         return raw_value
+    return _decode_cached_value(raw_value)
+
+
+def _decode_cached_value(raw_value: Any) -> str | None:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, str):
+        return raw_value
     if isinstance(raw_value, (bytes, bytearray, memoryview)):
         try:
             return bytes(raw_value).decode("utf-8")
         except UnicodeDecodeError as error:
             raise RuntimeError("Provisioning token cache payload is invalid") from error
     raise RuntimeError("Provisioning token cache payload is invalid")
+
+
+def _decode_cached_provisioning_payload(
+    cached: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        payload = json.loads(cached)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise RuntimeError("Provisioning token cache payload is invalid") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError("Provisioning token cache payload is invalid")
+    setup = payload.get("setup")
+    if not isinstance(setup, dict):
+        frappe.throw(
+            _("Provisioning token setup is invalid; request a new setup QR"),
+            frappe.ValidationError,
+        )
+    return payload, setup
 
 
 def _device_api_user_email(device_doc) -> str:
@@ -520,6 +643,11 @@ def _ensure_device_api_user(device_doc) -> str:
         user_doc.append("roles", {"role": KOPOS_DEVICE_API_ROLE})
         user_doc.insert(ignore_permissions=True)
     else:
+        # Saving a Frappe User can remove its encrypted API secret from __Auth.
+        # Preserve the already-issued secret inside the same transaction so a
+        # harmless provisioning refresh never disconnects a live terminal or
+        # creates an incomplete key/secret pair.
+        api_secret_before_save = _read_device_api_secret(user_email)
         user_doc = frappe.get_doc("User", user_email)
         user_doc.enabled = 1
         user_doc.first_name = display_name or user_doc.first_name
@@ -530,6 +658,35 @@ def _ensure_device_api_user(device_doc) -> str:
             [{"doctype": "Has Role", "role": KOPOS_DEVICE_API_ROLE}],
         )
         user_doc.save(ignore_permissions=True)
+        if api_secret_before_save:
+            api_secret_after_save = _read_device_api_secret(user_email)
+            if api_secret_after_save and not hmac.compare_digest(
+                api_secret_after_save,
+                api_secret_before_save,
+            ):
+                frappe.throw(
+                    _(
+                        "KoPOS device API secret changed unexpectedly while normalizing its user"
+                    ),
+                    frappe.ValidationError,
+                )
+            if not api_secret_after_save:
+                set_encrypted_password(
+                    "User",
+                    user_email,
+                    api_secret_before_save,
+                    "api_secret",
+                )
+                if not hmac.compare_digest(
+                    _read_device_api_secret(user_email),
+                    api_secret_before_save,
+                ):
+                    frappe.throw(
+                        _(
+                            "KoPOS device API secret could not be preserved while normalizing its user"
+                        ),
+                        frappe.ValidationError,
+                    )
 
     if cstr(getattr(device_doc, "api_user", None)).strip() != user_email:
         frappe.db.set_value(

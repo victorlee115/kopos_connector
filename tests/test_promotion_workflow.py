@@ -348,7 +348,18 @@ class PromotionWorkflowTests(unittest.TestCase):
         snapshot = KoPOSPromotionSnapshot()
         snapshot.snapshot_version = "KOPOS-PROMO-20260317000000-ABCD1234"
 
-        with patch.object(frappe.db, "exists", return_value="POS-INV-001"):
+        def canonical_reference_exists(doctype, filters):
+            if doctype == "Sales Invoice" and filters == {
+                "custom_kopos_promotion_snapshot_version": snapshot.snapshot_version
+            }:
+                return "SINV-001"
+            return False
+
+        with patch.object(
+            frappe.db,
+            "exists",
+            side_effect=canonical_reference_exists,
+        ):
             with self.assertRaises(frappe.ValidationError):
                 snapshot.on_trash()
 

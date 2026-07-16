@@ -36,6 +36,7 @@ from kopos_connector.kopos.services.inventory.stock_issue_service import (
 from kopos_connector.kopos.services.inventory.warning_service import (
     detect_stock_shortfall,
     log_stock_shortfall,
+    require_advisory_shortfall_policy,
 )
 from kopos_connector.kopos.services.projection.log_service import (
     create_projection_log,
@@ -284,9 +285,9 @@ class FBOrder(BaseDocument):
             computed_line_total_sen = (
                 (unit_price_sen + modifier_total_sen) * qty
             ) - discount_amount_sen
-            if computed_line_total_sen <= 0:
+            if computed_line_total_sen < 0:
                 frappe.throw(
-                    f"{prefix} line_total must be greater than 0",
+                    f"{prefix} line_total must be 0 or greater",
                     frappe.ValidationError,
                 )
             line.qty = qty
@@ -1074,6 +1075,7 @@ class FBOrder(BaseDocument):
 
         shortfalls = detect_stock_shortfall(components)
         if shortfalls:
+            require_advisory_shortfall_policy(shortfalls)
             log_stock_shortfall(self, shortfalls, timestamp=now_datetime())
 
     def create_resolved_sales(self, line_resolutions: list[dict[str, Any]]):

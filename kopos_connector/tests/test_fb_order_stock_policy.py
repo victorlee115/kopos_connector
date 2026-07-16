@@ -28,6 +28,7 @@ class FakeLogDoc:
 def fake_frappe(monkeypatch):
     created_logs: list[FakeLogDoc] = []
     stock_by_bin: dict[tuple[str, str], float] = {}
+    stock_policy = {"allow_negative_stock": 1, "restricted_items": set()}
     timestamp = datetime(2026, 4, 20, 12, 0, 0)
 
     frappe_module: Any = types.ModuleType("frappe")
@@ -42,13 +43,31 @@ def fake_frappe(monkeypatch):
         assert fieldname == "actual_qty"
         return stock_by_bin.get((filters["item_code"], filters["warehouse"]), 0)
 
-    frappe_module.db = SimpleNamespace(get_value=get_bin_value)
+    frappe_module.db = SimpleNamespace(
+        get_value=get_bin_value,
+        get_single_value=lambda doctype, fieldname: stock_policy[
+            "allow_negative_stock"
+        ]
+        if (doctype, fieldname) == ("Stock Settings", "allow_negative_stock")
+        else None,
+    )
+    frappe_module.get_all = lambda doctype, **kwargs: [
+        {
+            "name": item_code,
+            "has_serial_no": 1,
+            "has_batch_no": 0,
+        }
+        for item_code in sorted(stock_policy["restricted_items"])
+    ] if doctype == "Item" else []
     frappe_module.new_doc = lambda doctype: FakeLogDoc(doctype, created_logs)
     frappe_module.generate_hash = lambda length=8: "X" * length
     frappe_module.scrub = (
         lambda value: str(value).replace("_", "-").replace(" ", "-").lower()
     )
     frappe_module.ValidationError = type("ValidationError", (Exception,), {})
+    frappe_module.throw = lambda message, exc=None: (_ for _ in ()).throw(
+        (exc or frappe_module.ValidationError)(message)
+    )
 
     frappe_utils_module.now_datetime = lambda: timestamp
     frappe_utils_module.flt = lambda value: float(value or 0)
@@ -92,6 +111,7 @@ def fake_frappe(monkeypatch):
     return SimpleNamespace(
         created_logs=created_logs,
         stock_by_bin=stock_by_bin,
+        stock_policy=stock_policy,
         timestamp=timestamp,
     )
 
@@ -177,6 +197,72 @@ def test_before_submit_logs_shortfall_without_throwing(fake_frappe):
     assert len(fake_frappe.created_logs) == 1
     assert fake_frappe.created_logs[0].item == "ITEM-1"
     assert fake_frappe.created_logs[0].order_reference == "ORDER-1"
+
+
+def test_before_submit_rejects_shortfall_when_negative_stock_policy_is_disabled(
+    fake_frappe,
+):
+    fake_frappe.stock_by_bin[("ITEM-1", "WH-1")] = 0
+    fake_frappe.stock_policy["allow_negative_stock"] = 0
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+
+    order = fb_order_module.FBOrder()
+    order.name = "FB-ORDER-1"
+    order.order_id = "ORDER-1"
+    order.booth_warehouse = "WH-1"
+
+    with pytest.raises(
+        fb_order_module.frappe.ValidationError,
+        match="Allow Negative Stock",
+    ):
+        order.validate_stock_availability(
+            [
+                {
+                    "resolved_components": [
+                        {"item": "ITEM-1", "stock_qty": 1, "affects_stock": 1}
+                    ]
+                }
+            ]
+        )
+
+    assert fake_frappe.created_logs == []
+
+
+def test_before_submit_rejects_serialised_shortfall_even_when_negative_stock_is_enabled(
+    fake_frappe,
+):
+    fake_frappe.stock_by_bin[("SERIAL-ITEM", "WH-1")] = 0
+    fake_frappe.stock_policy["restricted_items"].add("SERIAL-ITEM")
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+
+    order = fb_order_module.FBOrder()
+    order.name = "FB-ORDER-1"
+    order.order_id = "ORDER-1"
+    order.booth_warehouse = "WH-1"
+
+    with pytest.raises(
+        fb_order_module.frappe.ValidationError,
+        match="serialised or batched",
+    ):
+        order.validate_stock_availability(
+            [
+                {
+                    "resolved_components": [
+                        {
+                            "item": "SERIAL-ITEM",
+                            "stock_qty": 1,
+                            "affects_stock": 1,
+                        }
+                    ]
+                }
+            ]
+        )
+
+    assert fake_frappe.created_logs == []
 
 
 def test_before_submit_still_raises_non_stock_failures(fake_frappe):

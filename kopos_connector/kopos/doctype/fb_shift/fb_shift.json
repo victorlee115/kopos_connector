@@ -89,7 +89,8 @@
             "fieldtype": "Data",
             "in_list_view": 1,
             "label": "Device ID",
-            "reqd": 1
+            "reqd": 1,
+            "search_index": 1
         },
         {
             "fieldname": "staff_id",
@@ -109,7 +110,8 @@
             "in_list_view": 1,
             "label": "Status",
             "options": "Open\nClosing\nClosed\nException\nCancelled",
-            "reqd": 1
+            "reqd": 1,
+            "search_index": 1
         },
         {
             "fieldname": "event_project",

@@ -3,6 +3,12 @@
 
 from importlib import import_module
 
+from kopos_connector.kopos.api.money_contract import (
+    MoneyContractValidationError,
+    persisted_money_to_sen,
+    sen_to_decimal,
+)
+
 frappe = import_module("frappe")
 Document = import_module("frappe.model.document").Document
 frappe_utils = import_module("frappe.utils")
@@ -14,6 +20,15 @@ now = frappe_utils.now
 
 BLOCKING_PROJECTION_STATUSES = {"Pending", "Failed"}
 BLOCKING_PROJECTION_TYPES = {"Sales Invoice", "Stock Issue", "Stock Entry", "FB Shift"}
+QUERY_PAGE_SIZE = 500
+
+
+def _money_sen(value: object, fieldname: str) -> int:
+    try:
+        return persisted_money_to_sen(value, fieldname)
+    except MoneyContractValidationError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+        raise AssertionError("frappe.throw must raise") from error
 
 
 class FBShift(Document):
@@ -24,7 +39,17 @@ class FBShift(Document):
     def calculate_variance(self):
         """Calculate cash variance if counted cash is provided"""
         if self.counted_cash is not None and self.expected_cash is not None:
-            self.cash_variance = self.counted_cash - self.expected_cash
+            counted_cash_sen = _money_sen(
+                self.counted_cash,
+                f"FB Shift {getattr(self, 'name', None) or 'new'} counted_cash",
+            )
+            expected_cash_sen = _money_sen(
+                self.expected_cash,
+                f"FB Shift {getattr(self, 'name', None) or 'new'} expected_cash",
+            )
+            self.cash_variance = sen_to_decimal(
+                counted_cash_sen - expected_cash_sen
+            )
 
     def validate_status_transitions(self):
         """Validate status transitions"""
@@ -69,50 +94,31 @@ class FBShift(Document):
 
 @frappe.whitelist()
 def get_shift_expected_cash(shift_name):
-    """Calculate expected cash for a shift based on orders"""
-    shift = frappe.get_doc("FB Shift", shift_name)
-
-    # Get all orders for this shift
-    orders = frappe.get_all(
-        "FB Order",
-        filters={"shift": shift_name, "status": "Submitted"},
-        fields=["name", "grand_total", "sales_invoice"],
+    """Calculate exact cash from submitted ERP accounting evidence."""
+    from kopos_connector.kopos.services.accounting.return_invoice_service import (
+        calculate_fb_shift_cash,
     )
 
-    total_cash = 0
-    for order in orders:
-        if order.sales_invoice:
-            # Get payment details from Sales Invoice
-            si = frappe.get_doc("Sales Invoice", order.sales_invoice)
-            for payment in si.payments:
-                if payment.mode_of_payment == "Cash":
-                    total_cash += payment.amount
-
-    return {
-        "opening_float": shift.opening_float,
-        "cash_sales": total_cash,
-        "expected_cash": shift.opening_float + total_cash,
-    }
+    return calculate_fb_shift_cash(shift_name)
 
 
 def get_shift_close_projection_blockers(shift_name):
-    orders = frappe.get_all(
+    orders = _get_all_rows(
         "FB Order",
         filters={"shift": shift_name, "status": "Submitted"},
         fields=["name", "invoice_status", "stock_status"],
         order_by="creation asc",
     )
     blockers = []
-    order_names = []
-    stock_required_by_order = {}
+    order_names = [
+        cstr(_row_value(order, "name")).strip()
+        for order in orders
+        if cstr(_row_value(order, "name")).strip()
+    ]
+    stock_required_by_order = _orders_requiring_stock_projection(order_names)
 
     for order in orders:
         order_name = _row_value(order, "name")
-        if order_name:
-            order_names.append(order_name)
-            stock_required_by_order[order_name] = _order_requires_stock_projection(
-                order_name
-            )
 
         invoice_status = cstr(_row_value(order, "invoice_status"))
         if invoice_status in BLOCKING_PROJECTION_STATUSES:
@@ -139,7 +145,7 @@ def get_shift_close_projection_blockers(shift_name):
             )
 
     if order_names:
-        projection_logs = frappe.get_all(
+        projection_logs = _get_all_rows(
             "FB Projection Log",
             filters={
                 "source_doctype": "FB Order",
@@ -204,38 +210,96 @@ def _row_value(row, fieldname):
 def _order_requires_stock_projection(order_name):
     if not order_name:
         return True
+    return _orders_requiring_stock_projection([order_name]).get(order_name, True)
 
-    resolved_sales = frappe.get_all(
+
+def _orders_requiring_stock_projection(order_names):
+    """Resolve stock requirements in two bounded queries, not one query per order."""
+
+    normalized_order_names = sorted(
+        {cstr(order_name).strip() for order_name in order_names if cstr(order_name).strip()}
+    )
+    if not normalized_order_names:
+        return {}
+
+    required_by_order = {order_name: True for order_name in normalized_order_names}
+    resolved_sales = _get_all_rows(
         "FB Resolved Sale",
-        filters={"fb_order": order_name},
-        fields=["name"],
+        filters={"fb_order": ["in", normalized_order_names]},
+        fields=["name", "fb_order", "booth_warehouse"],
         order_by="creation asc",
     )
     if not resolved_sales:
-        return True
+        return required_by_order
 
-    for resolved_sale_row in resolved_sales:
-        resolved_sale_name = _row_value(resolved_sale_row, "name")
-        if not resolved_sale_name:
+    sale_to_order = {}
+    sale_to_warehouse = {}
+    for sale in resolved_sales:
+        sale_name = cstr(_row_value(sale, "name")).strip()
+        order_name = cstr(_row_value(sale, "fb_order")).strip()
+        if not sale_name or order_name not in required_by_order:
             continue
-        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
-        for component in list(getattr(resolved_sale, "resolved_components", None) or []):
-            if not int(getattr(component, "affects_stock", 0) or 0):
-                continue
-            item = getattr(component, "item", None)
-            warehouse = getattr(component, "warehouse", None) or getattr(
-                resolved_sale,
-                "booth_warehouse",
-                None,
-            )
-            qty = flt(
-                getattr(component, "stock_qty", None)
-                or getattr(component, "qty", None)
-                or 0
-            )
-            if item and warehouse and qty > 0:
-                return True
-    return False
+        sale_to_order[sale_name] = order_name
+        sale_to_warehouse[sale_name] = cstr(
+            _row_value(sale, "booth_warehouse")
+        ).strip()
+        required_by_order[order_name] = False
+
+    if not sale_to_order:
+        return required_by_order
+
+    components = _get_all_rows(
+        "FB Resolved Component",
+        filters={
+            "parent": ["in", sorted(sale_to_order)],
+            "parenttype": "FB Resolved Sale",
+            "parentfield": "resolved_components",
+            "affects_stock": 1,
+        },
+        fields=["parent", "item", "warehouse", "stock_qty", "qty"],
+    )
+    for component in components:
+        sale_name = cstr(_row_value(component, "parent")).strip()
+        order_name = sale_to_order.get(sale_name)
+        if not order_name:
+            continue
+        stock_qty = _row_value(component, "stock_qty")
+        if stock_qty in (None, ""):
+            stock_qty = _row_value(component, "qty")
+        item = cstr(_row_value(component, "item")).strip()
+        warehouse = cstr(_row_value(component, "warehouse")).strip() or sale_to_warehouse.get(
+            sale_name, ""
+        )
+        if item and warehouse and flt(stock_qty or 0) > 0:
+            required_by_order[order_name] = True
+
+    return required_by_order
+
+
+def _get_all_rows(
+    doctype,
+    *,
+    filters,
+    fields,
+    order_by=None,
+):
+    """Read every matching row without relying on Frappe's default page limit."""
+
+    rows = []
+    start = 0
+    while True:
+        page = frappe.get_all(
+            doctype,
+            filters=filters,
+            fields=fields,
+            order_by=order_by,
+            limit_start=start,
+            limit_page_length=QUERY_PAGE_SIZE,
+        )
+        rows.extend(page)
+        if len(page) < QUERY_PAGE_SIZE:
+            return rows
+        start += len(page)
 
 
 def _is_noop_stock_projection(

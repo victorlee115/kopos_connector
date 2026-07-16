@@ -26,6 +26,7 @@ from frappe.utils import (
 from kopos_connector.api.devices import (
     get_authenticated_device_doc,
     get_session_roles,
+    lock_device_for_operational_mutation,
     require_device_context,
     require_kopos_api_access,
 )
@@ -810,7 +811,7 @@ def _get_max_receipt_bytes() -> int:
 
 
 def _resolve_authorized_device(request_device_id: str) -> Any:
-    device = get_authenticated_device_doc()
+    device = lock_device_for_operational_mutation(device_id=request_device_id)
     authorized_device_id = cstr(getattr(device, "device_id", None)).strip()
     if not authorized_device_id:
         frappe.throw(_("Authenticated KoPOS Device has no device_id"), frappe.ValidationError)

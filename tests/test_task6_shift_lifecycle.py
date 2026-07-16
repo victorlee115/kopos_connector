@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 from contextlib import nullcontext
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +23,9 @@ frappe.utils.now = lambda: "2026-03-13 18:05:00"
 fb_orders = importlib.import_module("kopos_connector.kopos.api.fb_orders")
 fb_shift = importlib.import_module("kopos_connector.kopos.doctype.fb_shift.fb_shift")
 shifts = importlib.import_module("kopos_connector.api.shifts")
+cash_service = importlib.import_module(
+    "kopos_connector.kopos.services.accounting.return_invoice_service"
+)
 
 
 class MutableShift(SimpleNamespace):
@@ -231,6 +235,8 @@ def _patch_close_dependencies(
             return 1
         if doctype == "User":
             return 1
+        if doctype == "FB Shift":
+            return shift_doc.expected_cash
         return None
 
     resolved_sales_by_order = resolved_sales_by_order or {}
@@ -249,10 +255,46 @@ def _patch_close_dependencies(
         if doctype == "FB Order":
             return order_rows
         if doctype == "FB Resolved Sale":
-            order_name = str((filters or {}).get("fb_order") or "")
+            order_filter = (filters or {}).get("fb_order")
+            requested_orders = (
+                set(order_filter[1])
+                if isinstance(order_filter, list)
+                and len(order_filter) == 2
+                and order_filter[0] == "in"
+                else {str(order_filter or "")}
+            )
             return [
-                {"name": resolved_sale.name}
-                for resolved_sale in resolved_sales_by_order.get(order_name, [])
+                {
+                    "name": resolved_sale.name,
+                    "fb_order": order_name,
+                    "booth_warehouse": resolved_sale.booth_warehouse,
+                }
+                for order_name, sales in resolved_sales_by_order.items()
+                if order_name in requested_orders
+                for resolved_sale in sales
+            ]
+        if doctype == "FB Resolved Component":
+            parent_filter = (filters or {}).get("parent")
+            requested_parents = (
+                set(parent_filter[1])
+                if isinstance(parent_filter, list)
+                and len(parent_filter) == 2
+                and parent_filter[0] == "in"
+                else set()
+            )
+            return [
+                {
+                    "parent": resolved_sale.name,
+                    "item": component.item,
+                    "warehouse": component.warehouse,
+                    "stock_qty": component.stock_qty,
+                    "qty": getattr(component, "qty", None),
+                }
+                for sales in resolved_sales_by_order.values()
+                for resolved_sale in sales
+                if resolved_sale.name in requested_parents
+                for component in resolved_sale.resolved_components
+                if int(component.affects_stock or 0)
             ]
         if doctype == "FB Projection Log":
             return projection_rows
@@ -267,6 +309,11 @@ def _patch_close_dependencies(
     )
     monkeypatch.setattr(shifts, "elevate_device_api_user", lambda: nullcontext())
     monkeypatch.setattr(shifts, "_resolve_fb_shift_reference", lambda value: value)
+    monkeypatch.setattr(
+        cash_service,
+        "refresh_fb_shift_cash",
+        lambda _shift_name: None,
+    )
     def get_doc(doctype: str, name: str) -> Any:
         if doctype == "FB Resolved Sale":
             return resolved_sale_docs[name]
@@ -423,6 +470,107 @@ def test_close_shift_payload_all_posted_transitions_open_to_closing_to_closed(
     assert shift_doc.save_calls == [("Closing", True), ("Closed", True)]
     assert shift_doc.counted_cash == 12.5
     assert shift_doc.cash_variance == 2.5
+
+
+def test_close_shift_reconciles_cash_from_accounting_evidence_before_variance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shift_doc = _patch_close_dependencies(
+        monkeypatch,
+        order_rows=[
+            {"name": "FB-ORDER-1", "invoice_status": "Posted", "stock_status": "Posted"}
+        ],
+        projection_rows=[],
+    )
+    refresh_calls: list[str] = []
+
+    def refresh(shift_name: str) -> None:
+        refresh_calls.append(shift_name)
+        shift_doc.expected_cash = Decimal("12.00")
+
+    monkeypatch.setattr(cash_service, "refresh_fb_shift_cash", refresh)
+
+    shifts.close_shift_payload(_close_payload())
+
+    assert refresh_calls == ["FB-SHIFT-1"]
+    assert shift_doc.expected_cash == Decimal("12.00")
+    assert shift_doc.cash_variance == Decimal("0.50")
+
+
+def test_shift_stock_requirement_is_bulk_bounded_for_two_thousand_orders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    order_names = [f"FB-ORDER-{index:04d}" for index in range(2_000)]
+    calls: list[str] = []
+
+    def get_all(doctype: str, **_kwargs: Any) -> list[dict[str, Any]]:
+        calls.append(doctype)
+        if doctype == "FB Resolved Sale":
+            rows = [
+                {
+                    "name": f"SALE-{index:04d}",
+                    "fb_order": order_name,
+                    "booth_warehouse": "WH-1",
+                }
+                for index, order_name in enumerate(order_names)
+            ]
+        elif doctype == "FB Resolved Component":
+            rows = [
+                {
+                    "parent": f"SALE-{index:04d}",
+                    "item": "INGREDIENT-1",
+                    "warehouse": "WH-1",
+                    "stock_qty": 1,
+                    "qty": 1,
+                }
+                for index in range(0, len(order_names), 2)
+            ]
+        else:
+            raise AssertionError(f"unexpected doctype {doctype}")
+
+        start = int(_kwargs.get("limit_start", 0))
+        length = int(_kwargs.get("limit_page_length", len(rows)))
+        return rows[start : start + length]
+
+    monkeypatch.setattr(fb_shift.frappe, "get_all", get_all)
+    monkeypatch.setattr(
+        fb_shift.frappe,
+        "get_doc",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("bulk stock classification must not hydrate documents")
+        ),
+    )
+
+    required = fb_shift._orders_requiring_stock_projection(order_names)
+
+    assert calls.count("FB Resolved Sale") == 5
+    assert calls.count("FB Resolved Component") == 3
+    assert required["FB-ORDER-0000"] is True
+    assert required["FB-ORDER-0001"] is False
+    assert len(required) == 2_000
+
+
+def test_expected_cash_uses_accounting_reconciliation_including_refunds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {
+        "opening_float": Decimal("100.00"),
+        "cash_sales": Decimal("18.00"),
+        "cash_refunds": Decimal("3.00"),
+        "net_cash": Decimal("15.00"),
+        "expected_cash": Decimal("115.00"),
+    }
+    calls: list[str] = []
+    monkeypatch.setattr(
+        cash_service,
+        "calculate_fb_shift_cash",
+        lambda shift_name: calls.append(shift_name) or expected,
+    )
+
+    result = fb_shift.get_shift_expected_cash("FB-SHIFT-1")
+
+    assert calls == ["FB-SHIFT-1"]
+    assert result == expected
 
 
 @pytest.mark.parametrize(

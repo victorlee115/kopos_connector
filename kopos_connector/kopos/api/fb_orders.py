@@ -21,6 +21,7 @@ from kopos_connector.kopos.api.money_contract import (
     sen_to_decimal,
 )
 from kopos_connector.kopos.services.orders.sale_datetime import (
+    normalize_site_datetime,
     validate_submit_sale_datetime,
     validate_submit_sale_datetime_bounds,
 )
@@ -55,6 +56,14 @@ ORDER_PROJECTION_CONFIG = (
     },
 )
 
+ORDER_RETRY_PROJECTION_CONFIG = ORDER_PROJECTION_CONFIG + (
+    {
+        "projection_type": "FB Shift",
+        "target_field": "shift",
+        "target_doctype": "FB Shift",
+    },
+)
+
 RETURN_PROJECTION_CONFIG = (
     {
         "projection_type": "Sales Return",
@@ -84,6 +93,22 @@ PROJECTION_SUBSYSTEMS = {
     "Stock Issue": "stock",
     "Stock Entry": "stock",
     "FB Shift": "shift",
+}
+
+PROMOTION_PRICING_MODES = {
+    "legacy_client",
+    "manual_only",
+    "online_snapshot",
+    "offline_snapshot",
+    "server_validated",
+}
+PROMOTION_SOURCE_SNAPSHOT = "snapshot"
+LOCALLY_SUPPORTED_PROMOTION_TYPES = {
+    "buy_x_get_y",
+    "happy_hour",
+    "item_discount",
+    "nth_item_discount",
+    "order_discount",
 }
 
 
@@ -360,6 +385,439 @@ def _normalize_optional_tax_rate(
     return canonical
 
 
+def _normalize_optional_promotion_text(
+    value: Any,
+    fieldname: str,
+    *,
+    required: bool = False,
+    maximum_length: int = 140,
+) -> str | None:
+    if value is None and not required:
+        return None
+    if not isinstance(value, str):
+        frappe.throw(f"{fieldname} must be a trimmed string", frappe.ValidationError)
+    normalized = value.strip()
+    if required and not normalized:
+        frappe.throw(f"{fieldname} is required", frappe.ValidationError)
+    if normalized != value or len(normalized) > maximum_length:
+        frappe.throw(
+            f"{fieldname} must be a trimmed string no longer than {maximum_length} characters",
+            frappe.ValidationError,
+        )
+    return normalized or None
+
+
+def _normalize_pricing_context(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        frappe.throw("pricing_context must be an object", frappe.ValidationError)
+
+    pricing_mode = _normalize_optional_promotion_text(
+        value.get("pricing_mode"),
+        "pricing_context.pricing_mode",
+    )
+    if pricing_mode and pricing_mode not in PROMOTION_PRICING_MODES:
+        frappe.throw(
+            "pricing_context.pricing_mode is invalid",
+            frappe.ValidationError,
+        )
+    snapshot_version = _normalize_optional_promotion_text(
+        value.get("snapshot_version"),
+        "pricing_context.snapshot_version",
+    )
+    snapshot_hash = _normalize_optional_promotion_text(
+        value.get("snapshot_hash"),
+        "pricing_context.snapshot_hash",
+        maximum_length=64,
+    )
+    if snapshot_hash and (
+        len(snapshot_hash) != 64
+        or any(character not in "0123456789abcdef" for character in snapshot_hash)
+    ):
+        frappe.throw(
+            "pricing_context.snapshot_hash must be a lowercase SHA-256 digest",
+            frappe.ValidationError,
+        )
+    if bool(snapshot_version) != bool(snapshot_hash):
+        frappe.throw(
+            "pricing_context snapshot_version and snapshot_hash must be provided together",
+            frappe.ValidationError,
+        )
+    if pricing_mode in {"online_snapshot", "offline_snapshot"} and not snapshot_version:
+        frappe.throw(
+            "snapshot pricing modes require pricing_context snapshot version and hash",
+            frappe.ValidationError,
+        )
+
+    restricted_mode = value.get("restricted_mode", False)
+    if not isinstance(restricted_mode, bool):
+        frappe.throw(
+            "pricing_context.restricted_mode must be a boolean",
+            frappe.ValidationError,
+        )
+    if restricted_mode and pricing_mode != "manual_only":
+        frappe.throw(
+            "restricted promotion pricing must use manual_only pricing_mode",
+            frappe.ValidationError,
+        )
+    raw_offline_ids = value.get("offline_applied_promotion_ids", [])
+    if not isinstance(raw_offline_ids, list):
+        frappe.throw(
+            "pricing_context.offline_applied_promotion_ids must be an array",
+            frappe.ValidationError,
+        )
+    offline_ids = [
+        _normalize_optional_promotion_text(
+            promotion_id,
+            f"pricing_context.offline_applied_promotion_ids[{index}]",
+            required=True,
+        )
+        for index, promotion_id in enumerate(raw_offline_ids)
+    ]
+    if len(offline_ids) != len(set(offline_ids)):
+        frappe.throw(
+            "pricing_context.offline_applied_promotion_ids must be unique",
+            frappe.ValidationError,
+        )
+
+    raw_expiry = value.get("promotion_expiry_by_id", {})
+    if not isinstance(raw_expiry, Mapping):
+        frappe.throw(
+            "pricing_context.promotion_expiry_by_id must be an object",
+            frappe.ValidationError,
+        )
+    promotion_expiry_by_id: dict[str, str | None] = {}
+    for promotion_id, expiry in raw_expiry.items():
+        normalized_id = _normalize_optional_promotion_text(
+            promotion_id,
+            "pricing_context.promotion_expiry_by_id key",
+            required=True,
+        )
+        assert normalized_id is not None
+        promotion_expiry_by_id[normalized_id] = _normalize_optional_promotion_text(
+            expiry,
+            f"pricing_context.promotion_expiry_by_id.{normalized_id}",
+            maximum_length=64,
+        )
+
+    return {
+        "snapshot_version": snapshot_version,
+        "snapshot_hash": snapshot_hash,
+        "snapshot_downloaded_at": _normalize_optional_promotion_text(
+            value.get("snapshot_downloaded_at"),
+            "pricing_context.snapshot_downloaded_at",
+            maximum_length=64,
+        ),
+        "snapshot_published_at": _normalize_optional_promotion_text(
+            value.get("snapshot_published_at"),
+            "pricing_context.snapshot_published_at",
+            maximum_length=64,
+        ),
+        "snapshot_effective_from": _normalize_optional_promotion_text(
+            value.get("snapshot_effective_from"),
+            "pricing_context.snapshot_effective_from",
+            maximum_length=64,
+        ),
+        "pricing_mode": pricing_mode,
+        "restricted_mode": restricted_mode,
+        "priced_at": _normalize_optional_promotion_text(
+            value.get("priced_at"),
+            "pricing_context.priced_at",
+            maximum_length=64,
+        ),
+        "offline_applied_promotion_ids": offline_ids,
+        "promotion_expiry_by_id": promotion_expiry_by_id,
+    }
+
+
+def _normalize_applied_promotions(
+    value: Any,
+    money_contract_version: str,
+) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        frappe.throw("applied_promotions must be an array", frappe.ValidationError)
+
+    promotions: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, raw_promotion in enumerate(value):
+        field_prefix = f"applied_promotions[{index}]"
+        if not isinstance(raw_promotion, Mapping):
+            frappe.throw(f"{field_prefix} must be an object", frappe.ValidationError)
+        promotion_id = _normalize_optional_promotion_text(
+            raw_promotion.get("promotion_id"),
+            f"{field_prefix}.promotion_id",
+            required=True,
+        )
+        assert promotion_id is not None
+        if promotion_id in seen_ids:
+            frappe.throw(
+                "applied_promotions promotion_id values must be unique",
+                frappe.ValidationError,
+            )
+        seen_ids.add(promotion_id)
+        amount_sen = _parse_wire_money_sen(
+            raw_promotion,
+            version=money_contract_version,
+            sen_field="amount_sen",
+            legacy_fields=("amount",),
+        )
+        if amount_sen <= 0:
+            frappe.throw(
+                f"{field_prefix}.amount_sen must be greater than 0",
+                frappe.ValidationError,
+            )
+        offline_applied = raw_promotion.get("offline_applied", False)
+        if not isinstance(offline_applied, bool):
+            frappe.throw(
+                f"{field_prefix}.offline_applied must be a boolean",
+                frappe.ValidationError,
+            )
+        source = _normalize_optional_promotion_text(
+            raw_promotion.get("source"),
+            f"{field_prefix}.source",
+            required=True,
+        )
+        if source != PROMOTION_SOURCE_SNAPSHOT:
+            frappe.throw(
+                f"{field_prefix}.source must be {PROMOTION_SOURCE_SNAPSHOT}",
+                frappe.ValidationError,
+            )
+        promotions.append(
+            {
+                "promotion_id": promotion_id,
+                "promotion_name": _normalize_optional_promotion_text(
+                    raw_promotion.get("promotion_name"),
+                    f"{field_prefix}.promotion_name",
+                ),
+                "promotion_type": _normalize_optional_promotion_text(
+                    raw_promotion.get("promotion_type"),
+                    f"{field_prefix}.promotion_type",
+                ),
+                "amount_sen": amount_sen,
+                "scope": _normalize_optional_promotion_text(
+                    raw_promotion.get("scope"),
+                    f"{field_prefix}.scope",
+                ),
+                "source": source,
+                "snapshot_version": _normalize_optional_promotion_text(
+                    raw_promotion.get("snapshot_version"),
+                    f"{field_prefix}.snapshot_version",
+                    required=True,
+                ),
+                "snapshot_hash": _normalize_optional_promotion_text(
+                    raw_promotion.get("snapshot_hash"),
+                    f"{field_prefix}.snapshot_hash",
+                    required=True,
+                    maximum_length=64,
+                ),
+                "valid_from": _normalize_optional_promotion_text(
+                    raw_promotion.get("valid_from"),
+                    f"{field_prefix}.valid_from",
+                    maximum_length=64,
+                ),
+                "valid_upto": _normalize_optional_promotion_text(
+                    raw_promotion.get("valid_upto"),
+                    f"{field_prefix}.valid_upto",
+                    maximum_length=64,
+                ),
+                "offline_applied": offline_applied,
+            }
+        )
+    return promotions
+
+
+def _normalize_promotion_allocations(
+    value: Any,
+    *,
+    item_index: int,
+    money_contract_version: str,
+) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        frappe.throw(
+            f"items[{item_index}].promotion_allocations must be an array",
+            frappe.ValidationError,
+        )
+    allocations: list[dict[str, Any]] = []
+    for allocation_index, raw_allocation in enumerate(value):
+        field_prefix = (
+            f"items[{item_index}].promotion_allocations[{allocation_index}]"
+        )
+        if not isinstance(raw_allocation, Mapping):
+            frappe.throw(f"{field_prefix} must be an object", frappe.ValidationError)
+        promotion_id = _normalize_optional_promotion_text(
+            raw_allocation.get("promotion_id"),
+            f"{field_prefix}.promotion_id",
+            required=True,
+        )
+        assert promotion_id is not None
+        amount_sen = _parse_wire_money_sen(
+            raw_allocation,
+            version=money_contract_version,
+            sen_field="amount_sen",
+            legacy_fields=("amount",),
+        )
+        if amount_sen <= 0:
+            frappe.throw(
+                f"{field_prefix}.amount_sen must be greater than 0",
+                frappe.ValidationError,
+            )
+        quantity_value = raw_allocation.get("quantity")
+        quantity = (
+            _parse_positive_integer_quantity(
+                quantity_value,
+                f"{field_prefix}.quantity",
+            )
+            if quantity_value is not None
+            else None
+        )
+        allocations.append(
+            {
+                "promotion_id": promotion_id,
+                "amount_sen": amount_sen,
+                "quantity": quantity,
+                "scope": _normalize_optional_promotion_text(
+                    raw_allocation.get("scope"),
+                    f"{field_prefix}.scope",
+                ),
+            }
+        )
+    return allocations
+
+
+def _validate_normalized_promotion_evidence(
+    pricing_context: dict[str, Any],
+    applied_promotions: list[dict[str, Any]],
+    items: list[dict[str, Any]],
+) -> str:
+    allocations = [
+        allocation
+        for item in items
+        for allocation in item["promotion_allocations"]
+    ]
+    if not applied_promotions:
+        if allocations:
+            frappe.throw(
+                "promotion allocations require applied_promotions",
+                frappe.ValidationError,
+            )
+        if pricing_context.get("offline_applied_promotion_ids"):
+            frappe.throw(
+                "offline promotion ids require applied_promotions",
+                frappe.ValidationError,
+            )
+        if pricing_context.get("promotion_expiry_by_id"):
+            frappe.throw(
+                "promotion expiry evidence requires applied_promotions",
+                frappe.ValidationError,
+            )
+        return "not_applicable"
+
+    snapshot_version = pricing_context.get("snapshot_version")
+    snapshot_hash = pricing_context.get("snapshot_hash")
+    pricing_mode = pricing_context.get("pricing_mode")
+    if not snapshot_version or not snapshot_hash:
+        frappe.throw(
+            "applied_promotions require promotion snapshot version and hash",
+            frappe.ValidationError,
+        )
+    if pricing_mode not in {"online_snapshot", "offline_snapshot", "server_validated"}:
+        frappe.throw(
+            "applied_promotions require a snapshot pricing mode",
+            frappe.ValidationError,
+        )
+    if pricing_context.get("restricted_mode"):
+        frappe.throw(
+            "applied_promotions are forbidden in restricted pricing mode",
+            frappe.ValidationError,
+        )
+
+    applied_totals = {
+        promotion["promotion_id"]: promotion["amount_sen"]
+        for promotion in applied_promotions
+    }
+    allocation_totals: dict[str, int] = {}
+    for item in items:
+        line_allocation_total = _checked_sen_sum(
+            (
+                allocation["amount_sen"]
+                for allocation in item["promotion_allocations"]
+            ),
+            "promotion allocation total",
+        )
+        if line_allocation_total > item["discount_amount_sen"]:
+            frappe.throw(
+                "line promotion allocations cannot exceed the line discount",
+                frappe.ValidationError,
+            )
+        for allocation in item["promotion_allocations"]:
+            promotion_id = allocation["promotion_id"]
+            if promotion_id not in applied_totals:
+                frappe.throw(
+                    "line promotion allocation references an unapplied promotion",
+                    frappe.ValidationError,
+                )
+            allocation_totals[promotion_id] = _checked_sen_sum(
+                (
+                    allocation_totals.get(promotion_id, 0),
+                    allocation["amount_sen"],
+                ),
+                "promotion allocation total",
+            )
+    if applied_totals != allocation_totals:
+        frappe.throw(
+            "applied promotion totals must exactly match line allocations",
+            frappe.ValidationError,
+        )
+
+    offline_ids = {
+        promotion["promotion_id"]
+        for promotion in applied_promotions
+        if promotion["offline_applied"]
+    }
+    if offline_ids != set(pricing_context["offline_applied_promotion_ids"]):
+        frappe.throw(
+            "offline promotion ids do not match applied promotion evidence",
+            frappe.ValidationError,
+        )
+    if pricing_mode == "online_snapshot" and offline_ids:
+        frappe.throw(
+            "online snapshot pricing cannot mark promotions as offline applied",
+            frappe.ValidationError,
+        )
+    for promotion in applied_promotions:
+        if (
+            promotion["snapshot_version"] != snapshot_version
+            or promotion["snapshot_hash"] != snapshot_hash
+        ):
+            frappe.throw(
+                "applied promotion snapshot identity does not match pricing_context",
+                frappe.ValidationError,
+            )
+    return "matched"
+
+
+def _validate_offline_pricing_consistency(
+    offline_priced: bool,
+    pricing_context: dict[str, Any],
+) -> None:
+    pricing_mode = pricing_context.get("pricing_mode")
+    if pricing_mode == "offline_snapshot" and not offline_priced:
+        frappe.throw(
+            "offline_priced must be true for offline_snapshot pricing",
+            frappe.ValidationError,
+        )
+    if pricing_mode in {"online_snapshot", "server_validated"} and offline_priced:
+        frappe.throw(
+            "offline_priced must be false for online or server-validated pricing",
+            frappe.ValidationError,
+        )
+
+
 def _persisted_money_sen(value: Any, fieldname: str) -> int:
     try:
         return persisted_money_to_sen(value, fieldname)
@@ -460,6 +918,21 @@ def _normalize_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "order.payments payment_id values must be unique within the order",
             frappe.ValidationError,
         )
+
+    pricing_context = _normalize_pricing_context(payload.get("pricing_context"))
+    applied_promotions = _normalize_applied_promotions(
+        payload.get("applied_promotions"),
+        money_contract_version,
+    )
+    promotion_reconciliation_status = _validate_normalized_promotion_evidence(
+        pricing_context,
+        applied_promotions,
+        validated_items,
+    )
+    offline_priced = payload.get("offline_priced", False)
+    if not isinstance(offline_priced, bool):
+        frappe.throw("offline_priced must be a boolean", frappe.ValidationError)
+    _validate_offline_pricing_consistency(offline_priced, pricing_context)
 
     totals_payload = dict(order_payload)
     for fieldname in (
@@ -571,6 +1044,10 @@ def _normalize_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "grand_total_sen": grand_total_sen,
         "items": validated_items,
         "payments": validated_payments,
+        "offline_priced": offline_priced,
+        "pricing_context": pricing_context,
+        "applied_promotions": applied_promotions,
+        "promotion_reconciliation_status": promotion_reconciliation_status,
     }
     normalized["request_fingerprint"] = _canonical_order_request_fingerprint(normalized)
     return normalized
@@ -600,6 +1077,9 @@ def _validate_new_submit_order_state(normalized: dict[str, Any]) -> dict[str, An
         _require_doc("Project", normalized["event_project"], "event_project")
 
     validated = dict(normalized)
+    validated["promotion_evidence"] = _validate_published_promotion_snapshot(
+        normalized
+    )
     validated["shift"] = shift_name
     validated["net_total"] = sen_to_decimal(normalized["net_total_sen"])
     validated["tax_total"] = sen_to_decimal(normalized["tax_total_sen"])
@@ -616,6 +1096,665 @@ def _validate_new_submit_order_state(normalized: dict[str, Any]) -> dict[str, An
         for index, row in enumerate(normalized["payments"], start=1)
     ]
     return validated
+
+
+def _snapshot_rule_decimal(value: Any, fieldname: str) -> Decimal:
+    if isinstance(value, bool):
+        frappe.throw(f"{fieldname} must be a finite decimal", frappe.ValidationError)
+    try:
+        result = Decimal(str(value if value is not None else 0))
+    except (InvalidOperation, ValueError) as error:
+        frappe.throw(f"{fieldname} must be a finite decimal", frappe.ValidationError)
+        raise ValueError(f"{fieldname} must be a finite decimal") from error
+    if not result.is_finite():
+        frappe.throw(f"{fieldname} must be a finite decimal", frappe.ValidationError)
+    return result
+
+
+def _snapshot_rule_integer(value: Any, fieldname: str) -> int:
+    decimal_value = _snapshot_rule_decimal(value, fieldname)
+    if decimal_value != decimal_value.to_integral_value():
+        frappe.throw(f"{fieldname} must be an integer", frappe.ValidationError)
+    result = int(decimal_value)
+    if result < 0:
+        frappe.throw(f"{fieldname} must not be negative", frappe.ValidationError)
+    return result
+
+
+def _snapshot_rule_money_sen(value: Any, fieldname: str) -> int:
+    decimal_value = _snapshot_rule_decimal(value, fieldname)
+    if decimal_value < 0:
+        frappe.throw(f"{fieldname} must not be negative", frappe.ValidationError)
+    return int(
+        (decimal_value * Decimal("100")).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+    )
+
+
+def _snapshot_unit_discount_sen(
+    rule: dict[str, Any],
+    unit_price_sen: int,
+) -> int:
+    discount_type = cstr(rule.get("discount_type") or "percentage")
+    discount_value = _snapshot_rule_decimal(
+        rule.get("discount_value"),
+        f"promotion {cstr(rule.get('promotion_id'))} discount_value",
+    )
+    if discount_value < 0:
+        frappe.throw("Promotion discount_value must not be negative", frappe.ValidationError)
+    if discount_type == "fixed_amount":
+        amount_sen = int(
+            (discount_value * Decimal("100")).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP
+            )
+        )
+        return max(0, min(unit_price_sen, amount_sen))
+    if discount_type == "fixed_price":
+        target_sen = int(
+            (discount_value * Decimal("100")).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP
+            )
+        )
+        return max(0, unit_price_sen - target_sen)
+    if discount_type == "free_item":
+        return unit_price_sen
+    if discount_type != "percentage":
+        frappe.throw(
+            f"Promotion discount_type {discount_type or '<blank>'} is unsupported",
+            frappe.ValidationError,
+        )
+    percentage_sen = int(
+        (Decimal(unit_price_sen) * discount_value / Decimal("100")).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+    )
+    return max(0, min(unit_price_sen, percentage_sen))
+
+
+def _snapshot_rule_timestamp(value: Any, fieldname: str) -> Any | None:
+    if value in (None, ""):
+        return None
+    try:
+        return normalize_site_datetime(value, fieldname=fieldname)
+    except (TypeError, ValueError, OverflowError) as error:
+        frappe.throw(f"{fieldname} is not a valid timestamp", frappe.ValidationError)
+        raise ValueError(f"{fieldname} is not a valid timestamp") from error
+
+
+def _snapshot_rule_is_available(
+    rule: dict[str, Any],
+    *,
+    sale_datetime: Any,
+    pos_profile: str,
+) -> bool:
+    promotion_type = cstr(rule.get("promotion_type"))
+    if not bool(rule.get("offline_allowed")):
+        return False
+    if promotion_type not in LOCALLY_SUPPORTED_PROMOTION_TYPES:
+        return False
+    rule_profile = cstr(rule.get("pos_profile"))
+    if rule_profile and rule_profile != pos_profile:
+        return False
+    selected_profiles = {
+        cstr(value)
+        for value in (rule.get("selected_pos_profiles") or [])
+        if cstr(value)
+    }
+    if selected_profiles and pos_profile not in selected_profiles:
+        return False
+    valid_from = _snapshot_rule_timestamp(
+        rule.get("valid_from"),
+        f"promotion {cstr(rule.get('promotion_id'))} valid_from",
+    )
+    valid_upto = _snapshot_rule_timestamp(
+        rule.get("valid_upto"),
+        f"promotion {cstr(rule.get('promotion_id'))} valid_upto",
+    )
+    if valid_from is not None and sale_datetime < valid_from:
+        return False
+    if valid_upto is not None and sale_datetime > valid_upto:
+        return False
+    return True
+
+
+def _snapshot_line_is_eligible(
+    rule: dict[str, Any],
+    line: dict[str, Any],
+) -> bool:
+    eligible_items = {
+        cstr(value) for value in (rule.get("eligible_items") or []) if cstr(value)
+    }
+    if eligible_items and line["item_code"] not in eligible_items:
+        return False
+    eligible_groups = {
+        cstr(value)
+        for value in (rule.get("eligible_item_groups") or [])
+        if cstr(value)
+    }
+    if not eligible_groups:
+        return True
+    if line.get("item_group") is None:
+        line["item_group"] = cstr(
+            frappe.db.get_value("Item", line["item_code"], "item_group")
+        )
+    return line["item_group"] in eligible_groups
+
+
+def _snapshot_rule_minimums_met(
+    rule: dict[str, Any],
+    units: list[dict[str, Any]],
+) -> bool:
+    min_qty = _snapshot_rule_integer(
+        rule.get("min_qty") or 0,
+        f"promotion {cstr(rule.get('promotion_id'))} min_qty",
+    )
+    min_amount_sen = _snapshot_rule_money_sen(
+        rule.get("min_amount") or 0,
+        f"promotion {cstr(rule.get('promotion_id'))} min_amount",
+    )
+    if min_qty > 0 and len(units) < min_qty:
+        return False
+    if min_amount_sen > 0 and sum(unit["base_price_sen"] for unit in units) < min_amount_sen:
+        return False
+    return True
+
+
+def _snapshot_eligible_units(
+    rule: dict[str, Any],
+    lines: list[dict[str, Any]],
+    *,
+    respect_stacking: bool = True,
+) -> list[dict[str, Any]]:
+    units: list[dict[str, Any]] = []
+    for line in lines:
+        if not _snapshot_line_is_eligible(rule, line):
+            continue
+        if (
+            respect_stacking
+            and cstr(rule.get("stacking_policy") or "exclusive") != "stackable"
+            and line["promotion_discount_sen"] > 0
+        ):
+            continue
+        for unit_index in range(line["quantity"]):
+            units.append(
+                {
+                    "line_index": line["index"],
+                    "item_code": line["item_code"],
+                    "base_price_sen": line["unit_price_sen"],
+                    "cart_order": line["index"],
+                    "unit_order": unit_index,
+                }
+            )
+    return units
+
+
+def _append_expected_promotion_allocation(
+    line: dict[str, Any],
+    promotion_id: str,
+    amount_sen: int,
+    quantity: int,
+) -> None:
+    line["expected_allocations"].append(
+        {
+            "promotion_id": promotion_id,
+            "amount_sen": amount_sen,
+            "quantity": quantity,
+            "scope": "line",
+        }
+    )
+    line["promotion_discount_sen"] = _checked_sen_sum(
+        (line["promotion_discount_sen"], amount_sen),
+        "calculated promotion discount",
+    )
+
+
+def _calculate_expected_snapshot_promotions(
+    normalized: dict[str, Any],
+    snapshot_promotions: list[dict[str, Any]],
+    pos_profile: str,
+) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
+    sale_datetime = normalize_site_datetime(
+        normalized["sale_datetime"],
+        fieldname="order.sale_datetime",
+    )
+    selected_ids = {
+        promotion["promotion_id"] for promotion in normalized["applied_promotions"]
+    }
+    lines = [
+        {
+            "index": index,
+            "item_code": item["item_code"],
+            "item_group": None,
+            "quantity": item["qty"],
+            "unit_price_sen": item["unit_price_sen"],
+            "promotion_discount_sen": 0,
+            "expected_allocations": [],
+        }
+        for index, item in enumerate(normalized["items"])
+    ]
+    ordered_rules = sorted(
+        snapshot_promotions,
+        key=lambda rule: (
+            _snapshot_rule_integer(
+                rule.get("priority") or 0,
+                f"promotion {cstr(rule.get('promotion_id'))} priority",
+            ),
+            cstr(rule.get("promotion_id")),
+        ),
+    )
+    expected_promotions: list[dict[str, Any]] = []
+    for rule in ordered_rules:
+        promotion_id = cstr(rule.get("promotion_id"))
+        if not promotion_id or not _snapshot_rule_is_available(
+            rule,
+            sale_datetime=sale_datetime,
+            pos_profile=pos_profile,
+        ):
+            continue
+        if cstr(rule.get("activation_mode") or "automatic") == "manual_selectable" and promotion_id not in selected_ids:
+            continue
+
+        promotion_type = cstr(rule.get("promotion_type"))
+        total_discount_sen = 0
+        if promotion_type in {"item_discount", "happy_hour", "order_discount"}:
+            # The tablet evaluates item-discount minimums across every eligible
+            # unit, then applies an exclusive rule only to lines not already
+            # discounted. Preserve that ordering exactly; nth-item rules use
+            # the stacking-filtered unit pool below.
+            eligible_units = _snapshot_eligible_units(
+                rule,
+                lines,
+                respect_stacking=False,
+            )
+            if not _snapshot_rule_minimums_met(rule, eligible_units):
+                continue
+            for line in lines:
+                if not _snapshot_line_is_eligible(rule, line):
+                    continue
+                if cstr(rule.get("stacking_policy") or "exclusive") != "stackable" and line[
+                    "promotion_discount_sen"
+                ] > 0:
+                    continue
+                amount_per_unit_sen = _snapshot_unit_discount_sen(
+                    rule, line["unit_price_sen"]
+                )
+                amount_sen = amount_per_unit_sen * line["quantity"]
+                if amount_sen <= 0:
+                    continue
+                _append_expected_promotion_allocation(
+                    line,
+                    promotion_id,
+                    amount_sen,
+                    line["quantity"],
+                )
+                total_discount_sen = _checked_sen_sum(
+                    (total_discount_sen, amount_sen),
+                    "calculated applied promotion total",
+                )
+        elif promotion_type in {"nth_item_discount", "buy_x_get_y"}:
+            eligible_units = _snapshot_eligible_units(rule, lines)
+            if not eligible_units or not _snapshot_rule_minimums_met(
+                rule, eligible_units
+            ):
+                continue
+            buy_qty = max(
+                1,
+                _snapshot_rule_integer(
+                    rule.get("buy_qty") or 1,
+                    f"promotion {promotion_id} buy_qty",
+                ),
+            )
+            discount_qty = max(
+                1,
+                _snapshot_rule_integer(
+                    rule.get("discount_qty") or 1,
+                    f"promotion {promotion_id} discount_qty",
+                ),
+            )
+            cycle_size = buy_qty + discount_qty
+            pools: dict[str, list[dict[str, Any]]] = {}
+            same_item = cstr(rule.get("eligible_scope_mode") or "eligible_pool") == "same_item"
+            for unit in eligible_units:
+                pool_key = unit["item_code"] if same_item else "__all__"
+                pools.setdefault(pool_key, []).append(unit)
+            for units in pools.values():
+                ordered_units = sorted(
+                    units,
+                    key=lambda unit: (unit["cart_order"], unit["unit_order"]),
+                )
+                cycles = (
+                    len(ordered_units) // cycle_size
+                    if cstr(rule.get("repeat_mode") or "once") == "repeat"
+                    else (1 if len(ordered_units) >= cycle_size else 0)
+                )
+                for cycle_index in range(cycles):
+                    cycle_units = ordered_units[
+                        cycle_index * cycle_size : (cycle_index + 1) * cycle_size
+                    ]
+                    discounted_units = sorted(
+                        cycle_units,
+                        key=lambda unit: (
+                            unit["base_price_sen"],
+                            -unit["cart_order"],
+                            -unit["unit_order"],
+                        ),
+                    )[:discount_qty]
+                    for unit in discounted_units:
+                        amount_sen = _snapshot_unit_discount_sen(
+                            rule, unit["base_price_sen"]
+                        )
+                        if amount_sen <= 0:
+                            continue
+                        line = lines[unit["line_index"]]
+                        _append_expected_promotion_allocation(
+                            line, promotion_id, amount_sen, 1
+                        )
+                        total_discount_sen = _checked_sen_sum(
+                            (total_discount_sen, amount_sen),
+                            "calculated applied promotion total",
+                        )
+        if total_discount_sen > 0:
+            expected_promotions.append(
+                {
+                    "promotion_id": promotion_id,
+                    "promotion_name": cstr(rule.get("promotion_name")),
+                    "promotion_type": promotion_type,
+                    "amount_sen": total_discount_sen,
+                    "rule": rule,
+                }
+            )
+    return expected_promotions, [line["expected_allocations"] for line in lines]
+
+
+def _canonical_promotion_allocations(value: list[dict[str, Any]]) -> str:
+    normalized = [
+        {
+            "promotion_id": allocation.get("promotion_id"),
+            "amount_sen": allocation.get("amount_sen"),
+            "quantity": allocation.get("quantity"),
+            "scope": allocation.get("scope"),
+        }
+        for allocation in value
+    ]
+    normalized.sort(
+        key=lambda allocation: (
+            cstr(allocation.get("promotion_id")),
+            int(allocation.get("amount_sen") or 0),
+            int(allocation.get("quantity") or 0),
+            cstr(allocation.get("scope")),
+        )
+    )
+    return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+
+
+def _validate_snapshot_promotion_pricing(
+    normalized: dict[str, Any],
+    snapshot_promotions: list[dict[str, Any]],
+    pos_profile: str,
+) -> None:
+    expected_promotions, expected_allocations = (
+        _calculate_expected_snapshot_promotions(
+            normalized, snapshot_promotions, pos_profile
+        )
+    )
+    actual_by_id = {
+        promotion["promotion_id"]: promotion
+        for promotion in normalized["applied_promotions"]
+    }
+    expected_by_id = {
+        promotion["promotion_id"]: promotion for promotion in expected_promotions
+    }
+    if set(actual_by_id) != set(expected_by_id):
+        frappe.throw(
+            "Applied promotion ids do not exactly match server-recalculated snapshot pricing",
+            frappe.ValidationError,
+        )
+    expected_expiry_by_id = {
+        promotion_id: (
+            cstr(expected["rule"].get("valid_upto")) or None
+        )
+        for promotion_id, expected in expected_by_id.items()
+    }
+    if normalized["pricing_context"].get("promotion_expiry_by_id", {}) != (
+        expected_expiry_by_id
+    ):
+        frappe.throw(
+            "pricing_context.promotion_expiry_by_id does not match the promotion snapshot",
+            frappe.ValidationError,
+        )
+    for promotion_id, expected in expected_by_id.items():
+        actual = actual_by_id[promotion_id]
+        rule = expected["rule"]
+        if (
+            actual["amount_sen"] != expected["amount_sen"]
+            or (
+                actual.get("promotion_name")
+                and actual["promotion_name"] != expected["promotion_name"]
+            )
+            or (
+                actual.get("promotion_type")
+                and actual["promotion_type"] != expected["promotion_type"]
+            )
+            or (actual.get("scope") and actual["scope"] != "order")
+            or actual["offline_applied"] != normalized["offline_priced"]
+            or (
+                actual.get("valid_from")
+                and cstr(actual["valid_from"]) != cstr(rule.get("valid_from"))
+            )
+            or (
+                actual.get("valid_upto")
+                and cstr(actual["valid_upto"]) != cstr(rule.get("valid_upto"))
+            )
+        ):
+            frappe.throw(
+                f"Applied promotion {promotion_id} does not match server-recalculated snapshot pricing",
+                frappe.ValidationError,
+            )
+    for index, item in enumerate(normalized["items"]):
+        if _canonical_promotion_allocations(item["promotion_allocations"]) != (
+            _canonical_promotion_allocations(expected_allocations[index])
+        ):
+            frappe.throw(
+                f"items[{index + 1}].promotion_allocations do not match server-recalculated snapshot pricing",
+                frappe.ValidationError,
+            )
+
+
+def _validate_published_promotion_snapshot(
+    normalized: dict[str, Any],
+) -> dict[str, Any]:
+    pricing_context = normalized["pricing_context"]
+    applied_promotions = normalized["applied_promotions"]
+    items = normalized["items"]
+    evidence: dict[str, Any] = {
+        "offline_priced": normalized["offline_priced"],
+        "pricing_context": pricing_context,
+        "applied_promotions": applied_promotions,
+        "items": [
+            {
+                "line_id": item["line_id"],
+                "item_code": item["item_code"],
+                "promotion_allocations": item["promotion_allocations"],
+            }
+            for item in items
+        ],
+        "reconciliation": {
+            "status": normalized["promotion_reconciliation_status"],
+            "source": "none",
+        },
+        "snapshot": None,
+    }
+    snapshot_version = pricing_context.get("snapshot_version")
+    snapshot_hash = pricing_context.get("snapshot_hash")
+    if not snapshot_version and not snapshot_hash:
+        return evidence
+
+    from kopos_connector.api.promotions import (
+        build_snapshot_version_from_hash,
+        compute_snapshot_content_hash,
+        get_snapshot_by_version,
+        resolve_snapshot_pos_profile,
+    )
+
+    pos_profile = resolve_snapshot_pos_profile(
+        None,
+        device_id=normalized["device_id"],
+    )
+    snapshot = get_snapshot_by_version(pos_profile, snapshot_version)
+    if snapshot is None:
+        frappe.throw(
+            "Referenced promotion snapshot was not found for the device POS Profile",
+            frappe.ValidationError,
+        )
+    persisted_hash = cstr(getattr(snapshot, "snapshot_hash", None)).strip()
+    persisted_status = cstr(getattr(snapshot, "status", None)).strip()
+    persisted_profile = cstr(getattr(snapshot, "pos_profile", None)).strip()
+    persisted_version = cstr(getattr(snapshot, "snapshot_version", None)).strip()
+    if persisted_hash != snapshot_hash:
+        frappe.throw("Promotion snapshot hash mismatch", frappe.ValidationError)
+    if persisted_profile != pos_profile or persisted_version != snapshot_version:
+        frappe.throw(
+            "Promotion snapshot document identity is inconsistent",
+            frappe.ValidationError,
+        )
+    if persisted_status not in {"Published", "Superseded"}:
+        frappe.throw(
+            "Promotion snapshot is not a published pricing authority",
+            frappe.ValidationError,
+        )
+
+    try:
+        snapshot_payload = json.loads(
+            cstr(getattr(snapshot, "snapshot_payload", None)) or "{}"
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("Promotion snapshot payload is invalid JSON") from error
+    if not isinstance(snapshot_payload, dict):
+        frappe.throw("Promotion snapshot payload is invalid", frappe.ValidationError)
+    raw_snapshot_promotions = snapshot_payload.get("promotions")
+    if not isinstance(raw_snapshot_promotions, list) or any(
+        not isinstance(promotion, dict) for promotion in raw_snapshot_promotions
+    ):
+        frappe.throw(
+            "Promotion snapshot promotions payload is invalid",
+            frappe.ValidationError,
+        )
+    recomputed_hash = compute_snapshot_content_hash(
+        {
+            "pos_profile": snapshot_payload.get("pos_profile"),
+            "promotions": raw_snapshot_promotions,
+        }
+    )
+    if (
+        cstr(snapshot_payload.get("snapshot_version")) != snapshot_version
+        or cstr(snapshot_payload.get("snapshot_hash")) != snapshot_hash
+        or cstr(snapshot_payload.get("pos_profile")) != pos_profile
+        or recomputed_hash != snapshot_hash
+        or build_snapshot_version_from_hash(recomputed_hash) != snapshot_version
+        or int(getattr(snapshot, "promotion_count", -1))
+        != len(raw_snapshot_promotions)
+    ):
+        frappe.throw(
+            "Promotion snapshot persisted identity is inconsistent",
+            frappe.ValidationError,
+        )
+    snapshot_promotions = {
+        cstr(promotion.get("promotion_id")): promotion
+        for promotion in raw_snapshot_promotions
+        if cstr(promotion.get("promotion_id"))
+    }
+    if len(snapshot_promotions) != len(raw_snapshot_promotions):
+        frappe.throw(
+            "Promotion snapshot contains missing or duplicate promotion ids",
+            frappe.ValidationError,
+        )
+    for context_field, snapshot_field in (
+        ("snapshot_published_at", "published_at"),
+        ("snapshot_effective_from", "effective_from"),
+    ):
+        context_value = pricing_context.get(context_field)
+        snapshot_value = snapshot_payload.get(snapshot_field)
+        if context_value and snapshot_value and normalize_site_datetime(
+            context_value,
+            fieldname=f"pricing_context.{context_field}",
+        ) != normalize_site_datetime(
+            snapshot_value,
+            fieldname=f"promotion snapshot {snapshot_field}",
+        ):
+            frappe.throw(
+                f"pricing_context.{context_field} does not match the promotion snapshot",
+                frappe.ValidationError,
+            )
+    if pricing_context.get("priced_at") and normalize_site_datetime(
+        pricing_context["priced_at"],
+        fieldname="pricing_context.priced_at",
+    ) != normalize_site_datetime(
+        normalized["sale_datetime"],
+        fieldname="order.sale_datetime",
+    ):
+        frappe.throw(
+            "pricing_context.priced_at must equal the immutable sale_datetime",
+            frappe.ValidationError,
+        )
+    for promotion in applied_promotions:
+        snapshot_promotion = snapshot_promotions.get(promotion["promotion_id"])
+        if snapshot_promotion is None:
+            frappe.throw(
+                "Applied promotion id does not exist in the referenced snapshot",
+                frappe.ValidationError,
+            )
+        if promotion["promotion_name"] and promotion["promotion_name"] != cstr(
+            snapshot_promotion.get("promotion_name")
+        ):
+            frappe.throw(
+                "Applied promotion name does not match the referenced snapshot",
+                frappe.ValidationError,
+            )
+        if promotion["promotion_type"] and promotion["promotion_type"] != cstr(
+            snapshot_promotion.get("promotion_type")
+        ):
+            frappe.throw(
+                "Applied promotion type does not match the referenced snapshot",
+                frappe.ValidationError,
+            )
+
+    for item in items:
+        for allocation in item["promotion_allocations"]:
+            snapshot_promotion = snapshot_promotions[allocation["promotion_id"]]
+            eligible_items = {
+                cstr(item_code)
+                for item_code in snapshot_promotion.get("eligible_items", [])
+                if cstr(item_code)
+            }
+            if eligible_items and item["item_code"] not in eligible_items:
+                frappe.throw(
+                    "Promotion allocation item is not eligible in the referenced snapshot",
+                    frappe.ValidationError,
+                )
+
+    if pricing_context.get("pricing_mode") in {
+        "online_snapshot",
+        "offline_snapshot",
+        "server_validated",
+    }:
+        _validate_snapshot_promotion_pricing(
+            normalized,
+            raw_snapshot_promotions,
+            pos_profile,
+        )
+
+    evidence["snapshot"] = {
+        "snapshot_version": snapshot_version,
+        "snapshot_hash": snapshot_hash,
+        "pos_profile": pos_profile,
+        "status": persisted_status,
+    }
+    evidence["reconciliation"] = {
+        "status": "matched" if applied_promotions else "not_applicable",
+        "source": "published_snapshot",
+    }
+    return evidence
 
 
 def _normalize_order_item(
@@ -671,6 +1810,11 @@ def _normalize_order_item(
     )
     backend_line_uuid = cstr(value.get("backend_line_uuid")) or None
     modifiers = value.get("modifiers", value.get("selected_modifiers", []))
+    promotion_allocations = _normalize_promotion_allocations(
+        value.get("promotion_allocations"),
+        item_index=index,
+        money_contract_version=money_contract_version,
+    )
 
     if not line_id:
         frappe.throw(f"items[{index}].line_id is required", frappe.ValidationError)
@@ -691,9 +1835,9 @@ def _normalize_order_item(
             f"items[{index}].discount_amount_sen must be 0 or greater",
             frappe.ValidationError,
         )
-    if line_total_sen <= 0:
+    if line_total_sen < 0:
         frappe.throw(
-            f"items[{index}].line_total_sen must be greater than 0",
+            f"items[{index}].line_total_sen must be 0 or greater",
             frappe.ValidationError,
         )
     if not isinstance(modifiers, list):
@@ -742,6 +1886,7 @@ def _normalize_order_item(
         "recipe_version": recipe_version,
         "remarks": remarks,
         "selected_modifiers": validated_modifiers,
+        "promotion_allocations": promotion_allocations,
     }
 
 
@@ -939,6 +2084,7 @@ def _resolve_order_item(value: dict[str, Any], index: int) -> dict[str, Any]:
         "is_recipe_managed": 1 if value["recipe"] else 0,
         "remarks": value["remarks"],
         "selected_modifiers": resolved_modifiers,
+        "promotion_allocations": value["promotion_allocations"],
     }
 
 
@@ -1264,6 +2410,40 @@ def _resolve_mode_of_payment_name(requested_mode: str) -> str:
 
 
 def _build_fb_order(validated: dict[str, Any]):
+    pricing_context_value = validated.get("pricing_context")
+    pricing_context = (
+        dict(pricing_context_value)
+        if isinstance(pricing_context_value, Mapping)
+        else {}
+    )
+    promotion_evidence_value = validated.get("promotion_evidence")
+    promotion_reconciliation_status = cstr(
+        validated.get("promotion_reconciliation_status") or "not_applicable"
+    )
+    promotion_evidence = (
+        dict(promotion_evidence_value)
+        if isinstance(promotion_evidence_value, Mapping)
+        else {
+            "offline_priced": bool(validated.get("offline_priced", False)),
+            "pricing_context": pricing_context,
+            "applied_promotions": [],
+            "items": [
+                {
+                    "line_id": item["line_id"],
+                    "item_code": item["item"],
+                    "promotion_allocations": item.get(
+                        "promotion_allocations", []
+                    ),
+                }
+                for item in validated["items"]
+            ],
+            "reconciliation": {
+                "status": promotion_reconciliation_status,
+                "source": "none",
+            },
+            "snapshot": None,
+        }
+    )
     order_doc = frappe.new_doc("FB Order")
     order_doc.order_id = validated["order_id"]
     order_doc.display_number = validated["display_number"]
@@ -1290,6 +2470,19 @@ def _build_fb_order(validated: dict[str, Any]):
     if hasattr(order_doc, "rounding_adjustment"):
         order_doc.rounding_adjustment = validated["rounding_adjustment"]
     order_doc.grand_total = validated["grand_total"]
+    order_doc.pricing_mode = pricing_context.get("pricing_mode")
+    order_doc.promotion_snapshot_version = pricing_context.get(
+        "snapshot_version"
+    )
+    order_doc.promotion_snapshot_hash = pricing_context.get(
+        "snapshot_hash"
+    )
+    order_doc.promotion_reconciliation_status = promotion_reconciliation_status
+    order_doc.promotion_payload_json = json.dumps(
+        promotion_evidence,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     order_doc.notes = validated["notes"]
 
     for item in validated["items"]:
@@ -1309,6 +2502,11 @@ def _build_fb_order(validated: dict[str, Any]):
                 "recipe": item["recipe"],
                 "recipe_version": item["recipe_version"],
                 "is_recipe_managed": item["is_recipe_managed"],
+                "promotion_allocations_json": json.dumps(
+                    item.get("promotion_allocations", []),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
                 "remarks": item["remarks"],
             },
         )
@@ -1360,12 +2558,25 @@ def _validate_existing_order_fingerprint(
         )
 
 
-def _set_selected_modifiers_payload(line, modifiers: list[dict[str, Any]]) -> None:
+def _set_selected_modifiers_payload(
+    line: Any, modifiers: list[dict[str, Any]]
+) -> None:
+    table_fieldnames = getattr(line, "_table_fieldnames", {})
     append = getattr(line, "append", None)
-    if callable(append):
+    if (
+        isinstance(table_fieldnames, Mapping)
+        and table_fieldnames.get("selected_modifiers")
+        and callable(append)
+    ):
         for modifier in modifiers:
             append("selected_modifiers", modifier)
         return
+
+    # Frappe v16 intentionally assigns an empty child-table map to rows inside
+    # another child table. FB Order Line therefore exposes Document.append(),
+    # but cannot use it for its nested selected_modifiers field. Keep the
+    # authenticated sale snapshot transient until FBOrder.before_submit writes
+    # the durable rows to FB Resolved Sale.
     setattr(
         line,
         "_selected_modifiers_payload",
@@ -1587,9 +2798,9 @@ def _validate_fb_order_doc(doc) -> None:
             getattr(row, "line_total", None),
             f"FB Order item {index} line_total",
         )
-        if line_total_sen <= 0:
+        if line_total_sen < 0:
             frappe.throw(
-                f"FB Order item {index} requires line_total greater than 0",
+                f"FB Order item {index} requires line_total 0 or greater",
                 frappe.ValidationError,
             )
         line_total_values_sen.append(line_total_sen)
@@ -1660,6 +2871,171 @@ def _validate_fb_order_doc(doc) -> None:
     if payment_total_sen != grand_total_sen:
         frappe.throw(
             "FB Order payments total must equal grand_total",
+            frappe.ValidationError,
+        )
+    _validate_persisted_fb_order_promotion_evidence(doc)
+
+
+def _parse_persisted_promotion_value(
+    value: Any,
+    *,
+    expected_type: type,
+    fieldname: str,
+) -> Any:
+    if value in (None, ""):
+        return expected_type()
+    if isinstance(value, expected_type):
+        return value
+    if not isinstance(value, str):
+        frappe.throw(f"{fieldname} has an invalid type", frappe.ValidationError)
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError) as error:
+        frappe.throw(f"{fieldname} is invalid JSON", frappe.ValidationError)
+        raise ValueError(f"{fieldname} is invalid JSON") from error
+    if not isinstance(parsed, expected_type):
+        frappe.throw(f"{fieldname} has an invalid JSON shape", frappe.ValidationError)
+    return parsed
+
+
+def _validate_persisted_fb_order_promotion_evidence(doc: Any) -> None:
+    raw_payload = getattr(doc, "promotion_payload_json", None)
+    raw_allocations = [
+        _parse_persisted_promotion_value(
+            getattr(item, "promotion_allocations_json", None),
+            expected_type=list,
+            fieldname=f"FB Order item {cstr(getattr(item, 'line_id', None))} promotion_allocations_json",
+        )
+        for item in (doc.get("items") or [])
+    ]
+    if not raw_payload:
+        if any(raw_allocations) or any(
+            cstr(getattr(doc, fieldname, None))
+            for fieldname in (
+                "pricing_mode",
+                "promotion_snapshot_version",
+                "promotion_snapshot_hash",
+            )
+        ):
+            frappe.throw(
+                "FB Order promotion provenance requires promotion_payload_json",
+                frappe.ValidationError,
+            )
+        payload = {
+            "offline_priced": False,
+            "pricing_context": {},
+            "applied_promotions": [],
+            "items": [
+                {
+                    "line_id": cstr(getattr(item, "line_id", None)),
+                    "item_code": cstr(getattr(item, "item", None)),
+                    "promotion_allocations": [],
+                }
+                for item in (doc.get("items") or [])
+            ],
+            "reconciliation": {
+                "status": "not_applicable",
+                "source": "none",
+            },
+            "snapshot": None,
+        }
+        doc.promotion_reconciliation_status = "not_applicable"
+        doc.promotion_payload_json = json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
+    else:
+        payload = _parse_persisted_promotion_value(
+            raw_payload,
+            expected_type=dict,
+            fieldname="FB Order promotion_payload_json",
+        )
+
+    raw_context = payload.get("pricing_context", {})
+    if not isinstance(raw_context, Mapping):
+        frappe.throw(
+            "FB Order promotion pricing_context must be an object",
+            frappe.ValidationError,
+        )
+    pricing_context = (
+        {} if not raw_context else _normalize_pricing_context(raw_context)
+    )
+    applied_promotions = _normalize_applied_promotions(
+        payload.get("applied_promotions"),
+        "sen_v1",
+    )
+    offline_priced = payload.get("offline_priced", False)
+    if not isinstance(offline_priced, bool):
+        frappe.throw(
+            "FB Order promotion offline_priced must be a boolean",
+            frappe.ValidationError,
+        )
+    normalized_items: list[dict[str, Any]] = []
+    for index, item in enumerate(doc.get("items") or [], start=1):
+        allocations = _normalize_promotion_allocations(
+            raw_allocations[index - 1],
+            item_index=index,
+            money_contract_version="sen_v1",
+        )
+        normalized_items.append(
+            {
+                "line_id": cstr(getattr(item, "line_id", None)),
+                "item_code": cstr(getattr(item, "item", None)),
+                "qty": _parse_positive_integer_quantity(
+                    getattr(item, "qty", None), f"FB Order item {index} qty"
+                ),
+                "unit_price_sen": _persisted_money_sen(
+                    getattr(item, "unit_price", None),
+                    f"FB Order item {index} unit_price",
+                ),
+                "discount_amount_sen": _persisted_money_sen(
+                    getattr(item, "discount_amount", None) or 0,
+                    f"FB Order item {index} discount_amount",
+                ),
+                "promotion_allocations": allocations,
+            }
+        )
+    reconciliation_status = _validate_normalized_promotion_evidence(
+        pricing_context,
+        applied_promotions,
+        normalized_items,
+    )
+    _validate_offline_pricing_consistency(offline_priced, pricing_context)
+    normalized = {
+        "device_id": cstr(getattr(doc, "device_id", None)),
+        "sale_datetime": getattr(doc, "sale_datetime", None),
+        "offline_priced": offline_priced,
+        "pricing_context": pricing_context,
+        "applied_promotions": applied_promotions,
+        "promotion_reconciliation_status": reconciliation_status,
+        "items": normalized_items,
+    }
+    expected_payload = _validate_published_promotion_snapshot(normalized)
+    persisted_snapshot = payload.get("snapshot")
+    if (
+        isinstance(persisted_snapshot, Mapping)
+        and isinstance(expected_payload.get("snapshot"), Mapping)
+        and cstr(persisted_snapshot.get("status")) in {"Published", "Superseded"}
+    ):
+        expected_payload["snapshot"]["status"] = persisted_snapshot.get("status")
+    if json.dumps(payload, sort_keys=True, separators=(",", ":")) != json.dumps(
+        expected_payload, sort_keys=True, separators=(",", ":")
+    ):
+        frappe.throw(
+            "FB Order promotion payload does not match its canonical snapshot evidence",
+            frappe.ValidationError,
+        )
+    if (
+        cstr(getattr(doc, "pricing_mode", None))
+        != cstr(pricing_context.get("pricing_mode"))
+        or cstr(getattr(doc, "promotion_snapshot_version", None))
+        != cstr(pricing_context.get("snapshot_version"))
+        or cstr(getattr(doc, "promotion_snapshot_hash", None))
+        != cstr(pricing_context.get("snapshot_hash"))
+        or cstr(getattr(doc, "promotion_reconciliation_status", None))
+        != reconciliation_status
+    ):
+        frappe.throw(
+            "FB Order promotion headers do not match promotion_payload_json",
             frappe.ValidationError,
         )
 
@@ -1798,12 +3174,27 @@ def _update_projection_log(
     log.target_name = target_name
     log.last_error = last_error
     log.last_attempt_at = now_datetime()
+    if state == "Succeeded":
+        # A supported manual retry may recover a row after automatic retries
+        # exhausted.  Clear obsolete scheduler/dead-letter evidence together
+        # with the successful state so support views cannot report a recovered
+        # projection as still requiring intervention.
+        log.next_retry_at = None
+        log.lease_token = None
+        log.lease_expires_at = None
+        log.dead_lettered_at = None
     log.save(ignore_permissions=True)
 
 
 def _retry_projection_log(log_name: str) -> dict[str, Any]:
+    # Serialize tablet, scheduler, and support retries for the same projection.
+    # Target services are independently idempotent, but the row lock also keeps
+    # retry counters and terminal evidence monotonic.
+    frappe.db.sql(
+        "SELECT name FROM `tabFB Projection Log` WHERE name = %s FOR UPDATE",
+        (log_name,),
+    )
     log = frappe.get_doc("FB Projection Log", log_name)
-    source_doc = frappe.get_doc(cstr(log.source_doctype), cstr(log.source_name))
     config = _get_projection_config(cstr(log.source_doctype), cstr(log.projection_type))
     if config is None:
         frappe.throw(
@@ -1811,6 +3202,23 @@ def _retry_projection_log(log_name: str) -> dict[str, Any]:
             frappe.ValidationError,
         )
         raise AssertionError("unreachable")
+
+    current_state = cstr(getattr(log, "state", None))
+    if current_state == "Succeeded":
+        return {
+            "projection_log": log.name,
+            "projection_type": cstr(log.projection_type),
+            "state": "Succeeded",
+            "target_name": cstr(getattr(log, "target_name", None)) or None,
+        }
+    if current_state != "Failed":
+        frappe.throw(
+            f"Projection {log.name} cannot be retried from state {current_state or 'missing'}",
+            frappe.ValidationError,
+        )
+        raise AssertionError("unreachable")
+
+    source_doc = frappe.get_doc(cstr(log.source_doctype), cstr(log.source_name))
 
     log.retry_count = cint(log.retry_count) + 1
     log.last_attempt_at = now_datetime()
@@ -2007,7 +3415,7 @@ def _get_projection_config(
     source_doctype: str, projection_type: str
 ) -> dict[str, str] | None:
     config_map = {
-        "FB Order": ORDER_PROJECTION_CONFIG,
+        "FB Order": ORDER_RETRY_PROJECTION_CONFIG,
         "FB Return Event": RETURN_PROJECTION_CONFIG,
         "FB Remake Event": REMAKE_PROJECTION_CONFIG,
     }

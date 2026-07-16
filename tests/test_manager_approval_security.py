@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -19,6 +19,29 @@ from kopos_connector.utils.pin import hash_pin, verify_pin
 
 NOW_UNIX = 1_700_000_000
 CONTEXT_HASH = manager_approval.canonical_context_hash({"reason": "cash count"})
+ORIGINAL_PIN_LIMIT_CHECK = manager_approval._assert_manager_pin_rate_limit
+ORIGINAL_PIN_LIMIT_FAILURE = manager_approval._record_manager_pin_rate_limit_failure
+ORIGINAL_PIN_LIMIT_CLEAR = manager_approval._clear_manager_pin_rate_limit
+
+
+@pytest.fixture(autouse=True)
+def _default_available_manager_pin_limiter(monkeypatch):
+    """Keep unrelated unit tests focused; dedicated tests exercise real Redis logic."""
+    monkeypatch.setattr(
+        manager_approval,
+        "_assert_manager_pin_rate_limit",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        manager_approval,
+        "_record_manager_pin_rate_limit_failure",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        manager_approval,
+        "_clear_manager_pin_rate_limit",
+        lambda *_args: None,
+    )
 
 
 @pytest.mark.parametrize(
@@ -310,7 +333,7 @@ def test_token_issuance_is_persisted_with_exact_scope(monkeypatch):
     assert decoded[0]["resource_id"] == "SINV-1"
 
 
-def test_pin_verification_and_restart_safe_lockout(monkeypatch):
+def test_pin_lockout_survives_endpoint_database_rollback(monkeypatch):
     pin_hash = hash_pin("1234", cost=256)
     row: dict[str, object] = {
         "name": "DEVICE-USER-1",
@@ -353,6 +376,61 @@ def test_pin_verification_and_restart_safe_lockout(monkeypatch):
         "kopos_connector.api.devices.get_session_roles",
         lambda user=None: ["KoPOS Device API"],
     )
+    rate_state = {"failures": 0, "window_started": 0, "locked_until": 0}
+
+    class AtomicCache:
+        @staticmethod
+        def make_key(key: str) -> str:
+            return key
+
+        @staticmethod
+        def eval(script: str, _key_count: int, _key: str, *args: int):
+            now_epoch = int(args[0]) if args else 0
+            if script == manager_approval.PIN_RATE_LIMIT_CHECK_SCRIPT:
+                return [
+                    int(rate_state["locked_until"] > now_epoch),
+                    rate_state["locked_until"],
+                ]
+            if script == manager_approval.PIN_RATE_LIMIT_FAILURE_SCRIPT:
+                window_seconds = int(args[1])
+                max_failures = int(args[2])
+                lockout_seconds = int(args[3])
+                if (
+                    not rate_state["window_started"]
+                    or now_epoch - rate_state["window_started"] >= window_seconds
+                ):
+                    rate_state.update(
+                        failures=0,
+                        window_started=now_epoch,
+                        locked_until=0,
+                    )
+                rate_state["failures"] += 1
+                if rate_state["failures"] >= max_failures:
+                    rate_state["locked_until"] = now_epoch + lockout_seconds
+                return [rate_state["failures"], rate_state["locked_until"]]
+            if script == manager_approval.PIN_RATE_LIMIT_CLEAR_SCRIPT:
+                rate_state.update(failures=0, window_started=0, locked_until=0)
+                return 1
+            raise AssertionError("unexpected Redis script")
+
+    epoch = [1_700_000_000]
+    monkeypatch.setattr(manager_approval.frappe, "cache", lambda: AtomicCache())
+    monkeypatch.setattr(manager_approval.time, "time", lambda: epoch[0])
+    monkeypatch.setattr(
+        manager_approval,
+        "_assert_manager_pin_rate_limit",
+        ORIGINAL_PIN_LIMIT_CHECK,
+    )
+    monkeypatch.setattr(
+        manager_approval,
+        "_record_manager_pin_rate_limit_failure",
+        ORIGINAL_PIN_LIMIT_FAILURE,
+    )
+    monkeypatch.setattr(
+        manager_approval,
+        "_clear_manager_pin_rate_limit",
+        ORIGINAL_PIN_LIMIT_CLEAR,
+    )
     device = SimpleNamespace(name="KOPOS-DEVICE-1", enabled=1)
 
     for expected_attempts in range(1, manager_approval.MAX_PIN_FAILURES + 1):
@@ -362,11 +440,13 @@ def test_pin_verification_and_restart_safe_lockout(monkeypatch):
                 manager_id="manager@example.com",
                 manager_pin="9999",
             )
-        assert row["pin_failed_attempts"] == expected_attempts
+        assert rate_state["failures"] == expected_attempts
+        # Simulate request exception handling rolling back the DB mirror.
+        row["pin_failed_attempts"] = 0
+        row["pin_last_failed_at"] = None
+        row["pin_locked_until"] = None
 
-    assert row["pin_locked_until"] == now + timedelta(
-        seconds=manager_approval.PIN_LOCKOUT_SECONDS
-    )
+    assert rate_state["locked_until"] == epoch[0] + manager_approval.PIN_LOCKOUT_SECONDS
     with pytest.raises(manager_approval.frappe.ValidationError, match="temporarily locked"):
         manager_approval.authorize_manager_for_device(
             device,
@@ -374,7 +454,7 @@ def test_pin_verification_and_restart_safe_lockout(monkeypatch):
             manager_pin="1234",
         )
 
-    row["pin_locked_until"] = None
+    epoch[0] += manager_approval.PIN_LOCKOUT_SECONDS + 1
     assert (
         manager_approval.authorize_manager_for_device(
             device,
@@ -383,9 +463,107 @@ def test_pin_verification_and_restart_safe_lockout(monkeypatch):
         )
         == "manager@example.com"
     )
+    assert rate_state == {"failures": 0, "window_started": 0, "locked_until": 0}
     assert row["pin_failed_attempts"] == 0
     assert verify_pin("1234", pin_hash)
     assert not verify_pin("1235", pin_hash)
+
+
+def test_manager_pin_limiter_fails_closed_without_atomic_redis(monkeypatch):
+    monkeypatch.setattr(
+        manager_approval.frappe,
+        "cache",
+        lambda: SimpleNamespace(),
+    )
+
+    with pytest.raises(
+        manager_approval.frappe.ValidationError,
+        match="temporarily unavailable",
+    ):
+        ORIGINAL_PIN_LIMIT_CHECK("KOPOS-DEVICE-1", "manager@example.com")
+
+    key = manager_approval._manager_pin_rate_limit_key(
+        "KOPOS-DEVICE-1",
+        "manager@example.com",
+    )
+    assert "manager@example.com" not in key
+    assert "KOPOS-DEVICE-1" not in key
+
+
+def test_manager_pin_upgrade_bumps_locked_parent_config_version(monkeypatch):
+    legacy_hash = hash_pin("1234", cost=256)
+    upgraded_hash = (
+        "scrypt$16384$00112233445566778899aabbccddeeff$"
+        "bd32905894891fff625cb7f496cbf8b7f9ef0cee823bd0aceda87857c65a77d9"
+    )
+    row: dict[str, object] = {
+        "name": "DEVICE-USER-1",
+        "user": "manager@example.com",
+        "active": 1,
+        "can_manager_override": 1,
+        "pin_hash": legacy_hash,
+        "pin_failed_attempts": 0,
+        "pin_last_failed_at": None,
+        "pin_locked_until": None,
+        "device_config_version": 7,
+    }
+    writes: list[tuple[str, str, dict[str, object], dict[str, object]]] = []
+
+    monkeypatch.setattr(
+        manager_approval.frappe.db,
+        "sql",
+        lambda query, params, as_dict=False: [row],
+    )
+    monkeypatch.setattr(
+        manager_approval.frappe.db,
+        "get_value",
+        lambda doctype, name, fieldname: 1,
+    )
+
+    def set_value(
+        doctype: str,
+        name: str,
+        updates: dict[str, object],
+        **kwargs: object,
+    ) -> None:
+        writes.append((doctype, name, updates, kwargs))
+        if doctype == "KoPOS Device User":
+            row.update(updates)
+
+    monkeypatch.setattr(manager_approval.frappe.db, "set_value", set_value)
+    monkeypatch.setattr(manager_approval, "hash_pin", lambda value: upgraded_hash)
+    monkeypatch.setattr(
+        manager_approval.frappe,
+        "session",
+        SimpleNamespace(user="device-api@example.com"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "kopos_connector.api.devices.get_session_roles",
+        lambda user=None: ["KoPOS Device API"],
+    )
+    device = SimpleNamespace(
+        name="KOPOS-DEVICE-1",
+        enabled=1,
+        config_version=7,
+    )
+
+    assert manager_approval.authorize_manager_for_device(
+        device,
+        manager_id="manager@example.com",
+        manager_pin="1234",
+    ) == "manager@example.com"
+
+    assert writes[0][0:2] == ("KoPOS Device User", "DEVICE-USER-1")
+    assert writes[0][2]["pin_hash"] == upgraded_hash
+    assert writes[0][3] == {"update_modified": False}
+    assert writes[1] == (
+        "KoPOS Device",
+        "KOPOS-DEVICE-1",
+        {"config_version": 8},
+        {"update_modified": True},
+    )
+    assert device.config_version == 8
 
 
 def test_system_manager_bypass_must_be_explicit(monkeypatch):
@@ -552,10 +730,10 @@ def test_token_use_rechecks_current_void_permission_before_consumption(monkeypat
         assert as_dict is True
         if "tabKoPOS Manager Approval" in query:
             return [approval_row]
-        if "tabKoPOS Device`" in query:
-            return [{"name": "KOPOS-DEVICE-1", "enabled": 1}]
         if "tabKoPOS Device User" in query:
             return [manager_row]
+        if "tabKoPOS Device`" in query:
+            return [{"name": "KOPOS-DEVICE-1", "enabled": 1}]
         raise AssertionError(f"unexpected query: {query}")
 
     monkeypatch.setattr(manager_approval.frappe.db, "sql", sql)
@@ -618,10 +796,10 @@ def test_token_use_rechecks_refund_permission_and_explicit_admin_mode(monkeypatc
     }
 
     def sql(query: str, *_args, **_kwargs):
-        if "tabKoPOS Device`" in query:
-            return [{"name": "KOPOS-DEVICE-1", "enabled": 1}]
         if "tabKoPOS Device User" in query:
             return [manager_row]
+        if "tabKoPOS Device`" in query:
+            return [{"name": "KOPOS-DEVICE-1", "enabled": 1}]
         raise AssertionError(f"unexpected query: {query}")
 
     monkeypatch.setattr(manager_approval.frappe.db, "sql", sql)

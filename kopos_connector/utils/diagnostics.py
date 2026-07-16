@@ -15,6 +15,9 @@ SENSITIVE_KEY_TOKENS = (
     "api_secret",
     "authorization",
     "bearer",
+    "cookie",
+    "credential",
+    "csrf",
     "encrypted_pin",
     "gcm_token",
     "password",
@@ -26,13 +29,16 @@ SENSITIVE_KEY_TOKENS = (
     "qrstring",
     "raw_response",
     "receipt_file_hash",
+    "secret",
+    "session",
+    "sid",
     "token",
 )
 
 MAX_ERROR_MESSAGE_LENGTH = 240
 MAX_PAYLOAD_TEXT_LENGTH = 500
 SENSITIVE_TEXT_PATTERN = re.compile(
-    r"(?i)(api[_-]?key|api[_-]?secret|authorization|bearer\s+\S+|encrypted[_-]?pin|pin[_-]?hash|password|provisioning[_-]?token|qr[_-]?(data|code|string)|raw[_-]?response|token)"
+    r"(?i)(api[_-]?key|api[_-]?secret|authorization|bearer\s+\S+|cookie|credential|csrf|encrypted[_-]?pin|pin[_-]?hash|password|provisioning[_-]?token|qr[_-]?(data|code|string)|raw[_-]?response|secret|session(?:[_-]?id)?|set[_-]?cookie|\bsid\b|token)"
 )
 
 
@@ -84,7 +90,13 @@ def log_sanitized_error(title: str, error: BaseException | None = None) -> None:
     traceback_getter = getattr(frappe, "get_traceback", None)
     if callable(traceback_getter):
         try:
-            message = _redact_text(str(traceback_getter()))
+            safe_traceback = _redact_text(str(traceback_getter()))
+            if safe_traceback and safe_traceback != message:
+                # Keep the sanitized exception type/message before the bounded
+                # traceback. Long tracebacks are intentionally truncated, so
+                # storing only their leading frames can otherwise discard the
+                # one line support needs to identify the failure class.
+                message = f"{message}\n{safe_traceback}"
         except Exception as traceback_error:
             logging.getLogger(__name__).debug(
                 "Frappe traceback collection failed: %s",

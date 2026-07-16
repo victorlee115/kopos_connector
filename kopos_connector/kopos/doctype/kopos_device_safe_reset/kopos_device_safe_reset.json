@@ -1,0 +1,822 @@
+{
+ "allow_copy": 0,
+ "allow_guest_to_view": 0,
+ "allow_import": 0,
+ "allow_rename": 0,
+ "autoname": "field:reset_id",
+ "creation": "2026-07-15 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "reset_id",
+  "safe_reset_protocol_version",
+  "request_id",
+  "status",
+  "device",
+  "device_id",
+        "api_user",
+        "reason",
+        "request_origin",
+        "registered_by_system_manager",
+        "credential_recovery_confirmed_at",
+        "stale_export_override",
+        "stale_export_override_reason",
+        "request_evidence_section",
+        "export_sha256",
+        "export_content_sha256",
+        "export_byte_length",
+        "exported_at",
+        "drained_row_count",
+  "queue_pending_count",
+  "queue_failed_count",
+  "queue_syncing_count",
+  "queue_dead_letter_count",
+  "migration_recovery_point_count",
+  "migration_recovery_valid_point_count",
+  "migration_recovery_invalid_point_count",
+  "migration_recovery_captured_pending_total",
+  "migration_recovery_review_required",
+  "previous_config_version",
+        "reset_proof_sha256",
+        "evidence_fingerprint",
+        "request_fingerprint",
+        "requested_by_api_user",
+		"requested_at",
+		"request_expires_at",
+		"cancellation_section",
+			"cancellation_idempotency_sha256",
+			"cancellation_reason",
+			"cancellation_origin",
+			"cancelled_by_user",
+			"cancelled_by_api_user",
+		"cancelled_at",
+		"cancellation_result_fingerprint",
+		"scope_evidence_section",
+        "erp_base_url",
+        "company",
+        "currency",
+        "pos_profile",
+        "warehouse",
+        "authorization_section",
+        "authorized_by",
+        "authorized_at",
+        "migration_recovery_acknowledged_by",
+        "migration_recovery_acknowledged_at",
+        "migration_recovery_acknowledgement_reason",
+        "migration_recovery_ack_fingerprint",
+        "authorization_count",
+        "approval_challenge_id",
+        "approval_token_sha256",
+        "approval_generation",
+        "approval_issued_by",
+        "approval_issued_at",
+        "approval_expires_at",
+        "approval_fingerprint",
+        "approval_erpnext_url",
+        "current_redemption_idempotency_sha256",
+        "current_redemption_result_fingerprint",
+        "credential_rotated_at",
+        "new_config_version",
+        "previous_credential_state",
+        "revoked_api_key_sha256",
+        "issued_api_key_sha256",
+        "issued_api_secret_sha256",
+  "redemption_section",
+        "redeemed_approval_challenge_id",
+        "redeemed_approval_generation",
+        "redeemed_approval_token_sha256",
+        "redeemed_approval_fingerprint",
+        "redeemed_approval_expires_at",
+        "redemption_idempotency_sha256",
+        "redemption_export_sha256",
+        "redemption_export_content_sha256",
+        "redemption_export_byte_length",
+        "redemption_setup_snapshot",
+        "redemption_setup_sha256",
+        "redemption_result_fingerprint",
+        "redemption_issued_at",
+        "redeemed_at",
+        "last_redeemed_at",
+        "redeemed_recovery_expires_at",
+        "redemption_count",
+  "completion_idempotency_sha256",
+  "completion_export_sha256",
+  "completion_export_content_sha256",
+  "completion_export_byte_length",
+  "completion_result_fingerprint",
+  "completed_by_api_user",
+  "completed_at"
+ ],
+ "fields": [
+	  {
+	   "fieldname": "reset_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Safe Reset ID",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1,
+	   "unique": 1
+	  },
+	  {
+	   "default": "2",
+	   "fieldname": "safe_reset_protocol_version",
+	   "fieldtype": "Int",
+	   "label": "Safe Reset Protocol Version",
+	   "read_only": 1,
+	   "reqd": 1
+	  },
+	  {
+	   "fieldname": "request_id",
+   "fieldtype": "Data",
+   "label": "Device Request ID",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1,
+   "unique": 1
+  },
+  {
+   "default": "requested",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "requested\nauthorized\nredeemed\ncompleted\ncancelled\nexpired",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "device",
+   "fieldtype": "Link",
+   "label": "KoPOS Device",
+   "options": "KoPOS Device",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "device_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Device ID",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "api_user",
+   "fieldtype": "Link",
+   "label": "Dedicated API User",
+   "options": "User",
+   "read_only": 1,
+   "reqd": 1
+  },
+        {
+            "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Reset Reason",
+   "read_only": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "request_origin",
+            "fieldtype": "Select",
+            "label": "Request Origin",
+            "options": "device_authenticated\ncredential_recovery",
+            "read_only": 1,
+            "reqd": 1,
+            "search_index": 1
+        },
+        {
+            "fieldname": "registered_by_system_manager",
+            "fieldtype": "Link",
+            "label": "Registered By System Manager",
+            "options": "User",
+            "read_only": 1
+        },
+        {
+            "fieldname": "credential_recovery_confirmed_at",
+            "fieldtype": "Datetime",
+            "label": "Credential Recovery Confirmed At",
+            "read_only": 1
+        },
+        {
+            "default": "0",
+            "fieldname": "stale_export_override",
+            "fieldtype": "Check",
+            "label": "Stale Export Override",
+            "read_only": 1
+        },
+        {
+            "fieldname": "stale_export_override_reason",
+            "fieldtype": "Small Text",
+            "label": "Stale Export Override Reason",
+            "read_only": 1
+        },
+        {
+            "fieldname": "request_evidence_section",
+   "fieldtype": "Section Break",
+   "label": "Immutable Device Evidence"
+  },
+  {
+   "fieldname": "export_sha256",
+   "fieldtype": "Data",
+   "label": "Emergency Export SHA-256",
+   "read_only": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "export_content_sha256",
+            "fieldtype": "Data",
+            "label": "Emergency Export Content SHA-256",
+            "read_only": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "export_byte_length",
+            "fieldtype": "Long Int",
+            "label": "Emergency Export Byte Length",
+            "read_only": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "exported_at",
+            "fieldtype": "Datetime",
+            "label": "Emergency Export Generated At",
+            "read_only": 1,
+            "reqd": 1
+        },
+  {
+   "default": "0",
+   "fieldname": "drained_row_count",
+   "fieldtype": "Int",
+   "label": "Drained Row Count",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "queue_pending_count",
+   "fieldtype": "Int",
+   "label": "Queue Pending Count",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "queue_failed_count",
+   "fieldtype": "Int",
+   "label": "Queue Failed Count",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "queue_syncing_count",
+   "fieldtype": "Int",
+   "label": "Queue Syncing Count",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "queue_dead_letter_count",
+   "fieldtype": "Int",
+   "label": "Queue Dead-Letter Count",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "migration_recovery_point_count",
+   "fieldtype": "Int",
+   "label": "Migration Recovery Point Count",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "migration_recovery_valid_point_count",
+   "fieldtype": "Int",
+   "label": "Valid Migration Recovery Point Count",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "migration_recovery_invalid_point_count",
+   "fieldtype": "Int",
+   "label": "Invalid Migration Recovery Point Count",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "description": "Factual aggregate reported by the verified archive; it does not classify every recovery point as unresolved.",
+   "fieldname": "migration_recovery_captured_pending_total",
+   "fieldtype": "Int",
+   "label": "Captured Migration Recovery Pending Total",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "migration_recovery_review_required",
+   "fieldtype": "Check",
+   "label": "Migration Recovery Review Required",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "previous_config_version",
+   "fieldtype": "Int",
+   "label": "Previous Config Version",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "reset_proof_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Reset Proof SHA-256",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1,
+   "unique": 1
+  },
+        {
+            "fieldname": "evidence_fingerprint",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Tablet Evidence Fingerprint",
+            "read_only": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "request_fingerprint",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Canonical Request Fingerprint",
+   "read_only": 1,
+   "reqd": 1
+  },
+        {
+            "fieldname": "requested_by_api_user",
+            "fieldtype": "Link",
+            "label": "Requesting API User",
+            "options": "User",
+            "read_only": 1
+        },
+  {
+   "fieldname": "requested_at",
+   "fieldtype": "Datetime",
+   "label": "Requested At",
+   "read_only": 1,
+   "reqd": 1
+  },
+        {
+            "fieldname": "request_expires_at",
+	   "fieldtype": "Datetime",
+	   "label": "Request Expires At",
+	   "read_only": 1,
+            "reqd": 1
+        },
+	{
+	 "fieldname": "cancellation_section",
+	 "fieldtype": "Section Break",
+	 "label": "Pre-Rotation Cancellation Audit"
+	},
+	{
+	 "fieldname": "cancellation_idempotency_sha256",
+	 "fieldtype": "Data",
+	 "hidden": 1,
+	 "label": "Cancellation Idempotency SHA-256",
+	 "read_only": 1
+	},
+	{
+	 "fieldname": "cancellation_reason",
+	 "fieldtype": "Small Text",
+	 "label": "Cancellation Reason",
+	 "read_only": 1
+	},
+	{
+	 "fieldname": "cancellation_origin",
+	 "fieldtype": "Select",
+	 "label": "Cancellation Origin",
+	 "options": "device_authenticated\nsystem_manager",
+	 "read_only": 1
+	},
+	{
+	 "fieldname": "cancelled_by_user",
+	 "fieldtype": "Link",
+	 "label": "Cancelled By User",
+	 "options": "User",
+	 "read_only": 1
+	},
+	{
+	 "fieldname": "cancelled_by_api_user",
+	 "fieldtype": "Link",
+	 "label": "Cancelled By Device API User",
+	 "options": "User",
+	 "read_only": 1
+	},
+	{
+	 "fieldname": "cancelled_at",
+	 "fieldtype": "Datetime",
+	 "label": "Cancelled At",
+	 "read_only": 1
+	},
+	{
+	 "fieldname": "cancellation_result_fingerprint",
+	 "fieldtype": "Data",
+	 "hidden": 1,
+	 "label": "Cancellation Result Fingerprint",
+	 "read_only": 1
+	},
+        {
+            "fieldname": "scope_evidence_section",
+            "fieldtype": "Section Break",
+            "label": "Immutable ERP Scope Evidence"
+        },
+        {
+            "fieldname": "erp_base_url",
+            "fieldtype": "Data",
+            "label": "ERP Base URL",
+            "read_only": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "company",
+            "fieldtype": "Link",
+            "label": "Company",
+            "options": "Company",
+            "read_only": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "currency",
+            "fieldtype": "Link",
+            "label": "Currency",
+            "options": "Currency",
+            "read_only": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "pos_profile",
+            "fieldtype": "Link",
+            "label": "POS Profile",
+            "options": "POS Profile",
+            "read_only": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "warehouse",
+            "fieldtype": "Link",
+            "label": "Warehouse",
+            "options": "Warehouse",
+            "read_only": 1,
+            "reqd": 1
+        },
+  {
+   "fieldname": "authorization_section",
+   "fieldtype": "Section Break",
+   "label": "ERP Approval Challenge"
+  },
+  {
+   "fieldname": "authorized_by",
+   "fieldtype": "Link",
+   "label": "Authorized By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "authorized_at",
+   "fieldtype": "Datetime",
+   "label": "Authorized At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "migration_recovery_acknowledged_by",
+   "fieldtype": "Link",
+   "label": "Migration Recovery Acknowledged By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "migration_recovery_acknowledged_at",
+   "fieldtype": "Datetime",
+   "label": "Migration Recovery Acknowledged At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "migration_recovery_acknowledgement_reason",
+   "fieldtype": "Small Text",
+   "label": "Migration Recovery Acknowledgement Reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "migration_recovery_ack_fingerprint",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Migration Recovery Acknowledgement Fingerprint",
+   "read_only": 1
+  },
+        {
+            "default": "0",
+            "fieldname": "authorization_count",
+   "fieldtype": "Int",
+   "label": "Authorization Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "new_config_version",
+   "fieldtype": "Int",
+   "label": "New Config Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approval_challenge_id",
+   "fieldtype": "Data",
+   "label": "Approval Challenge ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approval_token_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Approval Token SHA-256",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "approval_generation",
+   "fieldtype": "Int",
+   "label": "Approval Generation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approval_issued_by",
+   "fieldtype": "Link",
+   "label": "Approval Issued By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approval_issued_at",
+   "fieldtype": "Datetime",
+   "label": "Approval Issued At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approval_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Approval Expires At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approval_fingerprint",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Approval Fingerprint",
+   "read_only": 1
+  },
+  {
+   "fieldname": "approval_erpnext_url",
+   "fieldtype": "Data",
+   "label": "Approval ERP URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "current_redemption_idempotency_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Current Redemption Idempotency SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "current_redemption_result_fingerprint",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Current Redemption Result Fingerprint",
+   "read_only": 1
+  },
+        {
+            "fieldname": "credential_rotated_at",
+            "fieldtype": "Datetime",
+            "label": "Credential Rotated At",
+            "read_only": 1
+        },
+        {
+            "fieldname": "previous_credential_state",
+            "fieldtype": "Select",
+            "label": "Previous Credential State",
+            "options": "complete\ndisabled_user\nmissing_user\nmissing_binding\nmissing_api_key\nmissing_api_secret\nmissing_both",
+            "read_only": 1
+        },
+        {
+            "fieldname": "revoked_api_key_sha256",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Revoked API Key SHA-256",
+            "read_only": 1
+        },
+        {
+            "fieldname": "issued_api_key_sha256",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Issued API Key SHA-256",
+            "read_only": 1
+        },
+        {
+            "fieldname": "issued_api_secret_sha256",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Issued API Secret SHA-256",
+            "read_only": 1
+        },
+  {
+   "fieldname": "redemption_section",
+   "fieldtype": "Section Break",
+   "label": "Redemption and Completion"
+  },
+  {
+   "fieldname": "redeemed_approval_challenge_id",
+   "fieldtype": "Data",
+   "label": "Redeemed Approval Challenge ID",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "redeemed_approval_generation",
+   "fieldtype": "Int",
+   "label": "Redeemed Approval Generation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "redeemed_approval_token_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Redeemed Approval Token SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "redeemed_approval_fingerprint",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Redeemed Approval Fingerprint",
+   "read_only": 1
+  },
+  {
+   "fieldname": "redeemed_approval_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Redeemed Approval Expires At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "redemption_idempotency_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Redemption Idempotency SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "redemption_export_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Redemption Archive SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "redemption_export_content_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Redemption Archive Content SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "redemption_export_byte_length",
+   "fieldtype": "Long Int",
+   "label": "Redemption Archive Byte Length",
+   "read_only": 1
+  },
+  {
+   "fieldname": "redemption_setup_snapshot",
+   "fieldtype": "Password",
+   "hidden": 1,
+   "label": "Encrypted Redemption Setup Snapshot",
+   "read_only": 1
+  },
+  {
+   "fieldname": "redemption_setup_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Redemption Setup SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "redemption_result_fingerprint",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Redemption Result Fingerprint",
+   "read_only": 1
+  },
+  {
+   "fieldname": "redemption_issued_at",
+   "fieldtype": "Datetime",
+   "label": "Redemption Result Issued At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "redeemed_at",
+   "fieldtype": "Datetime",
+   "label": "Redeemed At",
+   "read_only": 1
+  },
+        {
+            "fieldname": "last_redeemed_at",
+            "fieldtype": "Datetime",
+            "label": "Last Redeemed At",
+            "read_only": 1
+        },
+        {
+            "fieldname": "redeemed_recovery_expires_at",
+            "fieldtype": "Datetime",
+            "label": "Redeemed Response Recovery Expires At",
+            "read_only": 1
+        },
+  {
+   "default": "0",
+   "fieldname": "redemption_count",
+   "fieldtype": "Int",
+   "label": "Redemption Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completion_idempotency_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Completion Idempotency SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completion_export_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Completion Archive SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completion_export_content_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Completion Archive Content SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completion_export_byte_length",
+   "fieldtype": "Long Int",
+   "label": "Completion Archive Byte Length",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completion_result_fingerprint",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Completion Result Fingerprint",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_by_api_user",
+   "fieldtype": "Link",
+   "label": "Completing API User",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At",
+   "read_only": 1
+  }
+ ],
+ "module": "KoPOS",
+ "name": "KoPOS Device Safe Reset",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1,
+ "track_seen": 1,
+ "track_views": 1
+}

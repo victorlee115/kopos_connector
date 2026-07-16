@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import frappe
-from frappe.utils import flt, now_datetime, nowdate
+from frappe.utils import cint, flt, now_datetime, nowdate
 
 from kopos_connector.kopos.api.money_contract import (
     persisted_money_to_sen,
@@ -26,6 +27,9 @@ DEMO_MATCHA_ITEM = "SMOKE-MATCHA-POWDER"
 DEMO_STRAWBERRY_ITEM = "SMOKE-STRAWBERRY-PUREE"
 DEMO_MILK_ITEM = "SMOKE-MILK"
 DEMO_CUP_ITEM = "SMOKE-CUP"
+DEMO_PROMOTION_NAME = "SMOKE-MANUAL-10-PCT"
+DEMO_PROMOTION_DISPLAY_LABEL = "Smoke 10% Off"
+DEMO_PROMOTION_DISCOUNT_VALUE = 10
 DEMO_MATCHA_QTY_PER_ORDER = 18
 DEMO_STRAWBERRY_QTY_PER_ORDER = 40
 DEMO_MILK_QTY_PER_ORDER = 180
@@ -53,6 +57,10 @@ SMOKE_ACCEPTANCE_CUP_TARGET_QTY = (
     * SMOKE_ACCEPTANCE_STOCK_HEADROOM_MULTIPLIER
 )
 DEMO_CURRENCY_FALLBACK = "MYR"
+SMOKE_COMPANY_NAME = "KoPOS Malaysia Sdn Bhd"
+SMOKE_COMPANY_ABBR = "KMY"
+SMOKE_COMPANY_COUNTRY = "Malaysia"
+SMOKE_COMPANY_CURRENCY = "MYR"
 SMOKE_SIZE_GROUP_CODE = "SMOKE-FB-SIZE"
 SMOKE_SIZE_REGULAR_CODE = "SMOKE-FB-SIZE-REGULAR"
 SMOKE_SIZE_LARGE_CODE = "SMOKE-FB-SIZE-LARGE"
@@ -75,6 +83,11 @@ SUPPORT_SENSITIVE_KEY_FRAGMENTS = (
     "token",
 )
 SMOKE_DEVICE_ID = "SMOKE-TAB-A001"
+SMOKE_DEVICE_API_USER = "kopos.device.smoke.tab.a001@kopos.local"
+SMOKE_ALLOW_TRAINING_MODE = 0
+SMOKE_ENABLE_SST = 0
+SMOKE_SST_RATE_PERCENT = 8
+SMOKE_MAYBANK_OUTLET_ID = "SMOKE-MOCK-OUTLET"
 SMOKE_STAFF_EMAIL_DOMAIN = "@smoke.kopos.local"
 SMOKE_VALUE_PREFIXES = (
     "smoke-",
@@ -93,7 +106,12 @@ def setup_refund_smoke_data() -> dict[str, Any]:
 
     before_tests()
 
-    company = frappe.get_all("Company", pluck="name", limit=1)[0]
+    return _ensure_smoke_base_data()
+
+
+def _ensure_smoke_base_data() -> dict[str, Any]:
+    company = _ensure_smoke_company()
+
     customer = _ensure_customer(company)
     warehouse = _ensure_warehouse(company)
     cost_center = _ensure_cost_center(company)
@@ -118,6 +136,9 @@ def setup_refund_smoke_data() -> dict[str, Any]:
     )
 
     frappe.db.commit()
+    demo_recipe = frappe.db.get_value(
+        "Item", DEMO_DRINK_ITEM, "custom_fb_default_recipe"
+    ) or DEMO_RECIPE_CODE
     return {
         "company": company,
         "customer": customer,
@@ -127,6 +148,7 @@ def setup_refund_smoke_data() -> dict[str, Any]:
         "expense_account": expense_account,
         "pos_profile": pos_profile,
         "item_code": item,
+        "recipe": demo_recipe,
     }
 
 
@@ -137,10 +159,42 @@ def _get_demo_currency(company: str) -> str:
     )
 
 
+def _ensure_smoke_company() -> str:
+    existing = frappe.db.exists("Company", SMOKE_COMPANY_NAME)
+    if existing:
+        values = frappe.db.get_value(
+            "Company",
+            existing,
+            ["abbr", "default_currency", "country"],
+            as_dict=True,
+        )
+        if not values or (
+            str(values.get("abbr") or "") != SMOKE_COMPANY_ABBR
+            or str(values.get("default_currency") or "")
+            != SMOKE_COMPANY_CURRENCY
+            or str(values.get("country") or "") != SMOKE_COMPANY_COUNTRY
+        ):
+            frappe.throw(
+                "Existing KoPOS smoke company does not match the immutable MYR fixture",
+                frappe.ValidationError,
+            )
+        return str(existing)
+
+    company = frappe.new_doc("Company")
+    company.company_name = SMOKE_COMPANY_NAME
+    company.abbr = SMOKE_COMPANY_ABBR
+    company.default_currency = SMOKE_COMPANY_CURRENCY
+    company.country = SMOKE_COMPANY_COUNTRY
+    company.create_chart_of_accounts_based_on = "Standard Template"
+    company.chart_of_accounts = "Standard"
+    company.insert(ignore_permissions=True)
+    return str(company.name)
+
+
 def setup_stock_item_smoke_data(target_qty: float = 5) -> dict[str, Any]:
     from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
 
-    company = frappe.get_all("Company", pluck="name", limit=1)[0]
+    company = _ensure_smoke_company()
     warehouse = _ensure_warehouse(company)
     item_code = _ensure_stock_item()
     current_qty = get_bin_qty(item_code, warehouse)
@@ -184,7 +238,7 @@ def set_stock_item_smoke_qty_five() -> dict[str, Any]:
 
 
 def get_stock_item_smoke_state() -> dict[str, Any]:
-    company = frappe.get_all("Company", pluck="name", limit=1)[0]
+    company = _ensure_smoke_company()
     warehouse = _ensure_warehouse(company)
     return {
         "company": company,
@@ -195,7 +249,7 @@ def get_stock_item_smoke_state() -> dict[str, Any]:
 
 
 def get_demo_ingredient_state() -> dict[str, Any]:
-    company = frappe.get_all("Company", pluck="name", limit=1)[0]
+    company = _ensure_smoke_company()
     warehouse = _ensure_warehouse(company)
     return {
         "company": company,
@@ -213,7 +267,7 @@ def set_demo_ingredient_quantities(
     milk_qty: float = SMOKE_ACCEPTANCE_MILK_TARGET_QTY,
     cup_qty: float = SMOKE_ACCEPTANCE_CUP_TARGET_QTY,
 ) -> dict[str, Any]:
-    company = frappe.get_all("Company", pluck="name", limit=1)[0]
+    company = _ensure_smoke_company()
     warehouse = _ensure_warehouse(company)
     _ensure_stock_item()
 
@@ -290,7 +344,7 @@ def ensure_demo_fb_shift(shift_code: str = "smoke-shift-001") -> dict[str, Any]:
             "status": shift.status,
         }
 
-    company = frappe.get_all("Company", pluck="name", limit=1)[0]
+    company = _ensure_smoke_company()
     warehouse = _ensure_warehouse(company)
     shift = frappe.new_doc("FB Shift")
     shift.shift_code = shift_code
@@ -319,6 +373,7 @@ def run_demo_fb_sale_audit(return_to_stock: bool = False) -> dict[str, Any]:
 
     shift = ensure_demo_fb_shift()
     before = set_demo_ingredient_quantities()
+    recipe = _get_demo_recipe_reference(shift["company"])
     order_id = f"SMOKE-DEMO-{frappe.generate_hash(length=8)}"
     idempotency_key = f"SMOKE-DEMO-{frappe.generate_hash(length=16)}"
     frappe.local.form_dict = {
@@ -344,8 +399,8 @@ def run_demo_fb_sale_audit(return_to_stock: bool = False) -> dict[str, Any]:
                     "line_id": f"LINE-{frappe.generate_hash(length=8)}",
                     "item_code": DEMO_DRINK_ITEM,
                     "item_name": DEMO_DRINK_NAME,
-                    "recipe": DEMO_RECIPE_CODE,
-                    "recipe_version": 1,
+                    "recipe": recipe["name"],
+                    "recipe_version": recipe["version_no"],
                     "qty": 1,
                     "unit_price_sen": 1200,
                     "discount_amount_sen": 0,
@@ -417,6 +472,259 @@ def run_demo_fb_sale_audit(return_to_stock: bool = False) -> dict[str, Any]:
     }
 
 
+def run_demo_delayed_maybank_paid_audit() -> dict[str, Any]:
+    """Prove a provider-paid sale survives an eight-hour ERP observation delay.
+
+    This fixture never calls a live bank. It is deliberately restricted to an
+    explicitly opted-in developer/test site and the dedicated smoke device. The
+    synthetic provider response still passes through the production response
+    identity validator, paid-state transition, FB Order claim, Sales Invoice
+    projection, and one-time consumption binding.
+    """
+
+    _require_maybank_mock_smoke_context()
+    _ensure_smoke_maybank_outlet()
+    device_name = frappe.db.get_value(
+        "KoPOS Device", {"device_id": SMOKE_DEVICE_ID}, "name"
+    )
+    if not device_name:
+        frappe.throw(
+            "Delayed Maybank smoke requires setup_full_smoke_data first",
+            frappe.ValidationError,
+        )
+
+    from kopos_connector.api.maybank_qr import _apply_provider_poll_result
+    from kopos_connector.api.shifts import close_shift_payload
+    from kopos_connector.kopos.api.fb_orders import submit_order
+
+    token = frappe.generate_hash(length=16)
+    shift = ensure_demo_fb_shift(f"smoke-maybank-late-{token}")
+    if shift["status"] != "Open":
+        frappe.throw(
+            "Delayed Maybank smoke requires the demo FB Shift to be Open",
+            frappe.ValidationError,
+        )
+    set_demo_ingredient_quantities()
+    recipe = _get_demo_recipe_reference(shift["company"])
+
+    transaction_refno = f"SMOKE-MOCK-MBQR-{token.upper()}"
+    qr_idempotency_key = f"SMOKE-MBQR-{token}"
+    request_fingerprint = hashlib.sha256(
+        f"{SMOKE_DEVICE_ID}\0{qr_idempotency_key}".encode("utf-8")
+    ).hexdigest()
+    observed_at = now_datetime()
+    expires_at = observed_at - timedelta(hours=8)
+    created_at = expires_at - timedelta(minutes=1)
+    transaction = frappe.get_doc(
+        {
+            "doctype": "Maybank QR Transaction",
+            "transaction_refno": transaction_refno,
+            "outlet_id": SMOKE_MAYBANK_OUTLET_ID,
+            "sale_amount": "12.00",
+            "sale_amount_sen": 1200,
+            "currency": "MYR",
+            "status": "pending",
+            "maybank_status": 2,
+            "device_id": SMOKE_DEVICE_ID,
+            "provider": "maybank_qr",
+            "idempotency_key": qr_idempotency_key,
+            "request_fingerprint": request_fingerprint,
+            "round_number": 1,
+            "created_at": created_at,
+            "business_date": created_at.date().isoformat(),
+            "expires_at": expires_at,
+            "raw_response": json.dumps(
+                {"status": "smoke_pending_provider_observation"},
+                sort_keys=True,
+            ),
+        }
+    )
+    transaction.insert(ignore_permissions=True)
+    # Model a durable pending QR surviving an ERP outage before provider status
+    # can be observed.
+    frappe.db.commit()
+
+    resolved_status = _apply_provider_poll_result(
+        transaction.name,
+        {
+            "status": "QR000",
+            "data": [
+                {
+                    "status": 1,
+                    "transaction_refno": transaction_refno,
+                    "sale_amount": "12.00",
+                    "outlet_id": SMOKE_MAYBANK_OUTLET_ID,
+                    "currency": "MYR",
+                }
+            ],
+        },
+    )
+    if resolved_status != "paid":
+        frappe.throw(
+            "Delayed Maybank smoke did not persist provider-paid status",
+            frappe.ValidationError,
+        )
+    frappe.db.commit()
+
+    order_id = f"SMOKE-MBQR-ORDER-{token}"
+    order_idempotency_key = f"SMOKE-MBQR-ORDER-IDEMPOTENCY-{token}"
+    payment_id = f"SMOKE-MBQR-PAYMENT-{token}"
+    frappe.local.form_dict = {
+        "money_contract_version": "sen_v1",
+        "order_id": order_id,
+        "idempotency_key": order_idempotency_key,
+        "device_id": SMOKE_DEVICE_ID,
+        "shift_id": shift["shift_code"],
+        "staff_id": shift["staff_id"],
+        "warehouse": shift["warehouse"],
+        "company": shift["company"],
+        "currency": "MYR",
+        "order": {
+            "display_number": "SMK-MBQR-LATE",
+            "order_type": "takeaway",
+            "created_at": now_datetime().isoformat(),
+            "subtotal_sen": 1200,
+            "tax_amount_sen": 0,
+            "rounding_adjustment_sen": 0,
+            "total_sen": 1200,
+            "items": [
+                {
+                    "line_id": f"LINE-{token}",
+                    "item_code": DEMO_DRINK_ITEM,
+                    "item_name": DEMO_DRINK_NAME,
+                    "recipe": recipe["name"],
+                    "recipe_version": recipe["version_no"],
+                    "qty": 1,
+                    "unit_price_sen": 1200,
+                    "discount_amount_sen": 0,
+                    "modifier_total_sen": 0,
+                    "line_total_sen": 1200,
+                    "modifiers": [],
+                }
+            ],
+            "payments": [
+                {
+                    "payment_id": payment_id,
+                    "payment_method": "DuitNow QR",
+                    "payment_channel_code": "maybank",
+                    "amount_sen": 1200,
+                    "tendered_amount_sen": 1200,
+                    "change_amount_sen": 0,
+                    "reference_no": transaction_refno,
+                    "external_transaction_id": transaction_refno,
+                }
+            ],
+        },
+    }
+    submit_result = submit_order()
+    frappe.db.commit()
+
+    order = frappe.get_doc("FB Order", submit_result["fb_order"])
+    invoice_matches = frappe.get_all(
+        "Sales Invoice",
+        filters={"custom_fb_idempotency_key": order_idempotency_key},
+        fields=["name"],
+        limit_page_length=2,
+    )
+    if (
+        not order.sales_invoice
+        or order.invoice_status != "Posted"
+        or not frappe.db.exists("Sales Invoice", order.sales_invoice)
+        or len(invoice_matches) != 1
+        or invoice_matches[0].get("name") != order.sales_invoice
+    ):
+        frappe.throw(
+            "Delayed Maybank smoke did not create exactly one linked Sales Invoice",
+            frappe.ValidationError,
+        )
+
+    close_result = close_shift_payload(
+        {
+            "idempotency_key": f"SMOKE-MBQR-SHIFT-CLOSE-{token}",
+            "device_id": SMOKE_DEVICE_ID,
+            "staff_id": shift["staff_id"],
+            "shift_id": shift["shift_code"],
+            "fb_shift": shift["name"],
+            # Provider QR is non-cash and this isolated shift has no opening float.
+            "counted_cash_sen": 0,
+            "closed_at": now_datetime().isoformat(),
+        }
+    )
+    if close_result.get("status") != "ok":
+        frappe.throw(
+            "Delayed Maybank smoke did not close its isolated FB Shift",
+            frappe.ValidationError,
+        )
+    frappe.db.commit()
+
+    evidence_rows = [
+        row
+        for row in _collect_maybank_qr_transactions(SMOKE_DEVICE_ID)
+        if row.get("name") == transaction.name
+    ]
+    if len(evidence_rows) != 1 or not evidence_rows[0].get(
+        "late_authenticated_paid_accepted"
+    ):
+        frappe.throw(
+            "Delayed Maybank smoke did not prove late authenticated paid acceptance",
+            frappe.ValidationError,
+        )
+
+    return {
+        "status": "ok",
+        "scenario": "delayed_authenticated_maybank_paid",
+        "delay_seconds": 8 * 60 * 60,
+        "transaction": transaction.name,
+        "transaction_refno": transaction_refno,
+        "fb_order": order.name,
+        "sales_invoice": order.sales_invoice,
+        "fb_shift": shift["name"],
+        "shift_close_status": close_result["status"],
+        "order_idempotency_key": order_idempotency_key,
+        "provider_identity_evidence_complete": evidence_rows[0][
+            "provider_identity_evidence_complete"
+        ],
+        "one_time_consumption_evidence_complete": evidence_rows[0][
+            "one_time_consumption_evidence_complete"
+        ],
+        "late_authenticated_paid_accepted": True,
+    }
+
+
+def _require_maybank_mock_smoke_context() -> None:
+    config = getattr(frappe, "conf", None)
+    getter = getattr(config, "get", None)
+    allow_mock = getter("allow_maybank_mock", 0) if callable(getter) else getattr(
+        config, "allow_maybank_mock", 0
+    )
+    developer_mode = getter("developer_mode", 0) if callable(getter) else getattr(
+        config, "developer_mode", 0
+    )
+    in_test = getattr(getattr(frappe, "flags", None), "in_test", 0)
+    if not cint(allow_mock) or not (cint(developer_mode) or cint(in_test)):
+        frappe.throw(
+            "Delayed Maybank smoke requires allow_maybank_mock=1 and a developer/test context",
+            frappe.ValidationError,
+        )
+
+
+def _ensure_smoke_maybank_outlet() -> None:
+    current = str(
+        frappe.db.get_single_value("Maybank Settings", "outlet_id") or ""
+    ).strip()
+    if current and current != SMOKE_MAYBANK_OUTLET_ID:
+        frappe.throw(
+            "Delayed Maybank smoke refuses to overwrite a non-smoke Maybank outlet",
+            frappe.ValidationError,
+        )
+    if not current:
+        frappe.db.set_single_value(
+            "Maybank Settings",
+            "outlet_id",
+            SMOKE_MAYBANK_OUTLET_ID,
+        )
+
+
 def run_demo_advisory_stock_audit() -> dict[str, Any]:
     """
     Test advisory stock shortfall behavior.
@@ -431,6 +739,8 @@ def run_demo_advisory_stock_audit() -> dict[str, Any]:
     set_demo_ingredient_quantities(matcha_qty=0)
     from kopos_connector.kopos.api.fb_orders import submit_order
 
+    company = _ensure_smoke_company()
+    recipe = _get_demo_recipe_reference(company)
     order_id = f"ADV-{frappe.generate_hash(length=8)}"
     frappe.local.form_dict = {
         "money_contract_version": "sen_v1",
@@ -439,13 +749,9 @@ def run_demo_advisory_stock_audit() -> dict[str, Any]:
         "device_id": SMOKE_DEVICE_ID,
         "shift_id": "smoke-shift-001",
         "staff_id": "staff@smoke.kopos.local",
-        "warehouse": _ensure_warehouse(
-            frappe.get_all("Company", pluck="name", limit=1)[0]
-        ),
-        "company": frappe.get_all("Company", pluck="name", limit=1)[0],
-        "currency": _get_demo_currency(
-            frappe.get_all("Company", pluck="name", limit=1)[0]
-        ),
+        "warehouse": _ensure_warehouse(company),
+        "company": company,
+        "currency": _get_demo_currency(company),
         "order": {
             "display_number": "SMK-ADV-1",
             "order_type": "takeaway",
@@ -459,8 +765,8 @@ def run_demo_advisory_stock_audit() -> dict[str, Any]:
                     "line_id": f"LINE-{frappe.generate_hash(length=8)}",
                     "item_code": DEMO_DRINK_ITEM,
                     "item_name": DEMO_DRINK_NAME,
-                    "recipe": DEMO_RECIPE_CODE,
-                    "recipe_version": 1,
+                    "recipe": recipe["name"],
+                    "recipe_version": recipe["version_no"],
                     "qty": 1,
                     "unit_price_sen": 1200,
                     "discount_amount_sen": 0,
@@ -734,6 +1040,7 @@ def _ensure_pos_profile(
         doc.write_off_account = write_off_account
         doc.write_off_cost_center = write_off_cost_center
         doc.write_off_limit = 0
+        _apply_smoke_pos_profile_tax_config(doc)
         if not any(row.mode_of_payment == "Cash" for row in doc.payments):
             doc.append("payments", {"mode_of_payment": "Cash", "default": 1})
         if not any(row.mode_of_payment == "DuitNow QR" for row in doc.payments):
@@ -752,6 +1059,8 @@ def _ensure_pos_profile(
             "write_off_account": write_off_account,
             "write_off_cost_center": write_off_cost_center,
             "write_off_limit": 0,
+            "custom_kopos_enable_sst": SMOKE_ENABLE_SST,
+            "custom_kopos_sst_rate": SMOKE_SST_RATE_PERCENT,
             "payments": [
                 {"mode_of_payment": "Cash", "default": 1},
                 {"mode_of_payment": "DuitNow QR", "default": 0},
@@ -760,6 +1069,19 @@ def _ensure_pos_profile(
     )
     doc.insert(ignore_permissions=True)
     return doc.name
+
+
+def _apply_smoke_pos_profile_tax_config(profile_doc: Any) -> bool:
+    """Keep the dedicated acceptance profile tax-free without changing defaults."""
+
+    changed = (
+        cint(_value(profile_doc, "custom_kopos_enable_sst")) != SMOKE_ENABLE_SST
+        or flt(_value(profile_doc, "custom_kopos_sst_rate"))
+        != SMOKE_SST_RATE_PERCENT
+    )
+    profile_doc.custom_kopos_enable_sst = SMOKE_ENABLE_SST
+    profile_doc.custom_kopos_sst_rate = SMOKE_SST_RATE_PERCENT
+    return changed
 
 
 def _ensure_fb_modifier_group() -> dict[str, str]:
@@ -952,7 +1274,7 @@ def _retire_legacy_demo_drink_item() -> bool:
 
 def _set_demo_drink_availability_mode(mode: str) -> dict[str, Any]:
     if not frappe.db.exists("Item", DEMO_DRINK_ITEM):
-        company = frappe.get_all("Company", pluck="name", limit=1)[0]
+        company = _ensure_smoke_company()
         modifier_fixture = _ensure_fb_modifier_group()
         _ensure_item(
             company,
@@ -1015,22 +1337,57 @@ def _ensure_stock_item() -> str:
     return DEMO_MATCHA_ITEM
 
 
+def _build_demo_recipe_components() -> list[dict[str, Any]]:
+    components = [
+        (DEMO_MATCHA_ITEM, "Ingredient", DEMO_MATCHA_QTY_PER_ORDER, "Gram"),
+        (
+            DEMO_STRAWBERRY_ITEM,
+            "Ingredient",
+            DEMO_STRAWBERRY_QTY_PER_ORDER,
+            "Millilitre",
+        ),
+        (DEMO_MILK_ITEM, "Ingredient", DEMO_MILK_QTY_PER_ORDER, "Millilitre"),
+        (DEMO_CUP_ITEM, "Packaging", DEMO_CUP_QTY_PER_ORDER, "Nos"),
+    ]
+    return [
+        {
+            "item": item,
+            "component_type": component_type,
+            "qty": qty,
+            "uom": uom,
+            # Frappe applies the global UOM default to empty Link fields during
+            # insert. Pin both stock fields so an ingredient measured in Gram
+            # or Millilitre cannot silently inherit the usual "Nos" default.
+            "stock_qty": qty,
+            "stock_uom": uom,
+            "affects_stock": 1,
+            "affects_cogs": 1,
+        }
+        for item, component_type, qty, uom in components
+    ]
+
+
 def _ensure_demo_recipe(
     company: str, modifier_group: str, default_modifier: str
 ) -> str:
-    existing_name = frappe.db.exists("FB Recipe", DEMO_RECIPE_CODE)
+    # Both create and repair paths need all component Items/UOMs present before
+    # the recipe child table is validated and saved.
+    _ensure_stock_item()
+    recipe_code = _demo_recipe_code_for_company(company)
+    existing_name = frappe.db.exists("FB Recipe", recipe_code)
     if existing_name:
         recipe = frappe.get_doc("FB Recipe", existing_name)
-        changed = _ensure_demo_recipe_fields(recipe, company)
+        changed = _ensure_demo_recipe_fields(recipe, company, recipe_code)
+        if _ensure_demo_recipe_components(recipe):
+            changed = True
         if _ensure_recipe_modifier_group(recipe, modifier_group, default_modifier):
             changed = True
         if changed:
             recipe.save(ignore_permissions=True)
         return recipe.name
 
-    _ensure_stock_item()
     recipe = frappe.new_doc("FB Recipe")
-    recipe.recipe_code = DEMO_RECIPE_CODE
+    recipe.recipe_code = recipe_code
     recipe.recipe_name = DEMO_DRINK_NAME
     recipe.sellable_item = DEMO_DRINK_ITEM
     recipe.recipe_type = "Finished Drink"
@@ -1041,59 +1398,85 @@ def _ensure_demo_recipe(
     recipe.yield_uom = "Nos"
     recipe.default_serving_qty = 1
     recipe.default_serving_uom = "Nos"
-    recipe.append(
-        "components",
-        {
-            "item": DEMO_MATCHA_ITEM,
-            "component_type": "Ingredient",
-            "qty": DEMO_MATCHA_QTY_PER_ORDER,
-            "uom": "Gram",
-            "affects_stock": 1,
-            "affects_cogs": 1,
-        },
-    )
-    recipe.append(
-        "components",
-        {
-            "item": DEMO_STRAWBERRY_ITEM,
-            "component_type": "Ingredient",
-            "qty": DEMO_STRAWBERRY_QTY_PER_ORDER,
-            "uom": "Millilitre",
-            "affects_stock": 1,
-            "affects_cogs": 1,
-        },
-    )
-    recipe.append(
-        "components",
-        {
-            "item": DEMO_MILK_ITEM,
-            "component_type": "Ingredient",
-            "qty": DEMO_MILK_QTY_PER_ORDER,
-            "uom": "Millilitre",
-            "affects_stock": 1,
-            "affects_cogs": 1,
-        },
-    )
-    recipe.append(
-        "components",
-        {
-            "item": DEMO_CUP_ITEM,
-            "component_type": "Packaging",
-            "qty": DEMO_CUP_QTY_PER_ORDER,
-            "uom": "Nos",
-            "affects_stock": 1,
-            "affects_cogs": 1,
-        },
-    )
+    for component in _build_demo_recipe_components():
+        recipe.append("components", component)
     _ensure_recipe_modifier_group(recipe, modifier_group, default_modifier)
     recipe.insert(ignore_permissions=True)
     return recipe.name
 
 
-def _ensure_demo_recipe_fields(recipe: Any, company: str) -> bool:
+def _demo_recipe_code_for_company(company: str) -> str:
+    """Keep a published recipe immutable when the smoke company changes.
+
+    Recipe codes are globally unique, while recipe versions and active ranges
+    are company-scoped. If the original smoke recipe belongs to another
+    company, create a dedicated company recipe instead of mutating the
+    published definition in place.
+    """
+    existing_name = frappe.db.exists("FB Recipe", DEMO_RECIPE_CODE)
+    if not existing_name:
+        return DEMO_RECIPE_CODE
+
+    existing_company = frappe.db.get_value("FB Recipe", existing_name, "company")
+    if existing_company == company:
+        return DEMO_RECIPE_CODE
+
+    company_abbr = str(frappe.db.get_value("Company", company, "abbr") or "").strip()
+    if not company_abbr:
+        frappe.throw(
+            f"Company {company} must define an abbreviation for its smoke recipe",
+            frappe.ValidationError,
+        )
+    return f"{DEMO_RECIPE_CODE}-{company_abbr.upper()}"
+
+
+def _get_demo_recipe_reference(company: str) -> dict[str, Any]:
+    recipe_name = str(
+        frappe.db.get_value("Item", DEMO_DRINK_ITEM, "custom_fb_default_recipe")
+        or ""
+    ).strip()
+    if recipe_name:
+        values = frappe.db.get_value(
+            "FB Recipe",
+            recipe_name,
+            ["company", "version_no"],
+            as_dict=True,
+        )
+        if values and _value(values, "company") == company:
+            version_no = int(_value(values, "version_no") or 0)
+            if version_no > 0:
+                return {"name": recipe_name, "version_no": version_no}
+
+    candidates = frappe.get_all(
+        "FB Recipe",
+        filters={
+            "sellable_item": DEMO_DRINK_ITEM,
+            "company": company,
+            "status": "Active",
+        },
+        fields=["name", "version_no"],
+        order_by="version_no desc, modified desc",
+    )
+    if len(candidates) != 1:
+        frappe.throw(
+            f"Expected exactly one active smoke recipe for {company}, found {len(candidates)}",
+            frappe.ValidationError,
+        )
+    version_no = int(_value(candidates[0], "version_no") or 0)
+    if version_no <= 0:
+        frappe.throw(
+            f"Smoke recipe {_value(candidates[0], 'name')} has invalid version_no",
+            frappe.ValidationError,
+        )
+    return {"name": _value(candidates[0], "name"), "version_no": version_no}
+
+
+def _ensure_demo_recipe_fields(
+    recipe: Any, company: str, recipe_code: str = DEMO_RECIPE_CODE
+) -> bool:
     changed = False
     expected_values = {
-        "recipe_code": DEMO_RECIPE_CODE,
+        "recipe_code": recipe_code,
         "recipe_name": DEMO_DRINK_NAME,
         "sellable_item": DEMO_DRINK_ITEM,
         "recipe_type": "Finished Drink",
@@ -1110,6 +1493,36 @@ def _ensure_demo_recipe_fields(recipe: Any, company: str) -> bool:
             setattr(recipe, fieldname, value)
             changed = True
     return changed
+
+
+def _ensure_demo_recipe_components(recipe: Any) -> bool:
+    expected_components = _build_demo_recipe_components()
+    fieldnames = (
+        "item",
+        "component_type",
+        "qty",
+        "uom",
+        "stock_qty",
+        "stock_uom",
+        "affects_stock",
+        "affects_cogs",
+    )
+    current_components = list(recipe.get("components") or [])
+    current_signature = [
+        tuple(_value(component, fieldname) for fieldname in fieldnames)
+        for component in current_components
+    ]
+    expected_signature = [
+        tuple(component[fieldname] for fieldname in fieldnames)
+        for component in expected_components
+    ]
+    if current_signature == expected_signature:
+        return False
+
+    recipe.set("components", [])
+    for component in expected_components:
+        recipe.append("components", component)
+    return True
 
 
 def _ensure_recipe_modifier_group(
@@ -1179,6 +1592,184 @@ def _ensure_item_group() -> str:
 
 def setup_full_smoke_json(erpnext_url: str | None = None) -> dict[str, Any]:
     return setup_full_smoke_data(erpnext_url=erpnext_url)
+
+
+def upgrade_smoke_currency_to_myr_json() -> dict[str, Any]:
+    """Move the empty smoke terminal to its dedicated MYR company in place.
+
+    This is intentionally narrower than seeding: it never deletes business
+    records, creates provisioning tokens, or changes device credentials.
+    """
+    _require_empty_smoke_terminal("MYR smoke currency upgrade")
+
+    device_name = frappe.db.exists("KoPOS Device", {"device_id": SMOKE_DEVICE_ID})
+    if not device_name:
+        frappe.throw(
+            "MYR smoke currency upgrade requires the existing smoke device",
+            frappe.ValidationError,
+        )
+    device = frappe.get_doc("KoPOS Device", device_name)
+
+    from kopos_connector.api.devices import serialize_device_config
+
+    previous_config = serialize_device_config(device)
+    api_user = str(getattr(device, "api_user", None) or "").strip()
+    api_key_before = (
+        str(frappe.db.get_value("User", api_user, "api_key") or "").strip()
+        if api_user
+        else ""
+    )
+    auth_filters = {
+        "doctype": "User",
+        "name": api_user,
+        "fieldname": "api_secret",
+    }
+    api_secret_present_before = bool(
+        api_user and frappe.db.exists("__Auth", auth_filters)
+    )
+
+    base = _ensure_smoke_base_data()
+    set_demo_ingredient_quantities()
+    _ensure_demo_promotion(base["pos_profile"])
+    _ensure_promotion_snapshot(base["pos_profile"])
+
+    # The POS Profile extension performs one atomic database-side increment for
+    # every bound device. Reload before serializing so this long-lived document
+    # cannot overwrite or report the prior config version.
+    device.reload()
+    next_config = serialize_device_config(device)
+    changed = any(
+        previous_config.get(fieldname) != next_config.get(fieldname)
+        for fieldname in ("company", "warehouse", "currency", "tax_rate")
+    )
+    if changed and int(next_config.get("config_version") or 0) <= int(
+        previous_config.get("config_version") or 0
+    ):
+        frappe.throw(
+            "MYR smoke currency upgrade did not invalidate the prior device config",
+            frappe.ValidationError,
+        )
+
+    api_key_after = (
+        str(frappe.db.get_value("User", api_user, "api_key") or "").strip()
+        if api_user
+        else ""
+    )
+    api_secret_present_after = bool(
+        api_user and frappe.db.exists("__Auth", auth_filters)
+    )
+    if (
+        not api_user
+        or api_key_before != api_key_after
+        or api_secret_present_before != api_secret_present_after
+        or not api_key_after
+        or not api_secret_present_after
+    ):
+        frappe.throw(
+            "MYR smoke currency upgrade could not prove credential preservation",
+            frappe.ValidationError,
+        )
+    if (
+        next_config.get("company") != SMOKE_COMPANY_NAME
+        or next_config.get("currency") != SMOKE_COMPANY_CURRENCY
+    ):
+        frappe.throw(
+            "MYR smoke currency upgrade did not produce the required device config",
+            frappe.ValidationError,
+        )
+
+    frappe.db.commit()
+    return {
+        "status": "ok",
+        "device_id": SMOKE_DEVICE_ID,
+        "company": next_config.get("company"),
+        "warehouse": next_config.get("warehouse"),
+        "currency": next_config.get("currency"),
+        "pos_profile": next_config.get("pos_profile"),
+        "config_version": next_config.get("config_version"),
+        "recipe": _get_demo_recipe_reference(SMOKE_COMPANY_NAME)["name"],
+        "config_changed": changed,
+        "credential_identity_preserved": True,
+        "business_state_preserved_empty": True,
+    }
+
+
+def repair_empty_smoke_tax_config_json() -> dict[str, Any]:
+    """Disable SST on an existing empty smoke fixture without seeding sales."""
+
+    _require_empty_smoke_terminal("Smoke tax config repair")
+    device_name = frappe.db.exists("KoPOS Device", {"device_id": SMOKE_DEVICE_ID})
+    if not device_name:
+        frappe.throw(
+            "Smoke tax config repair requires the existing smoke device",
+            frappe.ValidationError,
+        )
+    device = frappe.get_doc("KoPOS Device", device_name)
+    profile_name = str(_value(device, "pos_profile") or "").strip()
+    if profile_name != "KoPOS Main":
+        frappe.throw(
+            "Smoke tax config repair refuses a non-smoke POS Profile",
+            frappe.ValidationError,
+        )
+
+    from kopos_connector.api.devices import serialize_device_config
+
+    previous_config = serialize_device_config(device)
+    profile = frappe.get_doc("POS Profile", profile_name)
+    changed = _apply_smoke_pos_profile_tax_config(profile)
+    if changed:
+        profile.save(ignore_permissions=True)
+
+    device.reload()
+    next_config = serialize_device_config(device)
+    if float(next_config.get("tax_rate") or 0) != 0:
+        frappe.throw(
+            "Smoke tax config repair did not produce a zero effective tax rate",
+            frappe.ValidationError,
+        )
+    if changed and int(next_config.get("config_version") or 0) <= int(
+        previous_config.get("config_version") or 0
+    ):
+        frappe.throw(
+            "Smoke tax config repair did not invalidate the prior device config",
+            frappe.ValidationError,
+        )
+
+    frappe.db.commit()
+    return {
+        "status": "ok",
+        "device_id": SMOKE_DEVICE_ID,
+        "pos_profile": profile_name,
+        "sst_enabled": bool(cint(_value(profile, "custom_kopos_enable_sst"))),
+        "sst_rate_percent": flt(_value(profile, "custom_kopos_sst_rate")),
+        "effective_tax_rate": next_config.get("tax_rate"),
+        "config_version_before": previous_config.get("config_version"),
+        "config_version_after": next_config.get("config_version"),
+        "config_changed": changed,
+        "business_state_preserved_empty": True,
+    }
+
+
+def _require_empty_smoke_terminal(operation: str) -> dict[str, Any]:
+    current_state = dump_smoke_state()
+    data = current_state.get("data") or {}
+    business_keys = (
+        "fb_shifts",
+        "fb_orders",
+        "sales_invoices",
+        "manual_qr_reconciliations",
+        "maybank_qr_transactions",
+        "return_records",
+        "void_records",
+    )
+    non_empty = [key for key in business_keys if data.get(key)]
+    projection_rows = (data.get("projection_statuses") or {}).get("rows") or []
+    if current_state.get("status") != "ready" or non_empty or projection_rows:
+        frappe.throw(
+            f"{operation} requires empty terminal business state",
+            frappe.ValidationError,
+        )
+    return current_state
 
 
 def reset_smoke_json(erpnext_url: str | None = None) -> dict[str, Any]:
@@ -1431,6 +2022,80 @@ def _ensure_promotion_snapshot(pos_profile: str) -> dict[str, Any]:
     return publish_promotion_snapshot(pos_profile=pos_profile)
 
 
+def _build_demo_promotion_values(pos_profile: str) -> dict[str, Any]:
+    return {
+        "promotion_name": DEMO_PROMOTION_NAME,
+        "promotion_type": "item_discount",
+        "is_active": 1,
+        "offline_allowed": 1,
+        "activation_mode": "manual_selectable",
+        "display_label": DEMO_PROMOTION_DISPLAY_LABEL,
+        "customer_message": "10% off the smoke drink.",
+        "priority": 10,
+        "stacking_policy": "exclusive",
+        "outlet_scope_mode": "selected_pos_profiles",
+        "eligible_scope_mode": "same_item",
+        "repeat_mode": "once",
+        "buy_qty": 1,
+        "discount_qty": 1,
+        "discount_target": "cheaper_eligible",
+        "discount_type": "percentage",
+        "discount_value": DEMO_PROMOTION_DISCOUNT_VALUE,
+        "comparison_basis": "base_item_only",
+        "discount_basis": "base_item_only",
+        "modifier_policy": "excluded_by_default",
+        "min_qty": 1,
+        "min_amount": 0,
+        "valid_from": None,
+        "valid_upto": None,
+        "eligible_items": [{"item_code": DEMO_DRINK_ITEM}],
+        "eligible_pos_profiles": [{"pos_profile": pos_profile}],
+    }
+
+
+def _ensure_demo_promotion(pos_profile: str) -> str:
+    expected = _build_demo_promotion_values(pos_profile)
+    existing_name = frappe.db.exists("KoPOS Promotion", DEMO_PROMOTION_NAME)
+    promotion = (
+        frappe.get_doc("KoPOS Promotion", existing_name)
+        if existing_name
+        else frappe.new_doc("KoPOS Promotion")
+    )
+    changed = not bool(existing_name)
+
+    for fieldname, value in expected.items():
+        if fieldname in {"eligible_items", "eligible_pos_profiles"}:
+            continue
+        if getattr(promotion, fieldname, None) != value:
+            setattr(promotion, fieldname, value)
+            changed = True
+
+    child_specs = (
+        ("eligible_items", "item_code"),
+        ("eligible_pos_profiles", "pos_profile"),
+    )
+    for table_fieldname, value_fieldname in child_specs:
+        expected_rows = expected[table_fieldname]
+        current_values = [
+            _value(row, value_fieldname)
+            for row in (promotion.get(table_fieldname) or [])
+        ]
+        expected_values = [row[value_fieldname] for row in expected_rows]
+        if current_values == expected_values:
+            continue
+        promotion.set(table_fieldname, [])
+        for row in expected_rows:
+            promotion.append(table_fieldname, row)
+        changed = True
+
+    if existing_name:
+        if changed:
+            promotion.save(ignore_permissions=True)
+    else:
+        promotion.insert(ignore_permissions=True)
+    return str(promotion.name)
+
+
 def _get_smoke_mock_printer_endpoint() -> tuple[str, int]:
     host = os.environ.get(
         SMOKE_MOCK_PRINTER_HOST_ENV,
@@ -1516,6 +2181,7 @@ def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
     if existing:
         doc = frappe.get_doc("KoPOS Device", existing)
         doc.pos_profile = pos_profile
+        doc.allow_training_mode = SMOKE_ALLOW_TRAINING_MODE
         doc.device_users = []
         doc.printers = []
         for row in users:
@@ -1533,7 +2199,7 @@ def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
             "device_prefix": "SMK",
             "pos_profile": pos_profile,
             "enabled": 1,
-            "allow_training_mode": 1,
+            "allow_training_mode": SMOKE_ALLOW_TRAINING_MODE,
             "allow_manual_settings_override": 0,
             "app_min_version": "0.1.0",
             "device_users": users,
@@ -1572,6 +2238,7 @@ def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
     )
 
     set_demo_ingredient_quantities()
+    promotion_name = _ensure_demo_promotion(base["pos_profile"])
     promotion_snapshot = _ensure_promotion_snapshot(base["pos_profile"])
 
     frappe.db.commit()
@@ -1586,6 +2253,14 @@ def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
         "api_secret": credentials["api_secret"],
         "provisioning_token": provisioning.get("token"),
         "promotion_snapshot": promotion_snapshot,
+        "promotion": {
+            "promotion_id": promotion_name,
+            "display_label": DEMO_PROMOTION_DISPLAY_LABEL,
+            "activation_mode": "manual_selectable",
+            "discount_type": "percentage",
+            "discount_value": DEMO_PROMOTION_DISCOUNT_VALUE,
+            "eligible_item": DEMO_DRINK_ITEM,
+        },
         "pos_profile": base["pos_profile"],
         "company": company,
         "warehouse": base["warehouse"],
@@ -1631,9 +2306,59 @@ def reset_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
                 )
             frappe.delete_doc(doctype, name, force=True, ignore_permissions=True)
 
+    _reset_smoke_device_api_credentials(device_name)
     frappe.db.commit()
 
     return setup_full_smoke_data(erpnext_url=erpnext_url)
+
+
+def _reset_smoke_device_api_credentials(device_name: str) -> None:
+    """Revoke the disposable smoke device credentials before reseeding them."""
+
+    api_user = str(
+        frappe.db.get_value("KoPOS Device", device_name, "api_user") or ""
+    ).strip()
+    if not api_user:
+        return
+    if api_user != SMOKE_DEVICE_API_USER:
+        raise RuntimeError(
+            "Refusing to reset API credentials for a non-smoke device user"
+        )
+
+    other_devices = frappe.get_all(
+        "KoPOS Device",
+        filters={"api_user": api_user, "name": ["!=", device_name]},
+        pluck="name",
+        limit=1,
+    )
+    if other_devices:
+        raise RuntimeError(
+            "Refusing to reset API credentials shared with another KoPOS device"
+        )
+
+    user_exists = bool(frappe.db.exists("User", api_user))
+    if user_exists:
+        frappe.db.set_value(
+            "User",
+            api_user,
+            "api_key",
+            None,
+            update_modified=False,
+        )
+    auth_filters = {
+        "doctype": "User",
+        "name": api_user,
+        "fieldname": "api_secret",
+    }
+    frappe.db.delete("__Auth", auth_filters)
+
+    remaining_api_key = (
+        str(frappe.db.get_value("User", api_user, "api_key") or "").strip()
+        if user_exists
+        else ""
+    )
+    if remaining_api_key or frappe.db.exists("__Auth", auth_filters):
+        raise RuntimeError("Failed to revoke disposable smoke device credentials")
 
 
 def _delete_smoke_business_rows(device_id: str) -> None:
@@ -1653,6 +2378,7 @@ def _delete_smoke_business_rows(device_id: str) -> None:
         return_events=return_events,
         resolved_sales=resolved_sales,
     )
+    maybank_qr_transactions = _get_smoke_maybank_qr_transaction_names(device_id)
     serial_batch_bundles = _get_smoke_serial_batch_bundle_names(stock_entries)
 
     _delete_task15_injected_projection_logs()
@@ -1664,6 +2390,7 @@ def _delete_smoke_business_rows(device_id: str) -> None:
 
     for doctype, names in (
         ("Serial and Batch Bundle", serial_batch_bundles),
+        ("Maybank QR Transaction", maybank_qr_transactions),
         ("FB Resolved Sale", resolved_sales),
         ("Journal Entry", settlement_journal_entries),
         ("FB Return Event", return_events),
@@ -1681,6 +2408,23 @@ def _delete_smoke_business_rows(device_id: str) -> None:
         stock_entries=stock_entries,
     )
     frappe.db.commit()
+
+
+def _get_smoke_maybank_qr_transaction_names(device_id: str) -> list[str]:
+    rows = frappe.get_all(
+        "Maybank QR Transaction",
+        filters={"device_id": device_id},
+        fields=["name", "device_id", "transaction_refno", "idempotency_key"],
+    )
+    names = []
+    for row in rows or []:
+        if (
+            _is_smoke_device_id(row.get("device_id"))
+            or _is_smoke_value(row.get("transaction_refno"))
+            or _is_smoke_value(row.get("idempotency_key"))
+        ):
+            names.append(str(row.get("name")))
+    return _unique_names(names)
 
 
 def _get_smoke_fb_order_names(device_id: str) -> list[str]:
@@ -2222,6 +2966,9 @@ def dump_smoke_state() -> dict[str, Any]:
         "device": {
             "device_id": device_id,
             "enabled": bool(device.enabled),
+            "allow_training_mode": bool(
+                cint(_value(device, "allow_training_mode"))
+            ),
             "pos_profile": device.pos_profile,
             **device_profile,
             "config_version": device.config_version,
@@ -2251,17 +2998,34 @@ def _collect_device_profile_evidence(device: Any) -> dict[str, Any]:
             "pos_profile_customer": None,
             "pos_profile_warehouse": None,
             "pos_profile_currency": None,
+            "pos_profile_sst_enabled": None,
+            "pos_profile_sst_rate_percent": None,
+            "device_config_tax_rate": None,
         }
     try:
         profile = frappe.get_cached_doc("POS Profile", profile_name)
     except Exception:
         profile = None
+    effective_tax_rate = None
+    if profile is not None:
+        from kopos_connector.api.catalog import get_tax_rate_value
+
+        effective_tax_rate = get_tax_rate_value(pos_profile_name=profile_name)
     return {
         "pos_profile_resolved": profile is not None,
         "pos_profile_company": _value(profile, "company") if profile else None,
         "pos_profile_customer": _value(profile, "customer") if profile else None,
         "pos_profile_warehouse": _value(profile, "warehouse") if profile else None,
         "pos_profile_currency": _value(profile, "currency") if profile else None,
+        "pos_profile_sst_enabled": (
+            bool(cint(_value(profile, "custom_kopos_enable_sst")))
+            if profile
+            else None
+        ),
+        "pos_profile_sst_rate_percent": (
+            flt(_value(profile, "custom_kopos_sst_rate")) if profile else None
+        ),
+        "device_config_tax_rate": effective_tax_rate,
     }
 
 
@@ -2326,6 +3090,11 @@ def _collect_smoke_business_state(
             "currency",
             "docstatus",
             "sale_datetime",
+            "pricing_mode",
+            "promotion_snapshot_version",
+            "promotion_snapshot_hash",
+            "promotion_reconciliation_status",
+            "promotion_payload_json",
             "creation",
         ],
         order_by="creation asc, name asc",
@@ -2343,7 +3112,11 @@ def _collect_smoke_business_state(
         order_doc = frappe.get_doc("FB Order", order_name) if order_name else None
         order["items"] = _collect_fb_order_items(order_doc)
         order["payments"] = _collect_fb_order_payments(order_doc)
+        order["promotion_evidence"] = _parse_json_record(
+            order.pop("promotion_payload_json", None)
+        )
     sales_invoices = _collect_sales_invoices(device_id)
+    promotion_snapshots = _collect_promotion_snapshots(fb_orders)
     ingredient_stock_entries = _collect_ingredient_stock_entries(fb_orders)
     ingredient_bin_balances = _collect_ingredient_bin_balances(
         ingredient_warehouse
@@ -2354,22 +3127,25 @@ def _collect_smoke_business_state(
     projections = _collect_projection_state(fb_orders, fb_shifts, return_records)
     legacy_active_paths = _collect_legacy_active_paths(device_id)
     idempotency = _build_idempotency_summary(fb_orders, sales_invoices)
+    demo_recipe = frappe.db.get_value(
+        "Item", DEMO_DRINK_ITEM, "custom_fb_default_recipe"
+    ) or DEMO_RECIPE_CODE
 
     return {
         "items": len(frappe.get_all("Item", filters={"is_sales_item": 1})),
         "modifier_groups": len(frappe.get_all("FB Modifier Group")),
         "demo_drink": DEMO_DRINK_ITEM,
-        "demo_recipe": DEMO_RECIPE_CODE,
+        "demo_recipe": demo_recipe,
         "fb_shifts": fb_shifts,
         "fb_orders": fb_orders,
         "sales_invoices": sales_invoices,
+        "promotion_snapshots": promotion_snapshots,
         "ingredient_stock_entries": ingredient_stock_entries,
         "ingredient_bin_balances": ingredient_bin_balances,
         "manual_qr_reconciliations": manual_qr_reconciliations,
         "maybank_qr_transactions": maybank_qr_transactions,
-        "maybank_qr_policy": {
-            "payment_expiry_grace_seconds": _maybank_payment_expiry_grace_seconds()
-        },
+        "maybank_qr_policy": _maybank_qr_policy(),
+        "maybank_qr_contract": _maybank_qr_contract(),
         "sales_invoice_items": [
             {"sales_invoice": invoice["name"], **item}
             for invoice in sales_invoices
@@ -2438,6 +3214,7 @@ def build_smoke_business_assertions(
     idempotency = data.get("idempotency") or {}
     order_history = data.get("order_history")
     order_history_data = order_history if isinstance(order_history, dict) else {}
+    device_state = state.get("device") if isinstance(state, dict) else None
 
     failed_projections = _list(projection_statuses.get("failed"))
     active_legacy_total = sum(
@@ -2470,6 +3247,123 @@ def build_smoke_business_assertions(
         if row.get("name")
     }
     dated_orders = [row for row in fb_orders if row.get("sale_datetime")]
+    modifier_proof_required = any(
+        str(key).startswith("history-") for key in expected_keys
+    )
+    modifier_cases: list[dict[str, Any]] = []
+    for order in fb_orders:
+        invoice = invoices_by_name.get(order.get("sales_invoice"))
+        invoice_items = _list(invoice.get("items")) if isinstance(invoice, dict) else []
+        for item in _list(order.get("items")):
+            if _money(item.get("modifier_total")) <= 0:
+                continue
+            invoice_item = next(
+                (
+                    row
+                    for row in invoice_items
+                    if row.get("order_line_ref") == item.get("line_id")
+                ),
+                None,
+            )
+            modifier_cases.append(
+                {
+                    "order": order,
+                    "item": item,
+                    "invoice": invoice,
+                    "invoice_item": invoice_item,
+                }
+            )
+
+    if isinstance(device_state, dict):
+        expect(
+            "provisioned_device_currency_is_myr",
+            device_state.get("pos_profile_currency") == SMOKE_COMPANY_CURRENCY,
+            device_state,
+        )
+        expect(
+            "fb_order_currency_is_myr",
+            bool(submitted_orders)
+            and all(
+                row.get("currency") == SMOKE_COMPANY_CURRENCY
+                and row.get("company") == SMOKE_COMPANY_NAME
+                for row in submitted_orders
+            ),
+            submitted_orders,
+        )
+        expect(
+            "sales_invoice_currency_is_myr",
+            bool(posted_sale_invoices)
+            and all(
+                row.get("currency") == SMOKE_COMPANY_CURRENCY
+                and row.get("company") == SMOKE_COMPANY_NAME
+                for row in posted_sale_invoices
+            ),
+            posted_sale_invoices,
+        )
+        invoice_payments = [
+            payment
+            for invoice in posted_sale_invoices
+            for payment in _list(invoice.get("payments"))
+        ]
+        expect(
+            "sales_invoice_payment_currency_is_myr",
+            bool(invoice_payments)
+            and all(
+                payment.get("account_currency") == SMOKE_COMPANY_CURRENCY
+                for payment in invoice_payments
+            ),
+            invoice_payments,
+        )
+        invoice_gl_entries = [
+            entry
+            for invoice in posted_sale_invoices
+            for entry in _list(invoice.get("gl_entries"))
+        ]
+        expect(
+            "sales_invoice_gl_currency_is_myr",
+            bool(invoice_gl_entries)
+            and all(
+                entry.get("account_currency") == SMOKE_COMPANY_CURRENCY
+                for entry in invoice_gl_entries
+            ),
+            invoice_gl_entries,
+        )
+
+    if modifier_proof_required:
+        expect(
+            "modifier_resolved_sale_audit_proven",
+            bool(modifier_cases)
+            and all(
+                bool(case["item"].get("resolved_sale"))
+                and any(
+                    modifier.get("modifier") == SMOKE_SIZE_LARGE_CODE
+                    and _money(modifier.get("price_adjustment")) == 2
+                    for modifier in _list(case["item"].get("selected_modifiers"))
+                )
+                for case in modifier_cases
+            ),
+            modifier_cases,
+        )
+        expect(
+            "modifier_sales_invoice_audit_proven",
+            bool(modifier_cases)
+            and all(_modifier_invoice_audit_matches(case) for case in modifier_cases),
+            modifier_cases,
+        )
+        expect(
+            "modifier_order_and_invoice_totals_proven",
+            bool(modifier_cases)
+            and all(
+                _money(case["order"].get("grand_total")) == 14
+                and _money(case["item"].get("line_total")) == 14
+                and isinstance(case["invoice"], dict)
+                and _money(case["invoice"].get("grand_total")) == 14
+                and isinstance(case["invoice_item"], dict)
+                and _money(case["invoice_item"].get("amount")) == 14
+                for case in modifier_cases
+            ),
+            modifier_cases,
+        )
 
     expect("fb_shift_open_close_proven", bool(closed_shifts), fb_shifts)
     expect(
@@ -2610,6 +3504,23 @@ def build_smoke_business_assertions(
     }
 
 
+def _modifier_invoice_audit_matches(case: dict[str, Any]) -> bool:
+    invoice_item = case.get("invoice_item")
+    if not isinstance(invoice_item, dict):
+        return False
+    snapshot = _parse_json_record(invoice_item.get("modifiers_json"))
+    modifiers = _list(snapshot.get("modifiers"))
+    return (
+        bool(invoice_item.get("has_modifiers"))
+        and _money(invoice_item.get("modifier_total")) == 2
+        and any(
+            modifier.get("id") == SMOKE_SIZE_LARGE_CODE
+            and int(modifier.get("price_adjustment_sen") or 0) == 200
+            for modifier in modifiers
+        )
+    )
+
+
 def _collect_sales_invoices(device_id: str) -> list[dict[str, Any]]:
     rows = _get_rows(
         "Sales Invoice",
@@ -2646,6 +3557,11 @@ def _collect_sales_invoices(device_id: str) -> list[dict[str, Any]]:
             "custom_fb_void_request_fingerprint",
             "custom_fb_void_manager",
             "custom_fb_void_approval_token_id",
+            "custom_kopos_pricing_mode",
+            "custom_kopos_promotion_snapshot_version",
+            "custom_kopos_promotion_snapshot_hash",
+            "custom_kopos_promotion_reconciliation_status",
+            "custom_kopos_promotion_payload",
         ],
         order_by="posting_date asc, posting_time asc, name asc",
     )
@@ -2681,8 +3597,58 @@ def _collect_sales_invoices(device_id: str) -> list[dict[str, Any]]:
         invoice["payments"] = _collect_invoice_payments(invoice_doc)
         invoice["taxes"] = _collect_invoice_taxes(invoice_doc)
         invoice["gl_entries"] = _collect_invoice_gl_entries(name)
+        invoice["promotion_evidence"] = _parse_json_record(
+            invoice.pop("custom_kopos_promotion_payload", None)
+        )
         invoices.append(invoice)
     return invoices
+
+
+def _collect_promotion_snapshots(
+    fb_orders: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    versions = _unique_names(
+        order.get("promotion_snapshot_version")
+        for order in fb_orders
+        if order.get("promotion_snapshot_version")
+    )
+    if not versions:
+        return []
+    rows = _get_rows(
+        "KoPOS Promotion Snapshot",
+        filters={"snapshot_version": ["in", versions]},
+        fields=[
+            "name",
+            "status",
+            "pos_profile",
+            "published_at",
+            "effective_from",
+            "snapshot_hash",
+            "snapshot_version",
+            "promotion_count",
+            "snapshot_payload",
+        ],
+        order_by="published_at asc, snapshot_version asc",
+    )
+    for row in rows:
+        payload = _parse_json_record(row.pop("snapshot_payload", None))
+        row["source"] = "published_snapshot"
+        row["promotions"] = [
+            {
+                "promotion_id": promotion.get("promotion_id"),
+                "promotion_name": promotion.get("promotion_name"),
+                "promotion_type": promotion.get("promotion_type"),
+                "activation_mode": promotion.get("activation_mode"),
+                "discount_type": promotion.get("discount_type"),
+                "discount_value": promotion.get("discount_value"),
+                "eligible_items": promotion.get("eligible_items") or [],
+                "selected_pos_profiles": promotion.get("selected_pos_profiles")
+                or [],
+            }
+            for promotion in _list(payload.get("promotions"))
+            if isinstance(promotion, dict)
+        ]
+    return rows
 
 
 def _collect_manual_qr_reconciliations(device_id: str) -> list[dict[str, Any]]:
@@ -2847,6 +3813,31 @@ def _maybank_payment_expiry_grace_seconds() -> int:
     return int(PAYMENT_EXPIRY_GRACE_SECONDS)
 
 
+def _maybank_qr_policy() -> dict[str, Any]:
+    """Describe the paid timestamp as observation evidence, not settlement time."""
+
+    return {
+        "payment_expiry_grace_seconds": _maybank_payment_expiry_grace_seconds(),
+        "provider_paid_is_authoritative": True,
+        "paid_at_semantics": "first_provider_paid_observation_at_erp",
+        "expiry_grace_is_acceptance_gate": False,
+    }
+
+
+def _maybank_qr_contract() -> dict[str, Any]:
+    """Stable dump vocabulary for provider-paid and delayed-observation proof."""
+
+    return {
+        "version": "provider_paid_observation_v1",
+        "provider_paid_status_code": 1,
+        "provider_paid_is_authoritative": True,
+        "provider_paid_at_available": False,
+        "provider_paid_at_source": "not_supplied_by_provider_status_contract",
+        "provider_status_observed_at_field": "paid_at",
+        "qr_expiry_is_not_settlement_rejection": True,
+    }
+
+
 def _collect_maybank_qr_transactions(device_id: str) -> list[dict[str, Any]]:
     """Collect provider-authenticity and exact-consumption evidence without QR data."""
 
@@ -2935,6 +3926,61 @@ def _collect_maybank_qr_transactions(device_id: str) -> list[dict[str, Any]]:
         row["paid_after_expiry"] = bool(seconds_after_expiry > 0)
         row["paid_after_expiry_within_grace"] = bool(
             0 < seconds_after_expiry <= PAYMENT_EXPIRY_GRACE_SECONDS
+        )
+        provider_paid_authoritative = bool(
+            row.get("status") == "paid" and cint(row.get("maybank_status")) == 1
+        )
+        provider_identity_evidence_complete = bool(
+            provider_paid_authoritative
+            and row.get("transaction_refno")
+            and persisted_money_to_sen(
+                row.get("sale_amount"),
+                f"Maybank QR Transaction {row.get('name')} sale_amount",
+            )
+            == cint(row.get("sale_amount_sen"))
+            and cint(row.get("sale_amount_sen")) > 0
+            and row.get("outlet_id")
+            and row.get("device_id") == device_id
+            and row.get("provider") == "maybank_qr"
+            and row.get("currency") == "MYR"
+            and row.get("idempotency_key")
+            and row.get("request_fingerprint")
+        )
+        payment_linked = bool(
+            payment
+            and payment.get("parent") == row.get("fb_order")
+            and payment.get("maybank_qr_transaction") == row.get("name")
+            and payment.get("external_transaction_id")
+            == row.get("transaction_refno")
+        )
+        one_time_consumption_evidence_complete = bool(
+            row.get("fb_order")
+            and row.get("sales_invoice")
+            and row.get("consumption_key") == row.get("fb_order")
+            and row.get("invoice_consumption_key") == row.get("sales_invoice")
+            and row.get("consumed_at")
+            and payment_linked
+        )
+        row["provider_paid_at"] = None
+        row["provider_paid_at_source"] = (
+            "not_supplied_by_provider_status_contract"
+        )
+        row["provider_status_observed_at"] = (
+            row.get("paid_at") if provider_paid_authoritative else row.get("last_polled_at")
+        )
+        row["paid_observed_seconds_after_expiry"] = seconds_after_expiry
+        row["paid_observed_after_expiry"] = bool(seconds_after_expiry > 0)
+        row["provider_paid_authoritative"] = provider_paid_authoritative
+        row["provider_identity_evidence_complete"] = (
+            provider_identity_evidence_complete
+        )
+        row["one_time_consumption_evidence_complete"] = (
+            one_time_consumption_evidence_complete
+        )
+        row["late_authenticated_paid_accepted"] = bool(
+            seconds_after_expiry > PAYMENT_EXPIRY_GRACE_SECONDS
+            and provider_identity_evidence_complete
+            and one_time_consumption_evidence_complete
         )
     return rows
 
@@ -3078,6 +4124,13 @@ def _collect_ingredient_bin_balances(warehouse: Any) -> list[dict[str, Any]]:
 def _collect_fb_order_items(order_doc: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for line in getattr(order_doc, "items", None) or []:
+        resolved_sale_name = _value(line, "resolved_sale")
+        modifier_rows = list(getattr(line, "selected_modifiers", None) or [])
+        if not modifier_rows and resolved_sale_name:
+            resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
+            modifier_rows = list(
+                getattr(resolved_sale, "selected_modifiers", None) or []
+            )
         rows.append(
             {
                 "line_id": _value(line, "line_id"),
@@ -3094,7 +4147,7 @@ def _collect_fb_order_items(order_doc: Any) -> list[dict[str, Any]]:
                 "recipe": _value(line, "recipe"),
                 "recipe_version": _value(line, "recipe_version"),
                 "is_recipe_managed": bool(_value(line, "is_recipe_managed")),
-                "resolved_sale": _value(line, "resolved_sale"),
+                "resolved_sale": resolved_sale_name,
                 "resolved_components": _parse_json_list(
                     _value(line, "resolved_components_snapshot")
                 ),
@@ -3112,10 +4165,11 @@ def _collect_fb_order_items(order_doc: Any) -> list[dict[str, Any]]:
                             _value(modifier, "affects_recipe")
                         ),
                     }
-                    for modifier in (
-                        getattr(line, "selected_modifiers", None) or []
-                    )
+                    for modifier in modifier_rows
                 ],
+                "promotion_allocations": _parse_json_list(
+                    _value(line, "promotion_allocations_json")
+                ),
             }
         )
     return rows
@@ -3254,6 +4308,9 @@ def _collect_invoice_items(invoice_doc: Any) -> list[dict[str, Any]]:
                     _value(item, "custom_kopos_has_modifiers")
                 ),
                 "modifiers_json": _value(item, "custom_kopos_modifiers"),
+                "promotion_allocations": _parse_json_list(
+                    _value(item, "custom_kopos_promotion_allocation")
+                ),
             }
         )
     return rows
@@ -3262,11 +4319,17 @@ def _collect_invoice_items(invoice_doc: Any) -> list[dict[str, Any]]:
 def _collect_invoice_payments(invoice_doc: Any) -> list[dict[str, Any]]:
     rows = []
     for payment in getattr(invoice_doc, "payments", []) or []:
+        account = _value(payment, "account")
         rows.append(
             {
                 "mode_of_payment": _value(payment, "mode_of_payment"),
                 "amount": _exact_money(_value(payment, "amount")),
-                "account": _value(payment, "account"),
+                "account": account,
+                "account_currency": (
+                    frappe.db.get_value("Account", account, "account_currency")
+                    if account
+                    else None
+                ),
                 "payment_id": _value(payment, "custom_fb_source_payment_id"),
             }
         )

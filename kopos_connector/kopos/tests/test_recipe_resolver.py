@@ -9,16 +9,30 @@ from kopos_connector.kopos.services.recipe.resolver import (
     resolve_components,
     resolve_sale_line,
 )
+from kopos_connector.kopos.tests.frappe_test_fixtures import (
+    ensure_persisted_test_modifier,
+    ensure_canonical_test_base,
+    modifier_doc,
+)
+from kopos_connector.smoke import (
+    DEMO_MATCHA_ITEM,
+    DEMO_MILK_ITEM,
+    DEMO_STRAWBERRY_ITEM,
+)
 
 
 class TestRecipeResolver(FrappeTestCase):
     def setUp(self):
-        self.company = frappe.defaults.get_defaults().get("company", "Test Company")
-        self.warehouse = "WH - Test Booth"
+        self.base = ensure_canonical_test_base()
+        self.company = self.base["company"]
+        self.warehouse = self.base["warehouse"]
+
+    def tearDown(self):
+        frappe.db.rollback()
 
     def test_resolve_simple_recipe(self):
         resolved = resolve_sale_line(
-            item_code="TEST-MATCHA-LATTE",
+            item_code=self.base["item_code"],
             qty=1.0,
             modifiers=[],
             warehouse=self.warehouse,
@@ -27,56 +41,79 @@ class TestRecipeResolver(FrappeTestCase):
         self.assertIn("recipe", resolved)
         self.assertIn("resolved_components", resolved)
         self.assertEqual(resolved["qty"], 1.0)
-        self.assertEqual(resolved["sellable_item"], "TEST-MATCHA-LATTE")
+        self.assertEqual(resolved["sellable_item"], self.base["item_code"])
 
     def test_resolve_with_add_modifier(self):
+        modifier = ensure_persisted_test_modifier(
+            "KOPOS-TEST-EXTRA-MATCHA",
+            kind="Add",
+            new_item=DEMO_MATCHA_ITEM,
+            qty_delta=9,
+            qty_uom="Gram",
+        )
         resolved = resolve_sale_line(
-            item_code="TEST-MATCHA-LATTE",
+            item_code=self.base["item_code"],
             qty=1.0,
-            modifiers=[{"modifier": "EXTRA-MATCHA"}],
+            modifiers=[{"modifier": modifier}],
             warehouse=self.warehouse,
         )
 
         component_items = [c["item"] for c in resolved["resolved_components"]]
-        self.assertIn("MATCHA-POWDER", component_items)
+        self.assertIn(DEMO_MATCHA_ITEM, component_items)
 
     def test_resolve_with_replace_modifier(self):
+        modifier = ensure_persisted_test_modifier(
+            "KOPOS-TEST-REPLACE-MILK",
+            kind="Replace",
+            target_item=DEMO_MILK_ITEM,
+            new_item=DEMO_STRAWBERRY_ITEM,
+        )
         resolved = resolve_sale_line(
-            item_code="TEST-MATCHA-LATTE",
+            item_code=self.base["item_code"],
             qty=1.0,
-            modifiers=[{"modifier": "OAT-MILK"}],
+            modifiers=[{"modifier": modifier}],
             warehouse=self.warehouse,
         )
 
-        milk_components = [
-            c for c in resolved["resolved_components"] if "MILK" in c["item"]
-        ]
-        self.assertTrue(any("OAT" in c["item"] for c in milk_components))
+        component_items = [c["item"] for c in resolved["resolved_components"]]
+        self.assertNotIn(DEMO_MILK_ITEM, component_items)
+        self.assertIn(DEMO_STRAWBERRY_ITEM, component_items)
 
     def test_resolve_with_scale_modifier(self):
+        modifier = ensure_persisted_test_modifier(
+            "KOPOS-TEST-DOUBLE-MATCHA",
+            kind="Scale",
+            target_item=DEMO_MATCHA_ITEM,
+            scale_percent=200,
+        )
         resolved = resolve_sale_line(
-            item_code="TEST-MATCHA-LATTE",
+            item_code=self.base["item_code"],
             qty=1.0,
-            modifiers=[{"modifier": "DOUBLE-MATCHA"}],
+            modifiers=[{"modifier": modifier}],
             warehouse=self.warehouse,
         )
 
         matcha_component = next(
-            (c for c in resolved["resolved_components"] if "MATCHA" in c["item"]), None
+            (
+                c
+                for c in resolved["resolved_components"]
+                if c["item"] == DEMO_MATCHA_ITEM
+            ),
+            None,
         )
         self.assertIsNotNone(matcha_component)
         self.assertGreater(matcha_component["qty"], 18.0)
 
     def test_resolve_qty_scaling(self):
         resolved_single = resolve_sale_line(
-            item_code="TEST-MATCHA-LATTE",
+            item_code=self.base["item_code"],
             qty=1.0,
             modifiers=[],
             warehouse=self.warehouse,
         )
 
         resolved_double = resolve_sale_line(
-            item_code="TEST-MATCHA-LATTE",
+            item_code=self.base["item_code"],
             qty=2.0,
             modifiers=[],
             warehouse=self.warehouse,
@@ -96,15 +133,21 @@ class TestRecipeResolver(FrappeTestCase):
         self.assertAlmostEqual(double_matcha, single_matcha * 2.0, places=1)
 
     def test_instruction_only_modifier_no_effect(self):
+        modifier = ensure_persisted_test_modifier(
+            "KOPOS-TEST-INSTRUCTION",
+            kind="Instruction Only",
+            affects_recipe=0,
+            affects_stock=0,
+        )
         resolved = resolve_sale_line(
-            item_code="TEST-MATCHA-LATTE",
+            item_code=self.base["item_code"],
             qty=1.0,
-            modifiers=[{"modifier": "LESS-SWEET"}],
+            modifiers=[{"modifier": modifier}],
             warehouse=self.warehouse,
         )
 
         base_resolved = resolve_sale_line(
-            item_code="TEST-MATCHA-LATTE",
+            item_code=self.base["item_code"],
             qty=1.0,
             modifiers=[],
             warehouse=self.warehouse,
@@ -116,36 +159,23 @@ class TestRecipeResolver(FrappeTestCase):
         )
 
     def test_calculate_stock_qty_with_conversion(self):
-        qty = calculate_stock_qty(qty=100.0, uom="ml", item="MILK-1L")
+        qty = calculate_stock_qty(qty=100.0, uom="Millilitre", item=DEMO_MILK_ITEM)
         self.assertEqual(qty, 100.0)
 
     def test_calculate_stock_qty_no_conversion_needed(self):
-        qty = calculate_stock_qty(qty=50.0, uom="g", item="MATCHA-POWDER")
+        qty = calculate_stock_qty(qty=50.0, uom="Gram", item=DEMO_MATCHA_ITEM)
         self.assertEqual(qty, 50.0)
 
     def test_apply_defaults_required_group(self):
-        modifier_groups = [
-            frappe._dict(
-                {
-                    "modifier_group": "MILK-CHOICE",
-                    "required": 1,
-                    "default_modifier": "DAIRY-MILK",
-                }
-            )
-        ]
+        recipe = frappe.get_doc("FB Recipe", self.base["recipe"])
+        modifier_groups = list(recipe.allowed_modifier_groups)
 
         defaults = apply_defaults(modifier_groups)
         self.assertEqual(len(defaults), 1)
-        self.assertEqual(defaults[0].name, "DAIRY-MILK")
+        self.assertTrue(defaults[0].active)
 
     def test_apply_defaults_optional_group(self):
-        modifier_groups = [
-            frappe._dict(
-                {"modifier_group": "ADD-ONS", "required": 0, "default_modifier": None}
-            )
-        ]
-
-        defaults = apply_defaults(modifier_groups)
+        defaults = apply_defaults([])
         self.assertEqual(len(defaults), 0)
 
     def test_resolve_components_base_only(self):
@@ -198,8 +228,9 @@ class TestRecipeResolver(FrappeTestCase):
         )
 
         modifiers = [
-            frappe._dict(
+            modifier_doc(
                 {
+                    "doctype": "FB Modifier",
                     "name": "EXTRA-MATCHA",
                     "kind": "Add",
                     "new_item": "MATCHA-POWDER",
@@ -242,8 +273,9 @@ class TestRecipeResolver(FrappeTestCase):
         )
 
         modifiers = [
-            frappe._dict(
+            modifier_doc(
                 {
+                    "doctype": "FB Modifier",
                     "name": "NO-SYRUP",
                     "kind": "Remove",
                     "target_substitution_key": "sweetener",

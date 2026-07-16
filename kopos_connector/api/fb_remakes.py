@@ -9,7 +9,7 @@ import frappe
 from frappe.utils import cstr
 
 from kopos_connector.api.devices import (
-    require_device_context,
+    lock_device_for_operational_mutation,
     require_device_operational_scope,
 )
 
@@ -17,7 +17,7 @@ from kopos_connector.api.devices import (
 @frappe.whitelist(methods=["POST"])
 def process_remake() -> dict[str, Any]:
     payload = _get_request_payload()
-    require_device_context(device_id=cstr(payload.get("device_id")))
+    lock_device_for_operational_mutation(device_id=cstr(payload.get("device_id")))
     validated = _validate_payload(payload)
     order_doc = frappe.get_doc("FB Order", validated["original_order"])
     if cstr(getattr(order_doc, "device_id", None)) != validated["device_id"]:

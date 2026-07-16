@@ -43,7 +43,9 @@ def get_columns() -> list[dict[str, object]]:
         {"label": _("Projection Type"), "fieldname": "projection_type", "fieldtype": "Data", "width": 150},
         {"label": _("Idempotency Key"), "fieldname": "idempotency_key", "fieldtype": "Data", "width": 220},
         {"label": _("Retry Count"), "fieldname": "retry_count", "fieldtype": "Int", "width": 110},
+        {"label": _("Next Retry"), "fieldname": "next_retry_at", "fieldtype": "Datetime", "width": 170},
         {"label": _("Last Attempt"), "fieldname": "last_attempt_at", "fieldtype": "Datetime", "width": 170},
+        {"label": _("Manual Recovery Required"), "fieldname": "dead_lettered_at", "fieldtype": "Datetime", "width": 190},
         {"label": _("Target DocType"), "fieldname": "target_doctype", "fieldtype": "Data", "width": 130},
         {"label": _("Target Name"), "fieldname": "target_name", "fieldtype": "Data", "width": 180},
         {"label": _("Failure Reason"), "fieldname": "failure_reason", "fieldtype": "Data", "width": 280},
@@ -66,7 +68,9 @@ def get_data(filters: Mapping[str, object]) -> list[dict[str, object]]:
             "idempotency_key",
             "state",
             "retry_count",
+            "next_retry_at",
             "last_attempt_at",
+            "dead_lettered_at",
             "target_doctype",
             "target_name",
             "last_error",
@@ -84,22 +88,27 @@ def _build_support_row(row: object) -> dict[str, object]:
     source_name = cstr(_read(row, "source_name")).strip()
     projection_type = cstr(_read(row, "projection_type")).strip()
     error_summary = _summarize_error(_read(row, "last_error"))
+    dead_lettered_at = _read(row, "dead_lettered_at")
     return {
         "name": cstr(_read(row, "name")).strip(),
         "projection_status": state,
-        "support_review": _support_review_copy(state),
+        "support_review": _support_review_copy(state, bool(dead_lettered_at)),
         "affected_order": source_name if source_doctype == "FB Order" else "",
         "source_doctype": source_doctype,
         "source_name": source_name,
         "projection_type": projection_type,
         "idempotency_key": cstr(_read(row, "idempotency_key")).strip(),
         "retry_count": cint(_read(row, "retry_count") or 0),
+        "next_retry_at": _read(row, "next_retry_at"),
         "last_attempt_at": _read(row, "last_attempt_at"),
+        "dead_lettered_at": dead_lettered_at,
         "target_doctype": cstr(_read(row, "target_doctype")).strip(),
         "target_name": cstr(_read(row, "target_name")).strip(),
         "failure_reason": _failure_reason(state, error_summary),
-        "next_action": _next_action_copy(state, projection_type),
-        "safe_retry": _safe_retry_copy(state),
+        "next_action": _next_action_copy(
+            state, projection_type, bool(dead_lettered_at)
+        ),
+        "safe_retry": _safe_retry_copy(state, bool(dead_lettered_at)),
         "last_error_summary": error_summary,
     }
 
@@ -115,7 +124,9 @@ def _states_from_filters(filters: Mapping[str, object]) -> list[str]:
     return DEFAULT_PROJECTION_STATES
 
 
-def _support_review_copy(state: str) -> str:
+def _support_review_copy(state: str, dead_lettered: bool = False) -> str:
+    if dead_lettered:
+        return _("Manual recovery required")
     if state == "Failed":
         return _("Support review required")
     if state == "Pending":
@@ -133,7 +144,13 @@ def _failure_reason(state: str, error_summary: str) -> str:
     return _("No failure reason recorded")
 
 
-def _next_action_copy(state: str, projection_type: str) -> str:
+def _next_action_copy(
+    state: str, projection_type: str, dead_lettered: bool = False
+) -> str:
+    if dead_lettered:
+        return _(
+            "Automatic retries are exhausted; correct the source failure, then use the supported idempotent retry workflow and verify the target document"
+        )
     if state == "Failed":
         return _(
             "Review the linked FB Order, Sales Invoice, and projection error; retry only after the source data is corrected"
@@ -149,9 +166,11 @@ def _next_action_copy(state: str, projection_type: str) -> str:
     return _("Confirm this projection is no longer blocking reconciliation")
 
 
-def _safe_retry_copy(state: str) -> str:
+def _safe_retry_copy(state: str, dead_lettered: bool = False) -> str:
     if state == "Failed":
-        return _("Supported: existing retry workflow returns failed projections to Pending")
+        if dead_lettered:
+            return _("Supported after review: the handler reuses an existing target or creates exactly one target")
+        return _("Automatic retry scheduled; the handler is idempotent and never relabels work without executing it")
     if state == "Pending":
         return _("Not needed yet; row is already waiting for projection")
     return _("No retry guidance required")

@@ -39,9 +39,15 @@
         "totals_section",
         "net_total",
 	        "tax_total",
-	        "tax_rate",
-	        "rounding_adjustment",
+        "tax_rate",
+        "rounding_adjustment",
         "grand_total",
+        "promotion_section",
+        "pricing_mode",
+        "promotion_snapshot_version",
+        "promotion_snapshot_hash",
+        "promotion_reconciliation_status",
+        "promotion_payload_json",
         "notes_section",
         "notes"
     ],
@@ -114,7 +120,8 @@
             "fieldname": "device_id",
             "fieldtype": "Data",
             "label": "Device ID",
-            "reqd": 1
+            "reqd": 1,
+            "search_index": 1
         },
         {
             "fieldname": "shift",
@@ -122,7 +129,8 @@
             "in_list_view": 1,
             "label": "Shift",
             "options": "FB Shift",
-            "reqd": 1
+            "reqd": 1,
+            "search_index": 1
         },
         {
             "fieldname": "staff_id",
@@ -186,7 +194,8 @@
             "in_list_view": 1,
             "label": "Order Status",
             "options": "Draft\nSubmitted\nCancelled",
-            "reqd": 1
+            "reqd": 1,
+            "search_index": 1
         },
         {
             "default": "Pending",
@@ -255,6 +264,49 @@
             "fieldname": "grand_total",
             "fieldtype": "Currency",
             "label": "Grand Total"
+        },
+        {
+            "collapsible": 1,
+            "fieldname": "promotion_section",
+            "fieldtype": "Section Break",
+            "label": "Promotion Provenance"
+        },
+        {
+            "fieldname": "pricing_mode",
+            "fieldtype": "Select",
+            "label": "Pricing Mode",
+            "options": "\nlegacy_client\nmanual_only\nonline_snapshot\noffline_snapshot\nserver_validated",
+            "read_only": 1
+        },
+        {
+            "fieldname": "promotion_snapshot_version",
+            "fieldtype": "Data",
+            "label": "Promotion Snapshot Version",
+            "read_only": 1,
+            "search_index": 1
+        },
+        {
+            "fieldname": "promotion_snapshot_hash",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Promotion Snapshot Hash",
+            "read_only": 1,
+            "search_index": 1
+        },
+        {
+            "fieldname": "promotion_reconciliation_status",
+            "fieldtype": "Select",
+            "label": "Promotion Reconciliation Status",
+            "options": "\nnot_applicable\nmatched\nreview_required",
+            "read_only": 1
+        },
+        {
+            "fieldname": "promotion_payload_json",
+            "fieldtype": "Code",
+            "hidden": 1,
+            "label": "Promotion Payload",
+            "options": "JSON",
+            "read_only": 1
         },
         {
             "fieldname": "notes_section",
