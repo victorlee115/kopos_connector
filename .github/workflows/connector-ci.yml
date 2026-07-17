@@ -45,7 +45,7 @@ jobs:
 
       - name: Install deterministic test dependencies
         run: |
-          python -m pip install --upgrade "pip==26.1.2" "wheel==0.46.2"
+          python -m pip install --upgrade "pip==26.1.2" "setuptools==83.0.0" "wheel==0.46.2"
           python -m pip install \
             "pytest==9.0.3" \
             "pycryptodome==3.23.0" \

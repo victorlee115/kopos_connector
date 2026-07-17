@@ -141,6 +141,209 @@ def test_delayed_maybank_smoke_refuses_non_smoke_outlet(monkeypatch) -> None:
     assert writes == []
 
 
+def test_smoke_rejects_unresolved_or_unproved_duplicate_qr_liability() -> None:
+    unresolved_state = _passing_state()
+    unresolved_state["data"]["maybank_qr_transactions"] = [
+        {
+            "name": "MBQR-DUPLICATE-1",
+            "duplicate_payment_status": "refund_required",
+            "duplicate_accounting_integrity_proven": True,
+        }
+    ]
+
+    unresolved = smoke.build_smoke_business_assertions(unresolved_state)
+
+    assert (
+        unresolved["assertions"]["duplicate_qr_accounting_integrity_proven"]
+        is True
+    )
+    assert (
+        unresolved["assertions"][
+            "no_unresolved_duplicate_qr_customer_liabilities"
+        ]
+        is False
+    )
+
+    unproved_state = _passing_state()
+    unproved_state["data"]["maybank_qr_transactions"] = [
+        {
+            "name": "MBQR-DUPLICATE-1",
+            "duplicate_payment_status": "refunded",
+            "duplicate_accounting_integrity_proven": False,
+        }
+    ]
+
+    unproved = smoke.build_smoke_business_assertions(unproved_state)
+
+    assert (
+        unproved["assertions"]["duplicate_qr_accounting_integrity_proven"]
+        is False
+    )
+    assert (
+        unproved["assertions"][
+            "no_unresolved_duplicate_qr_customer_liabilities"
+        ]
+        is True
+    )
+
+
+def test_smoke_duplicate_qr_integrity_requires_live_exact_journals_and_file() -> None:
+    row: dict[str, Any] = {
+        "name": "MBQR-DUPLICATE-1",
+        "device_id": "SMOKE-TAB-A001",
+        "transaction_refno": "MBB-DUPLICATE-1",
+        "fb_order": "FB-ORDER-1",
+        "winning_sales_invoice": "SINV-1",
+        "winning_company": "KoPOS Malaysia Sdn Bhd",
+        "winning_sale": {
+            "name": "FB-ORDER-1",
+            "docstatus": 1,
+            "sales_invoice": "SINV-1",
+            "external_idempotency_key": "SALE-IDEMPOTENCY-1",
+            "device_id": "SMOKE-TAB-A001",
+            "status": "Submitted",
+            "invoice_status": "Posted",
+            "company": "KoPOS Malaysia Sdn Bhd",
+            "currency": "MYR",
+        },
+        "winning_invoice": {
+            "name": "SINV-1",
+            "docstatus": 1,
+            "is_return": 0,
+            "custom_fb_order": "FB-ORDER-1",
+            "custom_fb_idempotency_key": "SALE-IDEMPOTENCY-1",
+            "custom_fb_device_id": "SMOKE-TAB-A001",
+            "custom_fb_void_idempotency_key": None,
+            "custom_fb_void_request_fingerprint": None,
+            "custom_fb_void_manager": None,
+            "custom_fb_void_approval_token_id": None,
+            "company": "KoPOS Malaysia Sdn Bhd",
+            "currency": "MYR",
+            "void_approval": None,
+        },
+        "duplicate_payment_status": "refunded",
+        "duplicate_winning_transaction": "MBQR-WINNER-1",
+        "duplicate_accounting_key": "LIABILITY-KEY-1",
+        "duplicate_liability_journal_entry": "JV-liability_recognition",
+        "duplicate_refund_key": "REFUND-KEY-1",
+        "duplicate_refund_journal_entry": "JV-refund",
+        "duplicate_clearing_account": "Maybank Clearing - KMY",
+        "duplicate_liability_account": "Customer Refund Liability - KMY",
+        "duplicate_refund_reference": "MBB-REFUND-1",
+        "duplicate_refund_evidence_reference": "MAYBANK-CASE-1",
+        "duplicate_refund_evidence_file": "FILE-1",
+        "duplicate_refund_evidence_sha256": "a" * 64,
+        "duplicate_refund_amount_sen": 1250,
+        "duplicate_refund_currency": "MYR",
+        "duplicate_refund_date": "2026-03-13",
+        "duplicate_refund_note": (
+            "Provider portal confirms the exact duplicate payment refund."
+        ),
+        "duplicate_refunded_by": "manager@example.test",
+        "duplicate_refunded_at": "2026-03-13 12:00:00",
+        "sale_amount_sen": 1250,
+        "currency": "MYR",
+        "paid_at": "2026-03-12 23:59:00",
+        "duplicate_refund_evidence_file_proof": {
+            "name": "FILE-1",
+            "is_private": True,
+            "attached_to_doctype": "Maybank QR Transaction",
+            "attached_to_name": "MBQR-DUPLICATE-1",
+            "declared_size": 8,
+            "observed_size": 8,
+            "observed_sha256": "a" * 64,
+        },
+    }
+
+    def journal(
+        *,
+        key: str,
+        stage: str,
+        posting_date: str,
+        evidence_reference: str,
+        evidence_file: str | None,
+        evidence_sha256: str | None,
+        debit_account: str,
+        credit_account: str,
+    ) -> dict[str, Any]:
+        return {
+            "name": f"JV-{stage}",
+            "docstatus": 1,
+            "posting_date": posting_date,
+            "company": row["winning_company"],
+            "custom_kopos_qr_duplicate_key": key,
+            "custom_kopos_qr_duplicate_stage": stage,
+            "custom_kopos_qr_provider_transaction": row["name"],
+            "custom_kopos_qr_winning_transaction": row[
+                "duplicate_winning_transaction"
+            ],
+            "custom_kopos_qr_provider_evidence_reference": evidence_reference,
+            "custom_kopos_qr_provider_evidence_file": evidence_file,
+            "custom_kopos_qr_provider_evidence_sha256": evidence_sha256,
+            "custom_kopos_qr_source_doctype": "Maybank QR Transaction",
+            "custom_kopos_qr_source_name": row["name"],
+            "custom_kopos_qr_fb_order": row["fb_order"],
+            "custom_kopos_qr_sales_invoice": row["winning_sales_invoice"],
+            "custom_kopos_qr_amount_sen": row["sale_amount_sen"],
+            "custom_kopos_qr_currency": row["currency"],
+            "gl_entries": [
+                {"account": debit_account, "debit": "12.50", "credit": "0"},
+                {"account": credit_account, "debit": "0", "credit": "12.50"},
+            ],
+        }
+
+    row["duplicate_liability_journal"] = journal(
+        key="LIABILITY-KEY-1",
+        stage="liability_recognition",
+        posting_date="2026-03-12",
+        evidence_reference="MBB-DUPLICATE-1",
+        evidence_file=None,
+        evidence_sha256=None,
+        debit_account="Maybank Clearing - KMY",
+        credit_account="Customer Refund Liability - KMY",
+    )
+    row["duplicate_refund_journal"] = journal(
+        key="REFUND-KEY-1",
+        stage="refund",
+        posting_date="2026-03-13",
+        evidence_reference="MAYBANK-CASE-1",
+        evidence_file="FILE-1",
+        evidence_sha256="a" * 64,
+        debit_account="Customer Refund Liability - KMY",
+        credit_account="Maybank Clearing - KMY",
+    )
+
+    assert smoke._duplicate_qr_accounting_integrity_proven(row) is True
+
+    row["duplicate_refund_journal"]["docstatus"] = 2
+    assert smoke._duplicate_qr_accounting_integrity_proven(row) is False
+
+    row["duplicate_refund_journal"]["docstatus"] = 1
+    row["winning_invoice"]["docstatus"] = 2
+    row["winning_sale"]["status"] = "Cancelled"
+    row["winning_sale"]["invoice_status"] = "Reversed"
+    assert smoke._duplicate_qr_accounting_integrity_proven(row) is False
+
+    row["winning_invoice"].update(
+        {
+            "custom_fb_void_idempotency_key": "VOID-IDEMPOTENCY-1",
+            "custom_fb_void_request_fingerprint": "d" * 64,
+            "custom_fb_void_manager": "manager@example.test",
+            "custom_fb_void_approval_token_id": "APPROVAL-TOKEN-1",
+            "void_approval": {
+                "token_id": "APPROVAL-TOKEN-1",
+                "status": "consumed",
+                "manager_id": "manager@example.test",
+                "action": "void_order",
+                "resource_id": "SINV-1",
+                "context_hash": "c" * 64,
+                "consumed_idempotency_key": "VOID-IDEMPOTENCY-1",
+            },
+        }
+    )
+    assert smoke._duplicate_qr_accounting_integrity_proven(row) is True
+
+
 def _passing_state() -> dict[str, Any]:
     return {
         "data": {

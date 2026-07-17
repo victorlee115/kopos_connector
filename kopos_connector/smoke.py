@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import frappe
-from frappe.utils import cint, flt, now_datetime, nowdate
+from frappe.utils import cint, cstr, flt, now_datetime, nowdate
 
 from kopos_connector.kopos.api.money_contract import (
     persisted_money_to_sen,
@@ -116,10 +116,11 @@ def _ensure_smoke_base_data() -> dict[str, Any]:
     warehouse = _ensure_warehouse(company)
     cost_center = _ensure_cost_center(company)
     cash_account = _ensure_cash_account(company)
+    bank_account = _ensure_bank_account(company)
     expense_account = _ensure_expense_account(company)
 
     _ensure_mode_of_payment("Cash", company, cash_account, "Cash")
-    _ensure_mode_of_payment("DuitNow QR", company, cash_account, "Bank")
+    _ensure_mode_of_payment("DuitNow QR", company, bank_account, "Bank")
 
     pos_profile = _ensure_pos_profile(
         company=company,
@@ -493,7 +494,7 @@ def run_demo_delayed_maybank_paid_audit() -> dict[str, Any]:
             frappe.ValidationError,
         )
 
-    from kopos_connector.api.maybank_qr import _apply_provider_poll_result
+    from kopos_connector.api._maybank_qr_status import _apply_provider_poll_result
     from kopos_connector.api.shifts import close_shift_payload
     from kopos_connector.kopos.api.fb_orders import submit_order
 
@@ -522,6 +523,7 @@ def run_demo_delayed_maybank_paid_audit() -> dict[str, Any]:
             "outlet_id": SMOKE_MAYBANK_OUTLET_ID,
             "sale_amount": "12.00",
             "sale_amount_sen": 1200,
+            "company": shift["company"],
             "currency": "MYR",
             "status": "pending",
             "maybank_status": 2,
@@ -968,17 +970,92 @@ def _ensure_cash_account(company: str) -> str:
         "Account",
         filters={
             "company": company,
-            "account_type": ["in", ["Cash", "Bank"]],
+            "account_type": "Cash",
             "is_group": 0,
+            "disabled": 0,
         },
         pluck="name",
         limit=1,
     )
     if existing:
         return existing[0]
-    return _first_name(
-        "Account", {"company": company, "root_type": "Asset", "is_group": 0}
+
+    parent_accounts = frappe.get_all(
+        "Account",
+        filters={
+            "company": company,
+            "account_type": "Cash",
+            "is_group": 1,
+            "disabled": 0,
+        },
+        pluck="name",
+        limit=1,
     )
+    if not parent_accounts:
+        frappe.throw(
+            f"Smoke company {company} has no enabled Cash account group",
+            frappe.ValidationError,
+        )
+    account = frappe.get_doc(
+        {
+            "doctype": "Account",
+            "account_name": "KoPOS Cash",
+            "parent_account": parent_accounts[0],
+            "company": company,
+            "account_type": "Cash",
+            "account_currency": _get_demo_currency(company),
+            "is_group": 0,
+            "disabled": 0,
+        }
+    )
+    account.insert(ignore_permissions=True)
+    return account.name
+
+
+def _ensure_bank_account(company: str) -> str:
+    existing = frappe.get_all(
+        "Account",
+        filters={
+            "company": company,
+            "account_type": "Bank",
+            "is_group": 0,
+            "disabled": 0,
+        },
+        pluck="name",
+        limit=1,
+    )
+    if existing:
+        return existing[0]
+
+    parent_accounts = frappe.get_all(
+        "Account",
+        filters={
+            "company": company,
+            "account_type": "Bank",
+            "is_group": 1,
+            "disabled": 0,
+        },
+        pluck="name",
+        limit=1,
+    )
+    if not parent_accounts:
+        frappe.throw(
+            f"Smoke company {company} has no enabled Bank account group",
+            frappe.ValidationError,
+        )
+    account = frappe.get_doc(
+        {
+            "doctype": "Account",
+            "account_name": "KoPOS QR Clearing",
+            "parent_account": parent_accounts[0],
+            "company": company,
+            "account_type": "Bank",
+            "account_currency": _get_demo_currency(company),
+            "is_group": 0,
+        }
+    )
+    account.insert(ignore_permissions=True)
+    return account.name
 
 
 def _ensure_expense_account(company: str) -> str:
@@ -1008,7 +1085,24 @@ def _ensure_mode_of_payment(
         )
         doc.insert(ignore_permissions=True)
 
-    if not any(row.company == company for row in doc.accounts):
+    changed = False
+    if cint(getattr(doc, "enabled", 0)) != 1:
+        doc.enabled = 1
+        changed = True
+    if cstr(getattr(doc, "type", None)).strip() != mode_type:
+        doc.type = mode_type
+        changed = True
+
+    company_rows = [row for row in doc.accounts if row.company == company]
+    if company_rows:
+        account_row = company_rows[0]
+        if cstr(account_row.default_account).strip() != account:
+            account_row.default_account = account
+            changed = True
+        for duplicate_row in company_rows[1:]:
+            doc.remove(duplicate_row)
+            changed = True
+    else:
         doc.append(
             "accounts",
             {
@@ -1016,6 +1110,9 @@ def _ensure_mode_of_payment(
                 "default_account": account,
             },
         )
+        changed = True
+
+    if changed:
         doc.save(ignore_permissions=True)
 
     return doc.name
@@ -3209,6 +3306,17 @@ def build_smoke_business_assertions(
     ingredient_stock_entries = _list(data.get("ingredient_stock_entries"))
     returns = _list(data.get("return_records"))
     voids = _list(data.get("void_records"))
+    maybank_qr_transactions = _list(data.get("maybank_qr_transactions"))
+    duplicate_qr_incidents = [
+        row
+        for row in maybank_qr_transactions
+        if str(row.get("duplicate_payment_status") or "").strip()
+    ]
+    unresolved_duplicate_qr_incidents = [
+        row
+        for row in duplicate_qr_incidents
+        if row.get("duplicate_payment_status") != "refunded"
+    ]
     projection_statuses = data.get("projection_statuses") or {}
     legacy_active_paths = data.get("legacy_active_paths") or {}
     idempotency = data.get("idempotency") or {}
@@ -3457,6 +3565,19 @@ def build_smoke_business_assertions(
         order_history_data,
     )
     expect("no_failed_projections", not failed_projections, failed_projections)
+    expect(
+        "duplicate_qr_accounting_integrity_proven",
+        all(
+            row.get("duplicate_accounting_integrity_proven") is True
+            for row in duplicate_qr_incidents
+        ),
+        duplicate_qr_incidents,
+    )
+    expect(
+        "no_unresolved_duplicate_qr_customer_liabilities",
+        not unresolved_duplicate_qr_incidents,
+        unresolved_duplicate_qr_incidents,
+    )
     expect("no_active_legacy_pos_paths", active_legacy_total == 0, legacy_active_paths)
     expect("no_duplicate_sales_invoice_idempotency_keys", not duplicate_keys, duplicate_keys)
     for key in expected_keys:
@@ -3497,6 +3618,7 @@ def build_smoke_business_assertions(
             "ingredient_stock_entries": len(ingredient_stock_entries),
             "return_records": len(returns),
             "void_records": len(voids),
+            "duplicate_qr_incidents": len(duplicate_qr_incidents),
             "failed_projections": len(failed_projections),
             "active_legacy_paths": active_legacy_total,
             "expected_idempotency_keys": expected_keys,
@@ -3863,6 +3985,24 @@ def _collect_maybank_qr_transactions(device_id: str) -> list[dict[str, Any]]:
             "request_fingerprint",
             "consumption_key",
             "invoice_consumption_key",
+            "duplicate_payment_status",
+            "duplicate_winning_transaction",
+            "duplicate_accounting_key",
+            "duplicate_clearing_account",
+            "duplicate_liability_account",
+            "duplicate_liability_journal_entry",
+            "duplicate_refund_key",
+            "duplicate_refund_journal_entry",
+            "duplicate_refund_reference",
+            "duplicate_refund_evidence_reference",
+            "duplicate_refund_evidence_file",
+            "duplicate_refund_evidence_sha256",
+            "duplicate_refund_amount_sen",
+            "duplicate_refund_currency",
+            "duplicate_refund_date",
+            "duplicate_refund_note",
+            "duplicate_refunded_by",
+            "duplicate_refunded_at",
             "created_at",
             "business_date",
             "scanned_at",
@@ -3982,7 +4122,416 @@ def _collect_maybank_qr_transactions(device_id: str) -> list[dict[str, Any]]:
             and provider_identity_evidence_complete
             and one_time_consumption_evidence_complete
         )
+        duplicate_status = str(row.get("duplicate_payment_status") or "").strip()
+        row["duplicate_liability_journal"] = None
+        row["duplicate_refund_journal"] = None
+        row["duplicate_refund_evidence_file_proof"] = None
+        row["duplicate_accounting_integrity_proven"] = not duplicate_status
+        if duplicate_status:
+            sale_context = frappe.db.get_value(
+                "FB Order",
+                row.get("fb_order"),
+                [
+                    "name",
+                    "docstatus",
+                    "sales_invoice",
+                    "external_idempotency_key",
+                    "device_id",
+                    "status",
+                    "invoice_status",
+                    "company",
+                    "currency",
+                ],
+                as_dict=True,
+            )
+            row["winning_sale"] = {
+                fieldname: _value(sale_context, fieldname)
+                for fieldname in (
+                    "name",
+                    "docstatus",
+                    "sales_invoice",
+                    "external_idempotency_key",
+                    "device_id",
+                    "status",
+                    "invoice_status",
+                    "company",
+                    "currency",
+                )
+            }
+            row["winning_sales_invoice"] = _value(
+                sale_context,
+                "sales_invoice",
+            )
+            row["winning_company"] = _value(sale_context, "company")
+            row["winning_invoice"] = _collect_duplicate_qr_winning_invoice(
+                str(row.get("winning_sales_invoice") or "")
+            )
+            row["duplicate_liability_journal"] = _collect_duplicate_qr_journal(
+                str(row.get("duplicate_liability_journal_entry") or "")
+            )
+            row["duplicate_refund_journal"] = _collect_duplicate_qr_journal(
+                str(row.get("duplicate_refund_journal_entry") or "")
+            )
+            row["duplicate_refund_evidence_file_proof"] = (
+                _collect_duplicate_qr_evidence_file(
+                    str(row.get("duplicate_refund_evidence_file") or "")
+                )
+            )
+            row["duplicate_accounting_integrity_proven"] = (
+                _duplicate_qr_accounting_integrity_proven(row)
+            )
     return rows
+
+
+def _collect_duplicate_qr_journal(journal_name: str) -> dict[str, Any] | None:
+    if not journal_name:
+        return None
+    rows = _get_rows(
+        "Journal Entry",
+        filters={"name": journal_name},
+        fields=[
+            "name",
+            "docstatus",
+            "posting_date",
+            "company",
+            "custom_kopos_qr_duplicate_key",
+            "custom_kopos_qr_duplicate_stage",
+            "custom_kopos_qr_provider_transaction",
+            "custom_kopos_qr_winning_transaction",
+            "custom_kopos_qr_provider_evidence_reference",
+            "custom_kopos_qr_provider_evidence_file",
+            "custom_kopos_qr_provider_evidence_sha256",
+            "custom_kopos_qr_source_doctype",
+            "custom_kopos_qr_source_name",
+            "custom_kopos_qr_fb_order",
+            "custom_kopos_qr_sales_invoice",
+            "custom_kopos_qr_amount_sen",
+            "custom_kopos_qr_currency",
+        ],
+    )
+    if len(rows) != 1:
+        return {"name": journal_name, "missing_or_ambiguous": True}
+    journal = rows[0]
+    journal["gl_entries"] = _collect_settlement_gl_entries(
+        "Journal Entry",
+        journal_name,
+    )
+    return journal
+
+
+def _collect_duplicate_qr_winning_invoice(
+    invoice_name: str,
+) -> dict[str, Any] | None:
+    if not invoice_name:
+        return None
+    rows = _get_rows(
+        "Sales Invoice",
+        filters={"name": invoice_name},
+        fields=[
+            "name",
+            "docstatus",
+            "is_return",
+            "custom_fb_order",
+            "custom_fb_idempotency_key",
+            "custom_fb_device_id",
+            "custom_fb_void_idempotency_key",
+            "custom_fb_void_request_fingerprint",
+            "custom_fb_void_manager",
+            "custom_fb_void_approval_token_id",
+            "company",
+            "currency",
+        ],
+    )
+    if len(rows) != 1:
+        return {"name": invoice_name, "missing_or_ambiguous": True}
+    invoice = rows[0]
+    token_id = str(invoice.get("custom_fb_void_approval_token_id") or "")
+    approval_rows = (
+        _get_rows(
+            "KoPOS Manager Approval",
+            filters={"token_id": token_id},
+            fields=[
+                "token_id",
+                "status",
+                "manager_id",
+                "action",
+                "resource_id",
+                "context_hash",
+                "consumed_idempotency_key",
+            ],
+        )
+        if token_id
+        else []
+    )
+    invoice["void_approval"] = (
+        approval_rows[0] if len(approval_rows) == 1 else None
+    )
+    return invoice
+
+
+def _collect_duplicate_qr_evidence_file(file_name: str) -> dict[str, Any] | None:
+    if not file_name:
+        return None
+    try:
+        evidence = frappe.get_doc("File", file_name)
+        content = evidence.get_content()
+    except Exception:
+        return {"name": file_name, "missing_or_unreadable": True}
+    content_bytes = content.encode("utf-8") if isinstance(content, str) else content
+    if not isinstance(content_bytes, bytes):
+        return {"name": file_name, "invalid_content": True}
+    return {
+        "name": str(_value(evidence, "name") or ""),
+        "is_private": bool(cint(_value(evidence, "is_private"))),
+        "attached_to_doctype": _value(evidence, "attached_to_doctype"),
+        "attached_to_name": _value(evidence, "attached_to_name"),
+        "declared_size": cint(_value(evidence, "file_size")),
+        "observed_size": len(content_bytes),
+        "observed_sha256": hashlib.sha256(content_bytes).hexdigest(),
+    }
+
+
+def _duplicate_qr_accounting_integrity_proven(row: dict[str, Any]) -> bool:
+    status = str(row.get("duplicate_payment_status") or "").strip()
+    if status not in {"accounting_pending", "refund_required", "refunded"}:
+        return False
+    if status == "accounting_pending":
+        return not row.get("duplicate_liability_journal_entry") and not row.get(
+            "duplicate_refund_journal_entry"
+        )
+    if (
+        not row.get("duplicate_winning_transaction")
+        or row.get("duplicate_winning_transaction") == row.get("name")
+        or not row.get("duplicate_accounting_key")
+        or not row.get("duplicate_clearing_account")
+        or not row.get("duplicate_liability_account")
+        or row.get("duplicate_clearing_account")
+        == row.get("duplicate_liability_account")
+        or not _duplicate_qr_winning_sale_integrity_proven(row)
+    ):
+        return False
+    if not _duplicate_qr_journal_integrity_proven(
+        row,
+        row.get("duplicate_liability_journal"),
+        stage="liability_recognition",
+    ):
+        return False
+    if status == "refund_required":
+        return not row.get("duplicate_refund_journal_entry")
+    refund_reference = str(row.get("duplicate_refund_reference") or "").strip()
+    evidence_reference = str(
+        row.get("duplicate_refund_evidence_reference") or ""
+    ).strip()
+    evidence_hash = str(row.get("duplicate_refund_evidence_sha256") or "").strip()
+    refund_date = str(row.get("duplicate_refund_date") or "")
+    paid_date = str(row.get("paid_at") or "")[:10]
+    refund_note = str(row.get("duplicate_refund_note") or "").strip()
+    try:
+        canonical_refund_date = frappe.utils.getdate(refund_date).isoformat()
+        canonical_paid_date = frappe.utils.getdate(paid_date).isoformat()
+        canonical_today = frappe.utils.getdate(nowdate()).isoformat()
+    except Exception:
+        return False
+    if (
+        not row.get("duplicate_refund_key")
+        or not row.get("duplicate_refund_journal_entry")
+        or not refund_reference
+        or refund_reference == row.get("transaction_refno")
+        or not evidence_reference
+        or len(evidence_hash) != 64
+        or any(character not in "0123456789abcdef" for character in evidence_hash)
+        or cint(row.get("duplicate_refund_amount_sen"))
+        != cint(row.get("sale_amount_sen"))
+        or str(row.get("duplicate_refund_currency") or "")
+        != str(row.get("currency") or "")
+        or refund_date != canonical_refund_date
+        or paid_date != canonical_paid_date
+        or refund_date < paid_date
+        or refund_date > canonical_today
+        or len(refund_note) < 20
+        or len(refund_note) > 1000
+        or not row.get("duplicate_refunded_by")
+        or not row.get("duplicate_refunded_at")
+    ):
+        return False
+    evidence = row.get("duplicate_refund_evidence_file_proof")
+    if not isinstance(evidence, dict):
+        return False
+    expected_hash = evidence_hash
+    if (
+        evidence.get("name") != row.get("duplicate_refund_evidence_file")
+        or evidence.get("is_private") is not True
+        or evidence.get("attached_to_doctype") != "Maybank QR Transaction"
+        or evidence.get("attached_to_name") != row.get("name")
+        or cint(evidence.get("declared_size")) <= 0
+        or cint(evidence.get("declared_size")) > 10 * 1024 * 1024
+        or evidence.get("declared_size") != evidence.get("observed_size")
+        or evidence.get("observed_sha256") != expected_hash
+    ):
+        return False
+    return _duplicate_qr_journal_integrity_proven(
+        row,
+        row.get("duplicate_refund_journal"),
+        stage="refund",
+    )
+
+
+def _duplicate_qr_winning_sale_integrity_proven(row: dict[str, Any]) -> bool:
+    sale = row.get("winning_sale")
+    invoice = row.get("winning_invoice")
+    if not isinstance(sale, dict) or not isinstance(invoice, dict):
+        return False
+    if (
+        cint(sale.get("docstatus")) != 1
+        or sale.get("name") != row.get("fb_order")
+        or not sale.get("external_idempotency_key")
+        or not sale.get("sales_invoice")
+        or not sale.get("company")
+        or not sale.get("currency")
+        or sale.get("device_id") != row.get("device_id")
+        or invoice.get("name") != sale.get("sales_invoice")
+        or cint(invoice.get("is_return")) != 0
+        or invoice.get("custom_fb_order") != sale.get("name")
+        or invoice.get("custom_fb_idempotency_key")
+        != sale.get("external_idempotency_key")
+        or invoice.get("custom_fb_device_id") != row.get("device_id")
+        or invoice.get("company") != sale.get("company")
+        or invoice.get("currency") != sale.get("currency")
+        or row.get("winning_sales_invoice") != sale.get("sales_invoice")
+        or row.get("winning_company") != sale.get("company")
+    ):
+        return False
+    docstatus = cint(invoice.get("docstatus"))
+    void_fields = (
+        "custom_fb_void_idempotency_key",
+        "custom_fb_void_request_fingerprint",
+        "custom_fb_void_manager",
+        "custom_fb_void_approval_token_id",
+    )
+    if docstatus == 1:
+        return (
+            sale.get("status") == "Submitted"
+            and sale.get("invoice_status") == "Posted"
+            and all(not invoice.get(fieldname) for fieldname in void_fields)
+        )
+    if docstatus != 2:
+        return False
+    void_idempotency_key = str(
+        invoice.get("custom_fb_void_idempotency_key") or ""
+    )
+    void_fingerprint = str(
+        invoice.get("custom_fb_void_request_fingerprint") or ""
+    )
+    manager_id = str(invoice.get("custom_fb_void_manager") or "")
+    token_id = str(invoice.get("custom_fb_void_approval_token_id") or "")
+    approval = invoice.get("void_approval")
+    return bool(
+        sale.get("status") == "Cancelled"
+        and sale.get("invoice_status") == "Reversed"
+        and void_idempotency_key
+        and len(void_fingerprint) == 64
+        and all(character in "0123456789abcdef" for character in void_fingerprint)
+        and manager_id
+        and token_id
+        and isinstance(approval, dict)
+        and approval.get("token_id") == token_id
+        and approval.get("status") == "consumed"
+        and approval.get("manager_id") == manager_id
+        and approval.get("action") == "void_order"
+        and approval.get("resource_id") == invoice.get("name")
+        and approval.get("consumed_idempotency_key") == void_idempotency_key
+        and len(str(approval.get("context_hash") or "")) == 64
+        and all(
+            character in "0123456789abcdef"
+            for character in str(approval.get("context_hash") or "")
+        )
+    )
+
+
+def _duplicate_qr_journal_integrity_proven(
+    row: dict[str, Any],
+    journal: Any,
+    *,
+    stage: str,
+) -> bool:
+    if not isinstance(journal, dict) or cint(journal.get("docstatus")) != 1:
+        return False
+    is_refund = stage == "refund"
+    expected_journal_name = row.get(
+        "duplicate_refund_journal_entry"
+        if is_refund
+        else "duplicate_liability_journal_entry"
+    )
+    if not expected_journal_name or journal.get("name") != expected_journal_name:
+        return False
+    expected_key = row.get(
+        "duplicate_refund_key" if is_refund else "duplicate_accounting_key"
+    )
+    expected_reference = row.get(
+        "duplicate_refund_evidence_reference"
+        if is_refund
+        else "transaction_refno"
+    )
+    expected_file = row.get("duplicate_refund_evidence_file") if is_refund else None
+    expected_hash = row.get("duplicate_refund_evidence_sha256") if is_refund else None
+    expected_date = row.get("duplicate_refund_date") if is_refund else row.get("paid_at")
+    expected_date_text = str(expected_date or "")[:10]
+    expected_fields = {
+        "company": row.get("winning_company"),
+        "custom_kopos_qr_duplicate_key": expected_key,
+        "custom_kopos_qr_duplicate_stage": stage,
+        "custom_kopos_qr_provider_transaction": row.get("name"),
+        "custom_kopos_qr_winning_transaction": row.get(
+            "duplicate_winning_transaction"
+        ),
+        "custom_kopos_qr_provider_evidence_reference": expected_reference,
+        "custom_kopos_qr_provider_evidence_file": expected_file,
+        "custom_kopos_qr_provider_evidence_sha256": expected_hash,
+        "custom_kopos_qr_source_doctype": "Maybank QR Transaction",
+        "custom_kopos_qr_source_name": row.get("name"),
+        "custom_kopos_qr_fb_order": row.get("fb_order"),
+        "custom_kopos_qr_sales_invoice": row.get("winning_sales_invoice"),
+        "custom_kopos_qr_currency": row.get("currency"),
+    }
+    if any(
+        str(journal.get(fieldname) or "") != str(expected or "")
+        for fieldname, expected in expected_fields.items()
+    ):
+        return False
+    if (
+        cint(journal.get("custom_kopos_qr_amount_sen"))
+        != cint(row.get("sale_amount_sen"))
+        or str(journal.get("posting_date") or "")[:10] != expected_date_text
+    ):
+        return False
+
+    debit_account = row.get(
+        "duplicate_liability_account" if is_refund else "duplicate_clearing_account"
+    )
+    credit_account = row.get(
+        "duplicate_clearing_account" if is_refund else "duplicate_liability_account"
+    )
+    expected_sen = cint(row.get("sale_amount_sen"))
+    observed: dict[str, dict[str, int]] = {
+        str(debit_account or ""): {"debit": 0, "credit": 0},
+        str(credit_account or ""): {"debit": 0, "credit": 0},
+    }
+    if not debit_account or not credit_account or debit_account == credit_account:
+        return False
+    for gl_row in _list(journal.get("gl_entries")):
+        debit_sen = _money_sen(gl_row.get("debit")) or 0
+        credit_sen = _money_sen(gl_row.get("credit")) or 0
+        if not debit_sen and not credit_sen:
+            continue
+        account = str(gl_row.get("account") or "")
+        if account not in observed:
+            return False
+        observed[account]["debit"] += debit_sen
+        observed[account]["credit"] += credit_sen
+    return observed == {
+        str(debit_account): {"debit": expected_sen, "credit": 0},
+        str(credit_account): {"debit": 0, "credit": expected_sen},
+    }
 
 
 def _collect_ingredient_stock_entries(

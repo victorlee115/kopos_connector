@@ -141,6 +141,175 @@ def test_smoke_company_contract_is_dedicated_malaysia_myr() -> None:
     assert smoke.SMOKE_COMPANY_CURRENCY == "MYR"
 
 
+def test_smoke_seed_repairs_duitnow_qr_to_bank_account(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    class ModeOfPayment:
+        def __init__(self) -> None:
+            self.name = "DuitNow QR"
+            self.enabled = 1
+            self.type = "Bank"
+            self.accounts = [
+                SimpleNamespace(
+                    company=smoke.SMOKE_COMPANY_NAME,
+                    default_account="Cash - KMY",
+                ),
+                SimpleNamespace(
+                    company=smoke.SMOKE_COMPANY_NAME,
+                    default_account="Legacy QR - KMY",
+                ),
+                SimpleNamespace(
+                    company="Unrelated Company",
+                    default_account="Unrelated Bank",
+                ),
+            ]
+            self.saved = False
+            self.removed: list[SimpleNamespace] = []
+
+        def append(self, fieldname: str, value: dict[str, Any]) -> None:
+            assert fieldname == "accounts"
+            self.accounts.append(SimpleNamespace(**value))
+
+        def remove(self, row: SimpleNamespace) -> None:
+            self.accounts.remove(row)
+            self.removed.append(row)
+
+        def save(self, *, ignore_permissions: bool) -> None:
+            assert ignore_permissions is True
+            self.saved = True
+
+    mode = ModeOfPayment()
+    monkeypatch.setattr(frappe.db, "exists", lambda *args: "DuitNow QR")
+    monkeypatch.setattr(frappe, "get_doc", lambda *args: mode)
+
+    smoke._ensure_mode_of_payment(
+        "DuitNow QR",
+        smoke.SMOKE_COMPANY_NAME,
+        "KoPOS QR Clearing - KMY",
+        "Bank",
+    )
+
+    assert mode.accounts[0].default_account == "KoPOS QR Clearing - KMY"
+    assert [row.company for row in mode.accounts] == [
+        smoke.SMOKE_COMPANY_NAME,
+        "Unrelated Company",
+    ]
+    assert [row.default_account for row in mode.removed] == ["Legacy QR - KMY"]
+    assert mode.saved is True
+
+
+def test_smoke_seed_creates_cash_leaf_under_cash_group(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    captured: dict[str, Any] = {}
+    observed_filters: list[dict[str, Any]] = []
+
+    class Account:
+        name = "KoPOS Cash - KMY"
+
+        def insert(self, *, ignore_permissions: bool) -> None:
+            assert ignore_permissions is True
+
+    def get_all(doctype: str, *, filters: dict[str, Any], **kwargs: Any):
+        assert doctype == "Account"
+        observed_filters.append(filters)
+        if filters["is_group"] == 0:
+            return []
+        return ["Cash In Hand - KMY"]
+
+    def get_doc(payload: dict[str, Any]) -> Account:
+        captured.update(payload)
+        return Account()
+
+    monkeypatch.setattr(frappe, "get_all", get_all)
+    monkeypatch.setattr(frappe, "get_doc", get_doc)
+    monkeypatch.setattr(smoke, "_get_demo_currency", lambda company: "MYR")
+
+    result = smoke._ensure_cash_account(smoke.SMOKE_COMPANY_NAME)
+
+    assert result == "KoPOS Cash - KMY"
+    assert observed_filters == [
+        {
+            "company": smoke.SMOKE_COMPANY_NAME,
+            "account_type": "Cash",
+            "is_group": 0,
+            "disabled": 0,
+        },
+        {
+            "company": smoke.SMOKE_COMPANY_NAME,
+            "account_type": "Cash",
+            "is_group": 1,
+            "disabled": 0,
+        },
+    ]
+    assert captured["parent_account"] == "Cash In Hand - KMY"
+    assert captured["account_type"] == "Cash"
+    assert captured["account_currency"] == "MYR"
+    assert captured["is_group"] == 0
+    assert captured["disabled"] == 0
+
+
+def test_smoke_seed_rejects_company_without_enabled_cash_group(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    monkeypatch.setattr(frappe, "get_all", lambda *args, **kwargs: [])
+
+    with pytest.raises(
+        frappe.ValidationError,
+        match="has no enabled Cash account group",
+    ):
+        smoke._ensure_cash_account(smoke.SMOKE_COMPANY_NAME)
+
+
+def test_smoke_seed_creates_bank_leaf_under_bank_group(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    captured: dict[str, Any] = {}
+
+    class Account:
+        name = "KoPOS QR Clearing - KMY"
+
+        def insert(self, *, ignore_permissions: bool) -> None:
+            assert ignore_permissions is True
+
+    def get_all(doctype: str, *, filters: dict[str, Any], **kwargs: Any):
+        assert doctype == "Account"
+        if filters["is_group"] == 0:
+            return []
+        return ["Bank Accounts - KMY"]
+
+    def get_doc(payload: dict[str, Any]) -> Account:
+        captured.update(payload)
+        return Account()
+
+    monkeypatch.setattr(frappe, "get_all", get_all)
+    monkeypatch.setattr(frappe, "get_doc", get_doc)
+    monkeypatch.setattr(smoke, "_get_demo_currency", lambda company: "MYR")
+
+    result = smoke._ensure_bank_account(smoke.SMOKE_COMPANY_NAME)
+
+    assert result == "KoPOS QR Clearing - KMY"
+    assert captured["parent_account"] == "Bank Accounts - KMY"
+    assert captured["account_type"] == "Bank"
+    assert captured["account_currency"] == "MYR"
+
+
 def test_existing_smoke_device_refresh_disables_training_mode(monkeypatch) -> None:
     install_fake_frappe_modules()
 

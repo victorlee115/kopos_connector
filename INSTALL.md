@@ -126,6 +126,38 @@ re-registration procedure. Additional HTTPS provider origins require an explicit
 requires both `allow_maybank_mock=1` and a test/developer context and must never
 be enabled on a production site.
 
+Configure the **DuitNow QR** Mode of Payment as type **Bank** with exactly one
+company account. That account must be an enabled, non-group **Bank** account or
+an untyped Asset clearing account in the sale currency. Never map verified QR
+payments to a physical Cash account. ERP rejects generation before contacting
+Maybank when this accounting destination is unsafe or ambiguous.
+
+#### Isolated test-site Maybank payment simulation
+
+To test the real QR paid/finalization path without calling Maybank, use a
+disposable non-production site only:
+
+```bash
+bench --site test-site.local set-config developer_mode 1
+bench --site test-site.local set-config allow_maybank_mock 1
+bench --site test-site.local set-config allow_maybank_desk_simulation 1
+bench --site test-site.local set-config maybank_mock_payment_mode manual
+bench --site test-site.local migrate
+bench restart
+```
+
+As a System Manager, enable Maybank Settings, configure a valid test outlet and
+manual QR suspense account, and set **API Base URL** to `mock://`. Generate an
+Automatic QR through the normal POS flow, then open its **Maybank QR
+Transaction** in ERP Desk and choose **Testing > Simulate Successful Payment
+(Test Only)**. Type `SIMULATE MAYBANK PAYMENT` when prompted. The transaction
+remains pending until this explicit action.
+
+Never enable these flags or `developer_mode` on production. After testing,
+disable both allow flags, restore the official HTTPS Maybank URL, and restart
+all web, worker, and scheduler processes. Directly changing the transaction
+status is neither supported nor equivalent to provider payment.
+
 ### 3. Create Modifier Groups
 
 Navigate to ERPNext Desk:

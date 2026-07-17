@@ -145,6 +145,118 @@ Response:
 }
 ```
 
+### Open Shift and Recover Conflicts
+
+Open-shift conflicts are enforced transactionally by ERP under device, staff,
+and FB Shift locks. An exact duplicate retry remains idempotent. A different
+open shift on the device or staff account returns request-bound proof with
+`status: "conflict"` without creating the requested shift. The optional
+`staff_id` on `get_device_open_shift` provides the same staff-conflict preflight
+after the staff assignment and active status are validated. See the
+[FB Shift open-conflict contract](docs/FB_SHIFT_OPEN_CONFLICT_CONTRACT.md).
+
+```http
+POST /api/method/kopos_connector.api.open_shift
+GET /api/method/kopos_connector.api.get_device_open_shift?device_id=TAB-A-001&staff_id=cashier@example.test
+```
+
+### Generate Automatic QR
+
+ERPNext owns Maybank QR generation and settlement. Before contacting Maybank,
+the tablet must send the complete immutable sale to
+`prepare_automatic_qr_sale`. ERP persists a Draft FB Order, its exact payment
+row, and frozen recipe/modifier/component resolutions, then returns the
+`fb_order`, `fb_order_payment`, and `accepted_sale_fingerprint` identities that
+must accompany QR generation. Amount-only QR generation is rejected.
+
+A tablet may release a local
+provider intent only when this endpoint returns the exact, request-bound HTTP
+`409` preflight rejection registered by ERP. All ambiguous or post-provider-call
+failures remain fail-closed. See
+[Maybank QR preflight rejection contract](docs/MAYBANK_QR_PREFLIGHT_REJECTION_CONTRACT.md).
+
+```http
+POST /api/method/kopos_connector.api.prepare_automatic_qr_sale
+POST /api/method/kopos_connector.api.generate_maybank_qr
+GET /api/method/kopos_connector.api.check_maybank_payment?transaction_refno=...
+```
+
+Every successful generation and payment-status response returns the exact
+nonempty persisted provider `transaction_refno` and integer
+`sale_amount_sen`. The legacy decimal `sale_amount` is derived from that
+integer-sen authority. Status checks use the request reference only to locate
+the device-scoped ERP record; response identity and amount come from the
+persisted Maybank QR Transaction, never from client-supplied values. Malformed
+or mismatched provider/persisted identity fails closed.
+
+The **DuitNow QR** Mode of Payment must be type **Bank** and resolve to exactly
+one enabled, non-group Bank or untyped Asset clearing account for the company
+and currency. A physical Cash ledger is rejected during provider preflight, so
+a customer cannot pay a QR that ERP would later post into till cash.
+
+On an isolated developer/test site, a non-device System Manager may use the
+Maybank QR Transaction Desk action **Simulate Successful Payment (Test Only)**.
+Manual mock mode keeps the transaction pending until that explicit action; ERP
+then applies a server-derived status through the same locked provider identity
+validator and sale finalization path. The action is POST-only, audited,
+idempotent, and unavailable unless every mock/developer/simulation guard is
+enabled. Maybank QR Transaction itself is read-only and must never be edited to
+forge `paid`. See the
+[Maybank QR test simulation contract](docs/MAYBANK_QR_TEST_SIMULATION_CONTRACT.md).
+
+Before a QR is issued, the cashier may switch to another payment method through
+`cancel_prepared_automatic_qr_sale`. ERP returns local cancellation authority
+only after locking the prepared sale and proving that every linked attempt is a
+durable preflight rejection where Maybank was never contacted. Issued, pending,
+ambiguous, scanned, or paid attempts remain fail-closed.
+
+```http
+POST /api/method/kopos_connector.api.cancel_prepared_automatic_qr_sale
+```
+
+If an issued Automatic QR cannot be confirmed online, the cashier may verify the
+customer's exact-amount bank receipt and complete the sale locally. The later
+`submit_order` call submits that same prepared FB Order and creates its one Sales Invoice,
+but the Maybank payment is linked to its exact issued transaction and posts to
+`Maybank Settings.manual_qr_suspense_account` with
+`settlement_status: pending_reconciliation`. Fulfillment and printing do not
+wait for this back-office settlement state. A delayed receipt upload and later
+provider/bank review update the same Maybank QR Transaction and FB Order Payment;
+they must never create a second sale or invoice.
+
+The order/invoice/fulfillment state and settlement state are deliberately
+separate. `pending_reconciliation` is a back-office accounting state only: it
+does not reopen the sale, suppress sticker printing, block the next checkout, or
+prevent an otherwise healthy submitted shift from operating. Provider-paid
+evidence later reclassifies the exact suspense receipt to the configured bank or
+clearing account through one idempotent submitted Journal Entry.
+
+A manager may mark a settlement `reconciliation_failed` only after ERP proves
+the submitted Sales Invoice suspense debit and posts one exact compensating
+Journal Entry: debit the company's configured KoPOS QR failure variance Expense
+account and credit the snapshotted QR suspense account. The Journal Entry, its
+server-derived accounting key, reason, source, order, payment row, invoice,
+amount, company, currency, historical target account, and default Cost Center
+are bound and verified before the terminal state is written. If configuration or
+accounting evidence is missing, the settlement remains `pending_reconciliation`;
+the already-submitted
+sale, fulfillment, printing, and next checkout remain unaffected. See the
+[QR reconciliation accounting contract](docs/QR_RECONCILIATION_ACCOUNTING_CONTRACT.md).
+If provider-paid truth arrives after a terminal failure, ERP proves the failure
+Journal Entry and posts variance-to-bank recovery; it never credits suspense a
+second time and never creates or reopens a sale.
+
+If Maybank later reports a second paid attempt for the same prepared payment,
+the first exact attempt remains the winning settlement and ERP never creates a
+second Sales Invoice. The later attempt progresses independently through
+`accounting_pending -> refund_required -> refunded`. ERP must first prove one
+bank/clearing-to-customer-liability Journal Entry; a non-device System Manager
+may then record only an exact provider refund and ERP proves the inverse Journal
+Entry before marking it refunded. Missing configuration or accounting evidence
+cannot block the cashier or roll back the winning sale. Offset/store-credit
+resolution is intentionally unsupported. See the
+[duplicate Automatic QR refund contract](docs/DUPLICATE_AUTOMATIC_QR_REFUND_CONTRACT.md).
+
 ### Process Refund
 
 Create a return `Sales Invoice` and its posted accounting settlement against an
