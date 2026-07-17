@@ -543,6 +543,194 @@ class TestSalesInvoiceService(unittest.TestCase):
         self.assertEqual(invoice.payments[0].account, "Manual QR Suspense - TC")
         self.assertEqual(invoice.payments[0].amount, Decimal("12.95"))
 
+    def test_verified_maybank_qr_projects_only_through_account_policy(self):
+        order = self.make_fb_order_stub()
+        order.payments = [
+            frappe._dict(
+                {
+                    "payment_method": "DuitNow QR",
+                    "payment_channel_code": "maybank",
+                    "source_payment_id": "PAY-MAYBANK-001",
+                    "amount": Decimal("12.95"),
+                    "tendered_amount": Decimal("12.95"),
+                    "change_amount": Decimal("0.00"),
+                    "settlement_status": "verified",
+                    "is_manual_confirmation": 0,
+                    "reference_no": "MB-REF-1",
+                }
+            )
+        ]
+        invoice = frappe._dict(
+            {
+                "company": self.company,
+                "currency": "MYR",
+                "payments": [],
+                "append": lambda field, value: invoice[field].append(
+                    frappe._dict(value)
+                ),
+            }
+        )
+
+        with (
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.resolve_verified_qr_settlement_account",
+                return_value={"account": "QR Clearing - TC", "type": "Bank"},
+            ) as verified_account,
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._resolve_mode_of_payment_context",
+                side_effect=AssertionError(
+                    "verified Maybank QR must not use generic payment resolution"
+                ),
+            ),
+        ):
+            _append_payment_rows(invoice, order)
+
+        verified_account.assert_called_once_with(
+            "DuitNow QR",
+            self.company,
+            "MYR",
+        )
+        self.assertEqual(invoice.payments[0].account, "QR Clearing - TC")
+        self.assertEqual(invoice.payments[0].type, "Bank")
+
+    def test_automatic_maybank_qr_fails_closed_for_unverified_settlement(self):
+        for settlement_status in ("Verified", "pending_reconciliation"):
+            with self.subTest(settlement_status=settlement_status):
+                order = self.make_fb_order_stub()
+                order.payments = [
+                    frappe._dict(
+                        {
+                            "payment_method": "DuitNow QR",
+                            "payment_channel_code": "maybank-qr",
+                            "amount": Decimal("12.95"),
+                            "tendered_amount": Decimal("12.95"),
+                            "change_amount": Decimal("0.00"),
+                            "settlement_status": settlement_status,
+                            "is_manual_confirmation": 0,
+                        }
+                    )
+                ]
+                invoice = frappe._dict(
+                    {
+                        "company": self.company,
+                        "currency": "MYR",
+                        "payments": [],
+                        "append": lambda field, value: invoice[field].append(
+                            frappe._dict(value)
+                        ),
+                    }
+                )
+
+                with (
+                    patch(
+                        "kopos_connector.kopos.services.accounting.sales_invoice_service.resolve_verified_qr_settlement_account"
+                    ) as verified_account,
+                    patch(
+                        "kopos_connector.kopos.services.accounting.sales_invoice_service._resolve_mode_of_payment_context"
+                    ) as generic_account,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "must have verified settlement status",
+                    ):
+                        _append_payment_rows(invoice, order)
+
+                verified_account.assert_not_called()
+                generic_account.assert_not_called()
+                self.assertEqual(invoice.payments, [])
+
+    def test_manual_maybank_qr_fails_closed_for_verified_settlement(self):
+        order = self.make_fb_order_stub()
+        order.payments = [
+            frappe._dict(
+                {
+                    "payment_method": "DuitNow QR",
+                    "payment_channel_code": "MAYBANK_QR",
+                    "amount": Decimal("12.95"),
+                    "tendered_amount": Decimal("12.95"),
+                    "change_amount": Decimal("0.00"),
+                    "settlement_status": "verified",
+                    "is_manual_confirmation": 1,
+                    "suspense_account": "Manual QR Suspense - TC",
+                }
+            )
+        ]
+        invoice = frappe._dict(
+            {
+                "company": self.company,
+                "currency": "MYR",
+                "payments": [],
+                "append": lambda field, value: invoice[field].append(
+                    frappe._dict(value)
+                ),
+            }
+        )
+
+        with (
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.resolve_verified_qr_settlement_account"
+            ) as verified_account,
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._resolve_mode_of_payment_context"
+            ) as generic_account,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "must remain pending_reconciliation",
+            ):
+                _append_payment_rows(invoice, order)
+
+        verified_account.assert_not_called()
+        generic_account.assert_not_called()
+        self.assertEqual(invoice.payments, [])
+
+    def test_hyphenated_maybank_qr_channel_uses_verified_account_policy(self):
+        order = self.make_fb_order_stub()
+        order.payments = [
+            frappe._dict(
+                {
+                    "payment_method": "DuitNow QR",
+                    "payment_channel_code": "Maybank-QR",
+                    "amount": Decimal("12.95"),
+                    "tendered_amount": Decimal("12.95"),
+                    "change_amount": Decimal("0.00"),
+                    "settlement_status": "verified",
+                    "is_manual_confirmation": 0,
+                }
+            )
+        ]
+        invoice = frappe._dict(
+            {
+                "company": self.company,
+                "currency": "MYR",
+                "payments": [],
+                "append": lambda field, value: invoice[field].append(
+                    frappe._dict(value)
+                ),
+            }
+        )
+
+        with (
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.resolve_verified_qr_settlement_account",
+                return_value={"account": "QR Clearing - TC", "type": "Bank"},
+            ) as verified_account,
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._resolve_mode_of_payment_context",
+                side_effect=AssertionError(
+                    "hyphenated Maybank QR must not use generic resolution"
+                ),
+            ),
+        ):
+            _append_payment_rows(invoice, order)
+
+        verified_account.assert_called_once_with(
+            "DuitNow QR",
+            self.company,
+            "MYR",
+        )
+        self.assertEqual(invoice.payments[0].account, "QR Clearing - TC")
+
     def test_payment_projection_rejects_fractional_sen(self):
         order = self.make_fb_order_stub()
         order.payments[0].amount = Decimal("12.951")

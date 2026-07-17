@@ -24,6 +24,7 @@ class UploadEnv:
     manual_reconciliations: dict[str, SimpleNamespace] = field(default_factory=dict)
     files: dict[str, Any] = field(default_factory=dict)
     comments: list[SimpleNamespace] = field(default_factory=list)
+    payment_evidence: dict[str, str] = field(default_factory=dict)
     file_inserts: int = 0
 
 
@@ -48,7 +49,9 @@ def receipt_module(monkeypatch):
     device = SimpleNamespace(
         name="KoPOS Device A",
         device_id="DEVICE-A",
+        api_user="device-a@kopos.local",
         enabled=1,
+        config_version=8,
         pos_profile="POS-MAIN",
     )
     env.transactions["MBQR-TXN-1"] = build_transaction(
@@ -68,6 +71,24 @@ def receipt_module(monkeypatch):
         transaction_refno="TXN-B",
         device_id="DEVICE-B",
         amount_sen=1200,
+    )
+    linked_transaction = build_transaction(
+        name="MBQR-TXN-LINKED",
+        transaction_refno="TXN-LINKED",
+        device_id="DEVICE-A",
+        amount_sen=1200,
+    )
+    linked_transaction.status = "timeout"
+    linked_transaction.fb_order_payment = "FB-PAY-LINKED"
+    linked_transaction.manual_reconciliation_status = "pending_reconciliation"
+    env.transactions[linked_transaction.name] = linked_transaction
+    env.payment_evidence["FB-PAY-LINKED"] = json.dumps(
+        {
+            "evidence_kind": "receipt_photo",
+            "captured_at": "2026-03-13T18:05:45",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
     )
     env.manual_reconciliations["MQR-1"] = build_manual_reconciliation()
 
@@ -103,6 +124,11 @@ def receipt_module(monkeypatch):
             if as_dict and isinstance(fieldname, list):
                 return {field: getattr(file_doc, field, None) for field in fieldname}
             return getattr(file_doc, fieldname, None)
+        if (
+            doctype == "FB Order Payment"
+            and fieldname == "manual_confirmation_evidence_json"
+        ):
+            return env.payment_evidence.get(str(filters))
         if doctype == "Company" and fieldname == "default_currency":
             return "MYR"
         return None
@@ -182,6 +208,11 @@ def receipt_module(monkeypatch):
     )
     monkeypatch.setattr(
         manual_qr_receipt,
+        "require_device_context",
+        lambda device_id: device,
+    )
+    monkeypatch.setattr(
+        manual_qr_receipt,
         "lock_device_for_operational_mutation",
         lambda device_id: device,
     )
@@ -243,6 +274,66 @@ def test_static_qr_upload_attaches_to_manual_reconciliation(receipt_module):
     assert receipt_module.locked_transactions == ["MQR-1"]
 
 
+def test_offline_receipt_upload_attaches_after_transaction_timeout(
+    receipt_module,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        receipt_module.module,
+        "now_datetime",
+        lambda: datetime(2026, 3, 15, 18, 5, 45),
+    )
+
+    result = receipt_module.module.upload_manual_qr_receipt(
+        **valid_payload(
+            transaction_refno="TXN-LINKED",
+            captured_at="2026-03-13T18:05:45",
+            idempotency_key="upload-key-linked",
+        )
+    )
+
+    transaction = receipt_module.env.transactions["MBQR-TXN-LINKED"]
+    assert result["status"] == "ok"
+    assert result["attached_to_name"] == "MBQR-TXN-LINKED"
+    assert transaction.manual_reconciliation_status == "pending_reconciliation"
+    assert transaction.receipt_file
+
+
+def test_late_receipt_upload_preserves_provider_paid_and_reconciled_truth(
+    receipt_module,
+):
+    transaction = receipt_module.env.transactions["MBQR-TXN-LINKED"]
+    transaction.status = "paid"
+    transaction.manual_reconciliation_status = "reconciled"
+
+    result = receipt_module.module.upload_manual_qr_receipt(
+        **valid_payload(
+            transaction_refno="TXN-LINKED",
+            captured_at="2026-03-13T18:05:45",
+            idempotency_key="upload-key-linked-after-reconciled",
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert transaction.status == "paid"
+    assert transaction.manual_reconciliation_status == "reconciled"
+    assert transaction.receipt_file
+
+
+def test_linked_offline_receipt_must_match_persisted_capture_time(receipt_module):
+    with pytest.raises(
+        receipt_module.frappe.ValidationError,
+        match="captured_at does not match",
+    ):
+        receipt_module.module.upload_manual_qr_receipt(
+            **valid_payload(
+                transaction_refno="TXN-LINKED",
+                captured_at="2026-03-13T18:05:46",
+                idempotency_key="upload-key-linked-mismatch",
+            )
+        )
+
+
 def test_authentication_happens_before_receipt_bytes_are_read(receipt_module, monkeypatch):
     class ReadMustNotRun:
         mimetype = "image/jpeg"
@@ -259,7 +350,7 @@ def test_authentication_happens_before_receipt_bytes_are_read(receipt_module, mo
     )
     monkeypatch.setattr(
         receipt_module.module,
-        "lock_device_for_operational_mutation",
+        "require_device_context",
         lambda device_id: (_ for _ in ()).throw(
             receipt_module.frappe.ValidationError("denied")
         ),
@@ -267,6 +358,92 @@ def test_authentication_happens_before_receipt_bytes_are_read(receipt_module, mo
 
     with pytest.raises(receipt_module.frappe.ValidationError, match="denied"):
         receipt_module.module.upload_manual_qr_receipt(**valid_payload())
+
+
+def test_receipt_body_is_processed_before_device_mutation_lock(
+    receipt_module,
+    monkeypatch,
+):
+    events: list[str] = []
+
+    class TrackingUpload:
+        mimetype = "image/jpeg"
+        content_type = "image/jpeg"
+
+        def __init__(self) -> None:
+            self.stream = self
+
+        def read(self, _size: int = -1) -> bytes:
+            events.append("read_receipt")
+            assert "device_lock" not in events
+            return JPEG_BYTES
+
+        def seek(self, _position: int) -> None:
+            return None
+
+    original_load = receipt_module.module._load_and_validate_transaction
+
+    def track_transaction_load(payload, device):
+        events.append("transaction_mutation")
+        return original_load(payload, device)
+
+    monkeypatch.setattr(
+        receipt_module.frappe,
+        "request",
+        SimpleNamespace(files={"file": TrackingUpload()}),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        receipt_module.module,
+        "require_device_context",
+        lambda device_id: events.append("authorization_preflight")
+        or receipt_module.device,
+    )
+    monkeypatch.setattr(
+        receipt_module.module,
+        "lock_device_for_operational_mutation",
+        lambda device_id: events.append("device_lock") or receipt_module.device,
+    )
+    monkeypatch.setattr(
+        receipt_module.module,
+        "_load_and_validate_transaction",
+        track_transaction_load,
+    )
+
+    receipt_module.module.upload_manual_qr_receipt(**valid_payload())
+
+    assert events == [
+        "authorization_preflight",
+        "read_receipt",
+        "device_lock",
+        "transaction_mutation",
+    ]
+
+
+def test_receipt_mutation_rejects_device_authority_change_after_body_read(
+    receipt_module,
+    monkeypatch,
+):
+    changed_device = SimpleNamespace(
+        **{
+            **vars(receipt_module.device),
+            "config_version": receipt_module.device.config_version + 1,
+        }
+    )
+    monkeypatch.setattr(
+        receipt_module.module,
+        "lock_device_for_operational_mutation",
+        lambda device_id: changed_device,
+    )
+
+    with pytest.raises(
+        receipt_module.frappe.ValidationError,
+        match="authority changed",
+    ):
+        receipt_module.module.upload_manual_qr_receipt(**valid_payload())
+
+    assert receipt_module.locked_transactions == []
+    assert receipt_module.env.file_inserts == 0
 
 
 def test_receipt_reader_is_bounded_to_configured_limit_plus_one(receipt_module, monkeypatch):
@@ -427,6 +604,7 @@ def build_transaction(
         receipt_captured_at=None,
         receipt_uploaded_at=None,
         manual_reconciliation_status="",
+        fb_order_payment=None,
     )
 
 

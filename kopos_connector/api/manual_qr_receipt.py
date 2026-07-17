@@ -30,6 +30,11 @@ from kopos_connector.api.devices import (
     require_device_context,
     require_kopos_api_access,
 )
+from kopos_connector.kopos.services.accounting.qr_reconciliation_service import (
+    assert_qr_suspense_failure_reclassification,
+    ensure_qr_suspense_failure_reclassification,
+    ensure_qr_suspense_reclassification,
+)
 from kopos_connector.utils.diagnostics import log_sanitized_error, sanitized_error_message
 
 
@@ -75,6 +80,7 @@ def list_pending_manual_qr_reconciliations() -> list[dict[str, Any]]:
             "receipt_order_id",
             "receipt_amount_sen",
             "fb_order",
+            "fb_order_payment",
             "sales_invoice",
             "idempotency_key",
         ],
@@ -109,7 +115,9 @@ def list_pending_manual_qr_reconciliations() -> list[dict[str, Any]]:
     return [
         _manual_reconciliation_row(row)
         for row in [*maybank_rows, *manual_rows]
-        if _has_manual_receipt_evidence(row) or _is_static_reconciliation(row)
+        if _is_static_reconciliation(row)
+        or _has_manual_receipt_evidence(row)
+        or bool(cstr(_row_value(row, "fb_order_payment")).strip())
     ]
 
 
@@ -202,6 +210,14 @@ def _mark_manual_qr_reconciled(**kwargs: Any) -> dict[str, str]:
     payload = _collect_reconciliation_payload(kwargs, required_fields=("note",))
     txn = _load_pending_reconciliation_transaction(payload["transaction_refno"])
     _validate_reconciliation_bank_match(txn, payload)
+    _ensure_reconciliation_accounting_context(txn)
+    accounting_evidence = ensure_qr_suspense_reclassification(txn)
+    journal_entry = cstr(accounting_evidence.get("journal_entry")).strip()
+    if not journal_entry:
+        frappe.throw(
+            _("QR reconciliation did not produce submitted accounting evidence"),
+            frappe.ValidationError,
+        )
     reconciled_at = now_datetime()
 
     frappe.db.set_value(
@@ -213,9 +229,10 @@ def _mark_manual_qr_reconciled(**kwargs: Any) -> dict[str, str]:
             "reconciled_at": reconciled_at,
             "reconciliation_note": payload["note"],
             "reconciliation_failed_reason": None,
+            "reclassification_journal_entry": journal_entry,
         },
     )
-    _update_static_payment_settlement(txn, RECONCILED_STATUS)
+    _update_linked_payment_settlement(txn, RECONCILED_STATUS)
     _write_reconciliation_comment(
         txn,
         action=RECONCILED_STATUS,
@@ -223,8 +240,13 @@ def _mark_manual_qr_reconciled(**kwargs: Any) -> dict[str, str]:
         note=payload["note"],
         reason=None,
         reconciled_at=reconciled_at,
+        reclassification_journal_entry=journal_entry,
     )
-    return {"status": "ok", "manual_reconciliation_status": RECONCILED_STATUS}
+    return {
+        "status": "ok",
+        "manual_reconciliation_status": RECONCILED_STATUS,
+        "reclassification_journal_entry": journal_entry,
+    }
 
 
 @frappe.whitelist(methods=["POST"])
@@ -242,8 +264,40 @@ def _mark_manual_qr_reconciliation_failed(**kwargs: Any) -> dict[str, str]:
     if reason not in RECONCILIATION_FAILED_REASONS:
         frappe.throw(_("reconciliation_failed_reason is invalid"), frappe.ValidationError)
 
-    txn = _load_pending_reconciliation_transaction(payload["transaction_refno"])
+    txn = _load_pending_reconciliation_transaction(
+        payload["transaction_refno"],
+        allowed_statuses={
+            PENDING_RECONCILIATION_STATUS,
+            RECONCILIATION_FAILED_STATUS,
+        },
+    )
+    if _has_provider_paid_truth(txn):
+        frappe.throw(
+            _("Provider-paid Maybank QR truth cannot be marked reconciliation_failed"),
+            frappe.ValidationError,
+        )
+    if cstr(getattr(txn, "reclassification_journal_entry", None)).strip():
+        frappe.throw(
+            _("QR reconciliation already has posted accounting evidence"),
+            frappe.ValidationError,
+        )
     _validate_reconciliation_bank_match(txn, payload)
+    _ensure_reconciliation_accounting_context(txn)
+    if _record_status(txn) == RECONCILIATION_FAILED_STATUS:
+        return _replay_failed_reconciliation(txn, payload)
+
+    accounting_evidence = ensure_qr_suspense_failure_reclassification(
+        txn,
+        reason,
+    )
+    journal_entry = cstr(accounting_evidence.get("journal_entry")).strip()
+    if not journal_entry or cstr(
+        getattr(txn, "failure_journal_entry", None)
+    ).strip() != journal_entry:
+        frappe.throw(
+            _("QR failure disposition did not produce linked submitted accounting evidence"),
+            frappe.ValidationError,
+        )
     reconciled_at = now_datetime()
 
     frappe.db.set_value(
@@ -255,9 +309,10 @@ def _mark_manual_qr_reconciliation_failed(**kwargs: Any) -> dict[str, str]:
             "reconciled_by": payload["manager_id"],
             "reconciled_at": reconciled_at,
             "reconciliation_note": payload["note"],
+            "failure_journal_entry": journal_entry,
         },
     )
-    _update_static_payment_settlement(txn, RECONCILIATION_FAILED_STATUS)
+    _update_linked_payment_settlement(txn, RECONCILIATION_FAILED_STATUS)
     _write_reconciliation_comment(
         txn,
         action=RECONCILIATION_FAILED_STATUS,
@@ -265,8 +320,47 @@ def _mark_manual_qr_reconciliation_failed(**kwargs: Any) -> dict[str, str]:
         note=payload["note"],
         reason=reason,
         reconciled_at=reconciled_at,
+        failure_journal_entry=journal_entry,
     )
-    return {"status": "ok", "manual_reconciliation_status": RECONCILIATION_FAILED_STATUS}
+    return {
+        "status": "ok",
+        "manual_reconciliation_status": RECONCILIATION_FAILED_STATUS,
+        "failure_journal_entry": journal_entry,
+    }
+
+
+def _replay_failed_reconciliation(
+    txn: Any,
+    payload: dict[str, str],
+) -> dict[str, str]:
+    expected = {
+        "reconciliation_failed_reason": payload["reason"],
+        "reconciled_by": payload["manager_id"],
+        "reconciliation_note": payload["note"],
+    }
+    for fieldname, expected_value in expected.items():
+        if cstr(getattr(txn, fieldname, None)).strip() != expected_value:
+            frappe.throw(
+                _("Terminal QR reconciliation failure does not match this retry"),
+                frappe.ValidationError,
+            )
+    evidence = assert_qr_suspense_failure_reclassification(
+        txn,
+        payload["reason"],
+    )
+    journal_entry = cstr(evidence.get("journal_entry")).strip()
+    if not journal_entry or cstr(
+        getattr(txn, "failure_journal_entry", None)
+    ).strip() != journal_entry:
+        frappe.throw(
+            _("Terminal QR reconciliation failure has no linked accounting evidence"),
+            frappe.ValidationError,
+        )
+    return {
+        "status": "ok",
+        "manual_reconciliation_status": RECONCILIATION_FAILED_STATUS,
+        "failure_journal_entry": journal_entry,
+    }
 
 
 @frappe.whitelist(methods=["POST"])
@@ -277,11 +371,17 @@ def upload_manual_qr_receipt(**kwargs: Any) -> dict[str, str | None]:
 
     try:
         payload = _collect_payload(kwargs)
-        device = _resolve_authorized_device(payload["device_id"])
+        preflight_device = _resolve_authorized_device(payload["device_id"])
+        device_authority = _capture_receipt_device_authority(preflight_device)
         uploaded_file = _get_uploaded_file()
         content, mime_type = _read_and_validate_jpeg(uploaded_file)
         file_hash = hashlib.sha256(content).hexdigest()
 
+        # Reading and hashing a multi-megabyte JPEG must not hold the same device
+        # row lock used by order submission. Reacquire the lock only for the
+        # receipt mutation, then re-prove that device authority did not change
+        # while the bounded upload body was being processed.
+        device = _revalidate_receipt_device_authority(device_authority)
         txn = _load_and_validate_transaction(payload, device)
         transaction_name = cstr(getattr(txn, "name", None)).strip()
         transaction_doctype = _record_doctype(txn)
@@ -488,7 +588,11 @@ def _has_manual_receipt_evidence(row: Any) -> bool:
     )
 
 
-def _load_pending_reconciliation_transaction(transaction_refno: str) -> Any:
+def _load_pending_reconciliation_transaction(
+    transaction_refno: str,
+    *,
+    allowed_statuses: set[str] | None = None,
+) -> Any:
     is_static = _is_static_reference(transaction_refno)
     doctype = (
         MANUAL_QR_RECONCILIATION_DOCTYPE
@@ -508,7 +612,8 @@ def _load_pending_reconciliation_transaction(transaction_refno: str) -> Any:
     )
     txn = frappe.get_doc(doctype, txn_name)
     status = _record_status(txn)
-    if status != PENDING_RECONCILIATION_STATUS:
+    expected_statuses = allowed_statuses or {PENDING_RECONCILIATION_STATUS}
+    if status not in expected_statuses:
         frappe.throw(
             _("QR reconciliation record is not pending manual reconciliation"),
             frappe.ValidationError,
@@ -518,9 +623,13 @@ def _load_pending_reconciliation_transaction(transaction_refno: str) -> Any:
             _("Manual QR Reconciliation payment row is missing"),
             frappe.ValidationError,
         )
-    if not _has_manual_receipt_evidence(txn) and not is_static:
+    if (
+        not is_static
+        and not _has_manual_receipt_evidence(txn)
+        and not cstr(getattr(txn, "fb_order_payment", None)).strip()
+    ):
         frappe.throw(
-            _("Maybank QR Transaction has no manual receipt evidence"),
+            _("Maybank QR Transaction has no manual confirmation evidence"),
             frappe.ValidationError,
         )
     return txn
@@ -558,6 +667,81 @@ def _validate_reconciliation_bank_match(txn: Any, payload: dict[str, str]) -> No
             _("provider does not match QR reconciliation record"),
             frappe.ValidationError,
         )
+
+
+def _ensure_reconciliation_accounting_context(txn: Any) -> None:
+    if _is_static_reconciliation(txn):
+        return
+
+    order_name = cstr(getattr(txn, "fb_order", None)).strip()
+    payment_row_name = cstr(getattr(txn, "fb_order_payment", None)).strip()
+    if not order_name or not payment_row_name:
+        frappe.throw(
+            _("Maybank QR reconciliation is not linked to its submitted sale payment"),
+            frappe.ValidationError,
+        )
+
+    order = frappe.get_doc("FB Order", order_name)
+    expected_company = cstr(getattr(order, "company", None)).strip()
+    expected_currency = cstr(getattr(order, "currency", None)).strip().upper()
+    payment_context = frappe.db.get_value(
+        "FB Order Payment",
+        payment_row_name,
+        ["parent", "suspense_account"],
+        as_dict=True,
+    )
+    if not payment_context:
+        frappe.throw(
+            _("Maybank QR reconciliation payment row was not found"),
+            frappe.ValidationError,
+        )
+    if cstr(_row_value(payment_context, "parent")).strip() != order_name:
+        frappe.throw(
+            _("Maybank QR reconciliation payment row belongs to another sale"),
+            frappe.ValidationError,
+        )
+    expected_suspense_account = cstr(
+        _row_value(payment_context, "suspense_account")
+    ).strip()
+    if not expected_company or not expected_currency or not expected_suspense_account:
+        frappe.throw(
+            _("Maybank QR reconciliation accounting context is incomplete"),
+            frappe.ValidationError,
+        )
+
+    expected_values = {
+        "company": expected_company,
+        "currency": expected_currency,
+        "suspense_account": expected_suspense_account,
+    }
+    updates: dict[str, str] = {}
+    for fieldname, expected in expected_values.items():
+        current = cstr(getattr(txn, fieldname, None)).strip()
+        if fieldname == "currency":
+            current = current.upper()
+        if current and current != expected:
+            frappe.throw(
+                _("Maybank QR reconciliation {0} does not match its sale").format(
+                    fieldname
+                ),
+                frappe.ValidationError,
+            )
+        if not current:
+            updates[fieldname] = expected
+
+    if updates:
+        frappe.db.set_value(
+            MAYBANK_TRANSACTION_DOCTYPE,
+            txn.name,
+            updates,
+            update_modified=False,
+        )
+
+
+def _has_provider_paid_truth(txn: Any) -> bool:
+    return not _is_static_reconciliation(txn) and (
+        cstr(getattr(txn, "status", None)).strip() == "paid"
+    )
 
 
 def _transaction_amount_sen(txn: Any) -> Any:
@@ -609,11 +793,13 @@ def _record_status_field(row: Any) -> str:
     )
 
 
-def _update_static_payment_settlement(row: Any, settlement_status: str) -> None:
-    if not _is_static_reconciliation(row):
-        return
+def _update_linked_payment_settlement(row: Any, settlement_status: str) -> None:
     payment_row = cstr(_row_value(row, "fb_order_payment")).strip()
     if not payment_row:
+        if not _is_static_reconciliation(row):
+            # Compatibility for legacy receipt-only Maybank records created
+            # before the exact FB Order Payment link became authoritative.
+            return
         frappe.throw(
             _("Manual QR Reconciliation payment row is missing"),
             frappe.ValidationError,
@@ -680,6 +866,8 @@ def _write_reconciliation_comment(
     note: str,
     reason: str | None,
     reconciled_at: Any,
+    reclassification_journal_entry: str | None = None,
+    failure_journal_entry: str | None = None,
 ) -> None:
     payload = {
         "action": action,
@@ -688,6 +876,8 @@ def _write_reconciliation_comment(
         "note": note,
         "reason": reason,
         "reconciled_at": cstr(reconciled_at),
+        "reclassification_journal_entry": reclassification_journal_entry,
+        "failure_journal_entry": failure_journal_entry,
     }
     comment = frappe.get_doc(
         {
@@ -811,7 +1001,10 @@ def _get_max_receipt_bytes() -> int:
 
 
 def _resolve_authorized_device(request_device_id: str) -> Any:
-    device = lock_device_for_operational_mutation(device_id=request_device_id)
+    device = require_device_context(device_id=request_device_id)
+    if device is None:
+        frappe.throw(_("KoPOS Device is required"), frappe.ValidationError)
+        raise AssertionError("frappe.throw must raise")
     authorized_device_id = cstr(getattr(device, "device_id", None)).strip()
     if not authorized_device_id:
         frappe.throw(_("Authenticated KoPOS Device has no device_id"), frappe.ValidationError)
@@ -823,6 +1016,35 @@ def _resolve_authorized_device(request_device_id: str) -> Any:
     if not cint(getattr(device, "enabled", 1)):
         frappe.throw(_("KoPOS Device is disabled"), frappe.ValidationError)
     return device
+
+
+def _capture_receipt_device_authority(device: Any) -> dict[str, str | int]:
+    return {
+        "name": cstr(getattr(device, "name", None)).strip(),
+        "device_id": cstr(getattr(device, "device_id", None)).strip(),
+        "api_user": cstr(getattr(device, "api_user", None)).strip(),
+        "config_version": cint(getattr(device, "config_version", 0)),
+        "pos_profile": cstr(getattr(device, "pos_profile", None)).strip(),
+    }
+
+
+def _revalidate_receipt_device_authority(
+    authority: dict[str, str | int],
+) -> Any:
+    request_device_id = cstr(authority.get("device_id")).strip()
+    locked_device = lock_device_for_operational_mutation(
+        device_id=request_device_id,
+    )
+    current_authority = _capture_receipt_device_authority(locked_device)
+    if current_authority != authority:
+        frappe.throw(
+            _(
+                "KoPOS Device authority changed while the receipt upload was in flight; "
+                "authenticate again"
+            ),
+            frappe.ValidationError,
+        )
+    return locked_device
 
 
 def _load_and_validate_transaction(payload: dict[str, str], device: Any) -> Any:
@@ -865,7 +1087,10 @@ def _load_and_validate_transaction(payload: dict[str, str], device: Any) -> Any:
         _validate_static_receipt_capture(txn, payload["captured_at"])
     else:
         _validate_provider_context(txn)
-        _validate_transaction_window(txn, payload["captured_at"])
+        if cstr(getattr(txn, "fb_order_payment", None)).strip():
+            _validate_linked_maybank_receipt_capture(txn, payload["captured_at"])
+        else:
+            _validate_transaction_window(txn, payload["captured_at"])
     return txn
 
 
@@ -894,6 +1119,55 @@ def _validate_static_receipt_capture(txn: Any, captured_at: str) -> None:
     if actual_capture != expected_capture:
         frappe.throw(
             _("captured_at does not match Manual QR Reconciliation evidence"),
+            frappe.ValidationError,
+        )
+
+
+def _validate_linked_maybank_receipt_capture(txn: Any, captured_at: str) -> None:
+    if _record_status(txn) not in {
+        PENDING_RECONCILIATION_STATUS,
+        RECONCILED_STATUS,
+        RECONCILIATION_FAILED_STATUS,
+    }:
+        frappe.throw(
+            _("Maybank QR Transaction is not a manual reconciliation"),
+            frappe.ValidationError,
+        )
+
+    payment_row = cstr(getattr(txn, "fb_order_payment", None)).strip()
+    raw_evidence = cstr(
+        frappe.db.get_value(
+            "FB Order Payment",
+            payment_row,
+            "manual_confirmation_evidence_json",
+        )
+    ).strip()
+    try:
+        evidence = json.loads(raw_evidence)
+    except (TypeError, ValueError):
+        frappe.throw(
+            _("FB Order Payment manual confirmation evidence is invalid"),
+            frappe.ValidationError,
+        )
+        return
+    if not isinstance(evidence, dict) or cstr(evidence.get("evidence_kind")).strip() != (
+        "receipt_photo"
+    ):
+        frappe.throw(
+            _("FB Order Payment does not require receipt photo upload"),
+            frappe.ValidationError,
+        )
+    expected_captured_at = cstr(evidence.get("captured_at")).strip()
+    if not expected_captured_at:
+        frappe.throw(
+            _("FB Order Payment receipt captured_at is missing"),
+            frappe.ValidationError,
+        )
+    if _coerce_site_datetime(captured_at) != _coerce_site_datetime(
+        expected_captured_at
+    ):
+        frappe.throw(
+            _("captured_at does not match FB Order Payment evidence"),
             frappe.ValidationError,
         )
 
@@ -1074,22 +1348,25 @@ def _create_private_file(txn: Any, file_name: str, content: bytes) -> Any:
 def _attach_receipt_file(
     txn: Any, file_doc: Any, payload: dict[str, str], file_hash: str
 ) -> None:
+    updates: dict[str, Any] = {
+        "receipt_file": cstr(getattr(file_doc, "name", None)).strip(),
+        "receipt_uploaded_at": now_datetime(),
+        "receipt_idempotency_key": payload["idempotency_key"],
+        "receipt_idempotency_fingerprint": _idempotency_fingerprint(payload),
+        "receipt_payment_id": payload["payment_id"],
+        "receipt_order_id": payload["order_id"],
+        "receipt_amount_sen": cint(payload["amount_sen"]),
+        "receipt_file_name": payload["file_name"],
+        "receipt_file_hash": file_hash,
+        "receipt_captured_at": _coerce_site_datetime(payload["captured_at"]),
+    }
+    if not _record_status(txn):
+        updates[_record_status_field(txn)] = PENDING_RECONCILIATION_STATUS
+
     frappe.db.set_value(
         _record_doctype(txn),
         txn.name,
-        {
-            "receipt_file": cstr(getattr(file_doc, "name", None)).strip(),
-            "receipt_uploaded_at": now_datetime(),
-            "receipt_idempotency_key": payload["idempotency_key"],
-            "receipt_idempotency_fingerprint": _idempotency_fingerprint(payload),
-            "receipt_payment_id": payload["payment_id"],
-            "receipt_order_id": payload["order_id"],
-            "receipt_amount_sen": cint(payload["amount_sen"]),
-            "receipt_file_name": payload["file_name"],
-            "receipt_file_hash": file_hash,
-            "receipt_captured_at": _coerce_site_datetime(payload["captured_at"]),
-            _record_status_field(txn): PENDING_RECONCILIATION_STATUS,
-        },
+        updates,
         update_modified=False,
     )
 

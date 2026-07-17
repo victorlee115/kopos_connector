@@ -20,6 +20,9 @@ class ReconciliationEnv:
     comments: list[SimpleNamespace] = field(default_factory=list)
     updates: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     payment_updates: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    accounting_posts: list[str] = field(default_factory=list)
+    failure_accounting_posts: list[tuple[str, str]] = field(default_factory=list)
+    failure_accounting_assertions: list[tuple[str, str]] = field(default_factory=list)
 
 
 @pytest.fixture
@@ -43,6 +46,7 @@ def reconciliation_module(monkeypatch):
                 receipt_payment_id="PAY-1",
                 receipt_order_id="ORDER-1",
                 fb_order="FB-ORDER-1",
+                fb_order_payment="FB-PAY-1",
                 sales_invoice="SINV-1",
             ),
             "MBQR-PENDING-2": build_transaction(
@@ -56,6 +60,19 @@ def reconciliation_module(monkeypatch):
                 receipt_idempotency_key="receipt-key-2",
                 receipt_payment_id="PAY-2",
                 receipt_order_id="ORDER-2",
+                fb_order="FB-ORDER-2",
+                fb_order_payment="FB-PAY-2",
+                sales_invoice="SINV-2",
+            ),
+            "MBQR-PENDING-NO-RECEIPT": build_transaction(
+                name="MBQR-PENDING-NO-RECEIPT",
+                transaction_refno="TXN-PENDING-NO-RECEIPT",
+                device_id="DEVICE-A",
+                amount_sen=1800,
+                manual_reconciliation_status="pending_reconciliation",
+                fb_order="FB-ORDER-3",
+                fb_order_payment="FB-PAY-3",
+                sales_invoice="SINV-3",
             ),
             "MBQR-LEGACY-FALSE-PENDING": build_transaction(
                 name="MBQR-LEGACY-FALSE-PENDING",
@@ -126,6 +143,18 @@ def reconciliation_module(monkeypatch):
         fieldname: Any = None,
         **_kwargs: Any,
     ) -> Any:
+        if doctype == "FB Order Payment" and isinstance(filters, str):
+            payment_parents = {
+                "FB-PAY-1": "FB-ORDER-1",
+                "FB-PAY-2": "FB-ORDER-2",
+                "FB-PAY-3": "FB-ORDER-3",
+            }
+            parent = payment_parents.get(filters)
+            if fieldname == ["parent", "suspense_account"] and parent:
+                return {
+                    "parent": parent,
+                    "suspense_account": "Manual QR Suspense - KPC",
+                }
         records = (
             env.manual_reconciliations
             if doctype == "Manual QR Reconciliation"
@@ -160,7 +189,49 @@ def reconciliation_module(monkeypatch):
             return env.transactions[str(args[1])]
         if len(args) >= 2 and args[0] == "Manual QR Reconciliation":
             return env.manual_reconciliations[str(args[1])]
+        if len(args) >= 2 and args[0] == "FB Order":
+            return SimpleNamespace(
+                doctype="FB Order",
+                name=str(args[1]),
+                company="KoPOS Cafe",
+                currency="MYR",
+                docstatus=1,
+            )
         raise AssertionError(f"unexpected get_doc call: {args!r} {kwargs!r}")
+
+    def fake_ensure_reclassification(source: Any) -> dict[str, Any]:
+        assert manual_qr_receipt._record_status(source) == "pending_reconciliation"
+        if not manual_qr_receipt._is_static_reconciliation(source):
+            assert source.company == "KoPOS Cafe"
+            assert source.currency == "MYR"
+            assert source.suspense_account == "Manual QR Suspense - KPC"
+        env.accounting_posts.append(source.name)
+        return {"journal_entry": f"JV-QR-{source.name}"}
+
+    def fake_ensure_failure_reclassification(
+        source: Any,
+        reason: str,
+    ) -> dict[str, Any]:
+        assert manual_qr_receipt._record_status(source) == "pending_reconciliation"
+        journal_entry = f"JV-QR-FAIL-{source.name}"
+        source.failure_accounting_key = f"kopos:qr-failure:v1:{source.name}"
+        source.failure_variance_account = "QR Failure Variance - KPC"
+        source.failure_cost_center = "Main - KPC"
+        source.failure_accounting_reason = reason
+        source.failure_journal_entry = journal_entry
+        env.failure_accounting_posts.append((source.name, reason))
+        return {"journal_entry": journal_entry, "failure_reason": reason}
+
+    def fake_assert_failure_reclassification(
+        source: Any,
+        reason: str,
+    ) -> dict[str, Any]:
+        assert manual_qr_receipt._record_status(source) == "reconciliation_failed"
+        env.failure_accounting_assertions.append((source.name, reason))
+        return {
+            "journal_entry": source.failure_journal_entry,
+            "failure_reason": reason,
+        }
 
     monkeypatch.setattr(frappe.db, "get_value", fake_get_value, raising=False)
     monkeypatch.setattr(frappe.db, "set_value", fake_set_value, raising=False)
@@ -174,6 +245,21 @@ def reconciliation_module(monkeypatch):
         lambda user=None: ["System Manager"] if user == "manager@example.com" else [],
         raising=False,
     )
+    monkeypatch.setattr(
+        manual_qr_receipt,
+        "ensure_qr_suspense_reclassification",
+        fake_ensure_reclassification,
+    )
+    monkeypatch.setattr(
+        manual_qr_receipt,
+        "ensure_qr_suspense_failure_reclassification",
+        fake_ensure_failure_reclassification,
+    )
+    monkeypatch.setattr(
+        manual_qr_receipt,
+        "assert_qr_suspense_failure_reclassification",
+        fake_assert_failure_reclassification,
+    )
     return SimpleNamespace(module=manual_qr_receipt, env=env, frappe=frappe)
 
 
@@ -183,6 +269,7 @@ def test_list_returns_only_pending_reconciliation_transactions(reconciliation_mo
     assert [row["transaction_refno"] for row in rows] == [
         "TXN-PENDING-1",
         "TXN-PENDING-2",
+        "TXN-PENDING-NO-RECEIPT",
     ]
     assert rows[0]["manual_reconciliation_status"] == "pending_reconciliation"
     assert rows[0]["device_id"] == "DEVICE-A"
@@ -276,8 +363,14 @@ def test_static_qr_list_fetch_and_reconcile_route_to_manual_record(
     assert fetched["statuses"][0]["reconciliation_status"] == (
         "pending_reconciliation"
     )
-    assert result == {"status": "ok", "manual_reconciliation_status": "reconciled"}
+    assert result == {
+        "status": "ok",
+        "manual_reconciliation_status": "reconciled",
+        "reclassification_journal_entry": "JV-QR-MQR-1",
+    }
     assert reconciliation.status == "reconciled"
+    assert reconciliation.reclassification_journal_entry == "JV-QR-MQR-1"
+    assert reconciliation_module.env.accounting_posts == ["MQR-1"]
     assert reconciliation_module.env.payment_updates == [
         ("FB-PAY-STATIC", {"settlement_status": "reconciled"})
     ]
@@ -304,10 +397,16 @@ def test_static_qr_failure_updates_order_payment_settlement(reconciliation_modul
     assert result == {
         "status": "ok",
         "manual_reconciliation_status": "reconciliation_failed",
+        "failure_journal_entry": "JV-QR-FAIL-MQR-1",
     }
     assert reconciliation.status == "reconciliation_failed"
+    assert reconciliation.failure_journal_entry == "JV-QR-FAIL-MQR-1"
     assert reconciliation_module.env.payment_updates == [
         ("FB-PAY-STATIC", {"settlement_status": "reconciliation_failed"})
+    ]
+    assert reconciliation_module.env.accounting_posts == []
+    assert reconciliation_module.env.failure_accounting_posts == [
+        ("MQR-1", "no_bank_transaction")
     ]
 
 
@@ -390,8 +489,13 @@ def test_mark_reconciled_updates_status_and_audit(reconciliation_module):
     comment = reconciliation_module.env.comments[0]
     audit = json.loads(comment.content)
 
-    assert result == {"status": "ok", "manual_reconciliation_status": "reconciled"}
+    assert result == {
+        "status": "ok",
+        "manual_reconciliation_status": "reconciled",
+        "reclassification_journal_entry": "JV-QR-MBQR-PENDING-1",
+    }
     assert txn.manual_reconciliation_status == "reconciled"
+    assert txn.reclassification_journal_entry == "JV-QR-MBQR-PENDING-1"
     assert txn.reconciled_by == "manager@example.com"
     assert txn.reconciled_at == datetime(2026, 3, 13, 18, 5, 0)
     assert txn.reconciliation_note == "Matched Maybank settlement report"
@@ -401,6 +505,11 @@ def test_mark_reconciled_updates_status_and_audit(reconciliation_module):
     assert audit["action"] == "reconciled"
     assert audit["manager_id"] == "manager@example.com"
     assert audit["transaction_refno"] == "TXN-PENDING-1"
+    assert audit["reclassification_journal_entry"] == "JV-QR-MBQR-PENDING-1"
+    assert reconciliation_module.env.accounting_posts == ["MBQR-PENDING-1"]
+    assert reconciliation_module.env.payment_updates == [
+        ("FB-PAY-1", {"settlement_status": "reconciled"})
+    ]
 
 
 def test_mark_failed_updates_status_reason_and_audit(reconciliation_module):
@@ -421,12 +530,185 @@ def test_mark_failed_updates_status_reason_and_audit(reconciliation_module):
     assert result == {
         "status": "ok",
         "manual_reconciliation_status": "reconciliation_failed",
+        "failure_journal_entry": "JV-QR-FAIL-MBQR-PENDING-2",
     }
     assert txn.manual_reconciliation_status == "reconciliation_failed"
+    assert txn.fb_order == "FB-ORDER-2"
+    assert txn.sales_invoice == "SINV-2"
     assert txn.reconciliation_failed_reason == "no_bank_transaction"
     assert txn.reconciled_by == "manager@example.com"
     assert audit["action"] == "reconciliation_failed"
     assert audit["reason"] == "no_bank_transaction"
+    assert audit["failure_journal_entry"] == "JV-QR-FAIL-MBQR-PENDING-2"
+    assert reconciliation_module.env.payment_updates == [
+        ("FB-PAY-2", {"settlement_status": "reconciliation_failed"})
+    ]
+    assert reconciliation_module.env.accounting_posts == []
+    assert reconciliation_module.env.failure_accounting_posts == [
+        ("MBQR-PENDING-2", "no_bank_transaction")
+    ]
+
+
+def test_provider_paid_truth_cannot_be_marked_reconciliation_failed(
+    reconciliation_module,
+):
+    txn = reconciliation_module.env.transactions["MBQR-PENDING-2"]
+    txn.status = "paid"
+
+    with pytest.raises(
+        reconciliation_module.frappe.ValidationError,
+        match="Provider-paid Maybank QR truth cannot be marked",
+    ):
+        reconciliation_module.module.mark_manual_qr_reconciliation_failed(
+            transaction_refno="TXN-PENDING-2",
+            amount_sen="2500",
+            business_date="2026-03-13",
+            device_id="DEVICE-B",
+            provider="maybank_qr",
+            manager_id="manager@example.com",
+            reason="no_bank_transaction",
+            note="A stale settlement file must not override provider truth",
+        )
+
+    assert txn.status == "paid"
+    assert txn.manual_reconciliation_status == "pending_reconciliation"
+    assert txn.reclassification_journal_entry is None
+    assert reconciliation_module.env.accounting_posts == []
+    assert reconciliation_module.env.failure_accounting_posts == []
+    assert reconciliation_module.env.payment_updates == []
+    assert reconciliation_module.env.comments == []
+
+
+def test_accounting_failure_does_not_complete_reconciliation(
+    reconciliation_module, monkeypatch
+):
+    def fail_accounting(_source: Any) -> dict[str, Any]:
+        raise reconciliation_module.frappe.ValidationError(
+            "submitted suspense GL evidence is missing"
+        )
+
+    monkeypatch.setattr(
+        reconciliation_module.module,
+        "ensure_qr_suspense_reclassification",
+        fail_accounting,
+    )
+
+    with pytest.raises(
+        reconciliation_module.frappe.ValidationError,
+        match="submitted suspense GL evidence is missing",
+    ):
+        reconciliation_module.module.mark_manual_qr_reconciled(
+            transaction_refno="TXN-PENDING-1",
+            amount_sen="1200",
+            business_date="2026-03-13",
+            device_id="DEVICE-A",
+            provider="maybank_qr",
+            manager_id="manager@example.com",
+            note="Cannot reconcile without posted GL evidence",
+        )
+
+    txn = reconciliation_module.env.transactions["MBQR-PENDING-1"]
+    assert txn.manual_reconciliation_status == "pending_reconciliation"
+    assert txn.reclassification_journal_entry is None
+    assert reconciliation_module.env.payment_updates == []
+    assert reconciliation_module.env.comments == []
+
+
+def test_failure_accounting_error_keeps_reconciliation_pending(
+    reconciliation_module, monkeypatch
+):
+    def fail_accounting(_source: Any, _reason: str) -> dict[str, Any]:
+        raise reconciliation_module.frappe.ValidationError(
+            "company QR failure variance account is not configured"
+        )
+
+    monkeypatch.setattr(
+        reconciliation_module.module,
+        "ensure_qr_suspense_failure_reclassification",
+        fail_accounting,
+    )
+
+    with pytest.raises(
+        reconciliation_module.frappe.ValidationError,
+        match="failure variance account is not configured",
+    ):
+        reconciliation_module.module.mark_manual_qr_reconciliation_failed(
+            transaction_refno="TXN-PENDING-2",
+            amount_sen="2500",
+            business_date="2026-03-13",
+            device_id="DEVICE-B",
+            provider="maybank_qr",
+            manager_id="manager@example.com",
+            reason="no_bank_transaction",
+            note="Cannot fail without compensating accounting",
+        )
+
+    txn = reconciliation_module.env.transactions["MBQR-PENDING-2"]
+    assert txn.manual_reconciliation_status == "pending_reconciliation"
+    assert txn.failure_journal_entry is None
+    assert reconciliation_module.env.payment_updates == []
+    assert reconciliation_module.env.comments == []
+
+
+def test_exact_failure_retry_reproves_same_journal_without_duplicate_side_effects(
+    reconciliation_module,
+):
+    payload = {
+        "transaction_refno": "TXN-PENDING-2",
+        "amount_sen": "2500",
+        "business_date": "2026-03-13",
+        "device_id": "DEVICE-B",
+        "provider": "maybank_qr",
+        "manager_id": "manager@example.com",
+        "reason": "no_bank_transaction",
+        "note": "Not present in settlement report",
+    }
+
+    first = reconciliation_module.module.mark_manual_qr_reconciliation_failed(**payload)
+    second = reconciliation_module.module.mark_manual_qr_reconciliation_failed(**payload)
+
+    assert first == second == {
+        "status": "ok",
+        "manual_reconciliation_status": "reconciliation_failed",
+        "failure_journal_entry": "JV-QR-FAIL-MBQR-PENDING-2",
+    }
+    assert reconciliation_module.env.failure_accounting_posts == [
+        ("MBQR-PENDING-2", "no_bank_transaction")
+    ]
+    assert reconciliation_module.env.failure_accounting_assertions == [
+        ("MBQR-PENDING-2", "no_bank_transaction")
+    ]
+    assert reconciliation_module.env.payment_updates == [
+        ("FB-PAY-2", {"settlement_status": "reconciliation_failed"})
+    ]
+    assert len(reconciliation_module.env.comments) == 1
+
+
+def test_failure_retry_with_changed_note_is_rejected(
+    reconciliation_module,
+):
+    payload = {
+        "transaction_refno": "TXN-PENDING-2",
+        "amount_sen": "2500",
+        "business_date": "2026-03-13",
+        "device_id": "DEVICE-B",
+        "provider": "maybank_qr",
+        "manager_id": "manager@example.com",
+        "reason": "no_bank_transaction",
+        "note": "Original reviewed note",
+    }
+    reconciliation_module.module.mark_manual_qr_reconciliation_failed(**payload)
+
+    with pytest.raises(
+        reconciliation_module.frappe.ValidationError,
+        match="does not match this retry",
+    ):
+        reconciliation_module.module.mark_manual_qr_reconciliation_failed(
+            **{**payload, "note": "Changed note"}
+        )
+
+    assert reconciliation_module.env.failure_accounting_assertions == []
+    assert len(reconciliation_module.env.comments) == 1
 
 
 def test_mark_failed_requires_valid_reason(reconciliation_module):
@@ -642,12 +924,16 @@ def build_transaction(
     receipt_payment_id: str | None = None,
     receipt_order_id: str | None = None,
     fb_order: str | None = None,
+    fb_order_payment: str | None = None,
     sales_invoice: str | None = None,
     reconciled_by: str | None = None,
     reconciliation_failed_reason: str | None = None,
+    provider_status: str = "pending",
 ) -> SimpleNamespace:
     return SimpleNamespace(
+        doctype="Maybank QR Transaction",
         name=name,
+        status=provider_status,
         transaction_refno=transaction_refno,
         device_id=device_id,
         amount_sen=amount_sen,
@@ -663,8 +949,19 @@ def build_transaction(
         receipt_order_id=receipt_order_id,
         receipt_amount_sen=amount_sen if receipt_payment_id else None,
         fb_order=fb_order,
+        fb_order_payment=fb_order_payment,
         sales_invoice=sales_invoice,
+        company=None,
+        currency="MYR",
+        suspense_account=None,
         idempotency_key=f"qr-key-{transaction_refno}",
+        reconciliation_idempotency_key=f"reconcile-key-{transaction_refno}",
+        reclassification_journal_entry=None,
+        failure_journal_entry=None,
+        failure_accounting_key=None,
+        failure_variance_account=None,
+        failure_cost_center=None,
+        failure_accounting_reason=None,
         reconciled_by=reconciled_by,
         reconciled_at=None,
         reconciliation_note=None,
@@ -696,6 +993,13 @@ def build_manual_reconciliation() -> SimpleNamespace:
         fb_order="FB-STATIC-1",
         sales_invoice="SINV-STATIC-1",
         reconciliation_idempotency_key="manual-reconciliation-1",
+        suspense_account="Manual QR Suspense - KPC",
+        reclassification_journal_entry=None,
+        failure_journal_entry=None,
+        failure_accounting_key=None,
+        failure_variance_account=None,
+        failure_cost_center=None,
+        failure_accounting_reason=None,
         reconciled_by=None,
         reconciled_at=None,
         reconciliation_note=None,

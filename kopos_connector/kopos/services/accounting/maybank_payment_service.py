@@ -12,6 +12,7 @@ frappe = import_module("frappe")
 frappe_utils = import_module("frappe.utils")
 
 cstr = frappe_utils.cstr
+cint = frappe_utils.cint
 get_datetime = frappe_utils.get_datetime
 now_datetime = frappe_utils.now_datetime
 
@@ -39,12 +40,113 @@ def normalize_qr_token(value: Any) -> str:
     )
 
 
+def resolve_verified_qr_settlement_account(
+    mode_of_payment: Any,
+    company: Any,
+    currency: Any,
+) -> dict[str, str]:
+    """Resolve a verified QR tender only to a non-cash Asset ledger."""
+
+    resolved_mode = cstr(mode_of_payment).strip()
+    resolved_company = cstr(company).strip()
+    resolved_currency = cstr(currency).strip().upper()
+    if not resolved_mode or not resolved_company or not resolved_currency:
+        frappe.throw(
+            "Verified QR settlement requires payment method, company, and currency",
+            frappe.ValidationError,
+        )
+
+    try:
+        sales_invoice_module = import_module(
+            "erpnext.accounts.doctype.sales_invoice.sales_invoice"
+        )
+        get_mode_of_payment_info = getattr(
+            sales_invoice_module,
+            "get_mode_of_payment_info",
+        )
+        mode_rows = list(
+            get_mode_of_payment_info(resolved_mode, resolved_company) or []
+        )
+    except Exception as error:
+        frappe.throw(
+            "ERPNext verified QR payment-account resolver is unavailable",
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw must raise") from error
+
+    if len(mode_rows) != 1:
+        frappe.throw(
+            f"Mode of Payment {resolved_mode} must have exactly one account for company {resolved_company}",
+            frappe.ValidationError,
+        )
+    mode_row = mode_rows[0]
+    account = cstr(
+        _value(mode_row, "account") or _value(mode_row, "default_account")
+    ).strip()
+    mode_type = cstr(_value(mode_row, "type")).strip()
+    if not account:
+        frappe.throw(
+            f"Mode of Payment {resolved_mode} has no ledger account for company {resolved_company}",
+            frappe.ValidationError,
+        )
+    if mode_type.lower() != "bank":
+        frappe.throw(
+            f"Verified QR Mode of Payment {resolved_mode} must use type Bank",
+            frappe.ValidationError,
+        )
+
+    account_row = frappe.db.get_value(
+        "Account",
+        account,
+        [
+            "name",
+            "account_type",
+            "root_type",
+            "is_group",
+            "disabled",
+            "company",
+            "account_currency",
+        ],
+        as_dict=True,
+    )
+    if not account_row:
+        frappe.throw(
+            f"Verified QR settlement account {account} was not found",
+            frappe.ValidationError,
+        )
+    if (
+        cint(_value(account_row, "is_group"))
+        or cint(_value(account_row, "disabled"))
+        or cstr(_value(account_row, "company")).strip() != resolved_company
+        or cstr(_value(account_row, "root_type")).strip() != "Asset"
+    ):
+        frappe.throw(
+            f"Verified QR settlement account {account} must be an enabled non-group Asset account for company {resolved_company}",
+            frappe.ValidationError,
+        )
+    account_type = cstr(_value(account_row, "account_type")).strip()
+    if account_type not in {"", "Bank"}:
+        frappe.throw(
+            f"Verified QR settlement account {account} must be Bank or an untyped Asset clearing account; {account_type or 'unknown'} is not allowed",
+            frappe.ValidationError,
+        )
+    account_currency = cstr(_value(account_row, "account_currency")).strip().upper()
+    if account_currency and account_currency != resolved_currency:
+        frappe.throw(
+            f"Verified QR settlement account {account} currency does not match {resolved_currency}",
+            frappe.ValidationError,
+        )
+    return {"account": account, "type": mode_type}
+
+
 def register_qr_payment_settlement(order_doc: Any) -> str | None:
     """Register the verified or pending-reconciliation state for one QR payment."""
     payment, channel = _single_qr_payment(order_doc)
     if payment is None:
         return None
     if channel == "maybank":
+        if _is_manual_confirmation(payment):
+            return _register_manual_maybank_reconciliation(order_doc, payment)
         return _claim_payment_transaction(order_doc, payment)
     return _register_manual_qr_reconciliation(order_doc, payment)
 
@@ -66,6 +168,12 @@ def bind_qr_payment_settlement(
     if payment is None:
         return None
     if channel == "maybank":
+        if _is_manual_confirmation(payment):
+            return _bind_manual_maybank_reconciliation(
+                order_doc,
+                payment,
+                sales_invoice_name,
+            )
         return bind_claimed_maybank_transaction(order_doc, sales_invoice_name)
     return _bind_manual_qr_reconciliation(order_doc, payment, sales_invoice_name)
 
@@ -182,6 +290,180 @@ def bind_claimed_maybank_transaction(
     return cstr(_value(transaction, "name"))
 
 
+def _register_manual_maybank_reconciliation(
+    order_doc: Any,
+    payment: Any,
+) -> str:
+    """Claim an issued Maybank QR without claiming provider-paid settlement."""
+
+    evidence = _manual_confirmation_evidence(payment)
+    order_name = cstr(_value(order_doc, "name")).strip()
+    payment_row_name = cstr(_value(payment, "name")).strip()
+    if not order_name or not payment_row_name:
+        frappe.throw(
+            "FB Order and payment row must be inserted before Maybank QR manual reconciliation",
+            frappe.ValidationError,
+        )
+
+    transaction_refno = _payment_reference(payment)
+    transaction = _load_transaction_for_update(
+        "transaction_refno",
+        transaction_refno,
+    )
+    if transaction is None:
+        frappe.throw(
+            "Issued Maybank QR transaction reference was not found",
+            frappe.ValidationError,
+        )
+
+    _validate_transaction_for_order(
+        transaction,
+        order_doc,
+        payment,
+        require_provider_paid=False,
+    )
+    _validate_manual_evidence_identity(
+        evidence,
+        order_doc=order_doc,
+        payment=payment,
+        channel="maybank",
+    )
+
+    reconciliation_key = cstr(
+        _value(payment, "reconciliation_idempotency_key")
+        or evidence.get("reconciliation_idempotency_key")
+    ).strip()
+    if not reconciliation_key:
+        frappe.throw(
+            "Maybank QR reconciliation_idempotency_key is required",
+            frappe.ValidationError,
+        )
+    existing_key = cstr(
+        _value(transaction, "reconciliation_idempotency_key")
+    ).strip()
+    if existing_key and existing_key != reconciliation_key:
+        frappe.throw(
+            "Maybank QR transaction is already bound to another reconciliation attempt",
+            frappe.ValidationError,
+        )
+    existing_payment_row = cstr(
+        _value(transaction, "fb_order_payment")
+    ).strip()
+    if existing_payment_row and existing_payment_row != payment_row_name:
+        frappe.throw(
+            "Maybank QR transaction is already bound to another FB Order payment",
+            frappe.ValidationError,
+        )
+
+    settlement_status = cstr(
+        _value(transaction, "manual_reconciliation_status")
+    ).strip()
+    if settlement_status not in {
+        "",
+        "pending_reconciliation",
+        "reconciled",
+        "reconciliation_failed",
+    }:
+        frappe.throw(
+            "Maybank QR transaction manual reconciliation state is invalid",
+            frappe.ValidationError,
+        )
+
+    suspense_account = resolve_manual_qr_suspense_account(order_doc)
+    updates: dict[str, Any] = {
+        "fb_order": order_name,
+        "consumption_key": order_name,
+        "fb_order_payment": payment_row_name,
+        "reconciliation_idempotency_key": reconciliation_key,
+    }
+    if not settlement_status:
+        settlement_status = "pending_reconciliation"
+        updates["manual_reconciliation_status"] = settlement_status
+    if not _value(transaction, "consumed_at"):
+        updates["consumed_at"] = now_datetime()
+    frappe.db.set_value(
+        "Maybank QR Transaction",
+        _value(transaction, "name"),
+        updates,
+    )
+    _set_value(payment, "maybank_qr_transaction", _value(transaction, "name"))
+    _set_value(payment, "settlement_status", settlement_status)
+    _set_value(payment, "suspense_account", suspense_account)
+    return cstr(_value(transaction, "name"))
+
+
+def _bind_manual_maybank_reconciliation(
+    order_doc: Any,
+    payment: Any,
+    sales_invoice_name: str,
+) -> str:
+    """Bind a pending Maybank reconciliation to its one Sales Invoice."""
+
+    invoice_name = cstr(sales_invoice_name).strip()
+    if not invoice_name:
+        frappe.throw("Sales Invoice name is required", frappe.ValidationError)
+
+    transaction_name = cstr(
+        _value(payment, "maybank_qr_transaction")
+    ).strip()
+    if not transaction_name:
+        transaction_name = _register_manual_maybank_reconciliation(
+            order_doc,
+            payment,
+        )
+
+    transaction = _load_transaction_for_update("name", transaction_name)
+    if transaction is None:
+        frappe.throw(
+            "Pending-reconciliation Maybank QR transaction was not found",
+            frappe.ValidationError,
+        )
+    _validate_transaction_for_order(
+        transaction,
+        order_doc,
+        payment,
+        expected_sales_invoice=invoice_name,
+        require_provider_paid=False,
+    )
+
+    order_name = cstr(_value(order_doc, "name")).strip()
+    payment_row_name = cstr(_value(payment, "name")).strip()
+    if (
+        cstr(_value(transaction, "fb_order")).strip() != order_name
+        or cstr(_value(transaction, "consumption_key")).strip() != order_name
+        or cstr(_value(transaction, "fb_order_payment")).strip()
+        != payment_row_name
+    ):
+        frappe.throw(
+            "Maybank QR transaction is not bound to this FB Order payment",
+            frappe.ValidationError,
+        )
+
+    linked_invoice = cstr(_value(transaction, "sales_invoice")).strip()
+    invoice_key = cstr(
+        _value(transaction, "invoice_consumption_key")
+    ).strip()
+    if linked_invoice and linked_invoice != invoice_name:
+        frappe.throw(
+            "Maybank QR transaction is already bound to another Sales Invoice",
+            frappe.ValidationError,
+        )
+    if invoice_key and invoice_key != invoice_name:
+        frappe.throw(
+            "Maybank QR transaction invoice claim has already been consumed",
+            frappe.ValidationError,
+        )
+    frappe.db.set_value(
+        "Maybank QR Transaction",
+        _value(transaction, "name"),
+        {
+            "sales_invoice": invoice_name,
+            "invoice_consumption_key": invoice_name,
+        },
+    )
+    return cstr(_value(transaction, "name"))
+
+
 def is_automatic_maybank_payment(payment: Any) -> bool:
     mode = _normalized(_value(payment, "payment_method"))
     channel = _normalized(_value(payment, "payment_channel_code"))
@@ -283,7 +565,7 @@ def _register_manual_qr_reconciliation(order_doc: Any, payment: Any) -> str:
             frappe.ValidationError,
         )
 
-    suspense_account = _resolve_manual_qr_suspense_account(order_doc)
+    suspense_account = resolve_manual_qr_suspense_account(order_doc)
     amount_sen = money_to_sen(_value(payment, "amount"), "static_qr payment amount")
     idempotency_key = cstr(
         _value(payment, "reconciliation_idempotency_key")
@@ -402,9 +684,14 @@ def _bind_manual_qr_reconciliation(
 
 
 def _manual_confirmation_evidence(payment: Any) -> dict[str, Any]:
+    channel_label = (
+        "maybank"
+        if is_automatic_maybank_payment(payment)
+        else "static_qr"
+    )
     if not _is_manual_confirmation(payment):
         frappe.throw(
-            "static_qr must carry server-validated manual confirmation evidence",
+            f"{channel_label} must carry server-validated manual confirmation evidence",
             frappe.ValidationError,
         )
     raw_evidence = _value(payment, "manual_confirmation_evidence_json")
@@ -412,20 +699,20 @@ def _manual_confirmation_evidence(payment: Any) -> dict[str, Any]:
         evidence = json.loads(cstr(raw_evidence))
     except (TypeError, ValueError):
         frappe.throw(
-            "static_qr manual confirmation evidence is invalid",
+            f"{channel_label} manual confirmation evidence is invalid",
             frappe.ValidationError,
         )
         return {}
     if not isinstance(evidence, Mapping):
         frappe.throw(
-            "static_qr manual confirmation evidence must be an object",
+            f"{channel_label} manual confirmation evidence must be an object",
             frappe.ValidationError,
         )
     if cstr(evidence.get("reconciliation_status")).strip() != (
         "pending_reconciliation"
     ):
         frappe.throw(
-            "static_qr evidence must remain pending reconciliation",
+            f"{channel_label} evidence must remain pending reconciliation",
             frappe.ValidationError,
         )
     required_fields = (
@@ -441,7 +728,7 @@ def _manual_confirmation_evidence(payment: Any) -> dict[str, Any]:
     for fieldname in required_fields:
         if not cstr(evidence.get(fieldname)).strip():
             frappe.throw(
-                f"static_qr evidence {fieldname} is required",
+                f"{channel_label} evidence {fieldname} is required",
                 frappe.ValidationError,
             )
     for fieldname in ("captured_at", "local_confirmed_at"):
@@ -449,21 +736,21 @@ def _manual_confirmation_evidence(payment: Any) -> dict[str, Any]:
             get_datetime(evidence.get(fieldname))
         except Exception:
             frappe.throw(
-                f"static_qr evidence {fieldname} is invalid",
+                f"{channel_label} evidence {fieldname} is invalid",
                 frappe.ValidationError,
             )
     if cstr(evidence.get("local_confirmation_reference")).strip() != cstr(
         _value(payment, "reference_no")
     ).strip():
         frappe.throw(
-            "static_qr evidence reference does not match payment",
+            f"{channel_label} evidence reference does not match payment",
             frappe.ValidationError,
         )
     if cstr(evidence.get("reconciliation_idempotency_key")).strip() != cstr(
         _value(payment, "reconciliation_idempotency_key")
     ).strip():
         frappe.throw(
-            "static_qr evidence idempotency key does not match payment",
+            f"{channel_label} evidence idempotency key does not match payment",
             frappe.ValidationError,
         )
     evidence_kind = cstr(evidence.get("evidence_kind")).strip()
@@ -472,7 +759,7 @@ def _manual_confirmation_evidence(payment: Any) -> dict[str, Any]:
         local_uri = cstr(evidence.get("local_uri")).strip()
         if not local_uri or local_uri.lower().startswith("data:"):
             frappe.throw(
-                "static_qr receipt evidence local_uri is invalid",
+                f"{channel_label} receipt evidence local_uri is invalid",
                 frappe.ValidationError,
             )
         if cstr(evidence.get("mime_type")).strip().lower() not in {
@@ -480,7 +767,7 @@ def _manual_confirmation_evidence(payment: Any) -> dict[str, Any]:
             "image/pjpeg",
         }:
             frappe.throw(
-                "static_qr receipt evidence mime_type is invalid",
+                f"{channel_label} receipt evidence mime_type is invalid",
                 frappe.ValidationError,
             )
         if upload_status not in {
@@ -490,7 +777,7 @@ def _manual_confirmation_evidence(payment: Any) -> dict[str, Any]:
             "upload_failed",
         }:
             frappe.throw(
-                "static_qr receipt evidence upload_status is invalid",
+                f"{channel_label} receipt evidence upload_status is invalid",
                 frappe.ValidationError,
             )
     elif evidence_kind == "no_receipt_acknowledgement":
@@ -498,29 +785,59 @@ def _manual_confirmation_evidence(payment: Any) -> dict[str, Any]:
             evidence.get("no_receipt_reason_code")
         ).strip():
             frappe.throw(
-                "static_qr no-receipt evidence is invalid",
+                f"{channel_label} no-receipt evidence is invalid",
                 frappe.ValidationError,
             )
         if upload_status != "not_required":
             frappe.throw(
-                "static_qr no-receipt upload_status must be not_required",
+                f"{channel_label} no-receipt upload_status must be not_required",
                 frappe.ValidationError,
             )
     elif evidence_kind == "reference":
         if upload_status not in {"not_required", "uploaded"}:
             frappe.throw(
-                "static_qr reference evidence upload_status is invalid",
+                f"{channel_label} reference evidence upload_status is invalid",
                 frappe.ValidationError,
             )
     else:
         frappe.throw(
-            "static_qr evidence_kind is invalid",
+            f"{channel_label} evidence_kind is invalid",
             frappe.ValidationError,
         )
     return dict(evidence)
 
 
-def _resolve_manual_qr_suspense_account(order_doc: Any) -> str:
+def _validate_manual_evidence_identity(
+    evidence: Mapping[str, Any],
+    *,
+    order_doc: Any,
+    payment: Any,
+    channel: str,
+) -> None:
+    order_device = cstr(_value(order_doc, "device_id")).strip()
+    if cstr(evidence.get("evidence_captured_device_id")).strip() != order_device:
+        frappe.throw(
+            f"{channel} evidence device does not match FB Order",
+            frappe.ValidationError,
+        )
+    order_staff = cstr(_value(order_doc, "staff_id")).strip()
+    if cstr(evidence.get("local_confirmed_by")).strip() != order_staff:
+        frappe.throw(
+            f"{channel} evidence confirmer does not match FB Order staff",
+            frappe.ValidationError,
+        )
+    if cstr(evidence.get("local_confirmation_reference")).strip() != cstr(
+        _value(payment, "reference_no")
+    ).strip():
+        frappe.throw(
+            f"{channel} evidence reference does not match payment",
+            frappe.ValidationError,
+        )
+
+
+def resolve_manual_qr_suspense_account(order_doc: Any) -> str:
+    """Return the configured QR suspense ledger after exact order-bound checks."""
+
     account = cstr(
         frappe.db.get_single_value(
             "Maybank Settings", "manual_qr_suspense_account"
@@ -528,7 +845,7 @@ def _resolve_manual_qr_suspense_account(order_doc: Any) -> str:
     ).strip()
     if not account:
         frappe.throw(
-            "Maybank Settings manual_qr_suspense_account is required for static_qr",
+            "Maybank Settings manual_qr_suspense_account is required for manual QR confirmation",
             frappe.ValidationError,
         )
     account_row = frappe.db.get_value(
@@ -538,34 +855,46 @@ def _resolve_manual_qr_suspense_account(order_doc: Any) -> str:
         as_dict=True,
     )
     if not account_row:
-        frappe.throw("static_qr suspense account was not found", frappe.ValidationError)
-    if cstr(_value(account_row, "company")).strip() != cstr(
-        _value(order_doc, "company")
-    ).strip():
-        frappe.throw(
-            "static_qr suspense account belongs to another company",
-            frappe.ValidationError,
-        )
-    if int(_value(account_row, "is_group") or 0) or int(
-        _value(account_row, "disabled") or 0
+        frappe.throw("manual QR suspense account was not found", frappe.ValidationError)
+    order_company = cstr(_value(order_doc, "company")).strip()
+    if (
+        not order_company
+        or cstr(_value(account_row, "company")).strip() != order_company
     ):
         frappe.throw(
-            "static_qr suspense account must be an enabled ledger account",
+            "manual QR suspense account belongs to another company",
+            frappe.ValidationError,
+        )
+    is_group = _strict_account_flag(_value(account_row, "is_group"))
+    disabled = _strict_account_flag(_value(account_row, "disabled"))
+    if is_group is None or disabled is None or is_group or disabled:
+        frappe.throw(
+            "manual QR suspense account must be an enabled ledger account",
             frappe.ValidationError,
         )
     if cstr(_value(account_row, "root_type")).strip() != "Asset":
         frappe.throw(
-            "static_qr suspense account must be an Asset account",
+            "manual QR suspense account must be an Asset account",
             frappe.ValidationError,
         )
     account_currency = cstr(_value(account_row, "account_currency")).strip().upper()
     order_currency = cstr(_value(order_doc, "currency")).strip().upper()
-    if account_currency and account_currency != order_currency:
+    if not order_currency or account_currency != order_currency:
         frappe.throw(
-            "static_qr suspense account currency does not match FB Order",
+            "manual QR suspense account currency does not match FB Order",
             frappe.ValidationError,
         )
     return account
+
+
+def _strict_account_flag(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int) and value in {0, 1}:
+        return value
+    if isinstance(value, str) and value.strip() in {"0", "1"}:
+        return int(value.strip())
+    return None
 
 
 def _reject_maybank_reference(reference: str) -> None:
@@ -674,9 +1003,11 @@ def _load_transaction_for_update(fieldname: str, value: str) -> Any | None:
         f"""
         SELECT
             name, transaction_refno, status, maybank_status, sale_amount_sen,
-            device_id, outlet_id, currency, provider,
+            device_id, outlet_id, company, currency, provider,
             expires_at, paid_at, fb_order, sales_invoice,
-            consumption_key, invoice_consumption_key, consumed_at
+            consumption_key, invoice_consumption_key, consumed_at,
+            qr_data, fb_order_payment, reconciliation_idempotency_key,
+            manual_reconciliation_status
         FROM `tabMaybank QR Transaction`
         WHERE `{fieldname}` = %s
         LIMIT 1
@@ -694,6 +1025,7 @@ def _validate_transaction_for_order(
     payment: Any,
     *,
     expected_sales_invoice: str | None = None,
+    require_provider_paid: bool = True,
 ) -> None:
     expected_reference = _payment_reference(payment)
     if cstr(_value(transaction, "transaction_refno")).strip() != expected_reference:
@@ -702,16 +1034,32 @@ def _validate_transaction_for_order(
             frappe.ValidationError,
         )
 
-    if cstr(_value(transaction, "status")).strip().lower() != "paid":
-        frappe.throw(
-            "Maybank QR transaction is not paid",
-            frappe.ValidationError,
-        )
-    if cstr(_value(transaction, "maybank_status")).strip() != "1":
-        frappe.throw(
-            "Maybank QR transaction lacks provider-paid status evidence",
-            frappe.ValidationError,
-        )
+    transaction_status = cstr(_value(transaction, "status")).strip().lower()
+    if require_provider_paid:
+        if transaction_status != "paid":
+            frappe.throw(
+                "Maybank QR transaction is not paid",
+                frappe.ValidationError,
+            )
+        if cstr(_value(transaction, "maybank_status")).strip() != "1":
+            frappe.throw(
+                "Maybank QR transaction lacks provider-paid status evidence",
+                frappe.ValidationError,
+            )
+    else:
+        if transaction_status not in {
+            "creating",
+            "pending",
+            "scanned",
+            "paid",
+            "failed",
+            "timeout",
+            "unknown",
+        } or not cstr(_value(transaction, "qr_data")).strip():
+            frappe.throw(
+                "Maybank QR transaction was not issued to the POS",
+                frappe.ValidationError,
+            )
 
     payment_amount_sen = money_to_sen(
         _value(payment, "amount"), "Maybank QR payment amount"
@@ -734,17 +1082,36 @@ def _validate_transaction_for_order(
             frappe.ValidationError,
         )
 
-    expected_outlet = cstr(
-        frappe.db.get_single_value("Maybank Settings", "outlet_id")
-    ).strip()
-    if not expected_outlet:
+    order_name = cstr(_value(order_doc, "name")).strip()
+    order_company = cstr(_value(order_doc, "company")).strip()
+    transaction_company = cstr(_value(transaction, "company")).strip()
+    linked_order = cstr(_value(transaction, "fb_order")).strip()
+    consumption_key = cstr(_value(transaction, "consumption_key")).strip()
+    legacy_submitted_claim = bool(
+        not transaction_company
+        and order_company
+        and cint(_value(order_doc, "docstatus")) == 1
+        and linked_order == order_name
+        and consumption_key == order_name
+    )
+    if (
+        not order_company
+        or (not transaction_company and not legacy_submitted_claim)
+        or (transaction_company and transaction_company != order_company)
+    ):
         frappe.throw(
-            "Maybank Settings outlet_id is required to verify payment",
+            "Maybank QR transaction company does not match FB Order",
             frappe.ValidationError,
         )
-    if cstr(_value(transaction, "outlet_id")).strip() != expected_outlet:
+
+    # The transaction reservation captures the provider outlet before the QR
+    # network call, and provider status responses are verified against that
+    # immutable value.  Comparing a historical payment with today's mutable
+    # Maybank Settings would reject legitimate paid sales after an outlet
+    # rotation.  New reservations still capture the current configured outlet.
+    if not cstr(_value(transaction, "outlet_id")).strip():
         frappe.throw(
-            "Maybank QR transaction outlet does not match Maybank Settings",
+            "Maybank QR transaction outlet metadata is missing",
             frappe.ValidationError,
         )
 
@@ -767,19 +1134,20 @@ def _validate_transaction_for_order(
             frappe.ValidationError,
         )
 
-    paid_at_value = _value(transaction, "paid_at")
     expires_at_value = _value(transaction, "expires_at")
-    if not paid_at_value or not expires_at_value:
+    paid_at_value = _value(transaction, "paid_at")
+    if not expires_at_value or (require_provider_paid and not paid_at_value):
         frappe.throw(
-            "Maybank QR transaction payment or expiry timestamp is missing",
+            "Maybank QR transaction required timestamp is missing",
             frappe.ValidationError,
         )
     try:
-        get_datetime(paid_at_value)
         get_datetime(expires_at_value)
+        if require_provider_paid:
+            get_datetime(paid_at_value)
     except Exception as error:
         frappe.throw(
-            "Maybank QR transaction payment or expiry timestamp is invalid",
+            "Maybank QR transaction required timestamp is invalid",
             frappe.ValidationError,
         )
         raise AssertionError("frappe.throw must raise") from error
@@ -790,9 +1158,6 @@ def _validate_transaction_for_order(
     # by bad internet or an ERP outage. Preserve both timestamps for audit, but
     # never synthesize a local non-payment decision from observation latency.
 
-    order_name = cstr(_value(order_doc, "name")).strip()
-    linked_order = cstr(_value(transaction, "fb_order")).strip()
-    consumption_key = cstr(_value(transaction, "consumption_key")).strip()
     if linked_order and linked_order != order_name:
         frappe.throw(
             "Maybank QR transaction is already used by another FB Order",
@@ -838,7 +1203,7 @@ def _is_manual_confirmation(payment: Any) -> bool:
 
 
 def _normalized(value: Any) -> str:
-    return " ".join(cstr(value).strip().lower().replace("_", " ").split())
+    return normalize_qr_token(value)
 
 
 def _value(doc: Any, fieldname: str) -> Any:

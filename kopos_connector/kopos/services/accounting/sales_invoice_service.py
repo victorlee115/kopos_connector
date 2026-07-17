@@ -20,6 +20,8 @@ from kopos_connector.kopos.api.money_contract import (
 )
 from kopos_connector.kopos.services.accounting.maybank_payment_service import (
     bind_qr_payment_settlement,
+    normalize_qr_token,
+    resolve_verified_qr_settlement_account,
 )
 from kopos_connector.kopos.services.orders.sale_datetime import (
     resolve_order_sale_datetime,
@@ -902,17 +904,47 @@ def _append_payment_rows(invoice: Any, order_doc: Any) -> None:
         if source_payment_id:
             payment_row["custom_fb_source_payment_id"] = source_payment_id
 
-        payment_meta = _resolve_mode_of_payment_context(
-            str(mode_of_payment),
-            str(invoice.company),
+        settlement_status = str(
+            _value(payment, "settlement_status") or "verified"
+        ).strip()
+        payment_channel = normalize_qr_token(
+            _value(payment, "payment_channel_code")
         )
+        is_manual_confirmation = str(
+            _value(payment, "is_manual_confirmation") or ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if payment_channel in {"maybank", "maybank qr"}:
+            if is_manual_confirmation:
+                if settlement_status != "pending_reconciliation":
+                    raise ValueError(
+                        "Manual Maybank QR payment must remain pending_reconciliation"
+                    )
+                payment_meta = _resolve_mode_of_payment_context(
+                    str(mode_of_payment),
+                    str(invoice.company),
+                )
+            else:
+                if settlement_status != "verified":
+                    raise ValueError(
+                        "Automatic Maybank QR payment must have verified settlement status"
+                    )
+                payment_meta = resolve_verified_qr_settlement_account(
+                    str(mode_of_payment),
+                    str(invoice.company),
+                    str(
+                        _value(invoice, "currency")
+                        or _value(order_doc, "currency")
+                    ),
+                )
+        else:
+            payment_meta = _resolve_mode_of_payment_context(
+                str(mode_of_payment),
+                str(invoice.company),
+            )
         payment_row["account"] = payment_meta["account"]
         if payment_meta.get("type"):
             payment_row["type"] = payment_meta["type"]
 
-        settlement_status = str(
-            _value(payment, "settlement_status") or "verified"
-        ).strip()
         if settlement_status == "pending_reconciliation":
             suspense_account = str(
                 _value(payment, "suspense_account") or ""

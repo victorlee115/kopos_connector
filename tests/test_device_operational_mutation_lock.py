@@ -263,11 +263,26 @@ class TestDeviceOperationalMutationLock(unittest.TestCase):
             manual_path,
             "upload_manual_qr_receipt",
         )
+        revalidation_calls = _function_call_lines(
+            manual_path,
+            "_revalidate_receipt_device_authority",
+        )
         self.assertTrue(
-            resolver_calls.get("lock_device_for_operational_mutation")
+            resolver_calls.get("require_device_context")
+        )
+        self.assertTrue(
+            revalidation_calls.get("lock_device_for_operational_mutation")
         )
         self.assertLess(
             max(upload_calls["_resolve_authorized_device"]),
+            min(upload_calls["_read_and_validate_jpeg"]),
+        )
+        self.assertLess(
+            max(upload_calls["_read_and_validate_jpeg"]),
+            min(upload_calls["_revalidate_receipt_device_authority"]),
+        )
+        self.assertLess(
+            max(upload_calls["_revalidate_receipt_device_authority"]),
             min(upload_calls["_load_and_validate_transaction"]),
         )
 

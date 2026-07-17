@@ -49,6 +49,93 @@ def _order(payment: SimpleNamespace | None = None, **overrides: Any) -> SimpleNa
     return SimpleNamespace(**values)
 
 
+def _install_verified_qr_account_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    account_type: str,
+    root_type: str = "Asset",
+    mode_type: str = "Bank",
+    account_currency: str = "MYR",
+) -> None:
+    mode_module = SimpleNamespace(
+        get_mode_of_payment_info=lambda mode, company: [
+            {
+                "default_account": "QR Clearing - TC",
+                "type": mode_type,
+            }
+        ]
+    )
+    monkeypatch.setattr(service, "import_module", lambda name: mode_module)
+    monkeypatch.setattr(
+        service.frappe.db,
+        "get_value",
+        lambda *args, **kwargs: {
+            "name": "QR Clearing - TC",
+            "account_type": account_type,
+            "root_type": root_type,
+            "is_group": 0,
+            "disabled": 0,
+            "company": "Test Company",
+            "account_currency": account_currency,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["Maybank-QR", "MAYBANK_QR", "  maybank   qr  "],
+)
+def test_qr_channel_normalizer_accepts_supported_separator_variants(
+    value: str,
+) -> None:
+    assert service.normalize_qr_token(value) == "maybank qr"
+
+
+@pytest.mark.parametrize("account_type", ["Bank", ""])
+def test_verified_qr_account_accepts_bank_or_untyped_asset_clearing(
+    monkeypatch: pytest.MonkeyPatch,
+    account_type: str,
+) -> None:
+    _install_verified_qr_account_policy(
+        monkeypatch,
+        account_type=account_type,
+    )
+
+    assert service.resolve_verified_qr_settlement_account(
+        "DuitNow QR",
+        "Test Company",
+        "MYR",
+    ) == {"account": "QR Clearing - TC", "type": "Bank"}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"account_type": "Cash"}, "Cash is not allowed"),
+        ({"account_type": "Receivable"}, "Receivable is not allowed"),
+        ({"account_type": "Bank", "root_type": "Liability"}, "Asset account"),
+        ({"account_type": "Bank", "mode_type": "Cash"}, "must use type Bank"),
+        (
+            {"account_type": "Bank", "account_currency": "USD"},
+            "currency does not match MYR",
+        ),
+    ],
+)
+def test_verified_qr_account_rejects_unsafe_accounting_destination(
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, str],
+    message: str,
+) -> None:
+    _install_verified_qr_account_policy(monkeypatch, **overrides)
+
+    with pytest.raises(service.frappe.ValidationError, match=message):
+        service.resolve_verified_qr_settlement_account(
+            "DuitNow QR",
+            "Test Company",
+            "MYR",
+        )
+
+
 def _transaction(**overrides: Any) -> dict[str, Any]:
     values: dict[str, Any] = {
         "name": "MBQR-1",
@@ -58,6 +145,7 @@ def _transaction(**overrides: Any) -> dict[str, Any]:
         "sale_amount_sen": 1250,
         "device_id": "DEVICE-1",
         "outlet_id": "OUTLET-1",
+        "company": "Test Company",
         "currency": "MYR",
         "provider": "maybank_qr",
         "expires_at": datetime(2026, 3, 13, 18, 6, 0),
@@ -67,13 +155,20 @@ def _transaction(**overrides: Any) -> dict[str, Any]:
         "consumption_key": None,
         "invoice_consumption_key": None,
         "consumed_at": None,
+        "qr_data": "000201010212...",
+        "fb_order_payment": None,
+        "reconciliation_idempotency_key": None,
+        "manual_reconciliation_status": None,
     }
     values.update(overrides)
     return values
 
 
 def _install_transaction_db(
-    monkeypatch: pytest.MonkeyPatch, transaction: dict[str, Any]
+    monkeypatch: pytest.MonkeyPatch,
+    transaction: dict[str, Any],
+    *,
+    current_settings_outlet: str = "OUTLET-1",
 ) -> tuple[list[str], list[dict[str, Any]]]:
     sql_calls: list[str] = []
     update_calls: list[dict[str, Any]] = []
@@ -96,11 +191,32 @@ def _install_transaction_db(
 
     monkeypatch.setattr(service.frappe.db, "sql", sql)
     monkeypatch.setattr(service.frappe.db, "set_value", set_value)
-    monkeypatch.setattr(
-        service.frappe.db,
-        "get_single_value",
-        lambda doctype, fieldname: "OUTLET-1",
-    )
+    def get_single_value(doctype: str, fieldname: str):
+        assert doctype == "Maybank Settings"
+        if fieldname == "outlet_id":
+            return current_settings_outlet
+        if fieldname == "manual_qr_suspense_account":
+            return "Manual QR Suspense - TC"
+        raise AssertionError(f"unexpected Maybank setting {fieldname}")
+
+    def get_value(
+        doctype: str,
+        name: Any,
+        fields: Any,
+        **kwargs: Any,
+    ):
+        if doctype == "Account" and name == "Manual QR Suspense - TC":
+            return {
+                "company": "Test Company",
+                "is_group": 0,
+                "disabled": 0,
+                "root_type": "Asset",
+                "account_currency": "MYR",
+            }
+        return None
+
+    monkeypatch.setattr(service.frappe.db, "get_single_value", get_single_value)
+    monkeypatch.setattr(service.frappe.db, "get_value", get_value)
     monkeypatch.setattr(
         service,
         "now_datetime",
@@ -186,10 +302,24 @@ def test_rejects_wrong_device(monkeypatch):
         service.claim_paid_maybank_transaction(_order())
 
 
+@pytest.mark.parametrize("company", [None, "Other Company"])
+def test_automatic_claim_rejects_blank_or_cross_company_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+    company: str | None,
+) -> None:
+    transaction = _transaction(company=company)
+    _sql_calls, update_calls = _install_transaction_db(monkeypatch, transaction)
+
+    with pytest.raises(service.frappe.ValidationError, match="company does not match"):
+        service.claim_paid_maybank_transaction(_order())
+
+    assert update_calls == []
+
+
 @pytest.mark.parametrize(
     ("transaction_overrides", "message"),
     [
-        ({"outlet_id": "OUTLET-2"}, "outlet does not match"),
+        ({"outlet_id": ""}, "outlet metadata is missing"),
         ({"currency": "USD"}, "currency does not match"),
         ({"provider": "other_provider"}, "provider is invalid"),
         ({"maybank_status": 2}, "lacks provider-paid status evidence"),
@@ -202,6 +332,18 @@ def test_rejects_wrong_transaction_scope_or_provider_evidence(
 
     with pytest.raises(service.frappe.ValidationError, match=message):
         service.claim_paid_maybank_transaction(_order())
+
+
+def test_historical_transaction_survives_current_outlet_rotation(monkeypatch):
+    transaction = _transaction(outlet_id="OUTLET-A")
+    _install_transaction_db(
+        monkeypatch,
+        transaction,
+        current_settings_outlet="OUTLET-B",
+    )
+
+    assert service.claim_paid_maybank_transaction(_order()) == "MBQR-1"
+    assert transaction["outlet_id"] == "OUTLET-A"
 
 
 def test_accepts_provider_paid_success_observed_after_network_outage(monkeypatch):
@@ -263,6 +405,138 @@ def test_manual_flag_cannot_bypass_automatic_maybank_verification(monkeypatch):
 
     with pytest.raises(service.frappe.ValidationError, match="is not paid"):
         service.claim_paid_maybank_transaction(order)
+
+
+def _manual_maybank_payment(**overrides: Any) -> SimpleNamespace:
+    evidence = _static_evidence()
+    evidence.update(
+        {
+            "local_confirmation_reference": "MB-REF-1",
+            "reconciliation_idempotency_key": "manual-maybank-reconciliation-1",
+        }
+    )
+    values = {
+        "is_manual_confirmation": 1,
+        "settlement_status": "pending_reconciliation",
+        "manual_confirmation_evidence_json": json.dumps(evidence),
+        "reconciliation_idempotency_key": "manual-maybank-reconciliation-1",
+    }
+    values.update(overrides)
+    return _payment(**values)
+
+
+def test_manual_maybank_posts_as_pending_reconciliation_and_binds_once(monkeypatch):
+    transaction = _transaction(status="pending", maybank_status=0, paid_at=None)
+    _install_transaction_db(monkeypatch, transaction)
+    payment = _manual_maybank_payment()
+    order = _order(payment)
+
+    registered = service.register_qr_payment_settlement(order)
+    bound = service.bind_qr_payment_settlement(order, "SINV-MANUAL-1")
+
+    assert registered == "MBQR-1"
+    assert bound == "MBQR-1"
+    assert payment.maybank_qr_transaction == "MBQR-1"
+    assert payment.settlement_status == "pending_reconciliation"
+    assert payment.suspense_account == "Manual QR Suspense - TC"
+    assert transaction["fb_order"] == "FB-ORDER-1"
+    assert transaction["fb_order_payment"] == "PAY-1"
+    assert transaction["sales_invoice"] == "SINV-MANUAL-1"
+    assert transaction["manual_reconciliation_status"] == "pending_reconciliation"
+    assert transaction["reconciliation_idempotency_key"] == (
+        "manual-maybank-reconciliation-1"
+    )
+
+
+@pytest.mark.parametrize("company", [None, "Other Company"])
+def test_manual_claim_rejects_blank_or_cross_company_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+    company: str | None,
+) -> None:
+    transaction = _transaction(
+        status="pending",
+        maybank_status=0,
+        paid_at=None,
+        company=company,
+    )
+    _sql_calls, update_calls = _install_transaction_db(monkeypatch, transaction)
+
+    with pytest.raises(service.frappe.ValidationError, match="company does not match"):
+        service.register_qr_payment_settlement(_order(_manual_maybank_payment()))
+
+    assert update_calls == []
+
+
+def test_legacy_submitted_claim_allows_blank_company_only_when_already_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction = _transaction(
+        company=None,
+        fb_order="FB-ORDER-1",
+        consumption_key="FB-ORDER-1",
+    )
+    _install_transaction_db(monkeypatch, transaction)
+    payment = _payment(maybank_qr_transaction="MBQR-1")
+    order = _order(payment, docstatus=1)
+
+    assert service.bind_claimed_maybank_transaction(order, "SINV-1") == "MBQR-1"
+
+
+def test_manual_maybank_registration_is_idempotent_for_same_sale(monkeypatch):
+    transaction = _transaction(status="timeout", maybank_status=0, paid_at=None)
+    _install_transaction_db(monkeypatch, transaction)
+    payment = _manual_maybank_payment()
+    order = _order(payment)
+
+    assert service.register_qr_payment_settlement(order) == "MBQR-1"
+    assert service.register_qr_payment_settlement(order) == "MBQR-1"
+
+
+def test_manual_maybank_rejects_naked_flag_without_structured_evidence(monkeypatch):
+    _install_transaction_db(
+        monkeypatch,
+        _transaction(status="pending", maybank_status=0, paid_at=None),
+    )
+    payment = _payment(is_manual_confirmation=1)
+
+    with pytest.raises(service.frappe.ValidationError, match="evidence is invalid"):
+        service.register_qr_payment_settlement(_order(payment))
+
+
+def test_manual_maybank_rejects_unissued_transaction(monkeypatch):
+    _install_transaction_db(
+        monkeypatch,
+        _transaction(
+            status="creating",
+            maybank_status=0,
+            paid_at=None,
+            qr_data=None,
+        ),
+    )
+
+    with pytest.raises(service.frappe.ValidationError, match="was not issued"):
+        service.register_qr_payment_settlement(_order(_manual_maybank_payment()))
+
+
+def test_manual_maybank_rejects_evidence_from_another_device(monkeypatch):
+    _install_transaction_db(
+        monkeypatch,
+        _transaction(status="pending", maybank_status=0, paid_at=None),
+    )
+    evidence = _static_evidence()
+    evidence.update(
+        {
+            "local_confirmation_reference": "MB-REF-1",
+            "reconciliation_idempotency_key": "manual-maybank-reconciliation-1",
+            "evidence_captured_device_id": "DEVICE-2",
+        }
+    )
+    payment = _manual_maybank_payment(
+        manual_confirmation_evidence_json=json.dumps(evidence)
+    )
+
+    with pytest.raises(service.frappe.ValidationError, match="device does not match"):
+        service.register_qr_payment_settlement(_order(payment))
 
 
 def test_qr_channel_cannot_bypass_verification_with_cash_payment_method():
@@ -489,7 +763,7 @@ def test_duitnow_qr_requires_a_supported_channel(monkeypatch):
         fb_orders._validate_order_payment(payload, 1)
 
 
-def test_maybank_channel_does_not_trust_manual_warning_as_settlement(monkeypatch):
+def test_maybank_channel_persists_server_validated_manual_evidence(monkeypatch):
     monkeypatch.setattr(
         fb_orders,
         "_resolve_mode_of_payment_name",
@@ -500,6 +774,38 @@ def test_maybank_channel_does_not_trust_manual_warning_as_settlement(monkeypatch
     payload["payment_channel_code"] = "maybank"
     payload["external_transaction_id"] = "MB-REF-1"
     payload["reference_no"] = "MB-REF-1"
+    payload["manual_confirmation_evidence"].update(
+        {
+            "local_confirmation_reference": "MB-REF-1",
+            "reconciliation_idempotency_key": "manual-maybank-reconciliation-1",
+        }
+    )
+
+    payment = fb_orders._validate_order_payment(payload, 1)
+
+    assert payment["is_manual_confirmation"] == 1
+    assert payment["settlement_status"] == "pending_reconciliation"
+    assert payment["reconciliation_idempotency_key"] == (
+        "manual-maybank-reconciliation-1"
+    )
+
+
+def test_maybank_channel_without_manual_evidence_remains_provider_verified(monkeypatch):
+    monkeypatch.setattr(
+        fb_orders,
+        "_resolve_mode_of_payment_name",
+        lambda value: "DuitNow QR",
+    )
+    monkeypatch.setattr(fb_orders, "_require_doc", lambda *args: None)
+    payload = _validated_static_payload()
+    payload.update(
+        {
+            "payment_channel_code": "maybank",
+            "external_transaction_id": "MB-REF-1",
+            "reference_no": "MB-REF-1",
+        }
+    )
+    payload.pop("manual_confirmation_evidence")
 
     payment = fb_orders._validate_order_payment(payload, 1)
 
