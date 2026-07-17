@@ -1160,16 +1160,22 @@ def close_shift(**kwargs: Any) -> None:
 
 
 @frappe.whitelist()
-def get_device_open_shift(device_id: str | None = None) -> None:
+def get_device_open_shift(
+    device_id: str | None = None,
+    staff_id: str | None = None,
+) -> None:
     """Public KoPOS endpoint to get the current open shift for a device.
 
     This allows KoPOS to discover and adopt an existing open shift that was
     created from another device or from ERPNext directly.
     """
-    from .shifts import get_device_open_shift_payload
+    from .shifts import (
+        get_device_open_shift_payload,
+        resolve_and_validate_device_user,
+    )
 
     try:
-        resolved_device_id = frappe.utils.cstr(device_id)
+        resolved_device_id = frappe.utils.cstr(device_id).strip()
         if not resolved_device_id:
             _write_response(
                 {"status": "error", "message": "device_id is required"},
@@ -1177,11 +1183,30 @@ def get_device_open_shift(device_id: str | None = None) -> None:
             )
             return
 
-        require_device_context(device_id=resolved_device_id)
+        device_doc = require_device_context(device_id=resolved_device_id)
+        resolved_staff_id = frappe.utils.cstr(staff_id).strip()
+        if resolved_staff_id:
+            if not device_doc:
+                frappe.throw(
+                    _("KoPOS Device {0} was not found").format(resolved_device_id),
+                    frappe.ValidationError,
+                )
+            resolve_and_validate_device_user(device_doc, resolved_staff_id)
         mark_device_seen(device_id=resolved_device_id)
 
-        result = get_device_open_shift_payload(device_id=resolved_device_id)
-        if result:
+        result = get_device_open_shift_payload(
+            device_id=resolved_device_id,
+            staff_id=resolved_staff_id or None,
+        )
+        if result and isinstance(result.get("staff_conflict"), dict):
+            _write_response(
+                {
+                    "status": "ok",
+                    "shift": None,
+                    "staff_conflict": result["staff_conflict"],
+                }
+            )
+        elif result:
             _write_response({"status": "ok", "shift": result})
         else:
             _write_response({"status": "ok", "shift": None})

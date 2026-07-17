@@ -22,6 +22,8 @@ public_api = importlib.import_module("kopos_connector.api")
 auth = importlib.import_module("kopos_connector.auth")
 provisioning = importlib.import_module("kopos_connector.api.provisioning")
 safe_reset = importlib.import_module("kopos_connector.api.device_safe_reset")
+automatic_qr = importlib.import_module("kopos_connector.api.automatic_qr")
+install_module = importlib.import_module("kopos_connector.install.install")
 safe_reset_doctype = importlib.import_module(
     "kopos_connector.kopos.doctype.kopos_device_safe_reset.kopos_device_safe_reset"
 )
@@ -554,16 +556,21 @@ class DeviceSafeResetTests(unittest.TestCase):
             "idx_kopos_maybank_device_reconciliation",
             "idx_kopos_manual_qr_device_status",
             "idx_kopos_fb_order_shift_status",
+            "idx_kopos_fb_order_shift_qr_state",
+            "idx_kopos_fb_order_device_qr_state",
             "idx_kopos_projection_source_state",
             "idx_kopos_projection_retry_due",
             "idx_kopos_maybank_poll_due",
             "idx_kopos_maybank_device_created",
+            "idx_kopos_maybank_order_payment_status",
             "idx_kopos_resolved_sale_order",
         ):
             self.assertIn(index_name, install_source)
 
     def test_device_routes_are_exported_and_restricted_to_post(self) -> None:
         for route in (
+            "/api/method/kopos_connector.api.prepare_automatic_qr_sale",
+            "/api/method/kopos_connector.api.cancel_prepared_automatic_qr_sale",
             "/api/method/kopos_connector.api.request_device_safe_reset",
             "/api/method/kopos_connector.api.abandon_unregistered_device_safe_reset_request",
             "/api/method/kopos_connector.api.resolve_device_safe_reset_request",
@@ -573,6 +580,8 @@ class DeviceSafeResetTests(unittest.TestCase):
             self.assertIn(route, auth.ALLOWED_DEVICE_API_PATHS)
             self.assertEqual(auth.DEVICE_API_HTTP_METHODS[route], frozenset({"POST"}))
         for method_name in (
+            "prepare_automatic_qr_sale",
+            "cancel_prepared_automatic_qr_sale",
             "abandon_unregistered_device_safe_reset_request",
             "request_device_safe_reset",
             "cancel_device_safe_reset",
@@ -2811,7 +2820,7 @@ class DeviceSafeResetTests(unittest.TestCase):
                 active_shift_query,
             )
 
-        sql_results = [[], [{"name": "PROJECTION-1"}]]
+        sql_results = [[], [], [], [{"name": "PROJECTION-1"}]]
         with (
             patch.object(safe_reset.frappe.db, "sql", side_effect=sql_results),
             self.assertRaisesRegex(safe_reset.frappe.ValidationError, "projections"),
@@ -2825,14 +2834,21 @@ class DeviceSafeResetTests(unittest.TestCase):
         with patch.object(safe_reset.frappe.db, "sql", sql):
             safe_reset._assert_no_open_shift_or_unresolved_projection("tab-a-001")
 
-        self.assertEqual(sql.call_count, 7)
+        self.assertEqual(sql.call_count, 10)
         normalized_queries = [
             " ".join(call.args[0].split()) for call in sql.call_args_list
         ]
-        self.assertTrue(all("LIMIT 1" in query for query in normalized_queries))
+        self.assertEqual(
+            sum("LIMIT 1" in query for query in normalized_queries),
+            8,
+        )
+        self.assertEqual(
+            sum("LIMIT 65" in query for query in normalized_queries),
+            2,
+        )
         self.assertEqual(
             sum("FOR UPDATE" in query for query in normalized_queries),
-            1,
+            2,
         )
         self.assertTrue(
             all(query.count("%s") == 1 for query in normalized_queries)
@@ -2840,10 +2856,22 @@ class DeviceSafeResetTests(unittest.TestCase):
         self.assertTrue(
             all(call.args[1] == ("tab-a-001",) for call in sql.call_args_list)
         )
+        ordinary_queries = [
+            query
+            for query in normalized_queries
+            if "tabMaybank QR Transaction" not in query
+        ]
         self.assertTrue(
-            all(len(query) < 900 for query in normalized_queries),
+            all(len(query) < 900 for query in ordinary_queries),
             "query size must not grow with lifetime order history",
         )
+        maybank_queries = [
+            query
+            for query in normalized_queries
+            if "tabMaybank QR Transaction" in query
+        ]
+        self.assertEqual(len(maybank_queries), 2)
+        self.assertTrue(all(len(query) < 2200 for query in maybank_queries))
 
         indexed_fields = {
             "fb_shift": {"device_id", "status"},
@@ -2855,6 +2883,7 @@ class DeviceSafeResetTests(unittest.TestCase):
                 "device_id",
                 "status",
                 "manual_reconciliation_status",
+                "duplicate_payment_status",
             },
             "manual_qr_reconciliation": {"device_id", "status"},
         }
@@ -2872,15 +2901,27 @@ class DeviceSafeResetTests(unittest.TestCase):
             }
             self.assertTrue(expected_fields.issubset(indexed))
 
+        install_source = inspect.getsource(
+            install_module.ensure_operational_composite_indexes
+        )
+        self.assertIn(
+            '["device_id", "duplicate_payment_status", "status"]',
+            install_source,
+        )
+        self.assertIn(
+            '"idx_kopos_maybank_device_duplicate_status"',
+            install_source,
+        )
+
     def test_unresolved_maybank_and_manual_qr_state_block_safe_reset(self) -> None:
         cases = (
             (
                 "Maybank QR",
-                [[], [], [], [], [], [{"name": "MBQR-1"}]],
+                [[], [], [], [], [], [], [], [{"name": "MBQR-1"}]],
             ),
             (
                 "manual QR reconciliation",
-                [[], [], [], [], [], [], [{"name": "MQR-1"}]],
+                [[], [], [], [], [], [], [], [], [], [{"name": "MQR-1"}]],
             ),
         )
         for expected_message, query_results in cases:
@@ -2907,6 +2948,13 @@ class DeviceSafeResetTests(unittest.TestCase):
             query
             for query in normalized_queries
             if "tabMaybank QR Transaction" in query
+            and "duplicate_refund_evidence_file" not in query
+        )
+        refunded_query = next(
+            query
+            for query in normalized_queries
+            if "tabMaybank QR Transaction" in query
+            and "duplicate_refund_evidence_file" in query
         )
         manual_query = next(
             query
@@ -2918,8 +2966,272 @@ class DeviceSafeResetTests(unittest.TestCase):
         self.assertIn("fb_order IS NULL", maybank_query)
         self.assertIn("sales_invoice IS NULL", maybank_query)
         self.assertIn("manual_reconciliation_status", maybank_query)
+        self.assertIn(
+            "duplicate_payment_status, '') != 'refunded'",
+            maybank_query,
+        )
+        self.assertIn(
+            "duplicate_payment_status, '') IN ('accounting_pending', 'refund_required')",
+            maybank_query,
+        )
+        self.assertNotIn("tabJournal Entry", maybank_query)
+        self.assertNotIn("tabSales Invoice", maybank_query)
+        self.assertIn("LEFT JOIN `tabFile` AS evidence", refunded_query)
+        self.assertIn("LIMIT 65", refunded_query)
         self.assertIn("status IS NULL", manual_query)
         self.assertIn("reconciliation_failed", manual_query)
+
+    def test_unsubmitted_prepared_automatic_qr_blocks_safe_reset(self) -> None:
+        sql = MagicMock(
+            side_effect=[
+                [],
+                [{"name": "FB-ORDER-PREPARED-1"}],
+            ]
+        )
+        with (
+            patch.object(safe_reset.frappe.db, "sql", sql),
+            self.assertRaisesRegex(
+                safe_reset.frappe.ValidationError,
+                "prepared Automatic QR sale.*finalized",
+            ),
+        ):
+            safe_reset._assert_no_open_shift_or_unresolved_projection(
+                "tab-a-001"
+            )
+
+        prepared_query = " ".join(sql.call_args_list[1].args[0].split())
+        self.assertIn("docstatus = 0", prepared_query)
+        self.assertIn("accepted_sale_fingerprint", prepared_query)
+        self.assertIn("provider_rejected", prepared_query)
+        self.assertIn("FOR UPDATE", prepared_query)
+
+    def test_provider_rejected_draft_requires_exact_durable_release_fence(
+        self,
+    ) -> None:
+        sql = MagicMock(
+            side_effect=[
+                [],
+                [],
+                [{"name": "FB-ORDER-REJECTED-1"}],
+                [],
+                [],
+                [],
+                [],
+                [],
+                [],
+                [],
+            ]
+        )
+        with (
+            patch.object(safe_reset.frappe.db, "sql", sql),
+            patch.object(
+                automatic_qr,
+                "has_durable_no_provider_release_fence",
+                return_value=True,
+            ) as durable_fence,
+        ):
+            safe_reset._assert_no_open_shift_or_unresolved_projection(
+                "tab-a-001"
+            )
+
+        durable_fence.assert_called_once_with("FB-ORDER-REJECTED-1")
+        rejected_query = " ".join(sql.call_args_list[2].args[0].split())
+        self.assertIn("automatic_qr_state = 'provider_rejected'", rejected_query)
+        self.assertIn("docstatus = 0", rejected_query)
+        self.assertIn("LIMIT 65", rejected_query)
+        self.assertNotIn("FOR UPDATE", rejected_query)
+
+    def test_stale_tampered_or_ambiguous_provider_rejection_fails_closed(
+        self,
+    ) -> None:
+        outcomes = (
+            False,
+            safe_reset.frappe.ValidationError(
+                "provider generation attempt remains ambiguous"
+            ),
+        )
+        for outcome in outcomes:
+            sql = MagicMock(
+                side_effect=[
+                    [],
+                    [],
+                    [{"name": "FB-ORDER-REJECTED-1"}],
+                ]
+            )
+            kwargs = (
+                {"side_effect": outcome}
+                if isinstance(outcome, Exception)
+                else {"return_value": outcome}
+            )
+            with (
+                self.subTest(outcome=outcome),
+                patch.object(safe_reset.frappe.db, "sql", sql),
+                patch.object(
+                    automatic_qr,
+                    "has_durable_no_provider_release_fence",
+                    **kwargs,
+                ),
+                self.assertRaises(safe_reset.frappe.ValidationError),
+            ):
+                safe_reset._assert_no_open_shift_or_unresolved_projection(
+                    "tab-a-001"
+                )
+
+    def test_provider_rejected_draft_verification_is_bounded(self) -> None:
+        rejected_rows = [
+            {"name": f"FB-ORDER-REJECTED-{index:03d}"}
+            for index in range(65)
+        ]
+        with (
+            patch.object(
+                safe_reset.frappe.db,
+                "sql",
+                side_effect=[[], [], rejected_rows],
+            ),
+            patch.object(
+                automatic_qr,
+                "has_durable_no_provider_release_fence",
+            ) as durable_fence,
+            self.assertRaisesRegex(
+                safe_reset.frappe.ValidationError,
+                "bounded verification limit",
+            ),
+        ):
+            safe_reset._assert_no_open_shift_or_unresolved_projection(
+                "tab-a-001"
+            )
+        durable_fence.assert_not_called()
+
+    def test_refunded_duplicate_release_reuses_locked_terminal_evidence_proof(
+        self,
+    ) -> None:
+        refunded_row = {
+            "name": "MBQR-DUPLICATE-1",
+            "fb_order": "FB-ORDER-1",
+            "evidence_file_size": 4096,
+        }
+        sql_results = [[], [], [], [], [], [], [], [], [refunded_row], []]
+        proof_path = (
+            "kopos_connector.kopos.services.accounting."
+            "duplicate_qr_payment_service."
+            "lock_and_assert_duplicate_refund_terminal_evidence"
+        )
+        with (
+            patch.object(
+                safe_reset.frappe.db,
+                "sql",
+                side_effect=sql_results,
+            ),
+            patch(
+                proof_path,
+                return_value={"provider_evidence_byte_length": 4096},
+            ) as terminal_proof,
+        ):
+            safe_reset._assert_no_open_shift_or_unresolved_projection(
+                "tab-a-001"
+            )
+
+        terminal_proof.assert_called_once_with(
+            "MBQR-DUPLICATE-1",
+            expected_order_name="FB-ORDER-1",
+            expected_device_id="tab-a-001",
+        )
+
+    def test_refunded_duplicate_tamper_or_missing_gl_file_proof_blocks_reset(
+        self,
+    ) -> None:
+        refunded_row = {
+            "name": "MBQR-DUPLICATE-1",
+            "fb_order": "FB-ORDER-1",
+            "evidence_file_size": 4096,
+        }
+        proof_path = (
+            "kopos_connector.kopos.services.accounting."
+            "duplicate_qr_payment_service."
+            "lock_and_assert_duplicate_refund_terminal_evidence"
+        )
+        with (
+            patch.object(
+                safe_reset.frappe.db,
+                "sql",
+                side_effect=[[], [], [], [], [], [], [], [], [refunded_row]],
+            ),
+            patch(
+                proof_path,
+                side_effect=safe_reset.frappe.ValidationError(
+                    "exact GL or retained File evidence is invalid"
+                ),
+            ),
+            self.assertRaisesRegex(
+                safe_reset.frappe.ValidationError,
+                "exact GL or retained File",
+            ),
+        ):
+            safe_reset._assert_no_open_shift_or_unresolved_projection(
+                "tab-a-001"
+            )
+
+    def test_refunded_duplicate_verification_count_and_workload_are_bounded(
+        self,
+    ) -> None:
+        proof_path = (
+            "kopos_connector.kopos.services.accounting."
+            "duplicate_qr_payment_service."
+            "lock_and_assert_duplicate_refund_terminal_evidence"
+        )
+        cases = (
+            (
+                [
+                    {
+                        "name": f"MBQR-DUPLICATE-{index:03d}",
+                        "fb_order": f"FB-ORDER-{index:03d}",
+                        "evidence_file_size": 1,
+                    }
+                    for index in range(65)
+                ],
+                "bounded verification limit",
+            ),
+            (
+                [
+                    {
+                        "name": "MBQR-DUPLICATE-1",
+                        "fb_order": "FB-ORDER-1",
+                        "evidence_file_size": (
+                            safe_reset.MAX_REFUND_EVIDENCE_WORKLOAD_BYTES + 1
+                        ),
+                    }
+                ],
+                "bounded verification workload",
+            ),
+        )
+        for refunded_rows, message in cases:
+            with (
+                self.subTest(message=message),
+                patch.object(
+                    safe_reset.frappe.db,
+                    "sql",
+                    side_effect=[
+                        [],
+                        [],
+                        [],
+                        [],
+                        [],
+                        [],
+                        [],
+                        [],
+                        refunded_rows,
+                    ],
+                ),
+                patch(proof_path) as terminal_proof,
+                self.assertRaisesRegex(
+                    safe_reset.frappe.ValidationError,
+                    message,
+                ),
+            ):
+                safe_reset._assert_no_open_shift_or_unresolved_projection(
+                    "tab-a-001"
+                )
+            terminal_proof.assert_not_called()
 
     def test_credential_recovery_can_replace_incomplete_old_credentials(self) -> None:
         device = _device()

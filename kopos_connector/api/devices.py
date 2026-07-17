@@ -41,7 +41,16 @@ def get_session_roles(user: str | None = None) -> set[str]:
     if not isinstance(roles, (list, tuple, set)):
         roles = []
 
-    return {cstr(role).strip() for role in roles if cstr(role).strip()}
+    normalized_roles = {
+        cstr(role).strip() for role in roles if cstr(role).strip()
+    }
+    if resolved_user == "Administrator":
+        # Frappe's built-in superuser reports every Role as effective even when
+        # it has no Has Role assignment. KoPOS Device API is an identity marker,
+        # not a general permission, so treating that synthetic membership as a
+        # device session would lock Administrator out of Desk and login routes.
+        normalized_roles.discard(KOPOS_DEVICE_API_ROLE)
+    return normalized_roles
 
 
 def require_system_manager(user: str | None = None) -> None:

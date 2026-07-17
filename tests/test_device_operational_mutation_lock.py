@@ -260,13 +260,13 @@ class TestDeviceOperationalMutationLock(unittest.TestCase):
             manual_path,
             "_resolve_authorized_device",
         )
-        upload_calls = _function_call_lines(
-            manual_path,
-            "upload_manual_qr_receipt",
-        )
         revalidation_calls = _function_call_lines(
             manual_path,
             "_revalidate_receipt_device_authority",
+        )
+        upload_calls = _function_call_lines(
+            manual_path,
+            "upload_manual_qr_receipt",
         )
         self.assertTrue(
             resolver_calls.get("require_device_context")

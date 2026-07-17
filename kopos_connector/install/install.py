@@ -143,6 +143,11 @@ def ensure_operational_composite_indexes() -> None:
             "idx_kopos_maybank_duplicate_refund",
         ),
         (
+            "Maybank QR Transaction",
+            ["device_id", "duplicate_payment_status", "status"],
+            "idx_kopos_maybank_device_duplicate_status",
+        ),
+        (
             "FB Resolved Sale",
             ["fb_order"],
             "idx_kopos_resolved_sale_order",

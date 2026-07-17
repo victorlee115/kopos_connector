@@ -4,7 +4,9 @@
 from importlib import import_module
 
 from kopos_connector.kopos.api.money_contract import (
+    MAX_SAFE_INTEGER,
     MoneyContractValidationError,
+    parse_sen,
     persisted_money_to_sen,
     sen_to_decimal,
 )
@@ -20,6 +22,11 @@ now = frappe_utils.now
 
 BLOCKING_PROJECTION_STATUSES = {"Pending", "Failed"}
 BLOCKING_PROJECTION_TYPES = {"Sales Invoice", "Stock Issue", "Stock Entry", "FB Shift"}
+NON_BLOCKING_PREPARED_QR_STATES = {"provider_rejected"}
+UNRESOLVED_DUPLICATE_QR_STATUSES = (
+    "accounting_pending",
+    "refund_required",
+)
 QUERY_PAGE_SIZE = 500
 
 
@@ -103,6 +110,16 @@ def get_shift_expected_cash(shift_name):
 
 
 def get_shift_close_projection_blockers(shift_name):
+    prepared_qr_orders = _get_all_rows(
+        "FB Order",
+        filters={
+            "shift": shift_name,
+            "docstatus": 0,
+            "accepted_sale_fingerprint": ["!=", ""],
+        },
+        fields=["name", "status", "automatic_qr_state"],
+        order_by="creation asc",
+    )
     orders = _get_all_rows(
         "FB Order",
         filters={"shift": shift_name, "status": "Submitted"},
@@ -110,6 +127,30 @@ def get_shift_close_projection_blockers(shift_name):
         order_by="creation asc",
     )
     blockers = []
+    for prepared_order in prepared_qr_orders:
+        prepared_state = cstr(
+            _row_value(prepared_order, "automatic_qr_state")
+        ).strip()
+        if prepared_state in NON_BLOCKING_PREPARED_QR_STATES:
+            from kopos_connector.api.automatic_qr import (
+                has_durable_no_provider_release_fence,
+            )
+
+            if has_durable_no_provider_release_fence(
+                cstr(_row_value(prepared_order, "name")).strip()
+            ):
+                # Only locked, exact no-provider evidence can prove that this
+                # Draft is not paid or potentially paid. The order state alone
+                # is a derived display cache and is never release authority.
+                continue
+        blockers.append(
+            {
+                "fb_order": _row_value(prepared_order, "name"),
+                "projection_type": "Automatic QR Finalization",
+                "state": prepared_state or "unknown",
+                "reason": "automatic_qr_state",
+            }
+        )
     order_names = [
         cstr(_row_value(order, "name")).strip()
         for order in orders
@@ -178,6 +219,170 @@ def get_shift_close_projection_blockers(shift_name):
             )
 
     return _dedupe_close_blockers(blockers)
+
+
+def get_shift_pending_reconciliation_summary(
+    shift_name: str,
+) -> dict[str, int | bool]:
+    """Report submitted QR settlement exposure without making it a close blocker."""
+
+    order_names = _get_submitted_shift_order_names(shift_name)
+    if not order_names:
+        return {"count": 0, "amount_sen": 0, "blocks_close": False}
+
+    pending_payments = _get_all_rows(
+        "FB Order Payment",
+        filters={
+            "parent": ["in", order_names],
+            "parenttype": "FB Order",
+            "parentfield": "payments",
+            "settlement_status": "pending_reconciliation",
+        },
+        fields=["name", "parent", "amount"],
+        order_by="creation asc",
+    )
+    amount_sen = 0
+    for payment in pending_payments:
+        payment_name = cstr(_row_value(payment, "name")).strip() or "unknown"
+        payment_amount_sen = _money_sen(
+            _row_value(payment, "amount"),
+            f"FB Order Payment {payment_name} pending reconciliation amount",
+        )
+        if payment_amount_sen <= 0:
+            frappe.throw(
+                (
+                    f"FB Order Payment {payment_name} pending reconciliation "
+                    "amount must be greater than zero"
+                ),
+                frappe.ValidationError,
+            )
+        if amount_sen > MAX_SAFE_INTEGER - payment_amount_sen:
+            frappe.throw(
+                "FB Shift pending reconciliation amount exceeds the safe integer range",
+                frappe.ValidationError,
+            )
+        amount_sen += payment_amount_sen
+
+    return {
+        "count": len(pending_payments),
+        "amount_sen": amount_sen,
+        "blocks_close": False,
+    }
+
+
+def get_shift_duplicate_qr_liability_summary(
+    shift_name: str,
+) -> dict[str, object]:
+    """Report unresolved duplicate provider-payment liabilities for a shift.
+
+    The Maybank QR Transaction incident state is the durable authority. The
+    winning FB Order Payment remains unchanged and is therefore deliberately
+    not used to infer duplicate-payment exposure.
+    """
+
+    summaries = {
+        status: {"count": 0, "amount_sen": 0}
+        for status in UNRESOLVED_DUPLICATE_QR_STATUSES
+    }
+    order_names = _get_submitted_shift_order_names(shift_name)
+    if not order_names:
+        return _duplicate_qr_liability_result(summaries)
+
+    incidents = _get_all_rows(
+        "Maybank QR Transaction",
+        filters={
+            "fb_order": ["in", order_names],
+            "duplicate_payment_status": [
+                "in",
+                list(UNRESOLVED_DUPLICATE_QR_STATUSES),
+            ],
+        },
+        fields=[
+            "name",
+            "fb_order",
+            "duplicate_payment_status",
+            "sale_amount_sen",
+        ],
+        order_by="creation asc",
+    )
+    total_amount_sen = 0
+    for incident in incidents:
+        incident_name = cstr(_row_value(incident, "name")).strip() or "unknown"
+        status = cstr(
+            _row_value(incident, "duplicate_payment_status")
+        ).strip()
+        if status not in summaries:
+            frappe.throw(
+                (
+                    f"Maybank QR Transaction {incident_name} has an invalid "
+                    "unresolved duplicate payment status"
+                ),
+                frappe.ValidationError,
+            )
+        try:
+            amount_sen = parse_sen(
+                _row_value(incident, "sale_amount_sen"),
+                (
+                    f"Maybank QR Transaction {incident_name} duplicate "
+                    "payment amount_sen"
+                ),
+            )
+        except MoneyContractValidationError as error:
+            frappe.throw(str(error), frappe.ValidationError)
+            raise AssertionError("frappe.throw must raise") from error
+        if amount_sen <= 0:
+            frappe.throw(
+                (
+                    f"Maybank QR Transaction {incident_name} duplicate "
+                    "payment amount_sen must be greater than zero"
+                ),
+                frappe.ValidationError,
+            )
+        if total_amount_sen > MAX_SAFE_INTEGER - amount_sen:
+            frappe.throw(
+                "FB Shift duplicate QR liability amount exceeds the safe integer range",
+                frappe.ValidationError,
+            )
+        status_summary = summaries[status]
+        status_summary["count"] += 1
+        status_summary["amount_sen"] += amount_sen
+        total_amount_sen += amount_sen
+
+    return _duplicate_qr_liability_result(summaries)
+
+
+def _get_submitted_shift_order_names(shift_name: str) -> list[str]:
+    submitted_orders = _get_all_rows(
+        "FB Order",
+        filters={
+            "shift": shift_name,
+            "docstatus": 1,
+            "status": "Submitted",
+        },
+        fields=["name"],
+        order_by="creation asc",
+    )
+    return sorted(
+        {
+            cstr(_row_value(order, "name")).strip()
+            for order in submitted_orders
+            if cstr(_row_value(order, "name")).strip()
+        }
+    )
+
+
+def _duplicate_qr_liability_result(
+    summaries: dict[str, dict[str, int]],
+) -> dict[str, object]:
+    return {
+        "accounting_pending": dict(summaries["accounting_pending"]),
+        "refund_required": dict(summaries["refund_required"]),
+        "count": sum(summary["count"] for summary in summaries.values()),
+        "amount_sen": sum(
+            summary["amount_sen"] for summary in summaries.values()
+        ),
+        "blocks_close": False,
+    }
 
 
 def validate_shift_can_close(shift_name):

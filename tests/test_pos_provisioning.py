@@ -602,6 +602,55 @@ class PosProvisioningTests(unittest.TestCase):
 
         self.assertIn("disabled", str(error.exception))
 
+    def test_administrator_synthetic_all_roles_does_not_become_device_identity(self):
+        with (
+            patch.object(
+                devices.frappe,
+                "get_roles",
+                return_value=["System Manager", devices.KOPOS_DEVICE_API_ROLE],
+            ),
+            patch.object(
+                auth.frappe,
+                "session",
+                SimpleNamespace(user="Administrator"),
+            ),
+            patch.object(
+                auth.frappe,
+                "local",
+                SimpleNamespace(
+                    request=SimpleNamespace(path="/app", method="GET")
+                ),
+            ),
+        ):
+            roles = devices.get_session_roles(user="Administrator")
+            auth.enforce_device_api_restrictions()
+
+        self.assertIn("System Manager", roles)
+        self.assertNotIn(devices.KOPOS_DEVICE_API_ROLE, roles)
+
+    def test_real_dual_role_user_remains_device_restricted(self):
+        with (
+            patch.object(
+                auth.frappe,
+                "session",
+                SimpleNamespace(user="dual-role@example.test"),
+            ),
+            patch.object(
+                auth.frappe,
+                "local",
+                SimpleNamespace(
+                    request=SimpleNamespace(path="/app", method="GET")
+                ),
+            ),
+            patch.object(
+                auth.frappe,
+                "get_roles",
+                return_value=["System Manager", devices.KOPOS_DEVICE_API_ROLE],
+            ),
+        ):
+            with self.assertRaises(auth.frappe.ValidationError):
+                auth.enforce_device_api_restrictions()
+
     def test_device_api_users_are_blocked_from_non_api_routes(self):
         with (
             patch.object(

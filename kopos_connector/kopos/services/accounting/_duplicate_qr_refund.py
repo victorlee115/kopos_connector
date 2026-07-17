@@ -8,6 +8,7 @@ from typing import Any
 import frappe
 from frappe.utils import now_datetime
 
+from kopos_connector.api.devices import lock_device_for_operational_mutation
 from kopos_connector.kopos.services.accounting._duplicate_qr_contract import (
     MAYBANK_TRANSACTION_DOCTYPE,
     REFUNDED_STATUS,
@@ -50,17 +51,29 @@ def resolve_duplicate_paid_refund(payload: Mapping[str, Any]) -> dict[str, Any]:
     source_link = frappe.db.get_value(
         MAYBANK_TRANSACTION_DOCTYPE,
         source_name,
-        ["name", "fb_order"],
+        ["name", "fb_order", "device_id"],
         as_dict=True,
     )
     order_name = _text(_value(source_link, "fb_order"))
-    if not order_name:
+    device_id = _text(_value(source_link, "device_id"))
+    if not order_name or not device_id:
         frappe.throw(
-            "Duplicate Automatic QR transaction is not bound to an FB Order",
+            "Duplicate Automatic QR transaction is not bound to an FB Order and device",
             frappe.ValidationError,
         )
 
-    # Preserve the finalizer's global lock order: FB Order, then provider row.
+    # Serialize support mutations against safe reset before taking any sale or
+    # provider locks. The source binding is re-read under lock below, so this
+    # non-locking lookup is scope discovery only and never mutation authority.
+    locked_device = lock_device_for_operational_mutation(device_id=device_id)
+    if _text(_value(locked_device, "device_id")) != device_id:
+        frappe.throw(
+            "Duplicate Automatic QR device binding changed while its lock was acquired",
+            frappe.ValidationError,
+        )
+
+    # Preserve the global operational lock order: Device, Safe Reset, FB Order,
+    # provider row, accounting rows, then retained evidence File.
     locked_order = frappe.db.sql(
         "SELECT name FROM `tabFB Order` WHERE name = %s LIMIT 1 FOR UPDATE",
         (order_name,),
@@ -82,6 +95,15 @@ def resolve_duplicate_paid_refund(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     order_doc = frappe.get_doc("FB Order", order_name)
     transaction = frappe.get_doc(MAYBANK_TRANSACTION_DOCTYPE, source_name)
+    if (
+        _text(_value(transaction, "device_id")) != device_id
+        or _text(_value(transaction, "fb_order")) != order_name
+        or _text(_value(order_doc, "device_id")) != device_id
+    ):
+        frappe.throw(
+            "Duplicate Automatic QR device or order binding changed while locks were acquired",
+            frappe.ValidationError,
+        )
     winning_transaction = _text(
         _value(transaction, "duplicate_winning_transaction")
     )

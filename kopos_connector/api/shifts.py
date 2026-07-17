@@ -792,6 +792,32 @@ def _find_open_shift_conflicts_for_update(
     return list(rows or [])
 
 
+def _open_shift_conflict_response(
+    *,
+    conflict_code: str,
+    idempotency_key: str,
+    shift_id: str,
+    device_id: str,
+    staff_id: str,
+    conflicting_fb_shift: str,
+    conflicting_device_id: str,
+    message: str,
+) -> dict[str, Any]:
+    """Return request-bound proof that this open attempt was not committed."""
+    return {
+        "status": "conflict",
+        "conflict_code": conflict_code,
+        "idempotency_key": idempotency_key,
+        "shift_id": shift_id,
+        "device_id": device_id,
+        "staff_id": staff_id,
+        "conflicting_fb_shift": conflicting_fb_shift,
+        "conflicting_device_id": conflicting_device_id,
+        "local_release_authorized": True,
+        "message": message,
+    }
+
+
 def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Open a KoPOS F&B shift in ERP.
 
@@ -913,15 +939,44 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
     for conflict in _find_open_shift_conflicts_for_update(device_id, staff_id):
-        if cstr(_doc_value(conflict, "device_id")).strip() == device_id:
+        conflicting_fb_shift = cstr(_doc_value(conflict, "name")).strip()
+        conflicting_device_id = cstr(
+            _doc_value(conflict, "device_id")
+        ).strip()
+        if not conflicting_fb_shift or not conflicting_device_id:
             frappe.throw(
-                _("An open shift already exists on device {0}").format(device_id),
+                _("Open FB Shift conflict evidence is incomplete"),
                 frappe.ValidationError,
             )
+        if conflicting_device_id == device_id:
+            return _open_shift_conflict_response(
+                conflict_code="device_open_shift_conflict",
+                idempotency_key=idempotency_key,
+                shift_id=shift_id,
+                device_id=device_id,
+                staff_id=staff_id,
+                conflicting_fb_shift=conflicting_fb_shift,
+                conflicting_device_id=conflicting_device_id,
+                message=_(
+                    "Device {0} already has open FB Shift {1}"
+                ).format(device_id, conflicting_fb_shift),
+            )
         if cstr(_doc_value(conflict, "staff_id")).strip() == staff_id:
-            frappe.throw(
-                _("User {0} already has an open shift").format(staff_id),
-                frappe.ValidationError,
+            return _open_shift_conflict_response(
+                conflict_code="staff_open_shift_conflict",
+                idempotency_key=idempotency_key,
+                shift_id=shift_id,
+                device_id=device_id,
+                staff_id=staff_id,
+                conflicting_fb_shift=conflicting_fb_shift,
+                conflicting_device_id=conflicting_device_id,
+                message=_(
+                    "User {0} already has open FB Shift {1} on device {2}"
+                ).format(
+                    staff_id,
+                    conflicting_fb_shift,
+                    conflicting_device_id,
+                ),
             )
 
     from kopos_connector.utils.manager_approval import canonical_context_hash
@@ -1003,6 +1058,73 @@ def _persisted_money_sen(value: Any, fieldname: str) -> int:
     except MoneyContractValidationError as error:
         frappe.throw(str(error), frappe.ValidationError)
         raise AssertionError("frappe.throw must raise") from error
+
+
+def _shift_pending_reconciliation_report(
+    fb_shift: str,
+) -> dict[str, Any]:
+    try:
+        from kopos_connector.kopos.doctype.fb_shift.fb_shift import (
+            get_shift_pending_reconciliation_summary,
+        )
+
+        summary = get_shift_pending_reconciliation_summary(fb_shift)
+        return {
+            "count": int(summary["count"]),
+            "amount_sen": int(summary["amount_sen"]),
+            "blocks_close": False,
+        }
+    except Exception as error:
+        # Settlement reporting is operational telemetry, never close authority.
+        # Preserve an explicit unknown result instead of lying with zeroes or
+        # preventing the cashier from ending an otherwise healthy shift.
+        log_sanitized_error(
+            "KoPOS shift pending reconciliation report unavailable",
+            error,
+        )
+        return {
+            "count": None,
+            "amount_sen": None,
+            "blocks_close": False,
+            "report_status": "unavailable",
+        }
+
+
+def _shift_duplicate_qr_liability_report(fb_shift: str) -> dict[str, Any]:
+    try:
+        from kopos_connector.kopos.doctype.fb_shift.fb_shift import (
+            get_shift_duplicate_qr_liability_summary,
+        )
+
+        summary = get_shift_duplicate_qr_liability_summary(fb_shift)
+        return {
+            "accounting_pending": {
+                "count": int(summary["accounting_pending"]["count"]),
+                "amount_sen": int(
+                    summary["accounting_pending"]["amount_sen"]
+                ),
+            },
+            "refund_required": {
+                "count": int(summary["refund_required"]["count"]),
+                "amount_sen": int(summary["refund_required"]["amount_sen"]),
+            },
+            "count": int(summary["count"]),
+            "amount_sen": int(summary["amount_sen"]),
+            "blocks_close": False,
+        }
+    except Exception as error:
+        log_sanitized_error(
+            "KoPOS shift duplicate QR liability report unavailable",
+            error,
+        )
+        return {
+            "accounting_pending": {"count": None, "amount_sen": None},
+            "refund_required": {"count": None, "amount_sen": None},
+            "count": None,
+            "amount_sen": None,
+            "blocks_close": False,
+            "report_status": "unavailable",
+        }
 
 
 def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1129,11 +1251,17 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 idempotency_key=idempotency_key,
                 request_fingerprint=close_request_fingerprint,
             )
+            pending_reconciliation = _shift_pending_reconciliation_report(fb_shift)
+            duplicate_qr_liabilities = _shift_duplicate_qr_liability_report(
+                fb_shift
+            )
             return {
                 "status": "duplicate",
                 "fb_shift": fb_shift,
                 "shift_id": shift_id,
                 "message": _("Shift already closed"),
+                "pending_reconciliation": pending_reconciliation,
+                "duplicate_qr_liabilities": duplicate_qr_liabilities,
             }
         if getattr(shift_doc, "status", None) != "Open":
             frappe.throw(
@@ -1146,6 +1274,10 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
         validate_shift_can_close(fb_shift)
+        pending_reconciliation = _shift_pending_reconciliation_report(fb_shift)
+        duplicate_qr_liabilities = _shift_duplicate_qr_liability_report(
+            fb_shift
+        )
 
         # Rebuild expected cash under the already-held shift lock immediately
         # before close.  This prevents stale cached totals from hiding a sale,
@@ -1211,17 +1343,24 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "status": "ok",
             "fb_shift": fb_shift,
             "shift_id": shift_id,
+            "pending_reconciliation": pending_reconciliation,
+            "duplicate_qr_liabilities": duplicate_qr_liabilities,
         }
 
 
-def get_device_open_shift_payload(device_id: str) -> dict[str, Any] | None:
-    """Get the current open FB Shift for a KoPOS device.
+def get_device_open_shift_payload(
+    device_id: str,
+    staff_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Get the current open FB Shift or an optional staff conflict.
 
     This endpoint allows KoPOS to discover and adopt an existing open shift
     that was created from another device or from ERPNext directly.
 
     Args:
         device_id: The KoPOS device ID to look up
+        staff_id: Optional validated device user to check for an open shift on
+            another device
 
     Returns:
         Dict with shift data if an open shift exists, None otherwise:
@@ -1231,6 +1370,11 @@ def get_device_open_shift_payload(device_id: str) -> dict[str, Any] | None:
         - staff_id: The ERP user who opened the shift
         - opening_float_sen: Opening cash amount in sen/cents
         - opened_at: ISO timestamp when shift was opened
+
+        If this device has no open shift and staff_id has one on another device,
+        returns ``{"staff_conflict": {...}}``. The public endpoint exposes that
+        object alongside ``shift: null`` without changing the existing shift
+        response shape.
     """
     device_doc = get_device_doc(device_id=device_id)
     if not device_doc:
@@ -1250,9 +1394,6 @@ def get_device_open_shift_payload(device_id: str) -> dict[str, Any] | None:
     except Exception:
         return None
 
-    if not entries:
-        return None
-
     for entry in entries:
         custom_device_id = cstr(entry.get("device_id"))
         if custom_device_id != device_id:
@@ -1264,6 +1405,44 @@ def get_device_open_shift_payload(device_id: str) -> dict[str, Any] | None:
             "staff_id": cstr(entry.get("staff_id")),
             "opening_float_sen": int(round(flt(entry.get("opening_float", 0)) * 100)),
             "opened_at": _format_datetime_iso(entry.get("opened_at")),
+        }
+
+    resolved_staff_id = cstr(staff_id).strip()
+    if not resolved_staff_id:
+        return None
+
+    try:
+        staff_entries = frappe.get_all(
+            "FB Shift",
+            filters={"staff_id": resolved_staff_id, "status": "Open"},
+            fields=["name", "device_id", "staff_id"],
+            order_by="creation desc",
+            limit=10,
+        )
+    except Exception:
+        return None
+
+    for entry in staff_entries:
+        conflicting_device_id = cstr(entry.get("device_id")).strip()
+        if not conflicting_device_id or conflicting_device_id == device_id:
+            continue
+        conflicting_fb_shift = cstr(entry.get("name")).strip()
+        if not conflicting_fb_shift:
+            continue
+        return {
+            "staff_conflict": {
+                "conflict_code": "staff_open_shift_conflict",
+                "staff_id": resolved_staff_id,
+                "conflicting_fb_shift": conflicting_fb_shift,
+                "conflicting_device_id": conflicting_device_id,
+                "message": _(
+                    "User {0} already has open FB Shift {1} on device {2}"
+                ).format(
+                    resolved_staff_id,
+                    conflicting_fb_shift,
+                    conflicting_device_id,
+                ),
+            }
         }
 
     return None

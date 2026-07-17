@@ -51,6 +51,9 @@ CANCEL_CONFIRMATION_PREFIX = "CANCEL SAFE RESET"
 EXPORT_EVIDENCE_MAX_AGE_SECONDS = 30 * 60
 EXPORT_EVIDENCE_MAX_FUTURE_SKEW_SECONDS = 5 * 60
 MAX_SUPPORT_ARCHIVE_BYTES = 8 * 1024 * 1024 * 1024 + 64 * 1024 * 1024
+MAX_PROVIDER_REJECTED_DRAFTS_PER_SAFE_RESET = 64
+MAX_REFUNDED_DUPLICATE_PAYMENTS_PER_SAFE_RESET = 64
+MAX_REFUND_EVIDENCE_WORKLOAD_BYTES = 64 * 1024 * 1024
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 # The reset proof is the existing Android 32-byte value encoded as lowercase
@@ -3864,6 +3867,67 @@ def _assert_no_open_shift_or_unresolved_projection(device_id: str) -> None:
             frappe.ValidationError,
         )
 
+    unresolved_prepared_qr_rows = frappe.db.sql(
+        """
+        SELECT name
+        FROM `tabFB Order`
+        WHERE device_id = %s
+          AND docstatus = 0
+          AND COALESCE(accepted_sale_fingerprint, '') != ''
+          AND COALESCE(automatic_qr_state, '') != 'provider_rejected'
+        ORDER BY name
+        LIMIT 1
+        FOR UPDATE
+        """,
+        (device_id,),
+        as_dict=True,
+    )
+    if unresolved_prepared_qr_rows:
+        frappe.throw(
+            _(
+                "Safe reset requires every prepared Automatic QR sale for the "
+                "device to be finalized"
+            ),
+            frappe.ValidationError,
+        )
+
+    provider_rejected_drafts = frappe.db.sql(
+        """
+        SELECT name
+        FROM `tabFB Order`
+        WHERE device_id = %s
+          AND docstatus = 0
+          AND automatic_qr_state = 'provider_rejected'
+        ORDER BY name
+        LIMIT 65
+        """,
+        (device_id,),
+        as_dict=True,
+    )
+    if len(provider_rejected_drafts or []) > MAX_PROVIDER_REJECTED_DRAFTS_PER_SAFE_RESET:
+        frappe.throw(
+            _(
+                "Safe reset provider-rejected Automatic QR evidence exceeds the "
+                "bounded verification limit"
+            ),
+            frappe.ValidationError,
+        )
+    if provider_rejected_drafts:
+        from kopos_connector.api.automatic_qr import (
+            has_durable_no_provider_release_fence,
+        )
+
+        for row in provider_rejected_drafts:
+            order_name = cstr(_row_value(row, "name")).strip()
+            if not order_name or not has_durable_no_provider_release_fence(order_name):
+                frappe.throw(
+                    _(
+                        "Safe reset requires durable no-provider evidence for "
+                        "every provider-rejected Automatic QR sale"
+                    ),
+                    frappe.ValidationError,
+                )
+
     unresolved_projection_queries = (
         """
         SELECT projection.name
@@ -3939,12 +4003,33 @@ def _assert_no_open_shift_or_unresolved_projection(device_id: str) -> None:
             OR status NOT IN ('paid', 'failed', 'timeout')
             OR (
               status = 'paid'
-              AND (consumed_at IS NULL OR fb_order IS NULL OR sales_invoice IS NULL)
+              AND (
+                COALESCE(maybank_status, 0) != 1
+                OR COALESCE(provider, '') != 'maybank_qr'
+                OR COALESCE(transaction_refno, '') = ''
+                OR COALESCE(sale_amount_sen, 0) <= 0
+                OR COALESCE(currency, '') != 'MYR'
+              )
+            )
+            OR COALESCE(duplicate_payment_status, '') NOT IN
+              ('', 'accounting_pending', 'refund_required', 'refunded')
+            OR COALESCE(duplicate_payment_status, '') IN
+              ('accounting_pending', 'refund_required')
+            OR (
+              status = 'paid'
+              AND COALESCE(duplicate_payment_status, '') != 'refunded'
+              AND (
+                consumed_at IS NULL
+                OR fb_order IS NULL
+                OR sales_invoice IS NULL
+              )
             )
             OR (
-              COALESCE(manual_reconciliation_status, '') NOT IN
-                ('', 'reconciled', 'reconciliation_failed')
+              COALESCE(duplicate_payment_status, '') = 'refunded'
+              AND status != 'paid'
             )
+            OR COALESCE(manual_reconciliation_status, '') NOT IN
+              ('', 'reconciled', 'reconciliation_failed')
           )
         ORDER BY name
         LIMIT 1
@@ -3956,10 +4041,81 @@ def _assert_no_open_shift_or_unresolved_projection(device_id: str) -> None:
         frappe.throw(
             _(
                 "Safe reset requires every Maybank QR payment for the device to "
-                "reach a terminal, consumed state"
+                "reach a terminal consumed or exactly refunded state"
             ),
             frappe.ValidationError,
         )
+
+    refunded_duplicate_rows = frappe.db.sql(
+        """
+        SELECT
+          txn.name,
+          txn.fb_order,
+          evidence.file_size AS evidence_file_size
+        FROM `tabMaybank QR Transaction` AS txn
+        LEFT JOIN `tabFile` AS evidence
+          ON evidence.name = txn.duplicate_refund_evidence_file
+        WHERE txn.device_id = %s
+          AND txn.status = 'paid'
+          AND txn.duplicate_payment_status = 'refunded'
+        ORDER BY txn.name
+        LIMIT 65
+        """,
+        (device_id,),
+        as_dict=True,
+    )
+    if len(refunded_duplicate_rows or []) > MAX_REFUNDED_DUPLICATE_PAYMENTS_PER_SAFE_RESET:
+        frappe.throw(
+            _(
+                "Safe reset refunded duplicate-payment evidence exceeds the "
+                "bounded verification limit"
+            ),
+            frappe.ValidationError,
+        )
+
+    declared_evidence_workload = 0
+    for row in refunded_duplicate_rows or []:
+        declared_bytes = cint(_row_value(row, "evidence_file_size"))
+        if (
+            declared_bytes <= 0
+            or declared_evidence_workload
+            > MAX_REFUND_EVIDENCE_WORKLOAD_BYTES - declared_bytes
+        ):
+            frappe.throw(
+                _(
+                    "Safe reset refunded duplicate-payment evidence exceeds the "
+                    "bounded verification workload"
+                ),
+                frappe.ValidationError,
+            )
+        declared_evidence_workload += declared_bytes
+
+    if refunded_duplicate_rows:
+        from kopos_connector.kopos.services.accounting.duplicate_qr_payment_service import (
+            lock_and_assert_duplicate_refund_terminal_evidence,
+        )
+
+        verified_evidence_workload = 0
+        for row in refunded_duplicate_rows:
+            proof = lock_and_assert_duplicate_refund_terminal_evidence(
+                cstr(_row_value(row, "name")).strip(),
+                expected_order_name=cstr(_row_value(row, "fb_order")).strip(),
+                expected_device_id=device_id,
+            )
+            verified_bytes = cint(proof.get("provider_evidence_byte_length"))
+            if (
+                verified_bytes <= 0
+                or verified_evidence_workload
+                > MAX_REFUND_EVIDENCE_WORKLOAD_BYTES - verified_bytes
+            ):
+                frappe.throw(
+                    _(
+                        "Safe reset refunded duplicate-payment evidence exceeds "
+                        "the bounded verification workload"
+                    ),
+                    frappe.ValidationError,
+                )
+            verified_evidence_workload += verified_bytes
 
     unresolved_manual_qr_rows = frappe.db.sql(
         """

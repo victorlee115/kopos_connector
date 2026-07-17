@@ -25,6 +25,9 @@ contract = importlib.import_module(
 incident = importlib.import_module(
     "kopos_connector.kopos.services.accounting._duplicate_qr_incident"
 )
+refund_service = importlib.import_module(
+    "kopos_connector.kopos.services.accounting._duplicate_qr_refund"
+)
 journal_entry_extension = importlib.import_module(
     "kopos_connector.extensions.journal_entry"
 )
@@ -355,6 +358,14 @@ def duplicate_env(
         "session",
         FakeDoc(user="manager@example.test"),
     )
+    monkeypatch.setattr(
+        refund_service,
+        "lock_device_for_operational_mutation",
+        lambda device_id, **_kwargs: (
+            env.sql_queries.append(f"LOCK DEVICE {device_id}")
+            or FakeDoc(name=device_id, device_id=device_id)
+        ),
+    )
     monkeypatch.setattr(incident, "log_sanitized_error", lambda *_args: None)
     monkeypatch.setattr(
         contract,
@@ -677,6 +688,51 @@ def test_exact_provider_refund_posts_inverse_entry_and_exact_retry_is_idempotent
             )
         )
     assert env.journals_created == 2
+
+
+def test_system_manager_refund_locks_device_before_order_and_source(
+    duplicate_env: tuple[DuplicateAccountingEnv, FakeDoc, FakeDoc],
+) -> None:
+    env, order, source = duplicate_env
+    _register(order, source)
+    env.sql_queries.clear()
+
+    service.resolve_duplicate_paid_refund(_refund_payload())
+
+    assert env.sql_queries[0] == "LOCK DEVICE TAB-A001"
+    locked_tables = [
+        query.split("FROM `tab", 1)[1].split("`", 1)[0]
+        for query in env.sql_queries[1:3]
+    ]
+    assert locked_tables == ["FB Order", "Maybank QR Transaction"]
+    assert all("FOR UPDATE" in query for query in env.sql_queries[1:3])
+
+
+def test_system_manager_refund_revalidates_device_binding_after_source_lock(
+    duplicate_env: tuple[DuplicateAccountingEnv, FakeDoc, FakeDoc],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env, order, source = duplicate_env
+    _register(order, source)
+    writes_before = len(env.source_updates)
+
+    def mutate_binding_after_device_lock(device_id: str, **_kwargs: Any) -> FakeDoc:
+        source.device_id = "TAB-OTHER"
+        return FakeDoc(name=device_id, device_id=device_id)
+
+    monkeypatch.setattr(
+        refund_service,
+        "lock_device_for_operational_mutation",
+        mutate_binding_after_device_lock,
+    )
+    with pytest.raises(
+        service.frappe.ValidationError,
+        match="binding changed while locks were acquired",
+    ):
+        service.resolve_duplicate_paid_refund(_refund_payload())
+
+    assert len(env.source_updates) == writes_before
+    assert source.duplicate_payment_status == "refund_required"
 
 
 def test_terminal_refund_assertion_is_read_only_and_reproves_exact_evidence(

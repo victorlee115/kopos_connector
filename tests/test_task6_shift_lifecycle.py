@@ -176,6 +176,16 @@ def _close_payload() -> dict[str, Any]:
     }
 
 
+def _empty_duplicate_qr_liability_summary() -> dict[str, Any]:
+    return {
+        "accounting_pending": {"count": 0, "amount_sen": 0},
+        "refund_required": {"count": 0, "amount_sen": 0},
+        "count": 0,
+        "amount_sen": 0,
+        "blocks_close": False,
+    }
+
+
 def _patch_open_dependencies(
     monkeypatch: pytest.MonkeyPatch,
     existing_shift: SimpleNamespace,
@@ -215,6 +225,9 @@ def _patch_close_dependencies(
     order_rows: list[dict[str, Any]],
     projection_rows: list[dict[str, Any]],
     resolved_sales_by_order: dict[str, list[SimpleNamespace]] | None = None,
+    prepared_order_rows: list[dict[str, Any]] | None = None,
+    payment_rows: list[dict[str, Any]] | None = None,
+    duplicate_qr_transaction_rows: list[dict[str, Any]] | None = None,
 ) -> MutableShift:
     shift_doc = MutableShift(
         name="FB-SHIFT-1",
@@ -253,7 +266,60 @@ def _patch_close_dependencies(
         **_kwargs: Any,
     ) -> list[dict[str, Any]]:
         if doctype == "FB Order":
+            if (filters or {}).get("docstatus") == 0:
+                return prepared_order_rows or []
             return order_rows
+        if doctype == "FB Order Payment":
+            requested_status = (filters or {}).get("settlement_status")
+            parent_filter = (filters or {}).get("parent")
+            requested_parents = (
+                set(parent_filter[1])
+                if isinstance(parent_filter, list)
+                and len(parent_filter) == 2
+                and parent_filter[0] == "in"
+                else set()
+            )
+            return [
+                payment
+                for payment in payment_rows or []
+                if (
+                    not requested_status
+                    or payment.get("settlement_status") == requested_status
+                )
+                and (
+                    not requested_parents
+                    or payment.get("parent") in requested_parents
+                )
+            ]
+        if doctype == "Maybank QR Transaction":
+            requested_statuses = (filters or {}).get("duplicate_payment_status")
+            status_values = (
+                set(requested_statuses[1])
+                if isinstance(requested_statuses, list)
+                and len(requested_statuses) == 2
+                and requested_statuses[0] == "in"
+                else set()
+            )
+            order_filter = (filters or {}).get("fb_order")
+            requested_orders = (
+                set(order_filter[1])
+                if isinstance(order_filter, list)
+                and len(order_filter) == 2
+                and order_filter[0] == "in"
+                else set()
+            )
+            return [
+                transaction
+                for transaction in duplicate_qr_transaction_rows or []
+                if (
+                    not status_values
+                    or transaction.get("duplicate_payment_status") in status_values
+                )
+                and (
+                    not requested_orders
+                    or transaction.get("fb_order") in requested_orders
+                )
+            ]
         if doctype == "FB Resolved Sale":
             order_filter = (filters or {}).get("fb_order")
             requested_orders = (
@@ -383,6 +449,101 @@ def test_close_shift_payload_blocks_pending_or_failed_order_projections_before_s
     assert shift_doc.save_calls == []
 
 
+@pytest.mark.parametrize(
+    "automatic_qr_state",
+    [
+        "prepared",
+        "provider_pending",
+        "provider_ambiguous",
+        "provider_paid",
+        "manual_pending_reconciliation",
+        "finalized",
+        "",
+    ],
+)
+def test_close_shift_blocks_unsubmitted_prepared_automatic_qr_sale(
+    monkeypatch: pytest.MonkeyPatch,
+    automatic_qr_state: str,
+) -> None:
+    shift_doc = _patch_close_dependencies(
+        monkeypatch,
+        order_rows=[],
+        projection_rows=[],
+        prepared_order_rows=[
+            {
+                "name": "FB-ORDER-PREPARED-1",
+                "automatic_qr_state": automatic_qr_state,
+            }
+        ],
+    )
+
+    with pytest.raises(
+        shifts.frappe.ValidationError,
+        match="Automatic QR Finalization",
+    ):
+        shifts.close_shift_payload(_close_payload())
+
+    assert shift_doc.status == "Open"
+
+
+def test_close_shift_ignores_durably_rejected_no_provider_attempt_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    automatic_qr = importlib.import_module("kopos_connector.api.automatic_qr")
+    monkeypatch.setattr(
+        automatic_qr,
+        "has_durable_no_provider_release_fence",
+        lambda fb_order: fb_order == "FB-ORDER-REJECTED-1",
+    )
+    shift_doc = _patch_close_dependencies(
+        monkeypatch,
+        order_rows=[],
+        projection_rows=[],
+        prepared_order_rows=[
+            {
+                "name": "FB-ORDER-REJECTED-1",
+                "automatic_qr_state": "provider_rejected",
+            }
+        ],
+    )
+
+    result = shifts.close_shift_payload(_close_payload())
+
+    assert result["status"] == "ok"
+    assert shift_doc.status == "Closed"
+
+
+def test_close_shift_blocks_stale_provider_rejected_state_without_exact_fence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    automatic_qr = importlib.import_module("kopos_connector.api.automatic_qr")
+    monkeypatch.setattr(
+        automatic_qr,
+        "has_durable_no_provider_release_fence",
+        lambda _fb_order: False,
+    )
+    shift_doc = _patch_close_dependencies(
+        monkeypatch,
+        order_rows=[],
+        projection_rows=[],
+        prepared_order_rows=[
+            {
+                "name": "FB-ORDER-STALE-REJECTED-1",
+                "status": "Draft",
+                "automatic_qr_state": "provider_rejected",
+            }
+        ],
+    )
+
+    with pytest.raises(
+        shifts.frappe.ValidationError,
+        match="Automatic QR Finalization",
+    ):
+        shifts.close_shift_payload(_close_payload())
+
+    assert shift_doc.status == "Open"
+
+
 def test_close_shift_payload_allows_no_stock_required_pending_stock_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -399,7 +560,17 @@ def test_close_shift_payload_allows_no_stock_required_pending_stock_state(
 
     result = shifts.close_shift_payload(_close_payload())
 
-    assert result == {"status": "ok", "fb_shift": "FB-SHIFT-1", "shift_id": "SHIFT-1"}
+    assert result == {
+        "status": "ok",
+        "fb_shift": "FB-SHIFT-1",
+        "shift_id": "SHIFT-1",
+        "pending_reconciliation": {
+            "count": 0,
+            "amount_sen": 0,
+            "blocks_close": False,
+        },
+        "duplicate_qr_liabilities": _empty_duplicate_qr_liability_summary(),
+    }
     assert shift_doc.status == "Closed"
     assert shift_doc.save_calls == [("Closing", True), ("Closed", True)]
 
@@ -465,11 +636,218 @@ def test_close_shift_payload_all_posted_transitions_open_to_closing_to_closed(
 
     result = shifts.close_shift_payload(_close_payload())
 
-    assert result == {"status": "ok", "fb_shift": "FB-SHIFT-1", "shift_id": "SHIFT-1"}
+    assert result == {
+        "status": "ok",
+        "fb_shift": "FB-SHIFT-1",
+        "shift_id": "SHIFT-1",
+        "pending_reconciliation": {
+            "count": 0,
+            "amount_sen": 0,
+            "blocks_close": False,
+        },
+        "duplicate_qr_liabilities": _empty_duplicate_qr_liability_summary(),
+    }
     assert shift_doc.status == "Closed"
     assert shift_doc.save_calls == [("Closing", True), ("Closed", True)]
     assert shift_doc.counted_cash == 12.5
     assert shift_doc.cash_variance == 2.5
+
+
+def test_close_shift_reports_submitted_pending_reconciliation_without_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shift_doc = _patch_close_dependencies(
+        monkeypatch,
+        order_rows=[
+            {
+                "name": "FB-ORDER-1",
+                "docstatus": 1,
+                "status": "Submitted",
+                "invoice_status": "Posted",
+                "stock_status": "Posted",
+            }
+        ],
+        projection_rows=[],
+        payment_rows=[
+            {
+                "name": "FB-PAY-1",
+                "parent": "FB-ORDER-1",
+                "amount": Decimal("12.50"),
+                "settlement_status": "pending_reconciliation",
+            },
+            {
+                "name": "FB-PAY-2",
+                "parent": "FB-ORDER-1",
+                "amount": Decimal("3.25"),
+                "settlement_status": "pending_reconciliation",
+            },
+            {
+                "name": "FB-PAY-VERIFIED",
+                "parent": "FB-ORDER-1",
+                "amount": Decimal("99.00"),
+                "settlement_status": "verified",
+            },
+        ],
+    )
+
+    result = shifts.close_shift_payload(_close_payload())
+
+    assert shift_doc.status == "Closed"
+    assert result["pending_reconciliation"] == {
+        "count": 2,
+        "amount_sen": 1575,
+        "blocks_close": False,
+    }
+    duplicate = shifts.close_shift_payload(_close_payload())
+    assert duplicate["status"] == "duplicate"
+    assert duplicate["pending_reconciliation"] == result["pending_reconciliation"]
+
+
+def test_close_shift_reports_unresolved_duplicate_qr_liabilities_without_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shift_doc = _patch_close_dependencies(
+        monkeypatch,
+        order_rows=[
+            {
+                "name": "FB-ORDER-1",
+                "docstatus": 1,
+                "status": "Submitted",
+                "invoice_status": "Posted",
+                "stock_status": "Posted",
+            }
+        ],
+        projection_rows=[],
+        duplicate_qr_transaction_rows=[
+            {
+                "name": "MBQR-ACCOUNTING-PENDING",
+                "fb_order": "FB-ORDER-1",
+                "duplicate_payment_status": "accounting_pending",
+                "sale_amount_sen": 1250,
+            },
+            {
+                "name": "MBQR-REFUND-REQUIRED",
+                "fb_order": "FB-ORDER-1",
+                "duplicate_payment_status": "refund_required",
+                "sale_amount_sen": "325",
+            },
+            {
+                "name": "MBQR-REFUNDED",
+                "fb_order": "FB-ORDER-1",
+                "duplicate_payment_status": "refunded",
+                "sale_amount_sen": 9900,
+            },
+            {
+                "name": "MBQR-ANOTHER-SHIFT",
+                "fb_order": "FB-ORDER-OTHER",
+                "duplicate_payment_status": "refund_required",
+                "sale_amount_sen": 5000,
+            },
+        ],
+    )
+
+    result = shifts.close_shift_payload(_close_payload())
+
+    assert shift_doc.status == "Closed"
+    assert result["duplicate_qr_liabilities"] == {
+        "accounting_pending": {"count": 1, "amount_sen": 1250},
+        "refund_required": {"count": 1, "amount_sen": 325},
+        "count": 2,
+        "amount_sen": 1575,
+        "blocks_close": False,
+    }
+    duplicate = shifts.close_shift_payload(_close_payload())
+    assert duplicate["status"] == "duplicate"
+    assert (
+        duplicate["duplicate_qr_liabilities"]
+        == result["duplicate_qr_liabilities"]
+    )
+
+
+def test_duplicate_qr_liability_report_failure_never_blocks_shift_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shift_doc = _patch_close_dependencies(
+        monkeypatch,
+        order_rows=[],
+        projection_rows=[],
+    )
+    logged: list[tuple[str, str]] = []
+
+    def unavailable(_shift_name: str) -> dict[str, object]:
+        raise RuntimeError("report storage unavailable")
+
+    monkeypatch.setattr(
+        fb_shift,
+        "get_shift_duplicate_qr_liability_summary",
+        unavailable,
+    )
+    monkeypatch.setattr(
+        shifts,
+        "log_sanitized_error",
+        lambda title, error: logged.append((title, str(error))),
+    )
+
+    result = shifts.close_shift_payload(_close_payload())
+
+    assert shift_doc.status == "Closed"
+    assert result["status"] == "ok"
+    assert result["duplicate_qr_liabilities"] == {
+        "accounting_pending": {"count": None, "amount_sen": None},
+        "refund_required": {"count": None, "amount_sen": None},
+        "count": None,
+        "amount_sen": None,
+        "blocks_close": False,
+        "report_status": "unavailable",
+    }
+    assert logged == [
+        (
+            "KoPOS shift duplicate QR liability report unavailable",
+            "report storage unavailable",
+        )
+    ]
+
+
+def test_pending_reconciliation_report_failure_never_blocks_shift_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shift_doc = _patch_close_dependencies(
+        monkeypatch,
+        order_rows=[],
+        projection_rows=[],
+    )
+    logged: list[tuple[str, str]] = []
+
+    def unavailable(_shift_name: str) -> dict[str, int | bool]:
+        raise RuntimeError("settlement report storage unavailable")
+
+    monkeypatch.setattr(
+        fb_shift,
+        "get_shift_pending_reconciliation_summary",
+        unavailable,
+    )
+    monkeypatch.setattr(
+        shifts,
+        "log_sanitized_error",
+        lambda title, error: logged.append((title, str(error))),
+    )
+
+    result = shifts.close_shift_payload(_close_payload())
+
+    assert shift_doc.status == "Closed"
+    assert result["status"] == "ok"
+    assert result["pending_reconciliation"] == {
+        "count": None,
+        "amount_sen": None,
+        "blocks_close": False,
+        "report_status": "unavailable",
+    }
+    assert logged == [
+        (
+            "KoPOS shift pending reconciliation report unavailable",
+            "settlement report storage unavailable",
+        )
+    ]
 
 
 def test_close_shift_reconciles_cash_from_accounting_evidence_before_variance(
@@ -758,6 +1136,12 @@ def test_no_order_shift_closes_at_opening_float_without_variance(
         "status": "ok",
         "fb_shift": "FB-SHIFT-1",
         "shift_id": "SHIFT-1",
+        "pending_reconciliation": {
+            "count": 0,
+            "amount_sen": 0,
+            "blocks_close": False,
+        },
+        "duplicate_qr_liabilities": _empty_duplicate_qr_liability_summary(),
     }
     assert shift_doc.status == "Closed"
     assert shift_doc.opening_float == 10.0
