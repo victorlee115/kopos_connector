@@ -114,8 +114,25 @@ from ._maybank_qr_status import (
     _update_txn_status,
     check_maybank_payment_payload,
 )
+from .maybank_qr_simulation import (
+    MAYBANK_SIMULATION_FINGERPRINT_PATTERN,
+    MAYBANK_TEST_SIMULATION_CONFIG,
+    MAYBANK_TEST_SIMULATION_CONFIRMATION,
+    MAYBANK_TEST_SIMULATION_VERSION,
+    _audit_maybank_test_payment_simulation,
+    _build_maybank_test_simulation_identity,
+    _load_maybank_simulation_sale_for_update,
+    _maybank_desk_simulation_context_enabled,
+    _require_maybank_desk_simulation_context,
+    _validate_maybank_simulation_prepared_sale,
+    get_maybank_qr_simulation_capability,
+    simulate_maybank_qr_payment_payload,
+)
+
 __all__ = (
     "check_maybank_payment_payload",
     "generate_maybank_qr_payload",
+    "get_maybank_qr_simulation_capability",
     "resolve_maybank_qr_generation_payload",
+    "simulate_maybank_qr_payment_payload",
 )

@@ -27,6 +27,14 @@ PROVIDER_DEVICE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 PROVIDER_DEVICE_METADATA_PATTERN = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9 ._()/-]{1,63}$"
 )
+MAYBANK_MOCK_PAYMENT_MODE_AUTO_PAID = "auto_paid"
+MAYBANK_MOCK_PAYMENT_MODE_MANUAL = "manual"
+MAYBANK_MOCK_PAYMENT_MODES = frozenset(
+    {
+        MAYBANK_MOCK_PAYMENT_MODE_AUTO_PAID,
+        MAYBANK_MOCK_PAYMENT_MODE_MANUAL,
+    }
+)
 
 
 def _site_cache_key(key: str) -> str:
@@ -44,8 +52,25 @@ def _explicit_mock_mode_enabled() -> bool:
     """Require both an explicit opt-in and a test/developer execution context."""
     explicit_opt_in = bool(cint(_config_value("allow_maybank_mock", 0)))
     developer_context = bool(cint(_config_value("developer_mode", 0)))
-    test_context = bool(cint(getattr(getattr(frappe, "flags", None), "in_test", 0)))
+    test_context = bool(cint(getattr(frappe, "in_test", 0))) or bool(
+        cint(getattr(getattr(frappe, "flags", None), "in_test", 0))
+    )
     return explicit_opt_in and (developer_context or test_context)
+
+
+def _mock_payment_mode() -> str:
+    value = cstr(
+        _config_value(
+            "maybank_mock_payment_mode",
+            MAYBANK_MOCK_PAYMENT_MODE_AUTO_PAID,
+        )
+    ).strip().lower()
+    if value not in MAYBANK_MOCK_PAYMENT_MODES:
+        frappe.throw(
+            "maybank_mock_payment_mode must be auto_paid or manual",
+            frappe.ValidationError,
+        )
+    return value
 
 
 def _https_origin(value: str, *, config_entry: bool = False) -> str:
@@ -498,7 +523,6 @@ class MaybankClient:
                 }
             ],
         }
-
     def _mock_check_status(self, transaction_refno: str) -> dict:
         sale_amount = frappe.db.get_value(
             "Maybank QR Transaction",
@@ -511,7 +535,12 @@ class MaybankClient:
                 {
                     "transaction_refno": transaction_refno,
                     "sale_amount": cstr(sale_amount),
-                    "status": 1,
+                    "status": (
+                        2
+                        if _mock_payment_mode()
+                        == MAYBANK_MOCK_PAYMENT_MODE_MANUAL
+                        else 1
+                    ),
                 }
             ],
         }

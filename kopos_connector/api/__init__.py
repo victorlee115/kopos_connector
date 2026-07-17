@@ -1938,6 +1938,40 @@ def _revalidate_maybank_device_authority(authority: Mapping[str, Any]) -> None:
 
 
 @frappe.whitelist(methods=["POST"])
+def simulate_maybank_qr_payment(
+    transaction_name: str | None = None,
+    confirmation: str | None = None,
+) -> dict[str, Any]:
+    """Simulate provider-paid truth on an explicitly isolated mock test site."""
+    from .maybank_qr_simulation import simulate_maybank_qr_payment_payload
+
+    try:
+        require_system_manager()
+        if KOPOS_DEVICE_API_ROLE in get_session_roles():
+            frappe.throw(
+                _(
+                    "Maybank payment simulation requires a non-device System Manager session"
+                ),
+                frappe.ValidationError,
+            )
+        return simulate_maybank_qr_payment_payload(
+            transaction_name=frappe.utils.cstr(transaction_name),
+            confirmation=frappe.utils.cstr(confirmation),
+        )
+    except frappe.ValidationError:
+        frappe.db.rollback()
+        raise
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS Maybank payment simulation failed", error)
+        frappe.throw(
+            _("Maybank payment simulation failed safely"),
+            frappe.ValidationError,
+        )
+    return {}
+
+
+@frappe.whitelist(methods=["POST"])
 def resolve_maybank_qr_generation(**kwargs: Any) -> None:
     """Resolve an ambiguous provider generation using audited System Manager evidence."""
     from .maybank_qr import resolve_maybank_qr_generation_payload
@@ -2081,6 +2115,7 @@ __all__ = [
     "resolve_duplicate_automatic_qr_refund",
     "resolve_maybank_qr_generation",
     "review_promotion_reconciliation",
+    "simulate_maybank_qr_payment",
     "submit_order",
     "upload_manual_qr_receipt",
     "void_order",
