@@ -14,19 +14,83 @@ install_fake_frappe_modules()
 api_module = importlib.import_module("kopos_connector.api")
 devices_module = importlib.import_module("kopos_connector.api.devices")
 maybank_qr = importlib.import_module("kopos_connector.api.maybank_qr")
+maybank_contract = importlib.import_module(
+    "kopos_connector.api._maybank_qr_contract"
+)
+maybank_generation = importlib.import_module(
+    "kopos_connector.api._maybank_qr_generation"
+)
+maybank_persistence = importlib.import_module(
+    "kopos_connector.api._maybank_qr_persistence"
+)
+maybank_rate_limit = importlib.import_module(
+    "kopos_connector.api._maybank_qr_rate_limit"
+)
+maybank_resolution = importlib.import_module(
+    "kopos_connector.api._maybank_qr_resolution"
+)
+maybank_status = importlib.import_module("kopos_connector.api._maybank_qr_status")
 poll_maybank = importlib.import_module("kopos_connector.tasks.poll_maybank")
 diagnostics = importlib.import_module("kopos_connector.utils.diagnostics")
 maybank_client = importlib.import_module("kopos_connector.services.maybank.client")
 
 
+PREPARED_FB_ORDER = "FB-ORDER-PREPARED-1"
+PREPARED_FB_ORDER_PAYMENT = "FBPAY-PREPARED-1"
+PREPARED_SALE_FINGERPRINT = "a" * 64
+
+
+def _prepared_sale() -> dict[str, str]:
+    return {
+        "fb_order": PREPARED_FB_ORDER,
+        "fb_order_payment": PREPARED_FB_ORDER_PAYMENT,
+        "accepted_sale_fingerprint": PREPARED_SALE_FINGERPRINT,
+        "payment_method": "DuitNow QR",
+        "company": "Test Company",
+        "currency": "MYR",
+    }
+
+
+def _prepared_request_fingerprint(
+    device_id: str,
+    idempotency_key: str,
+    amount_sen: int,
+) -> str:
+    return maybank_qr._request_fingerprint(
+        device_id,
+        idempotency_key,
+        fb_order=PREPARED_FB_ORDER,
+        fb_order_payment=PREPARED_FB_ORDER_PAYMENT,
+        accepted_sale_fingerprint=PREPARED_SALE_FINGERPRINT,
+        amount_sen=amount_sen,
+        currency="MYR",
+    )
+
+
 class MaybankQrStatusTests(unittest.TestCase):
+    def setUp(self) -> None:
+        suspense_account = patch.object(
+            maybank_generation,
+            "resolve_manual_qr_suspense_account",
+            return_value="Manual QR Suspense - TC",
+        )
+        suspense_account.start()
+        self.addCleanup(suspense_account.stop)
+        verified_qr_account = patch.object(
+            maybank_generation,
+            "resolve_verified_qr_settlement_account",
+            return_value={"account": "QR Clearing - TC", "type": "Bank"},
+        )
+        verified_qr_account.start()
+        self.addCleanup(verified_qr_account.stop)
+
     def test_provider_device_identity_uses_small_samsung_tab_a11(self):
         self.assertEqual(maybank_client.DEVICE_NAME, "Samsung Galaxy Tab A11 Small")
         self.assertEqual(maybank_client.DEVICE_OS, "Android")
 
     def test_generate_qr_inserts_transaction(self):
         client = Mock()
-        client.outlet_id = "outlet-1"
+        client.outlet_id = "outlet-B"
         client.generate_qr.return_value = {
             "status": "QR000",
             "data": [
@@ -53,6 +117,8 @@ class MaybankQrStatusTests(unittest.TestCase):
             "sale_amount": "10.00",
             "sale_amount_sen": 1000,
             "device_id": "device-1",
+            "fb_order": PREPARED_FB_ORDER,
+            "fb_order_payment": PREPARED_FB_ORDER_PAYMENT,
             "request_fingerprint": "f" * 64,
             "poll_count": 0,
         }
@@ -70,7 +136,12 @@ class MaybankQrStatusTests(unittest.TestCase):
             return reservation
 
         with (
-            patch.object(maybank_qr, "_check_rate_limit"),
+            patch.object(maybank_generation, "_check_rate_limit"),
+            patch.object(
+                maybank_generation,
+                "_load_prepared_automatic_qr_sale",
+                return_value=_prepared_sale(),
+            ),
             patch.object(maybank_qr.frappe.db, "get_value", return_value=None),
             patch.object(
                 maybank_qr.frappe,
@@ -81,14 +152,14 @@ class MaybankQrStatusTests(unittest.TestCase):
                 maybank_qr.MaybankClient, "from_settings", return_value=client
             ),
             patch.object(
-                maybank_qr,
-                "_load_reserved_txn_for_update",
+                maybank_generation,
+                "_load_reserved_txn_with_order_lock",
                 side_effect=load_reservation,
             ),
             patch.object(maybank_qr.frappe.db, "set_value") as set_value,
             patch.object(maybank_qr.frappe.db, "commit") as commit,
             patch.object(
-                maybank_qr,
+                maybank_generation,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 5, 0),
             ),
@@ -103,11 +174,18 @@ class MaybankQrStatusTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["qr_data"], "0002010102110011BR123QDSAMR01")
+        self.assertEqual(result["transaction_refno"], "ref-1")
+        self.assertEqual(result["sale_amount_sen"], 1000)
+        self.assertEqual(result["sale_amount"], "10.00")
+        self.assertEqual(result["fb_order"], PREPARED_FB_ORDER)
+        self.assertEqual(result["fb_order_payment"], PREPARED_FB_ORDER_PAYMENT)
         client.generate_qr.assert_called_once_with("10.00")
 
         self.assertEqual(len(inserted_docs), 1)
         self.assertEqual(inserted_docs[0]["provider"], "maybank_qr")
+        self.assertEqual(inserted_docs[0]["outlet_id"], "outlet-B")
         self.assertEqual(inserted_docs[0]["currency"], "MYR")
+        self.assertEqual(inserted_docs[0]["company"], "Test Company")
         self.assertEqual(inserted_docs[0]["business_date"], "2026-03-13")
         self.assertEqual(len(inserted_docs[0]["request_fingerprint"]), 64)
         self.assertEqual(inserted_docs[0]["status"], "creating")
@@ -150,6 +228,44 @@ class MaybankQrStatusTests(unittest.TestCase):
                 }
             )
 
+    def test_generate_qr_fences_unsafe_verified_qr_account_before_provider(self):
+        rejection = {"status": "preflight_rejected", "provider_called": False}
+        with (
+            patch.object(
+                maybank_generation,
+                "_load_prepared_automatic_qr_sale",
+                return_value=_prepared_sale(),
+            ),
+            patch.object(maybank_generation, "_load_existing_txn", return_value=None),
+            patch.object(
+                maybank_generation,
+                "resolve_verified_qr_settlement_account",
+                side_effect=maybank_qr.frappe.ValidationError(
+                    "Verified QR settlement account cannot be Cash"
+                ),
+            ),
+            patch.object(
+                maybank_generation,
+                "_register_preflight_rejection_fence",
+                return_value=rejection,
+            ) as register_fence,
+            patch.object(maybank_qr.MaybankClient, "from_settings") as client,
+        ):
+            result = maybank_qr.generate_maybank_qr_payload(
+                {
+                    "amount_sen": 1000,
+                    "device_id": "device-1",
+                    "idempotency_key": "unsafe-account-key",
+                    "fb_order": PREPARED_FB_ORDER,
+                    "fb_order_payment": PREPARED_FB_ORDER_PAYMENT,
+                    "accepted_sale_fingerprint": PREPARED_SALE_FINGERPRINT,
+                }
+            )
+
+        self.assertEqual(result, rejection)
+        register_fence.assert_called_once()
+        client.assert_not_called()
+
     def test_generate_qr_rejects_provider_reference_in_static_namespace(self):
         client = Mock()
         client.generate_qr.return_value = {
@@ -165,6 +281,51 @@ class MaybankQrStatusTests(unittest.TestCase):
         with self.assertRaisesRegex(
             maybank_qr.frappe.ValidationError,
             "static QR namespace",
+        ):
+            maybank_qr._generate_qr_payload(
+                client,
+                "10.00",
+                datetime(2026, 3, 13, 18, 5, 0),
+            )
+
+    def test_generate_qr_rejects_whitespace_provider_reference(self):
+        client = Mock()
+        client.generate_qr.return_value = {
+            "status": "QR000",
+            "data": [
+                {
+                    "transaction_refno": " ref-1 ",
+                    "qr_data": "QR-DATA",
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(
+            maybank_qr.frappe.ValidationError,
+            "nonempty exact value",
+        ):
+            maybank_qr._generate_qr_payload(
+                client,
+                "10.00",
+                datetime(2026, 3, 13, 18, 5, 0),
+            )
+
+    def test_generate_qr_rejects_provider_amount_mismatch(self):
+        client = Mock()
+        client.generate_qr.return_value = {
+            "status": "QR000",
+            "data": [
+                {
+                    "transaction_refno": "ref-1",
+                    "qr_data": "QR-DATA",
+                    "sale_amount": "9.99",
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(
+            maybank_qr.frappe.ValidationError,
+            "does not match the prepared sale",
         ):
             maybank_qr._generate_qr_payload(
                 client,
@@ -243,13 +404,13 @@ class MaybankQrStatusTests(unittest.TestCase):
 
         with (
             patch.object(
-                maybank_qr,
+                maybank_status,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 5, 0),
             ),
-            patch.object(maybank_qr, "_load_existing_txn", return_value=existing),
+            patch.object(maybank_status, "_load_existing_txn", return_value=existing),
             patch.object(maybank_qr.frappe.db, "sql", side_effect=fake_sql),
-            patch.object(maybank_qr, "_check_rate_limit"),
+            patch.object(maybank_generation, "_check_rate_limit"),
         ):
             with self.assertRaises(maybank_qr.frappe.ValidationError) as error:
                 maybank_qr._resolve_existing_txn(
@@ -282,13 +443,13 @@ class MaybankQrStatusTests(unittest.TestCase):
 
         with (
             patch.object(
-                maybank_qr,
+                maybank_status,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 5, 0),
             ),
-            patch.object(maybank_qr, "_load_existing_txn", return_value=existing),
+            patch.object(maybank_status, "_load_existing_txn", return_value=existing),
             patch.object(maybank_qr.frappe.db, "sql", side_effect=fake_sql),
-            patch.object(maybank_qr, "_check_rate_limit"),
+            patch.object(maybank_generation, "_check_rate_limit"),
         ):
             with self.assertRaises(maybank_qr.frappe.ValidationError) as error:
                 maybank_qr._resolve_existing_txn(
@@ -299,25 +460,37 @@ class MaybankQrStatusTests(unittest.TestCase):
         self.assertEqual(len(delete_calls), 0)
 
     def test_generate_qr_reuses_live_scanned_transaction(self):
+        request_fingerprint = _prepared_request_fingerprint(
+            "device-1", "key-scanned", 1000
+        )
         existing = SimpleNamespace(
             name="txn-scanned",
             transaction_refno="ref-scanned",
             status="scanned",
             qr_data="000201010211SCANNED",
-            sale_amount="10.00",
+            sale_amount="999.99",
             sale_amount_sen=1000,
             expires_at=datetime(2026, 3, 13, 18, 10, 0),
             device_id="device-1",
+            company="Test Company",
+            fb_order=PREPARED_FB_ORDER,
+            fb_order_payment=PREPARED_FB_ORDER_PAYMENT,
+            request_fingerprint=request_fingerprint,
         )
 
         with (
             patch.object(
-                maybank_qr,
+                maybank_generation,
+                "_load_prepared_automatic_qr_sale",
+                return_value=_prepared_sale(),
+            ),
+            patch.object(
+                maybank_generation,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 5, 0),
             ),
-            patch.object(maybank_qr, "_load_existing_txn", return_value=existing),
-            patch.object(maybank_qr, "_check_rate_limit"),
+            patch.object(maybank_generation, "_load_existing_txn", return_value=existing),
+            patch.object(maybank_generation, "_check_rate_limit"),
         ):
             result = maybank_qr.generate_maybank_qr_payload(
                 {
@@ -329,6 +502,8 @@ class MaybankQrStatusTests(unittest.TestCase):
 
         self.assertEqual(result["transaction_refno"], "ref-scanned")
         self.assertEqual(result["qr_data"], "000201010211SCANNED")
+        self.assertEqual(result["sale_amount_sen"], 1000)
+        self.assertEqual(result["sale_amount"], "10.00")
 
     def test_generate_qr_rejects_existing_amount_mismatch(self):
         existing = {
@@ -342,7 +517,7 @@ class MaybankQrStatusTests(unittest.TestCase):
             "device_id": "device-1",
         }
 
-        with patch.object(maybank_qr, "_load_existing_txn", return_value=existing):
+        with patch.object(maybank_status, "_load_existing_txn", return_value=existing):
             with self.assertRaises(maybank_qr.frappe.ValidationError) as error:
                 maybank_qr._resolve_existing_txn(
                     "device-1",
@@ -355,20 +530,26 @@ class MaybankQrStatusTests(unittest.TestCase):
 
     def test_generate_qr_raises_for_provider_error(self):
         client = Mock()
+        client.outlet_id = "outlet-1"
         client.generate_qr.return_value = {
             "status": "QR999",
             "text": "Downstream error",
         }
 
         with (
-            patch.object(maybank_qr, "_check_rate_limit"),
+            patch.object(maybank_generation, "_check_rate_limit"),
+            patch.object(
+                maybank_generation,
+                "_load_prepared_automatic_qr_sale",
+                return_value=_prepared_sale(),
+            ),
             patch.object(maybank_qr.frappe.db, "get_value", return_value=None),
             patch.object(maybank_qr.frappe, "get_doc", return_value=Mock()),
             patch.object(
                 maybank_qr.MaybankClient, "from_settings", return_value=client
             ),
             patch.object(
-                maybank_qr,
+                maybank_generation,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 5, 0),
             ),
@@ -386,17 +567,23 @@ class MaybankQrStatusTests(unittest.TestCase):
 
     def test_generate_qr_raises_for_empty_data(self):
         client = Mock()
+        client.outlet_id = "outlet-1"
         client.generate_qr.return_value = {"status": "QR000", "data": []}
 
         with (
-            patch.object(maybank_qr, "_check_rate_limit"),
+            patch.object(maybank_generation, "_check_rate_limit"),
+            patch.object(
+                maybank_generation,
+                "_load_prepared_automatic_qr_sale",
+                return_value=_prepared_sale(),
+            ),
             patch.object(maybank_qr.frappe.db, "get_value", return_value=None),
             patch.object(maybank_qr.frappe, "get_doc", return_value=Mock()),
             patch.object(
                 maybank_qr.MaybankClient, "from_settings", return_value=client
             ),
             patch.object(
-                maybank_qr,
+                maybank_generation,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 5, 0),
             ),
@@ -424,10 +611,15 @@ class MaybankQrStatusTests(unittest.TestCase):
         first_doc = Mock()
         first_doc.insert.side_effect = duplicate_error
         with (
-            patch.object(maybank_qr, "_check_rate_limit"),
+            patch.object(maybank_generation, "_check_rate_limit"),
+            patch.object(
+                maybank_generation,
+                "_load_prepared_automatic_qr_sale",
+                return_value=_prepared_sale(),
+            ),
             patch.object(maybank_qr.frappe.db, "get_value", return_value=None),
             patch.object(
-                maybank_qr, "_resolve_existing_txn", return_value=None
+                maybank_generation, "_resolve_existing_txn", return_value=None
             ) as resolve_existing,
             patch.object(
                 maybank_qr.MaybankClient, "from_settings", return_value=client
@@ -438,7 +630,7 @@ class MaybankQrStatusTests(unittest.TestCase):
                 return_value=first_doc,
             ),
             patch.object(
-                maybank_qr,
+                maybank_generation,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 5, 0),
             ),
@@ -471,13 +663,20 @@ class MaybankQrStatusTests(unittest.TestCase):
             "sale_amount_sen": 1000,
             "expires_at": datetime(2026, 3, 13, 18, 6, 0),
             "device_id": "device-1",
+            "fb_order": PREPARED_FB_ORDER,
+            "fb_order_payment": PREPARED_FB_ORDER_PAYMENT,
         }
 
         with (
-            patch.object(maybank_qr, "_check_rate_limit"),
+            patch.object(maybank_generation, "_check_rate_limit"),
+            patch.object(
+                maybank_generation,
+                "_load_prepared_automatic_qr_sale",
+                return_value=_prepared_sale(),
+            ),
             patch.object(maybank_qr.frappe.db, "get_value", return_value=None),
             patch.object(
-                maybank_qr,
+                maybank_generation,
                 "_load_reserved_txn_for_update",
                 return_value=winning_transaction,
             ),
@@ -486,7 +685,7 @@ class MaybankQrStatusTests(unittest.TestCase):
             ),
             patch.object(maybank_qr.frappe, "get_doc", return_value=reservation),
             patch.object(
-                maybank_qr,
+                maybank_generation,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 5, 0),
             ),
@@ -501,6 +700,8 @@ class MaybankQrStatusTests(unittest.TestCase):
 
         self.assertEqual(result["transaction_refno"], "ref-winner")
         self.assertEqual(result["qr_data"], "QR-WINNER")
+        self.assertEqual(result["sale_amount_sen"], 1000)
+        self.assertEqual(result["sale_amount"], "10.00")
         client.generate_qr.assert_not_called()
         reservation.save.assert_not_called()
 
@@ -517,6 +718,16 @@ class MaybankQrStatusTests(unittest.TestCase):
         txn.currency = "MYR"
         txn.provider = "maybank_qr"
         txn.paid_at = None
+        persisted_txn = SimpleNamespace(
+            transaction_refno="ref-1",
+            status="paid",
+            device_id="device-1",
+            sale_amount="999.99",
+            sale_amount_sen=1000,
+            currency="MYR",
+            provider="maybank_qr",
+            paid_at=datetime(2026, 3, 13, 18, 6, 0),
+        )
 
         client = Mock()
         client.check_status.return_value = {
@@ -526,29 +737,91 @@ class MaybankQrStatusTests(unittest.TestCase):
             ],
         }
 
-        paid_at = datetime(2026, 3, 13, 18, 6, 0)
         with (
             patch.object(
                 maybank_qr.frappe.db,
                 "get_value",
-                side_effect=["txn-1", paid_at],
+                return_value="txn-1",
             ),
-            patch.object(maybank_qr.frappe, "get_doc", return_value=txn),
+            patch.object(
+                maybank_qr.frappe,
+                "get_doc",
+                side_effect=[txn, persisted_txn],
+            ),
             patch.object(
                 maybank_qr.MaybankClient, "from_settings", return_value=client
             ),
             patch.object(
-                maybank_qr,
+                maybank_status,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 6, 0),
             ),
-            patch.object(maybank_qr, "_poll_txn_status", return_value="paid") as poll,
+            patch.object(maybank_status, "_poll_txn_status", return_value="paid") as poll,
         ):
             result = maybank_qr.check_maybank_payment_payload("ref-1", "device-1")
 
         poll.assert_called_once_with(txn)
         self.assertEqual(result["status"], "paid")
+        self.assertEqual(result["transaction_refno"], "ref-1")
+        self.assertEqual(result["sale_amount_sen"], 1000)
+        self.assertEqual(result["sale_amount"], "10.00")
         self.assertIsNotNone(result["paid_at"])
+
+    def test_check_payment_rejects_persisted_reference_drift(self):
+        txn = SimpleNamespace(
+            transaction_refno="ref-other",
+            status="pending",
+            last_polled_at=datetime(2026, 3, 13, 18, 6, 0),
+            created_at=datetime(2026, 3, 13, 18, 6, 0),
+            device_id="device-1",
+            sale_amount="10.00",
+            sale_amount_sen=1000,
+            currency="MYR",
+            provider="maybank_qr",
+            paid_at=None,
+        )
+        with (
+            patch.object(maybank_qr.frappe.db, "get_value", return_value="txn-1"),
+            patch.object(maybank_qr.frappe, "get_doc", return_value=txn),
+            patch.object(
+                maybank_status,
+                "now_datetime",
+                return_value=datetime(2026, 3, 13, 18, 6, 0),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                maybank_qr.frappe.ValidationError,
+                "does not match the requested session",
+            ):
+                maybank_qr.check_maybank_payment_payload("ref-1", "device-1")
+
+    def test_check_payment_rejects_fractional_persisted_sen(self):
+        txn = SimpleNamespace(
+            transaction_refno="ref-1",
+            status="pending",
+            last_polled_at=datetime(2026, 3, 13, 18, 6, 0),
+            created_at=datetime(2026, 3, 13, 18, 6, 0),
+            device_id="device-1",
+            sale_amount="10.00",
+            sale_amount_sen="1000.5",
+            currency="MYR",
+            provider="maybank_qr",
+            paid_at=None,
+        )
+        with (
+            patch.object(maybank_qr.frappe.db, "get_value", return_value="txn-1"),
+            patch.object(maybank_qr.frappe, "get_doc", return_value=txn),
+            patch.object(
+                maybank_status,
+                "now_datetime",
+                return_value=datetime(2026, 3, 13, 18, 6, 0),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                maybank_qr.frappe.ValidationError,
+                "sale_amount_sen must be an integer",
+            ):
+                maybank_qr.check_maybank_payment_payload("ref-1", "device-1")
 
     def test_check_payment_endpoint_uses_authenticated_device_scope(self):
         api_module.frappe.local.response = {}
@@ -838,8 +1111,7 @@ class MaybankQrStatusTests(unittest.TestCase):
         )
         sql_update.assert_not_called()
 
-    def test_stale_sweep_times_out_rows_past_grace(self):
-        client = Mock()
+    def test_stale_loader_selects_due_rows_past_grace(self):
         with (
             patch.object(
                 poll_maybank.frappe,
@@ -856,14 +1128,12 @@ class MaybankQrStatusTests(unittest.TestCase):
                     )
                 ],
             ),
-            patch.object(poll_maybank, "_poll_single") as poll_single,
         ):
-            processed = poll_maybank._sweep_stale_pending_transactions(
-                client, datetime(2026, 3, 13, 18, 6, 0)
+            selected = poll_maybank._load_due_stale_transactions(
+                datetime(2026, 3, 13, 18, 6, 0)
             )
 
-        self.assertEqual(processed, {"txn-stale"})
-        poll_single.assert_called_once()
+        self.assertEqual([row.name for row in selected], ["txn-stale"])
 
     def test_poll_lock_contention_skips_scheduler_work(self):
         redis_client = Mock()
@@ -900,14 +1170,9 @@ class MaybankQrStatusTests(unittest.TestCase):
         with (
             patch.object(poll_maybank.frappe, "cache", return_value=cache),
             patch.object(
-                poll_maybank.MaybankClient,
-                "from_settings",
-                return_value=Mock(),
-            ),
-            patch.object(
                 poll_maybank.frappe,
                 "get_all",
-                side_effect=[[], []],
+                side_effect=[[], [], []],
             ) as get_all,
             patch.object(
                 poll_maybank,
@@ -917,15 +1182,18 @@ class MaybankQrStatusTests(unittest.TestCase):
         ):
             poll_maybank.poll_pending_maybank_transactions()
 
-        self.assertEqual(get_all.call_count, 2)
-        stale_call, active_call = get_all.call_args_list
+        self.assertEqual(get_all.call_count, 3)
+        scanned_call, pending_call, stale_call = get_all.call_args_list
+        self.assertEqual(scanned_call.kwargs["filters"]["status"], "scanned")
+        self.assertEqual(pending_call.kwargs["filters"]["status"], "pending")
+        self.assertEqual(scanned_call.kwargs["filters"]["expires_at"][0], ">")
+        self.assertEqual(pending_call.kwargs["filters"]["expires_at"][0], ">")
         self.assertEqual(stale_call.kwargs["filters"]["expires_at"][0], "<=")
-        self.assertEqual(active_call.kwargs["filters"]["expires_at"][0], ">")
         self.assertTrue(
             stale_call.kwargs["order_by"].startswith("last_polled_at asc")
         )
         self.assertTrue(
-            active_call.kwargs["order_by"].startswith("last_polled_at asc")
+            scanned_call.kwargs["order_by"].startswith("last_polled_at asc")
         )
         release_calls = [
             call
@@ -1093,7 +1361,7 @@ class MaybankQrStatusTests(unittest.TestCase):
         }
         stale_response = {"status": "QR000", "data": [{"status": 2}]}
         with (
-            patch.object(maybank_qr, "_record_poll_attempt") as record_attempt,
+            patch.object(maybank_status, "_record_poll_attempt") as record_attempt,
             patch.object(maybank_qr.frappe.db, "set_value") as set_value,
         ):
             status = maybank_qr._transition_txn_status_locked(
@@ -1116,7 +1384,7 @@ class MaybankQrStatusTests(unittest.TestCase):
             "scanned_at": datetime(2026, 3, 13, 18, 4, 0),
         }
         with (
-            patch.object(maybank_qr, "_record_poll_attempt") as record_attempt,
+            patch.object(maybank_status, "_record_poll_attempt") as record_attempt,
             patch.object(maybank_qr.frappe.db, "set_value") as set_value,
         ):
             status = maybank_qr._transition_txn_status_locked(
@@ -1152,9 +1420,9 @@ class MaybankQrStatusTests(unittest.TestCase):
                 "publish_realtime",
                 create=True,
             ) as publish,
-            patch.object(maybank_qr, "_record_poll_attempt") as record_attempt,
+            patch.object(maybank_status, "_record_poll_attempt") as record_attempt,
             patch.object(
-                maybank_qr,
+                maybank_status,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 6, 0),
             ),
@@ -1203,8 +1471,8 @@ class MaybankQrStatusTests(unittest.TestCase):
             ],
         }
         with (
-            patch.object(maybank_qr, "_load_txn_for_update", return_value=locked),
-            patch.object(maybank_qr, "_record_poll_attempt") as record_attempt,
+            patch.object(maybank_status, "_load_txn_for_update", return_value=locked),
+            patch.object(maybank_status, "_record_poll_attempt") as record_attempt,
             patch.object(maybank_qr.frappe.db, "set_value") as set_value,
         ):
             with self.assertRaisesRegex(
@@ -1254,14 +1522,14 @@ class MaybankQrStatusTests(unittest.TestCase):
             "created_at": datetime(2026, 3, 13, 18, 0, 0),
         }
         with (
-            patch.object(maybank_qr, "_load_txn_for_update", return_value=locked),
+            patch.object(maybank_resolution, "_load_txn_for_update", return_value=locked),
             patch.object(
-                maybank_qr,
+                maybank_resolution,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 16, 0),
             ),
             patch.object(maybank_qr.frappe.db, "set_value") as set_value,
-            patch.object(maybank_qr, "_audit_generation_resolution") as audit,
+            patch.object(maybank_resolution, "_audit_generation_resolution") as audit,
         ):
             result = maybank_qr._abandon_ambiguous_generation(
                 "MBQR-AMBIGUOUS",
@@ -1283,14 +1551,14 @@ class MaybankQrStatusTests(unittest.TestCase):
             "expires_at": datetime(2026, 3, 12, 18, 0, 0),
         }
         with (
-            patch.object(maybank_qr, "_load_txn_for_update", return_value=locked),
+            patch.object(maybank_resolution, "_load_txn_for_update", return_value=locked),
             patch.object(
-                maybank_qr,
+                maybank_resolution,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 0, 1),
             ),
             patch.object(maybank_qr.frappe.db, "set_value") as set_value,
-            patch.object(maybank_qr, "_audit_generation_resolution") as audit,
+            patch.object(maybank_resolution, "_audit_generation_resolution") as audit,
         ):
             result = maybank_qr._close_expired_reconciliation(
                 "MBQR-EXPIRED",
@@ -1315,14 +1583,14 @@ class MaybankQrStatusTests(unittest.TestCase):
             "expires_at": datetime(2026, 3, 13, 17, 0, 0),
         }
         with (
-            patch.object(maybank_qr, "_load_txn_for_update", return_value=locked),
+            patch.object(maybank_resolution, "_load_txn_for_update", return_value=locked),
             patch.object(
-                maybank_qr,
+                maybank_resolution,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 0, 0),
             ),
             patch.object(maybank_qr.frappe.db, "set_value") as set_value,
-            patch.object(maybank_qr, "_audit_generation_resolution") as audit,
+            patch.object(maybank_resolution, "_audit_generation_resolution") as audit,
         ):
             with self.assertRaisesRegex(
                 maybank_qr.frappe.ValidationError,
@@ -1339,7 +1607,7 @@ class MaybankQrStatusTests(unittest.TestCase):
         set_value.assert_not_called()
         audit.assert_not_called()
 
-    def test_late_original_provider_result_supersedes_audited_unknown_reservation(self):
+    def test_late_original_provider_result_stays_fenced_after_audited_release(self):
         abandoned = {
             "name": "MBQR-LATE",
             "transaction_refno": maybank_qr._reservation_reference("b" * 64),
@@ -1347,14 +1615,18 @@ class MaybankQrStatusTests(unittest.TestCase):
             "sale_amount": "10.00",
             "sale_amount_sen": 1000,
             "request_fingerprint": "b" * 64,
+            "fb_order": PREPARED_FB_ORDER,
+            "fb_order_payment": PREPARED_FB_ORDER_PAYMENT,
         }
         with (
             patch.object(
-                maybank_qr,
-                "_load_reserved_txn_for_update",
+                maybank_generation,
+                "_load_reserved_txn_with_order_lock",
                 return_value=abandoned,
             ),
             patch.object(maybank_qr.frappe.db, "set_value") as set_value,
+            patch.object(maybank_generation, "_audit_generation_resolution") as audit,
+            patch.object(maybank_qr.frappe, "log_error"),
         ):
             result = maybank_qr._finalize_reserved_generation(
                 "b" * 64,
@@ -1364,12 +1636,17 @@ class MaybankQrStatusTests(unittest.TestCase):
                 expires_at=datetime(2026, 3, 13, 18, 20, 0),
             )
 
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(set_value.call_args.args[2]["status"], "pending")
+        self.assertEqual(result["status"], "late_provider_result_fenced")
+        self.assertFalse(result["display_authorized"])
+        self.assertEqual(result["settlement_status"], "pending_reconciliation")
+        self.assertNotIn("qr_data", result)
+        self.assertNotIn("status", set_value.call_args.args[2])
+        self.assertNotIn("maybank_status", set_value.call_args.args[2])
         self.assertEqual(
             set_value.call_args.args[2]["transaction_refno"],
             "provider-ref-late",
         )
+        audit.assert_called_once()
 
     def test_support_resolution_checks_provider_before_locking_and_records_paid(self):
         snapshot = {
@@ -1413,20 +1690,20 @@ class MaybankQrStatusTests(unittest.TestCase):
 
         with (
             patch.object(
-                maybank_qr,
+                maybank_resolution,
                 "_load_generation_snapshot",
                 return_value=snapshot,
             ),
             patch.object(
-                maybank_qr.MaybankClient,
+                maybank_resolution.MaybankClient,
                 "from_settings",
                 return_value=client,
             ),
-            patch.object(maybank_qr, "_load_txn_for_update", side_effect=lock_row),
+            patch.object(maybank_resolution, "_load_txn_for_update", side_effect=lock_row),
             patch.object(maybank_qr.frappe.db, "set_value") as set_value,
-            patch.object(maybank_qr, "_audit_generation_resolution") as audit,
+            patch.object(maybank_resolution, "_audit_generation_resolution") as audit,
             patch.object(
-                maybank_qr,
+                maybank_resolution,
                 "now_datetime",
                 return_value=datetime(2026, 3, 13, 18, 20, 0),
             ),
@@ -1460,9 +1737,9 @@ class MaybankQrStatusTests(unittest.TestCase):
                 return [11, 1]
 
         with (
-            patch.object(maybank_qr.frappe, "cache", return_value=AtomicCache()),
+            patch.object(maybank_rate_limit.frappe, "cache", return_value=AtomicCache()),
             patch.object(
-                maybank_qr.frappe,
+                maybank_rate_limit.frappe,
                 "conf",
                 {"maybank_qr_per_device_per_minute": 10},
                 create=True,
@@ -1470,9 +1747,9 @@ class MaybankQrStatusTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(
                 maybank_qr.frappe.ValidationError,
-                "rate limit exceeded",
+                "request limit exceeded",
             ):
-                maybank_qr._check_rate_limit("device-1", "outlet-1")
+                maybank_rate_limit._check_rate_limit("device-1", "outlet-1")
 
         self.assertEqual(calls[0][1], 2)
         self.assertNotIn("device-1", calls[0][2])
@@ -1480,7 +1757,7 @@ class MaybankQrStatusTests(unittest.TestCase):
         self.assertEqual(calls[0][5:], (10, 120))
 
     def test_device_limited_qr_calls_do_not_increment_outlet_counter(self):
-        script = maybank_qr.QR_RATE_LIMIT_SCRIPT
+        script = maybank_rate_limit.QR_RATE_LIMIT_SCRIPT
         device_guard = script.index("if device_count >= device_limit then")
         device_rejection = script.index(
             "return {device_limit + 1, outlet_count}",
@@ -1493,7 +1770,7 @@ class MaybankQrStatusTests(unittest.TestCase):
 
     def test_qr_rate_limit_fails_closed_without_atomic_redis(self):
         with patch.object(
-            maybank_qr.frappe,
+            maybank_rate_limit.frappe,
             "cache",
             return_value=SimpleNamespace(),
         ):
@@ -1501,7 +1778,7 @@ class MaybankQrStatusTests(unittest.TestCase):
                 maybank_qr.frappe.ValidationError,
                 "temporarily unavailable",
             ):
-                maybank_qr._check_rate_limit("device-1", "outlet-1")
+                maybank_rate_limit._check_rate_limit("device-1", "outlet-1")
 
     def test_expired_polling_uses_bounded_long_tail_intervals(self):
         txn = SimpleNamespace(

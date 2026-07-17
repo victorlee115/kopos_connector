@@ -917,6 +917,36 @@ def prepare_automatic_qr_sale(**kwargs: Any) -> None:
 
 
 @frappe.whitelist(methods=["POST"])
+def cancel_prepared_automatic_qr_sale(**kwargs: Any) -> None:
+    """Release a prepared sale only after ERP proves Maybank was not contacted."""
+    from .automatic_qr import cancel_prepared_automatic_qr_sale_payload
+
+    try:
+        payload = _get_submit_payload(kwargs)
+        device_id = frappe.utils.cstr(payload.get("device_id")).strip()
+        lock_device_for_operational_mutation(device_id=device_id)
+        require_device_operational_scope(device_id)
+        result = cancel_prepared_automatic_qr_sale_payload(payload)
+        _write_response(result)
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error(
+            "KoPOS cancel_prepared_automatic_qr_sale failed",
+            error,
+        )
+        _write_response(
+            {
+                "status": "error",
+                "message": "Unexpected server error while cancelling prepared Automatic QR sale",
+            },
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
 def submit_order(**kwargs: Any) -> None:
     """Public KoPOS endpoint for FB Order submission with raw JSON responses."""
     from kopos_connector.kopos.api.fb_orders import submit_order_payload
@@ -1783,7 +1813,10 @@ def request_shift_manager_approval(**kwargs: Any) -> None:
 @frappe.whitelist(methods=["POST"])
 def generate_maybank_qr(**kwargs: Any) -> None:
     """Generate a Maybank DuitNow QR code for POS payment."""
-    from .maybank_qr import generate_maybank_qr_payload
+    from .maybank_qr import (
+        MAYBANK_QR_REQUEST_REJECTED_NO_PROVIDER_ATTEMPT,
+        generate_maybank_qr_payload,
+    )
 
     try:
         payload = _get_submit_payload(kwargs)
@@ -1794,6 +1827,22 @@ def generate_maybank_qr(**kwargs: Any) -> None:
         authority = _capture_maybank_device_authority(device_doc)
         payload["currency"] = "MYR"
         result = generate_maybank_qr_payload(payload)
+        if (
+            result.get("status") == "rejected"
+            and result.get("error_code")
+            == MAYBANK_QR_REQUEST_REJECTED_NO_PROVIDER_ATTEMPT
+            and result.get("provider_request_attempted") is False
+            and result.get("rejection_fence_registered") is True
+            and result.get("local_release_authorized") is True
+            and result.get("recovery_action") == "release_local_provider_intent"
+            and result.get("currency") == "MYR"
+        ):
+            # The ERP rejection fence is already committed. It is safe to
+            # return this non-sensitive, request-bound response even if device
+            # authority changes after the preflight, because no provider
+            # request can ever be made for this idempotency key.
+            _write_response(result, http_status_code=409)
+            return
         # Provider evidence is committed before acquiring the device fence. This
         # keeps the irreversible network call outside the broad device lock while
         # still denying a response if credentials/config changed in flight.
@@ -2001,6 +2050,7 @@ def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> None:
 __all__ = [
     "abandon_unregistered_device_safe_reset_request",
     "authorize_device_safe_reset",
+    "cancel_prepared_automatic_qr_sale",
     "cancel_device_safe_reset",
     "cancel_device_safe_reset_as_system_manager",
     "check_maybank_payment",

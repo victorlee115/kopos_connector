@@ -287,15 +287,48 @@ class TestMaybankQRSalesInvoiceFlow(unittest.TestCase):
     def test_generate_maybank_qr_payload_rejects_unverified_prebinding(self):
         from kopos_connector.api.maybank_qr import generate_maybank_qr_payload
 
-        with self.assertRaises(frappe.ValidationError) as error:
-            generate_maybank_qr_payload(
-                {
-                    "amount_sen": 1250,
-                    "device_id": "TEST-DEVICE-QR",
-                    "idempotency_key": "QR-IDEMP-001",
-                    "fb_order": "FB-ORDER-QR-001",
-                    "sales_invoice": "SINV-QR-001",
-                }
-            )
+        payment_row = "FBPAY-QR-001"
+        accepted_sale_fingerprint = "a" * 64
+        unprepared_order = frappe._dict(
+            {
+                "name": "FB-ORDER-QR-001",
+                "device_id": "TEST-DEVICE-QR",
+                "currency": "MYR",
+                "accepted_sale_fingerprint": accepted_sale_fingerprint,
+                "automatic_qr_payment": payment_row,
+                "automatic_qr_state": "",
+                "status": "Draft",
+                "docstatus": 0,
+                "payments": [
+                    frappe._dict(
+                        {
+                            "name": payment_row,
+                            "payment_channel_code": "maybank",
+                            "amount": Decimal("12.50"),
+                        }
+                    )
+                ],
+            }
+        )
 
-        self.assertIn("verified sale submission", str(error.exception))
+        with patch(
+            "kopos_connector.api._maybank_qr_generation.frappe.get_doc",
+            return_value=unprepared_order,
+        ):
+            with self.assertRaises(frappe.ValidationError) as error:
+                generate_maybank_qr_payload(
+                    {
+                        "amount_sen": 1250,
+                        "device_id": "TEST-DEVICE-QR",
+                        "idempotency_key": "QR-IDEMP-001",
+                        "fb_order": "FB-ORDER-QR-001",
+                        "fb_order_payment": payment_row,
+                        "accepted_sale_fingerprint": accepted_sale_fingerprint,
+                        "sales_invoice": "SINV-QR-001",
+                    }
+                )
+
+        self.assertIn(
+            "inconsistent provider-attempt state",
+            str(error.exception),
+        )

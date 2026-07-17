@@ -224,6 +224,7 @@ class TestDeviceOperationalMutationLock(unittest.TestCase):
         guarded_routes = {
             "api/__init__.py": {
                 "prepare_automatic_qr_sale": "prepare_automatic_qr_sale_payload",
+                "cancel_prepared_automatic_qr_sale": "cancel_prepared_automatic_qr_sale_payload",
                 "submit_order": "submit_order_payload",
                 "open_shift": "open_shift_payload",
                 "close_shift": "close_shift_payload",
