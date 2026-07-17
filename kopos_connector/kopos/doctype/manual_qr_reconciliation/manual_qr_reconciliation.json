@@ -38,6 +38,12 @@
   "receipt_captured_at",
   "receipt_uploaded_at",
   "created_at",
+  "reclassification_journal_entry",
+  "failure_journal_entry",
+  "failure_accounting_key",
+  "failure_variance_account",
+  "failure_cost_center",
+  "failure_accounting_reason",
   "reconciled_by",
   "reconciled_at",
   "reconciliation_note",
@@ -271,6 +277,53 @@
    "label": "Created At",
    "read_only": 1,
    "reqd": 1
+  },
+  {
+   "fieldname": "reclassification_journal_entry",
+   "fieldtype": "Link",
+   "label": "Reclassification Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "failure_journal_entry",
+   "fieldtype": "Link",
+   "label": "Failure Disposition Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "failure_accounting_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Failure Accounting Key",
+   "no_copy": 1,
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "failure_variance_account",
+   "fieldtype": "Link",
+   "label": "Failure Variance Account Snapshot",
+   "options": "Account",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failure_cost_center",
+   "fieldtype": "Link",
+   "label": "Failure Cost Center Snapshot",
+   "options": "Cost Center",
+   "read_only": 1
+  },
+  {
+   "fieldname": "failure_accounting_reason",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Failure Accounting Reason Snapshot",
+   "options": "\nno_bank_transaction\namount_mismatch\nduplicate\nwrong_device\ncustomer_dispute\nother",
+   "read_only": 1
   },
   {
    "fieldname": "reconciled_by",

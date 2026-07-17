@@ -103,6 +103,16 @@ def ensure_operational_composite_indexes() -> None:
             "idx_kopos_fb_order_shift_status",
         ),
         (
+            "FB Order",
+            ["shift", "docstatus", "automatic_qr_state"],
+            "idx_kopos_fb_order_shift_qr_state",
+        ),
+        (
+            "FB Order",
+            ["device_id", "docstatus", "automatic_qr_state"],
+            "idx_kopos_fb_order_device_qr_state",
+        ),
+        (
             "FB Projection Log",
             ["source_doctype", "source_name", "state", "projection_type"],
             "idx_kopos_projection_source_state",
@@ -121,6 +131,16 @@ def ensure_operational_composite_indexes() -> None:
             "Maybank QR Transaction",
             ["device_id", "created_at"],
             "idx_kopos_maybank_device_created",
+        ),
+        (
+            "Maybank QR Transaction",
+            ["fb_order", "fb_order_payment", "status", "maybank_status"],
+            "idx_kopos_maybank_order_payment_status",
+        ),
+        (
+            "Maybank QR Transaction",
+            ["duplicate_payment_status", "paid_at"],
+            "idx_kopos_maybank_duplicate_refund",
         ),
         (
             "FB Resolved Sale",

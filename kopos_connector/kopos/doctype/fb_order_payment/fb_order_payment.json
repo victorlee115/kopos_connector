@@ -100,7 +100,7 @@
             "fieldtype": "Select",
             "hidden": 1,
             "label": "Settlement Status",
-            "options": "verified\npending_reconciliation\nreconciled\nreconciliation_failed",
+            "options": "awaiting_provider\nverified\npending_reconciliation\nreconciled\nreconciliation_failed",
             "read_only": 1
         },
         {

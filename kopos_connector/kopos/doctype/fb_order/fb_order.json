@@ -16,6 +16,10 @@
 	  "catalog_version",
 	  "external_idempotency_key",
   "request_fingerprint",
+  "accepted_sale_fingerprint",
+  "automatic_qr_state",
+  "automatic_qr_payment",
+  "automatic_qr_accepted_at",
   "source",
         "sale_datetime",
         "column_break_1",
@@ -95,6 +99,37 @@
    "fieldtype": "Data",
    "hidden": 1,
    "label": "Canonical Request Fingerprint",
+   "read_only": 1
+  },
+  {
+   "fieldname": "accepted_sale_fingerprint",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Accepted Sale Fingerprint",
+   "read_only": 1
+  },
+  {
+   "fieldname": "automatic_qr_state",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Automatic QR State",
+   "options": "\nprepared\nprovider_pending\nprovider_ambiguous\nprovider_rejected\nprovider_paid\nmanual_pending_reconciliation\nfinalized",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "automatic_qr_payment",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Automatic QR Payment Row",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "automatic_qr_accepted_at",
+   "fieldtype": "Datetime",
+   "hidden": 1,
+   "label": "Automatic QR Accepted At",
    "read_only": 1
   },
         {

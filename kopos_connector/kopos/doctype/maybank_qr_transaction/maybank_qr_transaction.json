@@ -18,11 +18,15 @@
   "qr_data",
    "section_links",
    "fb_order",
+   "fb_order_payment",
+   "reconciliation_idempotency_key",
     "sales_invoice",
     "outlet_id",
    "device_id",
     "provider",
+    "company",
     "currency",
+    "suspense_account",
     "idempotency_key",
     "request_fingerprint",
     "consumption_key",
@@ -40,10 +44,35 @@
      "receipt_uploaded_at",
      "section_reconciliation",
      "manual_reconciliation_status",
+     "reclassification_journal_entry",
+     "failure_journal_entry",
+     "failure_accounting_key",
+     "failure_variance_account",
+     "failure_cost_center",
+     "failure_accounting_reason",
      "reconciled_by",
      "reconciled_at",
      "reconciliation_note",
      "reconciliation_failed_reason",
+     "section_duplicate_payment",
+     "duplicate_payment_status",
+     "duplicate_winning_transaction",
+     "duplicate_accounting_key",
+     "duplicate_clearing_account",
+     "duplicate_liability_account",
+     "duplicate_liability_journal_entry",
+     "duplicate_refund_key",
+     "duplicate_refund_journal_entry",
+     "duplicate_refund_reference",
+     "duplicate_refund_evidence_reference",
+     "duplicate_refund_evidence_file",
+     "duplicate_refund_evidence_sha256",
+     "duplicate_refund_amount_sen",
+     "duplicate_refund_currency",
+     "duplicate_refund_date",
+     "duplicate_refund_note",
+     "duplicate_refunded_by",
+     "duplicate_refunded_at",
      "section_timing",
   "round_number",
    "created_at",
@@ -54,6 +83,12 @@
   "expires_at",
   "last_polled_at",
   "poll_count",
+  "section_test_simulation",
+  "is_test_simulation",
+  "test_simulation_key",
+  "test_simulation_identity_sha256",
+  "test_simulated_by",
+  "test_simulated_at",
   "section_debug",
   "raw_response"
  ],
@@ -63,6 +98,7 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Transaction Ref",
+   "read_only": 1,
    "reqd": 1,
    "search_index": 1,
    "unique": 1
@@ -74,13 +110,15 @@
    "in_list_view": 1,
    "label": "Status",
    "options": "creating\npending\nscanned\npaid\nfailed\ntimeout\nunknown",
+   "read_only": 1,
    "reqd": 1,
    "search_index": 1
   },
   {
    "fieldname": "maybank_status",
    "fieldtype": "Int",
-   "label": "Raw Maybank Status"
+   "label": "Raw Maybank Status",
+   "read_only": 1
   },
   {
    "fieldname": "section_amount",
@@ -92,12 +130,14 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Amount (RM)",
+   "read_only": 1,
    "reqd": 1
   },
   {
    "fieldname": "sale_amount_sen",
    "fieldtype": "Int",
-   "label": "Amount (sen)"
+   "label": "Amount (sen)",
+   "read_only": 1
   },
   {
    "fieldname": "section_qr",
@@ -107,7 +147,8 @@
   {
    "fieldname": "qr_data",
    "fieldtype": "Long Text",
-   "label": "QR Data (EMVCo)"
+   "label": "QR Data (EMVCo)",
+   "read_only": 1
   },
   {
    "fieldname": "section_links",
@@ -119,41 +160,78 @@
     "fieldtype": "Link",
     "label": "F&B Order",
     "options": "FB Order",
+    "read_only": 1,
+   "search_index": 1
+   },
+   {
+    "fieldname": "fb_order_payment",
+    "fieldtype": "Data",
+    "hidden": 1,
+    "label": "FB Order Payment Row",
+    "read_only": 1,
     "search_index": 1
+   },
+   {
+    "fieldname": "reconciliation_idempotency_key",
+    "fieldtype": "Data",
+    "hidden": 1,
+    "label": "Reconciliation Idempotency Key",
+    "read_only": 1,
+    "unique": 1
    },
    {
     "fieldname": "sales_invoice",
     "fieldtype": "Link",
     "label": "Sales Invoice",
     "options": "Sales Invoice",
+    "read_only": 1,
     "search_index": 1
    },
   {
    "fieldname": "outlet_id",
    "fieldtype": "Data",
-   "label": "Outlet ID"
+   "label": "Outlet ID",
+   "read_only": 1
   },
    {
     "fieldname": "device_id",
     "fieldtype": "Data",
     "label": "Device ID",
+    "read_only": 1,
     "search_index": 1
    },
    {
     "fieldname": "provider",
     "fieldtype": "Data",
-    "label": "Provider"
+    "label": "Provider",
+    "read_only": 1
    },
+    {
+     "fieldname": "company",
+     "fieldtype": "Link",
+     "label": "Company",
+     "options": "Company",
+     "read_only": 1
+    },
     {
      "fieldname": "currency",
      "fieldtype": "Link",
      "label": "Currency",
-     "options": "Currency"
+     "options": "Currency",
+     "read_only": 1
+    },
+    {
+     "fieldname": "suspense_account",
+     "fieldtype": "Link",
+     "label": "Manual QR Suspense Account",
+     "options": "Account",
+     "read_only": 1
     },
     {
      "fieldname": "idempotency_key",
      "fieldtype": "Data",
       "label": "Idempotency Key",
+      "read_only": 1,
       "search_index": 1
     },
     {
@@ -271,6 +349,53 @@
      "search_index": 1
     },
     {
+     "fieldname": "reclassification_journal_entry",
+     "fieldtype": "Link",
+     "label": "Reclassification Journal Entry",
+     "options": "Journal Entry",
+     "read_only": 1,
+     "search_index": 1
+    },
+    {
+     "fieldname": "failure_journal_entry",
+     "fieldtype": "Link",
+     "label": "Failure Disposition Journal Entry",
+     "options": "Journal Entry",
+     "read_only": 1,
+     "search_index": 1
+    },
+    {
+     "fieldname": "failure_accounting_key",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Failure Accounting Key",
+     "no_copy": 1,
+     "read_only": 1,
+     "unique": 1
+    },
+    {
+     "fieldname": "failure_variance_account",
+     "fieldtype": "Link",
+     "label": "Failure Variance Account Snapshot",
+     "options": "Account",
+     "read_only": 1
+    },
+    {
+     "fieldname": "failure_cost_center",
+     "fieldtype": "Link",
+     "label": "Failure Cost Center Snapshot",
+     "options": "Cost Center",
+     "read_only": 1
+    },
+    {
+     "fieldname": "failure_accounting_reason",
+     "fieldtype": "Select",
+     "hidden": 1,
+     "label": "Failure Accounting Reason Snapshot",
+     "options": "\nno_bank_transaction\namount_mismatch\nduplicate\nwrong_device\ncustomer_dispute\nother",
+     "read_only": 1
+    },
+    {
      "fieldname": "reconciled_by",
      "fieldtype": "Data",
      "label": "Reconciled By",
@@ -296,6 +421,141 @@
      "read_only": 1
     },
     {
+     "fieldname": "section_duplicate_payment",
+     "fieldtype": "Section Break",
+     "label": "Duplicate Provider Payment Liability"
+    },
+    {
+     "fieldname": "duplicate_payment_status",
+     "fieldtype": "Select",
+     "in_list_view": 1,
+     "label": "Duplicate Payment Status",
+     "options": "\naccounting_pending\nrefund_required\nrefunded",
+     "read_only": 1,
+     "search_index": 1
+    },
+    {
+     "fieldname": "duplicate_winning_transaction",
+     "fieldtype": "Link",
+     "label": "Winning Maybank QR Transaction",
+     "options": "Maybank QR Transaction",
+     "read_only": 1,
+     "search_index": 1
+    },
+    {
+     "fieldname": "duplicate_accounting_key",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Duplicate Liability Accounting Key",
+     "no_copy": 1,
+     "read_only": 1,
+     "unique": 1
+    },
+    {
+     "fieldname": "duplicate_clearing_account",
+     "fieldtype": "Link",
+     "label": "Duplicate Payment Clearing Account Snapshot",
+     "options": "Account",
+     "read_only": 1
+    },
+    {
+     "fieldname": "duplicate_liability_account",
+     "fieldtype": "Link",
+     "label": "Customer Refund Liability Account Snapshot",
+     "options": "Account",
+     "read_only": 1
+    },
+    {
+     "fieldname": "duplicate_liability_journal_entry",
+     "fieldtype": "Link",
+     "label": "Duplicate Payment Liability Journal Entry",
+     "options": "Journal Entry",
+     "read_only": 1,
+     "search_index": 1
+    },
+    {
+     "fieldname": "duplicate_refund_key",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Duplicate Payment Refund Key",
+     "no_copy": 1,
+     "read_only": 1,
+     "unique": 1
+    },
+    {
+     "fieldname": "duplicate_refund_journal_entry",
+     "fieldtype": "Link",
+     "label": "Duplicate Payment Refund Journal Entry",
+     "options": "Journal Entry",
+     "read_only": 1,
+     "search_index": 1
+    },
+    {
+     "fieldname": "duplicate_refund_reference",
+     "fieldtype": "Data",
+     "label": "Provider Refund Reference",
+     "read_only": 1,
+     "unique": 1
+    },
+    {
+     "fieldname": "duplicate_refund_evidence_reference",
+     "fieldtype": "Data",
+     "label": "Provider Refund Evidence Reference",
+     "read_only": 1
+    },
+    {
+     "fieldname": "duplicate_refund_evidence_file",
+     "fieldtype": "Link",
+     "label": "Private Provider Refund Evidence",
+     "options": "File",
+     "read_only": 1
+    },
+    {
+     "fieldname": "duplicate_refund_evidence_sha256",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Provider Refund Evidence SHA-256",
+     "read_only": 1
+    },
+    {
+     "fieldname": "duplicate_refund_amount_sen",
+     "fieldtype": "Int",
+     "label": "Provider Refund Amount (sen)",
+     "read_only": 1
+    },
+    {
+     "fieldname": "duplicate_refund_currency",
+     "fieldtype": "Link",
+     "label": "Provider Refund Currency",
+     "options": "Currency",
+     "read_only": 1
+    },
+    {
+     "fieldname": "duplicate_refund_date",
+     "fieldtype": "Date",
+     "label": "Provider Refund Date",
+     "read_only": 1
+    },
+    {
+     "fieldname": "duplicate_refund_note",
+     "fieldtype": "Small Text",
+     "label": "Provider Refund Note",
+     "read_only": 1
+    },
+    {
+     "fieldname": "duplicate_refunded_by",
+     "fieldtype": "Link",
+     "label": "Duplicate Payment Refunded By",
+     "options": "User",
+     "read_only": 1
+    },
+    {
+     "fieldname": "duplicate_refunded_at",
+     "fieldtype": "Datetime",
+     "label": "Duplicate Payment Refunded At",
+     "read_only": 1
+    },
+    {
      "fieldname": "section_timing",
    "fieldtype": "Section Break",
    "label": "Timing"
@@ -304,7 +564,8 @@
    "default": "1",
    "fieldname": "round_number",
    "fieldtype": "Int",
-   "label": "QR Round"
+   "label": "QR Round",
+   "read_only": 1
   },
    {
     "fieldname": "created_at",
@@ -339,7 +600,8 @@
   {
    "fieldname": "expires_at",
    "fieldtype": "Datetime",
-   "label": "Expires At"
+   "label": "Expires At",
+   "read_only": 1
   },
   {
    "fieldname": "last_polled_at",
@@ -352,6 +614,51 @@
    "fieldname": "poll_count",
    "fieldtype": "Int",
    "label": "Poll Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "test_simulation_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Test Simulation Key",
+   "no_copy": 1,
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "test_simulation_identity_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Test Simulation Identity SHA-256",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "collapsible": 1,
+   "depends_on": "eval:doc.is_test_simulation",
+   "fieldname": "section_test_simulation",
+   "fieldtype": "Section Break",
+   "label": "Test Simulation Evidence"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_test_simulation",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Test Payment Simulation",
+   "read_only": 1
+  },
+  {
+   "fieldname": "test_simulated_by",
+   "fieldtype": "Link",
+   "label": "Test Simulated By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "test_simulated_at",
+   "fieldtype": "Datetime",
+   "label": "Test Simulated At",
    "read_only": 1
   },
   {
@@ -374,11 +681,9 @@
  "owner": "Administrator",
  "permissions": [
   {
-   "create": 1,
    "delete": 0,
    "read": 1,
-   "role": "System Manager",
-   "write": 1
+   "role": "System Manager"
   },
   {
    "read": 1,

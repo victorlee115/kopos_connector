@@ -58,6 +58,10 @@ class TestFBSchemaContract(unittest.TestCase):
                 "order_id",
                 "external_idempotency_key",
                 "request_fingerprint",
+                "accepted_sale_fingerprint",
+                "automatic_qr_state",
+                "automatic_qr_payment",
+                "automatic_qr_accepted_at",
                 "sale_datetime",
                 "shift",
                 "staff_id",
@@ -78,6 +82,29 @@ class TestFBSchemaContract(unittest.TestCase):
         )
         self.assertEqual(sale_datetime["fieldtype"], "Datetime")
         self.assertNotEqual(sale_datetime.get("reqd"), 1)
+
+        automatic_qr_state = next(
+            field
+            for field in doc["fields"]
+            if field.get("fieldname") == "automatic_qr_state"
+        )
+        for state in (
+            "prepared",
+            "provider_pending",
+            "provider_ambiguous",
+            "provider_rejected",
+            "provider_paid",
+            "manual_pending_reconciliation",
+            "finalized",
+        ):
+            self.assertIn(state, automatic_qr_state["options"])
+
+    def test_prepared_resolved_sale_schema(self):
+        doc = load_doctype("fb_resolved_sale")
+        status = next(
+            field for field in doc["fields"] if field.get("fieldname") == "status"
+        )
+        self.assertIn("Prepared", status["options"])
 
     def test_fb_stock_override_log_schema(self):
         doc = load_doctype("fb_stock_override_log")
@@ -119,6 +146,16 @@ class TestFBSchemaContract(unittest.TestCase):
             }.issubset(names)
         )
         self.assertEqual(doc.get("istable"), 1)
+
+    def test_fb_order_payment_distinguishes_provider_wait_from_reconciliation(self):
+        doc = load_doctype("fb_order_payment")
+        settlement_status = next(
+            field
+            for field in doc["fields"]
+            if field.get("fieldname") == "settlement_status"
+        )
+        self.assertIn("awaiting_provider", settlement_status["options"])
+        self.assertIn("pending_reconciliation", settlement_status["options"])
 
     def test_fb_recipe_schema(self):
         doc = load_doctype("fb_recipe")

@@ -140,7 +140,7 @@
             "fieldtype": "Select",
             "in_list_view": 1,
             "label": "Status",
-            "options": "Submitted\nPartially Returned\nReturned\nRemade\nCancelled",
+            "options": "Prepared\nSubmitted\nPartially Returned\nReturned\nRemade\nCancelled",
             "reqd": 1
         },
         {
