@@ -1920,6 +1920,42 @@ def resolve_maybank_qr_generation(**kwargs: Any) -> None:
 
 
 @frappe.whitelist(methods=["POST"])
+def resolve_duplicate_automatic_qr_refund(**kwargs: Any) -> None:
+    """Record an exact provider refund for an accounted duplicate QR payment."""
+    from .duplicate_qr_payment import (
+        resolve_duplicate_automatic_qr_refund_payload,
+    )
+
+    try:
+        require_system_manager()
+        if KOPOS_DEVICE_API_ROLE in get_session_roles():
+            frappe.throw(
+                _(
+                    "Duplicate Automatic QR refund resolution requires a non-device System Manager session"
+                ),
+                frappe.ValidationError,
+            )
+        payload = _get_submit_payload(kwargs)
+        _write_response(resolve_duplicate_automatic_qr_refund_payload(payload))
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error(
+            "KoPOS duplicate Automatic QR refund resolution failed",
+            error,
+        )
+        _write_response(
+            {
+                "status": "error",
+                "message": "Failed to resolve duplicate Automatic QR refund",
+            },
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
 def upload_manual_qr_receipt(**kwargs: Any) -> None:
     """Attach a validated private receipt JPEG to a Maybank QR transaction."""
     from .manual_qr_receipt import upload_manual_qr_receipt as upload_payload
@@ -1992,6 +2028,7 @@ __all__ = [
     "request_device_safe_reset",
     "resolve_device_safe_reset_request",
     "request_shift_manager_approval",
+    "resolve_duplicate_automatic_qr_refund",
     "resolve_maybank_qr_generation",
     "review_promotion_reconciliation",
     "submit_order",

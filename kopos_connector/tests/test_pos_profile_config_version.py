@@ -28,9 +28,15 @@ BASE_PROFILE_CONFIG = {
 
 def test_pos_profile_extension_is_registered_without_doc_event_lifecycle() -> None:
     assert hooks.extend_doctype_class == {
+        "Journal Entry": [
+            "kopos_connector.extensions.journal_entry.KoPOSJournalEntryIntegrityMixin"
+        ],
         "POS Profile": [
             "kopos_connector.extensions.pos_profile.KoPOSPOSProfileConfigMixin"
-        ]
+        ],
+        "Sales Invoice": [
+            "kopos_connector.extensions.sales_invoice.KoPOSSalesInvoiceIntegrityMixin"
+        ],
     }
     assert not hasattr(hooks, "doc_events")
     assert pos_profile.SERIALIZED_POS_PROFILE_FIELDS == (

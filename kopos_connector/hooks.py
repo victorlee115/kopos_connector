@@ -107,8 +107,14 @@ before_uninstall = "kopos_connector.uninstall.before_uninstall"
 # registering a second doc_events lifecycle.  The mixin invalidates managed
 # device configuration only when profile fields serialized to a tablet change.
 extend_doctype_class = {
+    "Journal Entry": [
+        "kopos_connector.extensions.journal_entry.KoPOSJournalEntryIntegrityMixin",
+    ],
     "POS Profile": [
         "kopos_connector.extensions.pos_profile.KoPOSPOSProfileConfigMixin",
+    ],
+    "Sales Invoice": [
+        "kopos_connector.extensions.sales_invoice.KoPOSSalesInvoiceIntegrityMixin",
     ],
 }
 
