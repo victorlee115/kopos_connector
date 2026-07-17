@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 import types
 from datetime import datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -86,6 +88,9 @@ def fake_frappe(monkeypatch):
         },
         "kopos_connector.kopos.services.accounting.sales_invoice_service": {
             "create_sales_invoice": lambda *args, **kwargs: None
+        },
+        "kopos_connector.kopos.services.accounting.maybank_payment_service": {
+            "register_qr_payment_settlement": lambda *args, **kwargs: None
         },
         "kopos_connector.kopos.services.inventory.stock_issue_service": {
             "create_ingredient_stock_entry": lambda *args, **kwargs: None
@@ -281,6 +286,311 @@ def test_before_submit_still_raises_non_stock_failures(fake_frappe):
 
     with pytest.raises(RuntimeError, match="resolved sale projection failed"):
         order.before_submit()
+
+
+def _prepared_component() -> dict[str, object]:
+    return {
+        "item": "ITEM-1",
+        "source_type": "Base Recipe",
+        "qty": 1.0,
+        "uom": "Gram",
+        "stock_qty": 1.0,
+        "stock_uom": "Gram",
+        "warehouse": "WH-1",
+        "source_reference": "component-1",
+        "affects_stock": 1,
+        "affects_cogs": 1,
+        "remarks": None,
+    }
+
+
+def test_prepared_sale_reuses_only_the_frozen_resolved_snapshot(
+    fake_frappe,
+    monkeypatch,
+):
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    component = _prepared_component()
+    resolved_sale = SimpleNamespace(
+        name="RESOLVED-1",
+        fb_order="FB-ORDER-1",
+        fb_order_line="FB-ORDER-LINE-1",
+        backend_line_uuid="LINE-UUID-1",
+        sellable_item="ITEM-SALE-1",
+        booth_warehouse="WH-1",
+        recipe="RECIPE-1",
+        recipe_version="1",
+        qty=1,
+        status="Prepared",
+        selected_modifiers=[],
+        resolved_components=[
+            SimpleNamespace(
+                **component,
+                name="CHILD-METADATA-MUST-NOT-BE-HASHED",
+                parent="RESOLVED-1",
+            )
+        ],
+    )
+    resolved_sale.resolution_hash = fb_order_module._resolution_hash(
+        recipe="RECIPE-1",
+        recipe_version="1",
+        selected_modifiers=[],
+        resolved_components=[component],
+    )
+    monkeypatch.setattr(
+        fb_order_module.frappe,
+        "get_doc",
+        lambda doctype, name: resolved_sale,
+        raising=False,
+    )
+
+    line = SimpleNamespace(
+        name="FB-ORDER-LINE-1",
+        backend_line_uuid="LINE-UUID-1",
+        item="ITEM-SALE-1",
+        recipe="RECIPE-1",
+        recipe_version="1",
+        qty=1,
+        resolved_sale="RESOLVED-1",
+        resolved_components_snapshot=json.dumps([component], sort_keys=True),
+    )
+    order = fb_order_module.FBOrder()
+    order.name = "FB-ORDER-1"
+    order.booth_warehouse = "WH-1"
+    order.items = [line]
+
+    resolutions = order.validate_prepared_resolved_sales()
+
+    assert resolutions[0]["resolved_sale"] is resolved_sale
+    assert resolutions[0]["resolved_components"] == [component]
+
+
+def test_prepared_sale_rejects_a_changed_resolution_hash(fake_frappe, monkeypatch):
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    component = _prepared_component()
+    resolved_sale = SimpleNamespace(
+        name="RESOLVED-1",
+        fb_order="FB-ORDER-1",
+        fb_order_line="FB-ORDER-LINE-1",
+        backend_line_uuid="LINE-UUID-1",
+        sellable_item="ITEM-SALE-1",
+        booth_warehouse="WH-1",
+        recipe="RECIPE-1",
+        recipe_version="1",
+        qty=1,
+        status="Prepared",
+        resolution_hash="tampered",
+        selected_modifiers=[],
+        resolved_components=[SimpleNamespace(**component)],
+    )
+    monkeypatch.setattr(
+        fb_order_module.frappe,
+        "get_doc",
+        lambda doctype, name: resolved_sale,
+        raising=False,
+    )
+    order = fb_order_module.FBOrder()
+    order.name = "FB-ORDER-1"
+    order.booth_warehouse = "WH-1"
+    order.items = [
+        SimpleNamespace(
+            name="FB-ORDER-LINE-1",
+            backend_line_uuid="LINE-UUID-1",
+            item="ITEM-SALE-1",
+            recipe="RECIPE-1",
+            recipe_version="1",
+            qty=1,
+            resolved_sale="RESOLVED-1",
+            resolved_components_snapshot=json.dumps([component], sort_keys=True),
+        )
+    ]
+
+    with pytest.raises(
+        fb_order_module.frappe.ValidationError,
+        match="resolution hash does not match",
+    ):
+        order.validate_prepared_resolved_sales()
+
+
+def test_prepared_before_submit_never_re_resolves_the_current_catalog(
+    fake_frappe,
+    monkeypatch,
+):
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    frozen_resolutions = [{"resolved_components": []}]
+    calls: list[tuple[str, object]] = []
+    order = fb_order_module.FBOrder()
+    order.accepted_sale_fingerprint = "f" * 64
+    order.build_line_resolutions = lambda: (_ for _ in ()).throw(
+        AssertionError("prepared sale must not re-resolve the catalog")
+    )
+    order.validate_prepared_resolved_sales = lambda: frozen_resolutions
+    order.validate_stock_availability = lambda value: calls.append(("stock", value))
+    order.mark_prepared_resolved_sales_submitted = lambda value: calls.append(
+        ("resolved", value)
+    )
+    monkeypatch.setattr(
+        fb_order_module,
+        "register_qr_payment_settlement",
+        lambda value: calls.append(("settlement", value)),
+    )
+
+    order.before_submit()
+
+    assert calls == [
+        ("resolved", frozen_resolutions),
+        ("settlement", order),
+    ]
+
+
+def test_prepared_sale_rejects_persisted_price_customer_or_payment_edits(
+    fake_frappe,
+) -> None:
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    before = SimpleNamespace(
+        accepted_sale_fingerprint="f" * 64,
+        customer="CUSTOMER-1",
+        grand_total=Decimal("12.50"),
+        items=[
+            SimpleNamespace(
+                line_id="LINE-1",
+                item="ITEM-1",
+                qty=1,
+                unit_price=Decimal("12.50"),
+            )
+        ],
+        payments=[
+            SimpleNamespace(
+                source_payment_id="PAY-1",
+                payment_method="DuitNow QR",
+                payment_channel_code="maybank",
+                amount=Decimal("12.50"),
+                tendered_amount=Decimal("12.50"),
+                change_amount=Decimal("0"),
+            )
+        ],
+    )
+    order = fb_order_module.FBOrder()
+    order.accepted_sale_fingerprint = "f" * 64
+    order.customer = "CUSTOMER-2"
+    order.grand_total = Decimal("12.50")
+    order.items = list(before.items)
+    order.payments = list(before.payments)
+    order.get_doc_before_save = lambda: before
+
+    with pytest.raises(
+        fb_order_module.frappe.ValidationError,
+        match=r"immutable sale snapshot cannot be changed: order\.customer",
+    ):
+        order.validate_prepared_sale_immutability()
+
+
+def test_prepared_sale_allows_only_qr_settlement_lifecycle_updates(
+    fake_frappe,
+) -> None:
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    payment_before = SimpleNamespace(
+        source_payment_id="PAY-1",
+        payment_method="DuitNow QR",
+        payment_channel_code="maybank",
+        amount=Decimal("12.50"),
+        tendered_amount=Decimal("12.50"),
+        change_amount=Decimal("0"),
+        external_transaction_id=None,
+        settlement_status="awaiting_provider",
+    )
+    payment_after = SimpleNamespace(**vars(payment_before))
+    payment_after.external_transaction_id = "MB-REF-1"
+    payment_after.settlement_status = "pending_reconciliation"
+    before = SimpleNamespace(
+        accepted_sale_fingerprint="f" * 64,
+        automatic_qr_state="provider_pending",
+        items=[],
+        payments=[payment_before],
+    )
+    order = fb_order_module.FBOrder()
+    order.accepted_sale_fingerprint = "f" * 64
+    order.automatic_qr_state = "manual_pending_reconciliation"
+    order.items = []
+    order.payments = [payment_after]
+    order.get_doc_before_save = lambda: before
+
+    order.validate_prepared_sale_immutability()
+
+
+def test_prepared_sale_tax_rate_canonicalizes_omitted_float_to_zero(
+    fake_frappe,
+) -> None:
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    before = SimpleNamespace(
+        accepted_sale_fingerprint="f" * 64,
+        tax_rate=0,
+        items=[],
+        payments=[],
+    )
+    order = fb_order_module.FBOrder()
+    order.accepted_sale_fingerprint = "f" * 64
+    order.tax_rate = None
+    order.items = []
+    order.payments = []
+    order.get_doc_before_save = lambda: before
+
+    order.validate_prepared_sale_immutability()
+
+    order.tax_rate = Decimal("0.08")
+    with pytest.raises(
+        fb_order_module.frappe.ValidationError,
+        match=r"immutable sale snapshot cannot be changed: order\.tax_rate",
+    ):
+        order.validate_prepared_sale_immutability()
+
+    before.tax_rate = Decimal("0.08")
+    order.tax_rate = Decimal("0.0800005")
+    with pytest.raises(
+        fb_order_module.frappe.ValidationError,
+        match=r"immutable sale snapshot cannot be changed: order\.tax_rate",
+    ):
+        order.validate_prepared_sale_immutability()
+
+
+def test_unprepared_before_submit_still_validates_current_stock(
+    fake_frappe,
+    monkeypatch,
+):
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    current_resolutions = [{"resolved_components": []}]
+    calls: list[tuple[str, object]] = []
+    order = fb_order_module.FBOrder()
+    order.accepted_sale_fingerprint = ""
+    order.build_line_resolutions = lambda: current_resolutions
+    order.validate_stock_availability = lambda value: calls.append(("stock", value))
+    order.create_resolved_sales = lambda value: calls.append(("resolved", value))
+    monkeypatch.setattr(
+        fb_order_module,
+        "register_qr_payment_settlement",
+        lambda value: calls.append(("settlement", value)),
+    )
+
+    order.before_submit()
+
+    assert calls == [
+        ("stock", current_resolutions),
+        ("resolved", current_resolutions),
+        ("settlement", order),
+    ]
 
 
 def test_on_submit_marks_noop_stock_projection_as_terminal_success(fake_frappe, monkeypatch):

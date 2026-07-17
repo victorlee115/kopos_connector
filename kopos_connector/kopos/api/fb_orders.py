@@ -20,6 +20,9 @@ from kopos_connector.kopos.api.money_contract import (
     require_money_contract_version,
     sen_to_decimal,
 )
+from kopos_connector.kopos.services.accounting.maybank_payment_service import (
+    normalize_qr_token,
+)
 from kopos_connector.kopos.services.orders.sale_datetime import (
     normalize_site_datetime,
     validate_submit_sale_datetime,
@@ -122,6 +125,9 @@ def submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     existing_name = _get_existing_fb_order_name(normalized["external_idempotency_key"])
     if existing_name:
         order_doc = frappe.get_doc("FB Order", existing_name)
+        if cstr(getattr(order_doc, "accepted_sale_fingerprint", None)).strip():
+            _validate_existing_accepted_sale_fingerprint(normalized, order_doc)
+            return _finalize_prepared_automatic_qr_order(normalized, order_doc)
         _validate_existing_order_fingerprint(normalized, order_doc)
         return _build_submit_response("duplicate", order_doc)
 
@@ -148,6 +154,379 @@ def submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise
 
     return _build_submit_response("ok", order_doc)
+
+
+def _finalize_prepared_automatic_qr_order(
+    normalized: dict[str, Any],
+    order_doc: Any,
+) -> dict[str, Any]:
+    """Submit the preaccepted order once payment truth is available."""
+
+    frappe.db.sql(
+        "SELECT name FROM `tabFB Order` WHERE name = %s LIMIT 1 FOR UPDATE",
+        (order_doc.name,),
+    )
+    order_doc.reload()
+    _validate_existing_accepted_sale_fingerprint(normalized, order_doc)
+    order_docstatus = cint(getattr(order_doc, "docstatus", 0))
+    if order_docstatus not in {0, 1}:
+        frappe.throw(
+            "Prepared Automatic QR sale is not eligible for finalization",
+            frappe.ValidationError,
+        )
+
+    incoming_payments = list(normalized["payments"])
+    stored_payments = list(order_doc.get("payments") or [])
+    if len(incoming_payments) != 1 or len(stored_payments) != 1:
+        frappe.throw(
+            "Prepared Automatic QR sale must retain exactly one payment",
+            frappe.ValidationError,
+        )
+    incoming = incoming_payments[0]
+    stored = stored_payments[0]
+    stored_payment_name = cstr(getattr(stored, "name", None)).strip()
+    if stored_payment_name != cstr(
+        getattr(order_doc, "automatic_qr_payment", None)
+    ).strip():
+        frappe.throw(
+            "Prepared Automatic QR payment identity does not match",
+            frappe.ValidationError,
+        )
+    if cstr(incoming.get("payment_id")).strip() != cstr(
+        getattr(stored, "source_payment_id", None)
+    ).strip():
+        frappe.throw(
+            "Prepared Automatic QR local payment identity does not match",
+            frappe.ValidationError,
+        )
+    if _persisted_money_sen(
+        getattr(stored, "amount", None),
+        "Prepared Automatic QR payment amount",
+    ) != incoming["amount_sen"]:
+        frappe.throw(
+            "Prepared Automatic QR payment amount does not match",
+            frappe.ValidationError,
+        )
+
+    transaction_refno = cstr(incoming.get("external_transaction_id")).strip()
+    if not transaction_refno or cstr(incoming.get("reference_no")).strip() != (
+        transaction_refno
+    ):
+        frappe.throw(
+            "Prepared Automatic QR finalization requires one exact provider reference",
+            frappe.ValidationError,
+        )
+    transaction = frappe.db.get_value(
+        "Maybank QR Transaction",
+        {"transaction_refno": transaction_refno},
+        [
+            "name",
+            "transaction_refno",
+            "status",
+            "maybank_status",
+            "paid_at",
+            "expires_at",
+            "provider",
+            "qr_data",
+            "outlet_id",
+            "device_id",
+            "currency",
+            "sale_amount_sen",
+            "fb_order",
+            "fb_order_payment",
+        ],
+        as_dict=True,
+    )
+    if not transaction:
+        frappe.throw(
+            "Prepared Automatic QR transaction was not found",
+            frappe.ValidationError,
+        )
+    if (
+        cstr(transaction.get("fb_order")).strip() != cstr(order_doc.name)
+        or cstr(transaction.get("fb_order_payment")).strip()
+        != stored_payment_name
+    ):
+        frappe.throw(
+            "Prepared Automatic QR transaction binding does not match",
+            frappe.ValidationError,
+        )
+
+    has_manual_evidence = bool(incoming.get("manual_confirmation_evidence_json"))
+
+    if order_docstatus == 1:
+        stored_transaction_name = cstr(
+            getattr(stored, "maybank_qr_transaction", None)
+        ).strip()
+        stored_reference = cstr(
+            getattr(stored, "external_transaction_id", None)
+        ).strip()
+        if (
+            stored_transaction_name != cstr(transaction.get("name")).strip()
+            or stored_reference != transaction_refno
+        ):
+            frappe.throw(
+                "Prepared Automatic QR sale was finalized with a different provider transaction",
+                frappe.ValidationError,
+            )
+        _validate_exact_prepared_qr_settlement_replay(incoming, stored)
+        if not cint(getattr(stored, "is_manual_confirmation", 0)):
+            provider_paid = _has_exact_authenticated_provider_paid_evidence(
+                transaction,
+                order_doc=order_doc,
+                payment=stored,
+                transaction_refno=transaction_refno,
+            )
+            if not provider_paid:
+                frappe.throw(
+                    "Prepared Automatic QR payment has no exact authenticated provider settlement",
+                    frappe.ValidationError,
+                )
+        return _build_submit_response("duplicate", order_doc)
+
+    provider_paid = _has_exact_authenticated_provider_paid_evidence(
+        transaction,
+        order_doc=order_doc,
+        payment=stored,
+        transaction_refno=transaction_refno,
+    )
+    if not provider_paid and not has_manual_evidence:
+        frappe.throw(
+            "Prepared Automatic QR payment is not yet confirmed",
+            frappe.ValidationError,
+        )
+
+    resolved = _resolve_order_payment(incoming, 1)
+    mutable_fields = (
+        "reference_no",
+        "external_transaction_id",
+        "manual_confirmation_evidence_json",
+        "reconciliation_idempotency_key",
+    )
+    for fieldname in mutable_fields:
+        setattr(stored, fieldname, resolved.get(fieldname))
+    if provider_paid:
+        stored.is_manual_confirmation = 0
+        stored.settlement_status = "verified"
+    else:
+        stored.is_manual_confirmation = 1
+        stored.settlement_status = "pending_reconciliation"
+
+    order_doc.automatic_qr_state = (
+        "provider_paid" if provider_paid else "manual_pending_reconciliation"
+    )
+    order_doc.save(ignore_permissions=True)
+    order_doc.submit()
+    frappe.db.set_value(
+        "FB Order",
+        order_doc.name,
+        "automatic_qr_state",
+        "finalized",
+        update_modified=False,
+    )
+    order_doc.automatic_qr_state = "finalized"
+    return _build_submit_response("ok", order_doc)
+
+
+def _validate_exact_prepared_qr_settlement_replay(
+    incoming: Mapping[str, Any],
+    stored: Any,
+) -> None:
+    expected = {
+        "reference_no": cstr(incoming.get("reference_no")).strip(),
+        "manual_confirmation_evidence_json": cstr(
+            incoming.get("manual_confirmation_evidence_json")
+        ).strip(),
+        "reconciliation_idempotency_key": cstr(
+            incoming.get("reconciliation_idempotency_key")
+        ).strip(),
+    }
+    for fieldname, expected_value in expected.items():
+        if cstr(getattr(stored, fieldname, None)).strip() != expected_value:
+            frappe.throw(
+                "Prepared Automatic QR sale was finalized with different settlement evidence",
+                frappe.ValidationError,
+            )
+
+
+def _has_exact_authenticated_provider_paid_evidence(
+    transaction: Mapping[str, Any],
+    *,
+    order_doc: Any,
+    payment: Any,
+    transaction_refno: str,
+) -> bool:
+    provider_status_paid = cstr(transaction.get("status")).strip().lower() == "paid"
+    provider_flag_paid = cstr(transaction.get("maybank_status")).strip() == "1"
+    if not provider_status_paid or not provider_flag_paid:
+        return False
+
+    exact_values = {
+        "transaction_refno": transaction_refno,
+        "provider": "maybank_qr",
+        "device_id": cstr(getattr(order_doc, "device_id", None)).strip(),
+        "currency": "MYR",
+    }
+    for fieldname, expected_value in exact_values.items():
+        actual_value = cstr(transaction.get(fieldname)).strip()
+        if fieldname in {"provider", "currency"}:
+            actual_value = (
+                actual_value.lower()
+                if fieldname == "provider"
+                else actual_value.upper()
+            )
+            expected_value = (
+                expected_value.lower()
+                if fieldname == "provider"
+                else expected_value.upper()
+            )
+        if not expected_value or actual_value != expected_value:
+            return False
+
+    if cstr(getattr(order_doc, "currency", None)).strip().upper() != "MYR":
+        return False
+    for fieldname in ("paid_at", "expires_at", "qr_data", "outlet_id"):
+        if not cstr(transaction.get(fieldname)).strip():
+            return False
+
+    raw_transaction_amount_sen = transaction.get("sale_amount_sen")
+    if isinstance(raw_transaction_amount_sen, bool):
+        return False
+    try:
+        transaction_amount_decimal = Decimal(str(raw_transaction_amount_sen))
+    except (InvalidOperation, ValueError):
+        return False
+    if (
+        not transaction_amount_decimal.is_finite()
+        or transaction_amount_decimal != transaction_amount_decimal.to_integral_value()
+    ):
+        return False
+    transaction_amount_sen = int(transaction_amount_decimal)
+    payment_amount_sen = _persisted_money_sen(
+        getattr(payment, "amount", None),
+        "Prepared Automatic QR payment amount",
+    )
+    if transaction_amount_sen != payment_amount_sen:
+        return False
+    return True
+
+
+def prepare_automatic_qr_sale_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Durably accept one immutable sale before any Maybank provider request."""
+
+    normalized = _normalize_submit_order_payload(payload)
+    _validate_automatic_qr_prepare_payment(normalized)
+    existing_name = _get_existing_fb_order_name(normalized["external_idempotency_key"])
+    if existing_name:
+        order_doc = frappe.get_doc("FB Order", existing_name)
+        _validate_existing_accepted_sale_fingerprint(normalized, order_doc)
+        return _build_automatic_qr_prepare_response("duplicate", order_doc)
+
+    validated = _validate_new_submit_order_state(normalized)
+    try:
+        _validate_submit_shift(
+            shift_name=validated["shift"],
+            device_id=validated["device_id"],
+            staff_id=validated["staff_id"],
+            lock=True,
+        )
+        order_doc = _build_fb_order(validated)
+        order_doc.accepted_sale_fingerprint = validated[
+            "accepted_sale_fingerprint"
+        ]
+        order_doc.automatic_qr_state = "prepared"
+        order_doc.automatic_qr_accepted_at = now_datetime()
+        order_doc.insert(ignore_permissions=True)
+
+        line_resolutions = order_doc.build_line_resolutions()
+        order_doc.validate_stock_availability(line_resolutions)
+        order_doc.create_resolved_sales(line_resolutions)
+        payment_rows = list(order_doc.get("payments") or [])
+        if len(payment_rows) != 1 or not cstr(
+            getattr(payment_rows[0], "name", None)
+        ).strip():
+            frappe.throw(
+                "Prepared Automatic QR sale has no durable payment row",
+                frappe.ValidationError,
+            )
+        payment_rows[0].settlement_status = "awaiting_provider"
+        order_doc.automatic_qr_payment = payment_rows[0].name
+        order_doc.save(ignore_permissions=True)
+    except Exception:
+        frappe.db.rollback()
+        existing_name = _get_existing_fb_order_name(
+            validated["external_idempotency_key"]
+        )
+        if existing_name:
+            order_doc = frappe.get_doc("FB Order", existing_name)
+            _validate_existing_accepted_sale_fingerprint(normalized, order_doc)
+            return _build_automatic_qr_prepare_response("duplicate", order_doc)
+        raise
+
+    return _build_automatic_qr_prepare_response("ok", order_doc)
+
+
+def _validate_automatic_qr_prepare_payment(normalized: dict[str, Any]) -> None:
+    payments = list(normalized["payments"])
+    if len(payments) != 1:
+        frappe.throw(
+            "Automatic QR preparation requires exactly one payment",
+            frappe.ValidationError,
+        )
+    payment = payments[0]
+    if _normalize_token(payment.get("payment_channel_code")) not in {
+        "maybank",
+        "maybank qr",
+    }:
+        frappe.throw(
+            "Automatic QR preparation requires the Maybank payment channel",
+            frappe.ValidationError,
+        )
+    if not cstr(payment.get("payment_id")).strip():
+        frappe.throw(
+            "Automatic QR preparation requires payment_id",
+            frappe.ValidationError,
+        )
+    if (
+        cstr(payment.get("reference_no")).strip()
+        or cstr(payment.get("external_transaction_id")).strip()
+        or payment.get("manual_confirmation_evidence_json")
+        or payment.get("is_manual_confirmation")
+    ):
+        frappe.throw(
+            "Automatic QR preparation must occur before provider or manual settlement evidence exists",
+            frappe.ValidationError,
+        )
+
+
+def _build_automatic_qr_prepare_response(
+    result_status: str,
+    order_doc: Any,
+) -> dict[str, Any]:
+    payment_row = cstr(
+        getattr(order_doc, "automatic_qr_payment", None)
+    ).strip()
+    if not payment_row:
+        payments = list(order_doc.get("payments") or [])
+        payment_row = cstr(getattr(payments[0], "name", None)).strip() if payments else ""
+    if not payment_row:
+        frappe.throw(
+            "Prepared Automatic QR sale payment row is missing",
+            frappe.ValidationError,
+        )
+    return {
+        "status": result_status,
+        "fb_order": order_doc.name,
+        "fb_order_payment": payment_row,
+        "order_id": cstr(order_doc.order_id),
+        "idempotency_key": cstr(order_doc.external_idempotency_key),
+        "accepted_sale_fingerprint": cstr(
+            getattr(order_doc, "accepted_sale_fingerprint", None)
+        ),
+        "automatic_qr_state": cstr(
+            getattr(order_doc, "automatic_qr_state", None)
+        ),
+    }
 
 
 def get_order_status(fb_order_name: str) -> dict[str, Any]:
@@ -1049,6 +1428,9 @@ def _normalize_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "applied_promotions": applied_promotions,
         "promotion_reconciliation_status": promotion_reconciliation_status,
     }
+    normalized["accepted_sale_fingerprint"] = (
+        _canonical_accepted_sale_fingerprint(normalized)
+    )
     normalized["request_fingerprint"] = _canonical_order_request_fingerprint(normalized)
     return normalized
 
@@ -1974,16 +2356,10 @@ def _normalize_order_payment(
     external_transaction_id = cstr(value.get("external_transaction_id")) or None
     manual_confirmation_evidence = value.get("manual_confirmation_evidence")
     normalized_channel = cstr(payment_channel_code).strip().lower()
-    manual_evidence = (
-        _validate_static_qr_evidence(
-            manual_confirmation_evidence,
-            index=index,
-            reference_no=reference_no,
-            external_transaction_id=external_transaction_id,
-        )
-        if normalized_channel == "static_qr"
-        else None
-    )
+    normalized_channel_token = _normalize_token(payment_channel_code)
+    is_static_qr = normalized_channel == "static_qr"
+    is_maybank_qr = normalized_channel_token in {"maybank", "maybank qr"}
+    manual_evidence = None
 
     if not payment_method:
         frappe.throw(
@@ -2017,10 +2393,24 @@ def _normalize_order_payment(
         )
 
     _validate_payment_channel_binding(payment_method, payment_channel_code, index)
-    normalized_channel_token = _normalize_token(payment_channel_code)
     if normalized_channel_token == "static qr" and normalized_channel != "static_qr":
         frappe.throw(
             f"payments[{index}].payment_channel_code must be static_qr",
+            frappe.ValidationError,
+        )
+    if is_static_qr or (
+        is_maybank_qr and manual_confirmation_evidence is not None
+    ):
+        manual_evidence = _validate_manual_qr_evidence(
+            manual_confirmation_evidence,
+            index=index,
+            channel="static_qr" if is_static_qr else "maybank",
+            reference_no=reference_no,
+            external_transaction_id=external_transaction_id,
+        )
+    elif manual_confirmation_evidence is not None:
+        frappe.throw(
+            f"payments[{index}].manual_confirmation_evidence is supported only for QR payments",
             frappe.ValidationError,
         )
 
@@ -2206,17 +2596,18 @@ def _validate_order_payment(value: Any, index: int) -> dict[str, Any]:
     return _resolve_order_payment(normalized, index)
 
 
-def _validate_static_qr_evidence(
+def _validate_manual_qr_evidence(
     value: Any,
     *,
     index: int,
+    channel: str,
     reference_no: str | None,
     external_transaction_id: str | None,
 ) -> dict[str, Any]:
     prefix = f"payments[{index}].manual_confirmation_evidence"
     if not isinstance(value, Mapping) or not value:
         frappe.throw(
-            f"{prefix} is required for static_qr",
+            f"{prefix} is required for {channel}",
             frappe.ValidationError,
         )
 
@@ -2277,14 +2668,27 @@ def _validate_static_qr_evidence(
         )
 
     provider_session = cstr(external_transaction_id).strip()
-    if not provider_session.startswith("static-"):
-        frappe.throw(
-            f"payments[{index}].external_transaction_id must be a static_qr session",
-            frappe.ValidationError,
-        )
+    payment_reference = cstr(reference_no).strip()
+    if channel == "static_qr":
+        if not provider_session.startswith("static-"):
+            frappe.throw(
+                f"payments[{index}].external_transaction_id must be a static_qr session",
+                frappe.ValidationError,
+            )
+    else:
+        if not provider_session or provider_session.startswith("static-"):
+            frappe.throw(
+                f"payments[{index}].external_transaction_id must identify the issued Maybank QR transaction",
+                frappe.ValidationError,
+            )
+        if not payment_reference or payment_reference != provider_session:
+            frappe.throw(
+                f"payments[{index}] Maybank QR references must identify the same issued transaction",
+                frappe.ValidationError,
+            )
 
     evidence_reference = cstr(evidence.get("local_confirmation_reference")).strip()
-    if reference_no and evidence_reference != cstr(reference_no).strip():
+    if payment_reference and evidence_reference != payment_reference:
         frappe.throw(
             f"{prefix}.local_confirmation_reference does not match reference_no",
             frappe.ValidationError,
@@ -2360,9 +2764,7 @@ PAYMENT_METHOD_CANONICAL_NAMES = {
 
 
 def _normalize_token(value: Any) -> str:
-    return " ".join(
-        cstr(value).strip().lower().replace("_", " ").replace("-", " ").split()
-    )
+    return normalize_qr_token(value)
 
 
 def _resolve_mode_of_payment_name(requested_mode: str) -> str:
@@ -2522,8 +2924,51 @@ def _canonical_order_request_fingerprint(validated: dict[str, Any]) -> str:
     canonical = {
         key: value
         for key, value in validated.items()
-        if key not in {"money_contract_version", "request_fingerprint"}
+        if key
+        not in {
+            "money_contract_version",
+            "request_fingerprint",
+            "accepted_sale_fingerprint",
+        }
     }
+    message = json.dumps(
+        canonical,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_canonical_json_value,
+    )
+    return hashlib.sha256(message.encode("utf-8")).hexdigest()
+
+
+def _canonical_accepted_sale_fingerprint(validated: dict[str, Any]) -> str:
+    """Fingerprint immutable sale facts separately from mutable QR settlement."""
+
+    payment_identity_fields = (
+        "payment_id",
+        "payment_method",
+        "payment_channel_code",
+        "amount_sen",
+        "tendered_amount_sen",
+        "change_amount_sen",
+    )
+    canonical = {
+        key: value
+        for key, value in validated.items()
+        if key
+        not in {
+            "money_contract_version",
+            "request_fingerprint",
+            "accepted_sale_fingerprint",
+            "payments",
+        }
+    }
+    canonical["payments"] = [
+        {
+            fieldname: payment.get(fieldname)
+            for fieldname in payment_identity_fields
+        }
+        for payment in validated["payments"]
+    ]
     message = json.dumps(
         canonical,
         sort_keys=True,
@@ -2554,6 +2999,28 @@ def _validate_existing_order_fingerprint(
     if existing_fingerprint != validated["request_fingerprint"]:
         frappe.throw(
             "idempotency_key was already used with a different canonical FB Order payload",
+            frappe.ValidationError,
+        )
+
+
+def _validate_existing_accepted_sale_fingerprint(
+    normalized: dict[str, Any],
+    order_doc: Any,
+) -> None:
+    existing_fingerprint = cstr(
+        getattr(order_doc, "accepted_sale_fingerprint", None)
+    ).strip()
+    existing_state = cstr(
+        getattr(order_doc, "automatic_qr_state", None)
+    ).strip()
+    if not existing_fingerprint or not existing_state:
+        frappe.throw(
+            "idempotency_key is already used by a sale that was not prepared for Automatic QR",
+            frappe.ValidationError,
+        )
+    if existing_fingerprint != normalized["accepted_sale_fingerprint"]:
+        frappe.throw(
+            "idempotency_key was already used with a different accepted sale",
             frappe.ValidationError,
         )
 

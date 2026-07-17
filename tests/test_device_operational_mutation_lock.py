@@ -223,6 +223,7 @@ class TestDeviceOperationalMutationLock(unittest.TestCase):
     def test_all_device_mutation_routes_lock_before_business_mutation(self) -> None:
         guarded_routes = {
             "api/__init__.py": {
+                "prepare_automatic_qr_sale": "prepare_automatic_qr_sale_payload",
                 "submit_order": "submit_order_payload",
                 "open_shift": "open_shift_payload",
                 "close_shift": "close_shift_payload",

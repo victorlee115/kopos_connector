@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
+from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from importlib import import_module
 from math import isfinite
 from typing import Any
@@ -45,7 +47,7 @@ from kopos_connector.kopos.services.projection.log_service import (
 
 
 def cstr(value: Any) -> str:
-    return str(frappe.utils.cstr(value))
+    return str(frappe_utils.cstr(value))
 
 
 def _optional_money_value(value: Any) -> Any:
@@ -68,6 +70,245 @@ def _positive_integer_qty(value: Any, fieldname: str) -> int:
         raise AssertionError("frappe.throw must raise") from error
 
 
+RESOLVED_COMPONENT_FIELDS = (
+    "item",
+    "source_type",
+    "qty",
+    "uom",
+    "stock_qty",
+    "stock_uom",
+    "warehouse",
+    "source_reference",
+    "affects_stock",
+    "affects_cogs",
+    "remarks",
+)
+
+
+def _record_value(record: Any, fieldname: str) -> Any:
+    if isinstance(record, Mapping):
+        return record.get(fieldname)
+    return getattr(record, fieldname, None)
+
+
+def _optional_text(value: Any) -> str | None:
+    text = cstr(value).strip()
+    return text or None
+
+
+def _canonical_resolved_component(component: Any) -> dict[str, Any]:
+    """Strip Frappe child-row metadata from one immutable recipe snapshot."""
+
+    return {
+        "item": cstr(_record_value(component, "item")).strip(),
+        "source_type": cstr(_record_value(component, "source_type")).strip(),
+        "qty": flt(_record_value(component, "qty")),
+        "uom": cstr(_record_value(component, "uom")).strip(),
+        "stock_qty": flt(_record_value(component, "stock_qty")),
+        "stock_uom": _optional_text(_record_value(component, "stock_uom")),
+        "warehouse": _optional_text(_record_value(component, "warehouse")),
+        "source_reference": _optional_text(
+            _record_value(component, "source_reference")
+        ),
+        "affects_stock": int(_record_value(component, "affects_stock") or 0),
+        "affects_cogs": int(_record_value(component, "affects_cogs") or 0),
+        "remarks": _optional_text(_record_value(component, "remarks")),
+    }
+
+
+def _canonical_resolved_components(components: list[Any]) -> list[dict[str, Any]]:
+    return [_canonical_resolved_component(component) for component in components]
+
+
+def _resolution_hash(
+    *,
+    recipe: str,
+    recipe_version: Any,
+    selected_modifiers: list[dict[str, Any]],
+    resolved_components: list[dict[str, Any]],
+) -> str:
+    payload = {
+        "recipe": recipe,
+        "recipe_version": recipe_version,
+        "selected_modifiers": selected_modifiers,
+        "resolved_components": resolved_components,
+    }
+    serialized_payload = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(serialized_payload.encode("utf-8")).hexdigest()
+
+
+PREPARED_SALE_IMMUTABLE_FIELDS = (
+    "order_id",
+    "display_number",
+    "order_type",
+    "catalog_version",
+    "external_idempotency_key",
+    "request_fingerprint",
+    "accepted_sale_fingerprint",
+    "source",
+    "sale_datetime",
+    "device_id",
+    "shift",
+    "staff_id",
+    "event_project",
+    "booth_warehouse",
+    "company",
+    "currency",
+    "customer",
+    "net_total",
+    "tax_total",
+    "tax_rate",
+    "rounding_adjustment",
+    "grand_total",
+    "pricing_mode",
+    "promotion_snapshot_version",
+    "promotion_snapshot_hash",
+    "promotion_reconciliation_status",
+    "promotion_payload_json",
+    "notes",
+)
+
+PREPARED_LINE_IMMUTABLE_FIELDS = (
+    "line_id",
+    "backend_line_uuid",
+    "item",
+    "item_name_snapshot",
+    "qty",
+    "uom",
+    "unit_price",
+    "modifier_total",
+    "discount_amount",
+    "line_total",
+    "recipe",
+    "recipe_version",
+    "is_recipe_managed",
+    "promotion_allocations_json",
+    "remarks",
+)
+
+PREPARED_PAYMENT_IMMUTABLE_FIELDS = (
+    "source_payment_id",
+    "payment_method",
+    "payment_channel_code",
+    "amount",
+    "tendered_amount",
+    "change_amount",
+)
+
+
+PREPARED_SALE_MONEY_FIELDS = {
+    "net_total",
+    "tax_total",
+    "rounding_adjustment",
+    "grand_total",
+    "unit_price",
+    "modifier_total",
+    "discount_amount",
+    "line_total",
+    "amount",
+    "tendered_amount",
+    "change_amount",
+}
+
+
+def _prepared_immutable_value(record: Any, fieldname: str) -> Any:
+    value = _record_value(record, fieldname)
+    if fieldname in PREPARED_SALE_MONEY_FIELDS:
+        return _money_sen(_optional_money_value(value), fieldname)
+    if fieldname == "qty":
+        return _positive_integer_qty(value, "Prepared FB Order line qty")
+    if fieldname == "is_recipe_managed":
+        return int(value or 0)
+    if fieldname == "tax_rate":
+        # Frappe Float fields persist an omitted optional rate as zero. Treat
+        # only those two representations as the same immutable business value;
+        # rounding here could conceal a mutation before MariaDB DECIMAL storage.
+        if value is None or value == "":
+            return Decimal("0")
+        try:
+            tax_rate = Decimal(str(value))
+        except (InvalidOperation, ValueError) as error:
+            frappe.throw(
+                "Prepared Automatic QR tax_rate is invalid",
+                frappe.ValidationError,
+            )
+            raise AssertionError("frappe.throw must raise") from error
+        if not tax_rate.is_finite():
+            frappe.throw(
+                "Prepared Automatic QR tax_rate must be finite",
+                frappe.ValidationError,
+            )
+        return Decimal("0") if tax_rate == 0 else tax_rate.normalize()
+    if fieldname in {"promotion_payload_json", "promotion_allocations_json"}:
+        text = cstr(value).strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError):
+            frappe.throw(
+                f"Prepared Automatic QR {fieldname} is invalid JSON",
+                frappe.ValidationError,
+            )
+            raise AssertionError("frappe.throw must raise")
+        return json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+    if fieldname == "sale_datetime" and value not in (None, ""):
+        return frappe_utils.get_datetime(value).isoformat()
+    return cstr(value)
+
+
+def _prepared_sale_immutable_snapshot(order: Any) -> dict[str, Any]:
+    return {
+        "order": {
+            fieldname: _prepared_immutable_value(order, fieldname)
+            for fieldname in PREPARED_SALE_IMMUTABLE_FIELDS
+        },
+        "items": [
+            {
+                fieldname: _prepared_immutable_value(line, fieldname)
+                for fieldname in PREPARED_LINE_IMMUTABLE_FIELDS
+            }
+            for line in list(getattr(order, "items", None) or [])
+        ],
+        "payments": [
+            {
+                fieldname: _prepared_immutable_value(payment, fieldname)
+                for fieldname in PREPARED_PAYMENT_IMMUTABLE_FIELDS
+            }
+            for payment in list(getattr(order, "payments", None) or [])
+        ],
+    }
+
+
+def _prepared_sale_changed_paths(
+    before: dict[str, Any],
+    current: dict[str, Any],
+) -> list[str]:
+    """Return immutable field paths only, without exposing sale values."""
+
+    changed_paths: list[str] = []
+    for fieldname in PREPARED_SALE_IMMUTABLE_FIELDS:
+        if before["order"].get(fieldname) != current["order"].get(fieldname):
+            changed_paths.append(f"order.{fieldname}")
+
+    for section, fieldnames in (
+        ("items", PREPARED_LINE_IMMUTABLE_FIELDS),
+        ("payments", PREPARED_PAYMENT_IMMUTABLE_FIELDS),
+    ):
+        before_rows = before[section]
+        current_rows = current[section]
+        if len(before_rows) != len(current_rows):
+            changed_paths.append(f"{section}.length")
+        for row_index, (before_row, current_row) in enumerate(
+            zip(before_rows, current_rows),
+            start=1,
+        ):
+            for fieldname in fieldnames:
+                if before_row.get(fieldname) != current_row.get(fieldname):
+                    changed_paths.append(f"{section}[{row_index}].{fieldname}")
+    return changed_paths
+
+
 class FBOrder(BaseDocument):
     def get_selected_modifier_rows(self, line) -> list[Any]:
         persisted_rows = list(line.get("selected_modifiers") or [])
@@ -76,7 +317,18 @@ class FBOrder(BaseDocument):
 
         transient_rows = getattr(line, "_selected_modifiers_payload", None)
         if not transient_rows:
-            return []
+            resolved_sale_name = cstr(getattr(line, "resolved_sale", None)).strip()
+            if not resolved_sale_name:
+                return []
+            resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
+            if cstr(getattr(resolved_sale, "fb_order", None)).strip() != cstr(
+                self.name
+            ).strip():
+                frappe.throw(
+                    "Prepared resolved sale belongs to another FB Order",
+                    frappe.ValidationError,
+                )
+            return list(getattr(resolved_sale, "selected_modifiers", None) or [])
 
         return list(transient_rows)
 
@@ -85,11 +337,46 @@ class FBOrder(BaseDocument):
         self.calculate_totals()
         self.validate_order_totals()
         self.validate_idempotency_key_uniqueness()
+        self.validate_prepared_sale_immutability()
+
+    def validate_prepared_sale_immutability(self) -> None:
+        if not cstr(getattr(self, "accepted_sale_fingerprint", None)).strip():
+            return
+        get_before_save = getattr(self, "get_doc_before_save", None)
+        before = get_before_save() if callable(get_before_save) else None
+        if before is None or not cstr(
+            getattr(before, "accepted_sale_fingerprint", None)
+        ).strip():
+            return
+        before_snapshot = _prepared_sale_immutable_snapshot(before)
+        current_snapshot = _prepared_sale_immutable_snapshot(self)
+        changed_paths = _prepared_sale_changed_paths(
+            before_snapshot,
+            current_snapshot,
+        )
+        if changed_paths:
+            displayed_paths = changed_paths[:12]
+            undisplayed_count = len(changed_paths) - len(displayed_paths)
+            suffix = (
+                f" (and {undisplayed_count} more)" if undisplayed_count else ""
+            )
+            frappe.throw(
+                "Prepared Automatic QR immutable sale snapshot cannot be changed: "
+                + ", ".join(displayed_paths)
+                + suffix,
+                frappe.ValidationError,
+            )
 
     def before_submit(self):
-        line_resolutions = self.build_line_resolutions()
-        self.validate_stock_availability(line_resolutions)
-        self.create_resolved_sales(line_resolutions)
+        if cstr(getattr(self, "accepted_sale_fingerprint", None)).strip():
+            line_resolutions = self.validate_prepared_resolved_sales()
+        else:
+            line_resolutions = self.build_line_resolutions()
+            self.validate_stock_availability(line_resolutions)
+        if cstr(getattr(self, "accepted_sale_fingerprint", None)).strip():
+            self.mark_prepared_resolved_sales_submitted(line_resolutions)
+        else:
+            self.create_resolved_sales(line_resolutions)
         register_qr_payment_settlement(self)
 
     def on_submit(self):
@@ -255,6 +542,147 @@ class FBOrder(BaseDocument):
                     )
                 return True
         return False
+
+    def validate_prepared_resolved_sales(self) -> list[dict[str, Any]]:
+        line_resolutions: list[dict[str, Any]] = []
+        for line_index, line in enumerate(self.items, start=1):
+            resolved_sale_name = cstr(getattr(line, "resolved_sale", None)).strip()
+            if not resolved_sale_name:
+                frappe.throw(
+                    "Prepared Automatic QR line {0} has no resolved sale snapshot".format(
+                        line_index
+                    ),
+                    frappe.ValidationError,
+                )
+            resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
+            expected_identity = {
+                "fb_order": cstr(self.name),
+                "fb_order_line": cstr(line.name),
+                "backend_line_uuid": cstr(line.backend_line_uuid),
+                "sellable_item": cstr(line.item),
+                "booth_warehouse": cstr(self.booth_warehouse),
+                "recipe": cstr(line.recipe),
+                "recipe_version": cstr(line.recipe_version),
+            }
+            for fieldname, expected_value in expected_identity.items():
+                if cstr(getattr(resolved_sale, fieldname, None)) != expected_value:
+                    frappe.throw(
+                        "Prepared resolved sale {0} {1} does not match".format(
+                            resolved_sale_name,
+                            fieldname,
+                        ),
+                        frappe.ValidationError,
+                    )
+            if _positive_integer_qty(
+                getattr(resolved_sale, "qty", None),
+                "Prepared resolved sale qty",
+            ) != _positive_integer_qty(line.qty, "FB Order line qty"):
+                frappe.throw(
+                    "Prepared resolved sale {0} qty does not match".format(
+                        resolved_sale_name
+                    ),
+                    frappe.ValidationError,
+                )
+            if cstr(getattr(resolved_sale, "status", None)).strip() not in {
+                "Prepared",
+                "Submitted",
+            }:
+                frappe.throw(
+                    "Prepared resolved sale {0} has invalid status".format(
+                        resolved_sale_name
+                    ),
+                    frappe.ValidationError,
+                )
+            if not cstr(getattr(resolved_sale, "resolution_hash", None)).strip():
+                frappe.throw(
+                    "Prepared resolved sale {0} has no resolution hash".format(
+                        resolved_sale_name
+                    ),
+                    frappe.ValidationError,
+                )
+            resolved_components = _canonical_resolved_components(
+                list(getattr(resolved_sale, "resolved_components", None) or [])
+            )
+            if not resolved_components:
+                frappe.throw(
+                    "Prepared resolved sale {0} has no resolved components".format(
+                        resolved_sale_name
+                    ),
+                    frappe.ValidationError,
+                )
+            try:
+                line_snapshot_value = json.loads(
+                    cstr(getattr(line, "resolved_components_snapshot", None))
+                )
+            except (TypeError, ValueError):
+                line_snapshot_value = None
+            if not isinstance(line_snapshot_value, list) or (
+                _canonical_resolved_components(line_snapshot_value)
+                != resolved_components
+            ):
+                frappe.throw(
+                    "Prepared resolved sale {0} component snapshot does not match".format(
+                        resolved_sale_name
+                    ),
+                    frappe.ValidationError,
+                )
+            selected_modifier_hash_rows = [
+                {
+                    "modifier_group": cstr(
+                        _record_value(modifier, "modifier_group")
+                    ),
+                    "modifier": cstr(_record_value(modifier, "modifier")),
+                    "price_adjustment_sen": _money_sen(
+                        _optional_money_value(
+                            _record_value(modifier, "price_adjustment")
+                        ),
+                        "Prepared selected modifier price_adjustment",
+                    ),
+                }
+                for modifier in list(
+                    getattr(resolved_sale, "selected_modifiers", None) or []
+                )
+            ]
+            persisted_resolution_hash = cstr(
+                getattr(resolved_sale, "resolution_hash", None)
+            ).strip()
+            recomputed_resolution_hash = _resolution_hash(
+                recipe=cstr(getattr(resolved_sale, "recipe", None)),
+                recipe_version=getattr(resolved_sale, "recipe_version", None),
+                selected_modifiers=selected_modifier_hash_rows,
+                resolved_components=resolved_components,
+            )
+            if persisted_resolution_hash != recomputed_resolution_hash:
+                frappe.throw(
+                    "Prepared resolved sale {0} resolution hash does not match".format(
+                        resolved_sale_name
+                    ),
+                    frappe.ValidationError,
+                )
+            line_resolutions.append(
+                {
+                    "line": line,
+                    "resolved_sale": resolved_sale,
+                    "resolved_components": resolved_components,
+                }
+            )
+        return line_resolutions
+
+    def mark_prepared_resolved_sales_submitted(
+        self,
+        line_resolutions: list[dict[str, Any]],
+    ) -> None:
+        for line_resolution in line_resolutions:
+            resolved_sale = line_resolution["resolved_sale"]
+            if cstr(getattr(resolved_sale, "status", None)).strip() == "Submitted":
+                continue
+            frappe.db.set_value(
+                "FB Resolved Sale",
+                resolved_sale.name,
+                "status",
+                "Submitted",
+                update_modified=False,
+            )
 
     def update_shift_expected_cash(self):
         if not self.shift:
@@ -1091,13 +1519,52 @@ class FBOrder(BaseDocument):
             existing_resolved_sale = frappe.db.get_value(
                 "FB Resolved Sale", {"resolved_sale_id": resolved_sale_id}, "name"
             )
+            resolution_hash = self.build_resolution_hash(
+                recipe_doc=recipe_doc,
+                selected_modifiers=selected_modifiers,
+                resolved_components=resolved_components,
+            )
             if existing_resolved_sale:
-                frappe.throw(
-                    "Resolved sale {0} already exists as {1}".format(
-                        resolved_sale_id, existing_resolved_sale
-                    ),
-                    frappe.ValidationError,
+                existing = frappe.get_doc(
+                    "FB Resolved Sale",
+                    existing_resolved_sale,
                 )
+                expected_identity = {
+                    "fb_order": cstr(self.name),
+                    "fb_order_line": cstr(line.name),
+                    "backend_line_uuid": cstr(line.backend_line_uuid),
+                    "sellable_item": cstr(line.item),
+                    "booth_warehouse": cstr(self.booth_warehouse),
+                    "recipe": cstr(recipe_doc.name),
+                    "recipe_version": cstr(recipe_doc.version_no),
+                    "resolution_hash": resolution_hash,
+                }
+                for fieldname, expected_value in expected_identity.items():
+                    if cstr(getattr(existing, fieldname, None)) != expected_value:
+                        frappe.throw(
+                            "Prepared resolved sale {0} {1} does not match".format(
+                                existing_resolved_sale,
+                                fieldname,
+                            ),
+                            frappe.ValidationError,
+                        )
+                if _positive_integer_qty(
+                    getattr(existing, "qty", None),
+                    "Prepared resolved sale qty",
+                ) != _positive_integer_qty(line.qty, "FB Order line qty"):
+                    frappe.throw(
+                        "Prepared resolved sale {0} qty does not match".format(
+                            existing_resolved_sale
+                        ),
+                        frappe.ValidationError,
+                    )
+                line.resolved_sale = existing_resolved_sale
+                line.resolved_components_snapshot = json.dumps(
+                    resolved_components,
+                    sort_keys=True,
+                    default=str,
+                )
+                continue
 
             resolved_sale = frappe.new_doc("FB Resolved Sale")
             resolved_sale.resolved_sale_id = resolved_sale_id
@@ -1109,13 +1576,15 @@ class FBOrder(BaseDocument):
             resolved_sale.booth_warehouse = self.booth_warehouse
             resolved_sale.recipe = recipe_doc.name
             resolved_sale.recipe_version = recipe_doc.version_no
-            resolved_sale.status = "Submitted"
-            resolved_sale.event_project = self.event_project
-            resolved_sale.resolution_hash = self.build_resolution_hash(
-                recipe_doc=recipe_doc,
-                selected_modifiers=selected_modifiers,
-                resolved_components=resolved_components,
+            resolved_sale.status = (
+                "Prepared"
+                if cstr(
+                    getattr(self, "accepted_sale_fingerprint", None)
+                ).strip()
+                else "Submitted"
             )
+            resolved_sale.event_project = self.event_project
+            resolved_sale.resolution_hash = resolution_hash
 
             for selected_modifier in selected_modifiers:
                 selected_row = selected_modifier["row"]
@@ -1147,10 +1616,10 @@ class FBOrder(BaseDocument):
         selected_modifiers: list[dict[str, Any]],
         resolved_components: list[dict[str, Any]],
     ) -> str:
-        payload = {
-            "recipe": recipe_doc.name,
-            "recipe_version": recipe_doc.version_no,
-            "selected_modifiers": [
+        return _resolution_hash(
+            recipe=recipe_doc.name,
+            recipe_version=recipe_doc.version_no,
+            selected_modifiers=[
                 {
                     "modifier_group": entry["row"].modifier_group,
                     "modifier": entry["row"].modifier,
@@ -1161,10 +1630,8 @@ class FBOrder(BaseDocument):
                 }
                 for entry in selected_modifiers
             ],
-            "resolved_components": resolved_components,
-        }
-        serialized_payload = json.dumps(payload, sort_keys=True, default=str)
-        return hashlib.sha256(serialized_payload.encode("utf-8")).hexdigest()
+            resolved_components=_canonical_resolved_components(resolved_components),
+        )
 
     def run_projection_service(
         self, candidate_paths: list[str], projection_label: str

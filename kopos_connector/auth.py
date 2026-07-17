@@ -24,6 +24,7 @@ ALLOWED_DEVICE_API_PATHS = frozenset(
         "/api/method/kopos_connector.api.resolve_device_safe_reset_request",
         "/api/method/kopos_connector.api.cancel_device_safe_reset",
         "/api/method/kopos_connector.api.complete_device_safe_reset",
+        "/api/method/kopos_connector.api.prepare_automatic_qr_sale",
         "/api/method/kopos_connector.api.submit_order",
         "/api/method/kopos_connector.api.open_shift",
         "/api/method/kopos_connector.api.close_shift",
@@ -47,6 +48,9 @@ DEVICE_API_HTTP_METHODS = {
 }
 DEVICE_API_HTTP_METHODS.update(
     {
+        "/api/method/kopos_connector.api.prepare_automatic_qr_sale": frozenset(
+            {"POST"}
+        ),
         "/api/method/kopos_connector.api.submit_order": frozenset({"POST"}),
         "/api/method/kopos_connector.api.request_device_safe_reset": frozenset(
             {"POST"}
@@ -87,6 +91,7 @@ DEVICE_API_HTTP_METHODS.update(
 
 DEFAULT_DEVICE_API_MAX_BODY_BYTES = 256 * 1024
 DEVICE_API_MAX_BODY_BYTES = {
+    "/api/method/kopos_connector.api.prepare_automatic_qr_sale": 512 * 1024,
     "/api/method/kopos_connector.api.submit_order": 512 * 1024,
     "/api/method/kopos_connector.api.upload_manual_qr_receipt": 6 * 1024 * 1024,
 }

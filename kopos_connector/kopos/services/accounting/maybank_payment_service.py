@@ -26,6 +26,19 @@ QR_PAYMENT_CHANNELS = MAYBANK_PAYMENT_CHANNELS | {STATIC_QR_PAYMENT_CHANNEL}
 PAYMENT_EXPIRY_GRACE_SECONDS = 30
 
 
+def normalize_qr_token(value: Any) -> str:
+    """Canonicalize QR payment method/channel separators consistently."""
+
+    return " ".join(
+        cstr(value)
+        .strip()
+        .lower()
+        .replace("_", " ")
+        .replace("-", " ")
+        .split()
+    )
+
+
 def register_qr_payment_settlement(order_doc: Any) -> str | None:
     """Register the verified or pending-reconciliation state for one QR payment."""
     payment, channel = _single_qr_payment(order_doc)

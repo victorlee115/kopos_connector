@@ -878,6 +878,45 @@ def review_promotion_reconciliation(**kwargs: Any) -> None:
 
 
 @frappe.whitelist(methods=["POST"])
+def prepare_automatic_qr_sale(**kwargs: Any) -> None:
+    """Persist the immutable FB Order snapshot before Maybank QR generation."""
+    from kopos_connector.kopos.api.fb_orders import (
+        prepare_automatic_qr_sale_payload,
+    )
+
+    try:
+        payload = _get_submit_payload(kwargs)
+        lock_device_for_operational_mutation(
+            device_id=frappe.utils.cstr(payload.get("device_id"))
+        )
+        require_device_operational_scope(
+            frappe.utils.cstr(payload.get("device_id")),
+            company=frappe.utils.cstr(payload.get("company")),
+            warehouse=frappe.utils.cstr(
+                payload.get("booth_warehouse") or payload.get("warehouse")
+            ),
+            currency=frappe.utils.cstr(payload.get("currency")),
+        )
+        result = prepare_automatic_qr_sale_payload(
+            _to_public_fb_submit_payload(payload)
+        )
+        _write_response(result)
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS prepare_automatic_qr_sale failed", error)
+        _write_response(
+            {
+                "status": "error",
+                "message": "Unexpected server error while preparing Automatic QR sale",
+            },
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
 def submit_order(**kwargs: Any) -> None:
     """Public KoPOS endpoint for FB Order submission with raw JSON responses."""
     from kopos_connector.kopos.api.fb_orders import submit_order_payload
@@ -1945,6 +1984,7 @@ __all__ = [
     "get_tax_rate",
     "open_shift",
     "ping",
+    "prepare_automatic_qr_sale",
     "process_refund",
     "publish_promotion_snapshot",
     "redeem_pos_provisioning",
