@@ -177,9 +177,17 @@ failures remain fail-closed. See
 
 ```http
 POST /api/method/kopos_connector.api.prepare_automatic_qr_sale
+GET /api/method/kopos_connector.api.get_maybank_qr_readiness?device_id=...
 POST /api/method/kopos_connector.api.generate_maybank_qr
 GET /api/method/kopos_connector.api.check_maybank_payment?transaction_refno=...
 ```
+
+The readiness route is a read-only capability prewarm. It validates the
+authenticated device, local provider settings, and QR accounting destinations;
+it does not prepare a sale, authenticate with Maybank, create a provider
+transaction, or expose the outlet ID. The response contains only `ready` or
+`unavailable`, an outlet-ID SHA-256 when ready, the check time, and contract
+version.
 
 Every successful generation and payment-status response returns the exact
 nonempty persisted provider `transaction_refno` and integer
@@ -188,6 +196,15 @@ integer-sen authority. Status checks use the request reference only to locate
 the device-scoped ERP record; response identity and amount come from the
 persisted Maybank QR Transaction, never from client-supplied values. Malformed
 or mismatched provider/persisted identity fails closed.
+
+Status reads retain the requested-reference fields and add the aggregate state
+of every provider-issued attempt linked to the prepared payment. ERP dispatches
+all due linked references independently, including expired, provider-failed, and
+provider-timeout attempts that can still become paid late. Display expiry uses
+60-second checks for the first hour, 5-minute checks through 24 hours, and
+15-minute long-tail checks thereafter. An exact audited provider cancellation
+is the only timeout release that stops polling. See the
+[Maybank QR polling contract](docs/MAYBANK_QR_POLLING_CONTRACT.md).
 
 The **DuitNow QR** Mode of Payment must be type **Bank** and resolve to exactly
 one enabled, non-group Bank or untyped Asset clearing account for the company
@@ -256,6 +273,13 @@ Entry before marking it refunded. Missing configuration or accounting evidence
 cannot block the cashier or roll back the winning sale. Offset/store-credit
 resolution is intentionally unsupported. See the
 [duplicate Automatic QR refund contract](docs/DUPLICATE_AUTOMATIC_QR_REFUND_CONTRACT.md).
+
+A reusable static DuitNow QR is emitted in device setup only after ERP validates
+its PayNet v1.5 TLV structure, static mode, Malaysia AID, Acquirer/QR identity,
+MYR/country fields, CRC, payload SHA-256, commissioning timestamp, and POS
+Profile company binding. Invalid or legacy uncommissioned payloads are omitted
+without disabling Cash or Automatic QR. See the
+[static QR commissioning contract](docs/STATIC_QR_COMMISSIONING_CONTRACT.md).
 
 ### Process Refund
 
