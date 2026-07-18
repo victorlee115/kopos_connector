@@ -10,6 +10,10 @@ import frappe
 from frappe import _
 from frappe.utils import cint, cstr, now_datetime
 
+from kopos_connector.services.static_qr_commissioning import (
+    commissioned_static_qr_config,
+)
+from kopos_connector.utils.diagnostics import log_sanitized_error
 from kopos_connector.utils.pin import is_supported_pin_hash
 
 
@@ -577,15 +581,71 @@ def serialize_device_config(
             or None
         )
 
+    static_qr_config: dict[str, str] | None = None
+    static_qr_status = "not_configured"
+    if cstr(getattr(device_doc, "static_qr_payload", None)):
+        try:
+            static_qr_config = commissioned_static_qr_config(
+                device_doc,
+                expected_company=company,
+            )
+            static_qr_status = "commissioned"
+        except frappe.ValidationError as error:
+            # Never send an uncommissioned/tampered payable payload to a
+            # tablet. Cash and Automatic QR configuration remain available.
+            static_qr_status = "invalid"
+            log_sanitized_error(
+                "KoPOS static QR commissioning validation failed",
+                error,
+            )
+
     payload = {
         "version": 2,
         "device_id": cstr(device_doc.device_id).strip(),
         "device_name": cstr(device_doc.device_name).strip() or None,
         "device_prefix": cstr(device_doc.device_prefix).strip().upper() or None,
-        "static_qr_payload": cstr(
-            getattr(device_doc, "static_qr_payload", None)
-        ).strip()
-        or None,
+        "static_qr_payload": (
+            static_qr_config["static_qr_payload"]
+            if static_qr_config is not None
+            else None
+        ),
+        "static_qr_payload_sha256": (
+            static_qr_config["static_qr_payload_sha256"]
+            if static_qr_config is not None
+            else None
+        ),
+        "static_qr_merchant_id": (
+            static_qr_config["static_qr_merchant_id"]
+            if static_qr_config is not None
+            else None
+        ),
+        "static_qr_acquirer_id": (
+            static_qr_config["static_qr_acquirer_id"]
+            if static_qr_config is not None
+            else None
+        ),
+        "static_qr_merchant_name": (
+            static_qr_config["static_qr_merchant_name"]
+            if static_qr_config is not None
+            else None
+        ),
+        "static_qr_version": (
+            static_qr_config["static_qr_version"]
+            if static_qr_config is not None
+            else None
+        ),
+        "static_qr_commissioned_at": (
+            static_qr_config["static_qr_commissioned_at"]
+            if static_qr_config is not None
+            else None
+        ),
+        "static_qr_company": (
+            static_qr_config["static_qr_company"]
+            if static_qr_config is not None
+            else None
+        ),
+        "static_qr_available": static_qr_config is not None,
+        "static_qr_configuration_status": static_qr_status,
         "enabled": bool(cint(device_doc.enabled)),
         "managed_by_erp": True,
         "config_version": cint(device_doc.config_version or 1),

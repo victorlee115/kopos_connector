@@ -6,9 +6,13 @@ from typing import Any
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cint, cstr
+from frappe.utils import cint, cstr, now_datetime
 
 from kopos_connector.api.devices import ensure_unique_device_api_user
+from kopos_connector.services.static_qr_commissioning import (
+    inspect_paynet_static_qr,
+    validate_static_qr_metadata,
+)
 from kopos_connector.utils.pin import hash_pin, is_supported_pin_hash
 
 
@@ -30,9 +34,87 @@ class KoPOSDevice(Document):
             frappe.throw(_("Device Name is required"), frappe.ValidationError)
 
         ensure_unique_device_api_user(self.api_user, current_device_name=self.name)
+        self._validate_static_qr_commissioning()
         self._validate_printers()
         self._normalize_users()
         self._bump_config_version_if_needed()
+
+    def _validate_static_qr_commissioning(self) -> None:
+        metadata_fields = (
+            "static_qr_payload_sha256",
+            "static_qr_merchant_id",
+            "static_qr_acquirer_id",
+            "static_qr_merchant_name",
+            "static_qr_version",
+            "static_qr_company",
+        )
+        if not self.static_qr_payload:
+            for fieldname in metadata_fields:
+                setattr(self, fieldname, None)
+            self.static_qr_commissioned_at = None
+            return
+
+        inspection = inspect_paynet_static_qr(self.static_qr_payload)
+        profile_company = cstr(
+            frappe.db.get_value("POS Profile", self.pos_profile, "company")
+        ).strip()
+        if not profile_company:
+            frappe.throw(
+                _("Static QR requires a POS Profile company"),
+                frappe.ValidationError,
+            )
+
+        previous = None
+        previous_getter = getattr(self, "get_doc_before_save", None)
+        if callable(previous_getter):
+            previous = previous_getter()
+        previous_payload = cstr(
+            getattr(previous, "static_qr_payload", None)
+        ).strip()
+        payload_changed = previous is None or previous_payload != self.static_qr_payload
+        metadata_missing = any(
+            not cstr(getattr(self, fieldname, None)).strip()
+            for fieldname in metadata_fields
+        ) or not cstr(
+            getattr(self, "static_qr_commissioned_at", None)
+        ).strip()
+
+        configured_company = cstr(
+            getattr(self, "static_qr_company", None)
+        ).strip()
+        if (
+            not payload_changed
+            and configured_company
+            and configured_company != profile_company
+        ):
+            frappe.throw(
+                _(
+                    "Static QR is commissioned for another company; clear it, "
+                    "save, and recommission it for this POS Profile"
+                ),
+                frappe.ValidationError,
+            )
+
+        if payload_changed or metadata_missing:
+            self.static_qr_payload_sha256 = inspection["payload_sha256"]
+            self.static_qr_merchant_id = inspection["merchant_id"]
+            self.static_qr_acquirer_id = inspection["acquirer_id"]
+            self.static_qr_merchant_name = inspection["merchant_name"]
+            self.static_qr_version = inspection["version"]
+            self.static_qr_company = profile_company
+            self.static_qr_commissioned_at = now_datetime()
+
+        validate_static_qr_metadata(
+            inspection,
+            payload_sha256=self.static_qr_payload_sha256,
+            merchant_id=self.static_qr_merchant_id,
+            acquirer_id=self.static_qr_acquirer_id,
+            merchant_name=self.static_qr_merchant_name,
+            version=self.static_qr_version,
+            commissioned_at=self.static_qr_commissioned_at,
+            configured_company=self.static_qr_company,
+            expected_company=profile_company,
+        )
 
     def _validate_printers(self) -> None:
         enabled_roles: dict[str, int] = {}
@@ -167,6 +249,27 @@ def _config_signature(doc: Document) -> str:
         "device_name": cstr(doc.device_name).strip(),
         "device_prefix": cstr(doc.device_prefix).strip().upper(),
         "static_qr_payload": cstr(getattr(doc, "static_qr_payload", None)).strip(),
+        "static_qr_payload_sha256": cstr(
+            getattr(doc, "static_qr_payload_sha256", None)
+        ).strip(),
+        "static_qr_merchant_id": cstr(
+            getattr(doc, "static_qr_merchant_id", None)
+        ).strip(),
+        "static_qr_acquirer_id": cstr(
+            getattr(doc, "static_qr_acquirer_id", None)
+        ).strip(),
+        "static_qr_merchant_name": cstr(
+            getattr(doc, "static_qr_merchant_name", None)
+        ).strip(),
+        "static_qr_version": cstr(
+            getattr(doc, "static_qr_version", None)
+        ).strip(),
+        "static_qr_commissioned_at": cstr(
+            getattr(doc, "static_qr_commissioned_at", None)
+        ).strip(),
+        "static_qr_company": cstr(
+            getattr(doc, "static_qr_company", None)
+        ).strip(),
         "enabled": cint(doc.enabled),
         "pos_profile": cstr(doc.pos_profile).strip(),
         "allow_training_mode": cint(doc.allow_training_mode),

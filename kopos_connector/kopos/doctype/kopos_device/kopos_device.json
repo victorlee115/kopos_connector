@@ -13,6 +13,13 @@
   "device_name",
   "device_prefix",
   "static_qr_payload",
+  "static_qr_payload_sha256",
+  "static_qr_merchant_id",
+  "static_qr_acquirer_id",
+  "static_qr_merchant_name",
+  "static_qr_version",
+  "static_qr_commissioned_at",
+  "static_qr_company",
   "enabled",
   "pos_profile",
   "api_user",
@@ -52,6 +59,49 @@
    "fieldname": "static_qr_payload",
    "fieldtype": "Small Text",
    "label": "Static QR Payload"
+  },
+  {
+   "fieldname": "static_qr_payload_sha256",
+   "fieldtype": "Data",
+   "label": "Static QR Payload SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "static_qr_merchant_id",
+   "fieldtype": "Data",
+   "label": "Static QR Merchant ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "static_qr_acquirer_id",
+   "fieldtype": "Data",
+   "label": "Static QR Acquirer ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "static_qr_merchant_name",
+   "fieldtype": "Data",
+   "label": "Static QR Merchant Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "static_qr_version",
+   "fieldtype": "Data",
+   "label": "Static QR Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "static_qr_commissioned_at",
+   "fieldtype": "Datetime",
+   "label": "Static QR Commissioned At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "static_qr_company",
+   "fieldtype": "Link",
+   "label": "Static QR Company",
+   "options": "Company",
+   "read_only": 1
   },
   {
    "default": "1",
