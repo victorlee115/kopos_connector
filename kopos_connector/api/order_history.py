@@ -30,7 +30,7 @@ def get_order_history_payload(
     cursor: str | int | None = None,
     limit: str | int | None = None,
 ) -> dict[str, Any]:
-    """Return current-shift submitted Sales Invoice history for one KoPOS device."""
+    """Return current-shift paid and durably voided history for one KoPOS device."""
     device_doc = resolve_history_device(device_id=device_id)
     device_id_value = cstr(getattr(device_doc, "device_id", None)).strip()
     if not device_id_value:
@@ -67,7 +67,7 @@ def get_order_history_payload(
     )
 
     with elevate_device_api_user():
-        invoice_rows = query_invoice_rows(
+        invoice_rows, next_cursor = query_invoice_rows(
             company=company,
             pos_profile=pos_profile_name,
             since_date=effective_since_date,
@@ -119,11 +119,9 @@ def get_order_history_payload(
         "since_date": effective_since_date,
         "since_datetime": format_datetime(effective_since_datetime),
         "limit": resolved_limit,
-        "next_cursor": str(offset + resolved_limit)
-        if len(invoice_rows) > resolved_limit
-        else None,
+        "next_cursor": next_cursor,
         "orders": [
-            serialize_invoice_row(
+            serialize_order_row(
                 row,
                 items=fb_items_by_order.get(cstr(row.get("custom_fb_order")).strip())
                 or items_by_parent.get(cstr(row.get("name")).strip(), []),
@@ -236,9 +234,9 @@ def query_invoice_rows(
     limit: int,
     offset: int,
     device_id: str | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str | None]:
     filters: dict[str, Any] = {
-        "docstatus": 1,
+        "docstatus": ["in", [1, 2]],
         "is_return": 0,
         "company": company,
         "pos_profile": pos_profile,
@@ -247,26 +245,163 @@ def query_invoice_rows(
     if device_id:
         filters["custom_fb_device_id"] = device_id
 
-    rows = [
-        dict(row)
-        for row in frappe.get_all(
-            "Sales Invoice",
-            filters=filters,
-            fields=filter_existing_fields("Sales Invoice", get_invoice_fields()),
-            order_by="posting_date desc, posting_time desc, creation desc, name desc",
-            limit_start=offset,
-            limit_page_length=limit,
-        )
-    ]
-
-    if since_datetime:
-        rows = [
-            row
-            for row in rows
-            if get_datetime(row.get("creation")) >= since_datetime
+    accepted_rows: list[dict[str, Any]] = []
+    cursor_after_accepted_row: list[int] = []
+    raw_offset = offset
+    batch_size = max(limit * 2, MAX_LIMIT + 1)
+    while len(accepted_rows) < limit:
+        raw_rows = [
+            dict(row)
+            for row in frappe.get_all(
+                "Sales Invoice",
+                filters=filters,
+                fields=filter_existing_fields("Sales Invoice", get_invoice_fields()),
+                order_by="posting_date desc, posting_time desc, creation desc, name desc",
+                limit_start=raw_offset,
+                limit_page_length=batch_size,
+            )
         ]
+        if not raw_rows:
+            break
 
-    return rows
+        for index, row in enumerate(raw_rows):
+            next_raw_cursor = raw_offset + index + 1
+            if not is_visible_history_invoice(row, device_id=device_id):
+                continue
+            if since_datetime and get_datetime(row.get("creation")) < since_datetime:
+                continue
+            accepted_rows.append(row)
+            cursor_after_accepted_row.append(next_raw_cursor)
+            if len(accepted_rows) >= limit:
+                break
+
+        if len(accepted_rows) >= limit or len(raw_rows) < batch_size:
+            break
+        raw_offset += len(raw_rows)
+
+    visible_page_length = max(limit - 1, 0)
+    next_cursor = (
+        str(cursor_after_accepted_row[visible_page_length - 1])
+        if visible_page_length > 0 and len(accepted_rows) > visible_page_length
+        else None
+    )
+    return accepted_rows, next_cursor
+
+
+def is_visible_history_invoice(
+    row: dict[str, Any], *, device_id: str | None
+) -> bool:
+    docstatus = cint(row.get("docstatus"))
+    if docstatus == 1:
+        return True
+    if docstatus != 2:
+        return False
+    return has_durable_kopos_void_history_proof(row, device_id=device_id)
+
+
+def has_durable_kopos_void_history_proof(
+    row: dict[str, Any], *, device_id: str | None
+) -> bool:
+    """Re-prove an exact KoPOS void before exposing a cancelled invoice."""
+    invoice_name = cstr(row.get("name")).strip()
+    order_name = cstr(row.get("custom_fb_order")).strip()
+    shift_name = cstr(row.get("custom_fb_shift")).strip()
+    invoice_device_id = cstr(row.get("custom_fb_device_id")).strip()
+    sale_idempotency_key = cstr(row.get("custom_fb_idempotency_key")).strip()
+    void_idempotency_key = cstr(
+        row.get("custom_fb_void_idempotency_key")
+    ).strip()
+    void_fingerprint = cstr(
+        row.get("custom_fb_void_request_fingerprint")
+    ).strip().lower()
+    void_manager = cstr(row.get("custom_fb_void_manager")).strip()
+    void_token_id = cstr(row.get("custom_fb_void_approval_token_id")).strip()
+    if (
+        not invoice_name
+        or not order_name
+        or not shift_name
+        or not invoice_device_id
+        or (device_id and invoice_device_id != device_id)
+        or not sale_idempotency_key
+        or not void_idempotency_key
+        or not is_sha256_hex(void_fingerprint)
+        or not void_manager
+        or not void_token_id
+    ):
+        return False
+
+    order = frappe.db.get_value(
+        "FB Order",
+        order_name,
+        [
+            "name",
+            "docstatus",
+            "sales_invoice",
+            "external_idempotency_key",
+            "device_id",
+            "shift",
+            "company",
+            "currency",
+            "status",
+            "invoice_status",
+        ],
+        as_dict=True,
+    )
+    if (
+        not order
+        or cstr(row_value(order, "name")).strip() != order_name
+        or cint(row_value(order, "docstatus")) != 1
+        or cstr(row_value(order, "sales_invoice")).strip() != invoice_name
+        or cstr(row_value(order, "external_idempotency_key")).strip()
+        != sale_idempotency_key
+        or cstr(row_value(order, "device_id")).strip() != invoice_device_id
+        or cstr(row_value(order, "shift")).strip() != shift_name
+        or cstr(row_value(order, "company")).strip()
+        != cstr(row.get("company")).strip()
+        or cstr(row_value(order, "currency")).strip().upper()
+        != cstr(row.get("currency")).strip().upper()
+        or cstr(row_value(order, "status")).strip() != "Cancelled"
+        or cstr(row_value(order, "invoice_status")).strip() != "Reversed"
+    ):
+        return False
+
+    approval = frappe.db.get_value(
+        "KoPOS Manager Approval",
+        {"token_id": void_token_id},
+        [
+            "token_id",
+            "status",
+            "manager_id",
+            "action",
+            "resource_id",
+            "context_hash",
+            "consumed_idempotency_key",
+        ],
+        as_dict=True,
+    )
+    return bool(
+        approval
+        and cstr(row_value(approval, "token_id")).strip() == void_token_id
+        and cstr(row_value(approval, "status")).strip() == "consumed"
+        and cstr(row_value(approval, "manager_id")).strip() == void_manager
+        and cstr(row_value(approval, "action")).strip() == "void_order"
+        and cstr(row_value(approval, "resource_id")).strip() == invoice_name
+        and cstr(row_value(approval, "consumed_idempotency_key")).strip()
+        == void_idempotency_key
+        and is_sha256_hex(cstr(row_value(approval, "context_hash")).strip().lower())
+    )
+
+
+def is_sha256_hex(value: str) -> bool:
+    return len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
+
+
+def row_value(row: Any, fieldname: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(fieldname)
+    return getattr(row, fieldname, None)
 
 
 def query_refund_rows(
@@ -471,6 +606,18 @@ def serialize_invoice_row(
     }
 
 
+def serialize_order_row(
+    row: dict[str, Any],
+    *,
+    items: list[dict[str, Any]],
+    payments: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        **serialize_invoice_row(row, items=items, payments=payments),
+        "status": "voided" if cint(row.get("docstatus")) == 2 else "paid",
+    }
+
+
 def serialize_refund_row(
     row: dict[str, Any],
     *,
@@ -518,6 +665,7 @@ def serialize_payment_row(row: dict[str, Any]) -> dict[str, Any]:
 def get_invoice_fields() -> list[str]:
     return [
         "name",
+        "docstatus",
         "company",
         "pos_profile",
         "customer",
@@ -533,6 +681,10 @@ def get_invoice_fields() -> list[str]:
         "custom_fb_shift",
         "custom_fb_idempotency_key",
         "custom_fb_device_id",
+        "custom_fb_void_idempotency_key",
+        "custom_fb_void_request_fingerprint",
+        "custom_fb_void_manager",
+        "custom_fb_void_approval_token_id",
         "net_total",
         "total_taxes_and_charges",
         "discount_amount",
@@ -548,7 +700,15 @@ def get_invoice_fields() -> list[str]:
 
 def filter_existing_fields(doctype: str, fields: list[str]) -> list[str]:
     meta = frappe.get_meta(doctype)
-    document_fields = {"name", "creation", "modified", "parent", "parenttype", "idx"}
+    document_fields = {
+        "name",
+        "creation",
+        "modified",
+        "docstatus",
+        "parent",
+        "parenttype",
+        "idx",
+    }
     return [
         fieldname
         for fieldname in fields

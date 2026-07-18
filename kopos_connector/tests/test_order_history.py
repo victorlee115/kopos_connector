@@ -201,7 +201,7 @@ def test_get_order_history_blocks_cross_profile_leakage(
 
     assert captured_invoice_filters == [
         {
-            "docstatus": 1,
+            "docstatus": ["in", [1, 2]],
             "is_return": 0,
             "company": "KoPOS Cafe",
             "pos_profile": "Counter 1",
@@ -365,7 +365,7 @@ def test_get_order_history_filters_by_server_device_context_and_paginates(
 
     assert captured_filters == [
         {
-            "docstatus": 1,
+            "docstatus": ["in", [1, 2]],
             "is_return": 0,
             "company": "KoPOS Cafe",
             "pos_profile": "POS-MAIN",
@@ -639,6 +639,193 @@ def test_get_order_history_returns_refunds_separately_with_decimal_strings(
             "refund_reason": "Wrong order",
         }
     ]
+
+
+def test_get_order_history_returns_only_exact_durably_voided_kopos_invoices(
+    order_history_module, monkeypatch
+):
+    valid_void = {
+        "name": "PINV-VOID-VALID",
+        "docstatus": 2,
+        "is_return": 0,
+        "company": "KoPOS Cafe",
+        "currency": "MYR",
+        "pos_profile": "POS-MAIN",
+        "posting_date": "2026-03-13",
+        "posting_time": "10:10:00",
+        "creation": datetime(2026, 3, 13, 10, 10),
+        "modified": datetime(2026, 3, 13, 10, 12),
+        "custom_fb_order": "FB-ORDER-VOID-VALID",
+        "custom_fb_shift": "FB-SHIFT-001",
+        "custom_fb_device_id": "DEVICE-1",
+        "custom_fb_idempotency_key": "sale-idem-valid",
+        "custom_fb_void_idempotency_key": "void-idem-valid",
+        "custom_fb_void_request_fingerprint": "a" * 64,
+        "custom_fb_void_manager": "manager@example.com",
+        "custom_fb_void_approval_token_id": "APPROVAL-VALID",
+        "grand_total": 12,
+        "paid_amount": 12,
+    }
+    tampered_void = {
+        **valid_void,
+        "name": "PINV-VOID-TAMPERED",
+        "custom_fb_order": "FB-ORDER-VOID-TAMPERED",
+        "custom_fb_idempotency_key": "sale-idem-tampered",
+        "custom_fb_void_idempotency_key": "void-idem-tampered",
+        "custom_fb_void_approval_token_id": "APPROVAL-TAMPERED",
+    }
+
+    def fake_get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        filters = kwargs.get("filters") or {}
+        if doctype == "FB Shift":
+            return [
+                {
+                    "name": "FB-SHIFT-001",
+                    "opened_at": datetime(2026, 3, 13, 8, 0),
+                    "creation": datetime(2026, 3, 13, 8, 0),
+                }
+            ]
+        if doctype == "Sales Invoice" and filters.get("is_return") == 0:
+            rows = [
+                row
+                for row in [valid_void, tampered_void]
+                if matches_filters(row, filters)
+            ]
+            start = kwargs.get("limit_start") or 0
+            limit = kwargs.get("limit_page_length")
+            return rows[start : start + limit] if limit else rows[start:]
+        return []
+
+    orders = {
+        "FB-ORDER-VOID-VALID": {
+            "name": "FB-ORDER-VOID-VALID",
+            "docstatus": 1,
+            "sales_invoice": "PINV-VOID-VALID",
+            "external_idempotency_key": "sale-idem-valid",
+            "device_id": "DEVICE-1",
+            "shift": "FB-SHIFT-001",
+            "company": "KoPOS Cafe",
+            "currency": "MYR",
+            "status": "Cancelled",
+            "invoice_status": "Reversed",
+        },
+        "FB-ORDER-VOID-TAMPERED": {
+            "name": "FB-ORDER-VOID-TAMPERED",
+            "docstatus": 1,
+            "sales_invoice": "PINV-VOID-TAMPERED",
+            "external_idempotency_key": "sale-idem-tampered",
+            "device_id": "DEVICE-1",
+            "shift": "FB-SHIFT-001",
+            "company": "KoPOS Cafe",
+            "currency": "MYR",
+            "status": "Cancelled",
+            "invoice_status": "Reversed",
+        },
+    }
+    approvals = {
+        "APPROVAL-VALID": {
+            "token_id": "APPROVAL-VALID",
+            "status": "consumed",
+            "manager_id": "manager@example.com",
+            "action": "void_order",
+            "resource_id": "PINV-VOID-VALID",
+            "context_hash": "b" * 64,
+            "consumed_idempotency_key": "void-idem-valid",
+        },
+        "APPROVAL-TAMPERED": {
+            "token_id": "APPROVAL-TAMPERED",
+            "status": "consumed",
+            "manager_id": "manager@example.com",
+            "action": "void_order",
+            "resource_id": "A-DIFFERENT-INVOICE",
+            "context_hash": "b" * 64,
+            "consumed_idempotency_key": "void-idem-tampered",
+        },
+    }
+
+    def fake_get_value(
+        doctype: str, name_or_filters: Any, fields: Any, **kwargs: Any
+    ) -> dict[str, Any] | None:
+        assert kwargs.get("as_dict") is True
+        if doctype == "FB Order":
+            return orders.get(str(name_or_filters))
+        if doctype == "KoPOS Manager Approval":
+            return approvals.get(str(name_or_filters.get("token_id")))
+        raise AssertionError(f"Unexpected proof doctype: {doctype}")
+
+    monkeypatch.setattr(order_history_module.frappe, "get_all", fake_get_all)
+    monkeypatch.setattr(order_history_module.frappe.db, "get_value", fake_get_value)
+
+    result = order_history_module.get_order_history_payload(device_id="DEVICE-1")
+
+    assert [order["name"] for order in result["orders"]] == ["PINV-VOID-VALID"]
+    assert result["orders"][0]["status"] == "voided"
+    assert result["orders"][0]["idempotency_key"] == "sale-idem-valid"
+
+
+def test_unproven_cancelled_invoice_does_not_hide_next_history_page(
+    order_history_module, monkeypatch
+):
+    invoices = [
+        {
+            "name": "PINV-001",
+            "docstatus": 1,
+            "is_return": 0,
+            "company": "KoPOS Cafe",
+            "pos_profile": "POS-MAIN",
+            "posting_date": "2026-03-13",
+            "posting_time": "10:10:00",
+            "creation": datetime(2026, 3, 13, 10, 10),
+            "custom_fb_device_id": "DEVICE-1",
+        },
+        {
+            "name": "PINV-UNPROVEN-CANCEL",
+            "docstatus": 2,
+            "is_return": 0,
+            "company": "KoPOS Cafe",
+            "pos_profile": "POS-MAIN",
+            "posting_date": "2026-03-13",
+            "posting_time": "10:05:00",
+            "creation": datetime(2026, 3, 13, 10, 5),
+            "custom_fb_device_id": "DEVICE-1",
+        },
+        {
+            "name": "PINV-002",
+            "docstatus": 1,
+            "is_return": 0,
+            "company": "KoPOS Cafe",
+            "pos_profile": "POS-MAIN",
+            "posting_date": "2026-03-13",
+            "posting_time": "10:00:00",
+            "creation": datetime(2026, 3, 13, 10, 0),
+            "custom_fb_device_id": "DEVICE-1",
+        },
+    ]
+
+    def fake_get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        filters = kwargs.get("filters") or {}
+        if doctype == "FB Shift":
+            return []
+        if doctype == "Sales Invoice" and filters.get("is_return") == 0:
+            rows = [row for row in invoices if matches_filters(row, filters)]
+            start = kwargs.get("limit_start") or 0
+            limit = kwargs.get("limit_page_length")
+            return rows[start : start + limit] if limit else rows[start:]
+        return []
+
+    monkeypatch.setattr(order_history_module.frappe, "get_all", fake_get_all)
+
+    first_page = order_history_module.get_order_history_payload(
+        device_id="DEVICE-1", limit=1
+    )
+    second_page = order_history_module.get_order_history_payload(
+        device_id="DEVICE-1", limit=1, cursor=first_page["next_cursor"]
+    )
+
+    assert [order["name"] for order in first_page["orders"]] == ["PINV-001"]
+    assert first_page["next_cursor"] == "1"
+    assert [order["name"] for order in second_page["orders"]] == ["PINV-002"]
+    assert second_page["next_cursor"] is None
 
 
 def test_get_order_history_handles_empty_current_shift(order_history_module, monkeypatch):

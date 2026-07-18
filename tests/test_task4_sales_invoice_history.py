@@ -402,7 +402,7 @@ def test_order_history_reads_generated_sales_invoice_for_device_profile_shift(
 
     assert captured_invoice_filters == [
         {
-            "docstatus": 1,
+            "docstatus": ["in", [1, 2]],
             "is_return": 0,
             "company": "KoPOS Cafe",
             "pos_profile": "Counter 1",
