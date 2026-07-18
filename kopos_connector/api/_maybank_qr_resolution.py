@@ -33,7 +33,11 @@ from ._maybank_qr_contract import (
     _validate_status_entry_identity,
     _validate_status_response,
 )
-from ._maybank_qr_persistence import _load_generation_snapshot, _load_txn_for_update
+from ._maybank_qr_persistence import (
+    _durable_generation_release,
+    _load_generation_snapshot,
+    _load_txn_for_update,
+)
 from ._maybank_qr_status import _enqueue_paid_automatic_qr_finalization
 
 def _validate_support_text(value: Any, fieldname: str, minimum: int, maximum: int) -> str:
@@ -220,6 +224,14 @@ def _abandon_ambiguous_generation(
     locked = _load_txn_for_update(transaction_name)
     current_status = cstr(_existing_value(locked, "status")).strip()
     if current_status == UNKNOWN_STATUS:
+        if (
+            _durable_generation_release(locked)
+            != "provider_transaction_absent"
+        ):
+            frappe.throw(
+                "Maybank QR generation does not have a durable provider-absence fence",
+                frappe.ValidationError,
+            )
         return {
             "status": "generation_abandoned",
             "transaction_name": transaction_name,
@@ -229,6 +241,20 @@ def _abandon_ambiguous_generation(
     if current_status != "creating":
         frappe.throw(
             "Only an ambiguous creating reservation can be abandoned",
+            frappe.ValidationError,
+        )
+    request_fingerprint = cstr(
+        _existing_value(locked, "request_fingerprint")
+    ).strip()
+    current_reference = cstr(
+        _existing_value(locked, "transaction_refno")
+    ).strip()
+    if (
+        not request_fingerprint
+        or current_reference != _reservation_reference(request_fingerprint)
+    ):
+        frappe.throw(
+            "A Maybank QR generation with a known provider reference cannot be marked absent",
             frappe.ValidationError,
         )
     created_at = _coerce_site_datetime(_existing_value(locked, "created_at"))

@@ -178,6 +178,20 @@ def test_unrenderable_provider_qr_can_be_replaced_immediately() -> None:
     assert _validate([attempt], _request()) == 2
 
 
+def test_blank_provider_display_remains_issued_pollable_and_replaceable() -> None:
+    attempt = _attempt(
+        1,
+        qr_data="",
+        expires_at="2026-07-19T14:01:00+08:00",
+    )
+
+    assert replacement._provider_issued_attempt(attempt) is True
+    assert poll_maybank.is_maybank_attempt_pollable(
+        SimpleNamespace(**attempt)
+    ) is True
+    assert _validate([attempt], _request()) == 2
+
+
 def test_expired_replacement_uses_erp_clock_and_exact_expiry() -> None:
     attempt = _attempt(1, expires_at="2026-07-19T14:00:00+08:00")
     assert _validate([attempt], _request("expired_display")) == 2

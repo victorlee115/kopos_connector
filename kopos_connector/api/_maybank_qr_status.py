@@ -38,6 +38,7 @@ from ._maybank_qr_contract import (
 )
 from ._maybank_qr_persistence import (
     _build_creation_recovery_response,
+    _build_display_unavailable_response,
     _build_existing_txn_response,
     _build_paid_existing_txn_response,
     _build_persisted_preflight_rejection_response,
@@ -123,6 +124,24 @@ def _resolve_existing_txn(
         return preflight_rejection
 
     status = cstr(_existing_value(existing, "status"))
+    persisted_reference = cstr(
+        _existing_value(existing, "transaction_refno")
+    ).strip()
+    if (
+        persisted_reference
+        and not persisted_reference.startswith("REQUEST-")
+        and not cstr(_existing_value(existing, "qr_data")).strip()
+        and status
+        in {
+            "pending",
+            "scanned",
+            "paid",
+            "failed",
+            "timeout",
+            UNKNOWN_STATUS,
+        }
+    ):
+        return _build_display_unavailable_response(existing)
     if status == "creating":
         return _build_creation_recovery_response(existing, now)
     if status == UNKNOWN_STATUS:
@@ -610,6 +629,21 @@ def _transition_txn_status_locked(
             "Maybank provider status cannot be persisted",
             frappe.ValidationError,
         )
+
+    if (
+        current_status == UNKNOWN_STATUS
+        and cstr(_existing_value(locked_txn, "transaction_refno")).strip()
+        and not cstr(
+            _existing_value(locked_txn, "transaction_refno")
+        ).strip().startswith("REQUEST-")
+    ):
+        # ``unknown`` plus a real provider reference is a support fence (for
+        # example, conflicting amount evidence or a result that arrived after
+        # audited release). Continue observing authenticated provider status,
+        # but never turn it into accounting authority automatically. A
+        # non-device System Manager must reconcile the conflicting evidence.
+        _record_poll_observation(name)
+        return current_status
 
     if status != current_status and status not in PROVIDER_STATUS_TRANSITIONS[
         current_status

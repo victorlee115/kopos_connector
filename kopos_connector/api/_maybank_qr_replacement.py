@@ -105,7 +105,10 @@ def _provider_issued_attempt(attempt: Any) -> bool:
         )
     except frappe.ValidationError:
         return False
-    return bool(cstr(_existing_value(attempt, "qr_data")).strip())
+    # A durable provider reference is an issued attempt even when Maybank's
+    # display payload is empty or unusable. It must remain pollable, count
+    # toward the cap, and be the exact target of a replacement request.
+    return True
 
 
 def _validate_target_fingerprint(

@@ -40,6 +40,7 @@ from ._maybank_qr_contract import (
     _serialize_site_datetime,
 )
 from ._maybank_qr_persistence import (
+    _build_display_unavailable_response,
     _build_existing_txn_response,
     _build_paid_existing_txn_response,
     _build_preflight_rejection_response,
@@ -59,6 +60,26 @@ from ._maybank_qr_replacement import (
 )
 from ._maybank_qr_resolution import _audit_generation_resolution
 from ._maybank_qr_status import _resolve_existing_txn
+
+
+class MaybankQrGenerationIdentityMismatch(frappe.ValidationError):
+    """A provider reference exists, but its returned sale identity is unsafe."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        result: dict[str, Any],
+        transaction_refno: str,
+        qr_data: str,
+        expires_at: Any,
+    ) -> None:
+        super().__init__(message)
+        self.result = result
+        self.transaction_refno = transaction_refno
+        self.qr_data = qr_data
+        self.expires_at = expires_at
+
 
 def _generate_qr_payload(
     client: MaybankClient, amount_rm: str, now: Any
@@ -85,51 +106,99 @@ def _generate_qr_payload(
     qr_data = cstr(
         qr_entry.get("qr_data", qr_entry.get("qr_code", qr_entry.get("qrString", "")))
     )
-
-    if not qr_data.strip():
-        frappe.throw("Maybank returned empty QR data")
+    expires_at = add_to_date(now, seconds=_extract_expiry_seconds(qr_entry))
 
     response_amount = qr_entry.get("sale_amount")
     if response_amount is None:
         response_amount = qr_entry.get("amount")
     if response_amount is not None:
-        expected_amount_sen = _parse_decimal_amount_sen(
-            amount_rm,
-            "Maybank QR requested amount",
-        )
-        response_amount_sen = _parse_decimal_amount_sen(
-            response_amount,
-            "Maybank QR generation response amount",
-        )
+        try:
+            expected_amount_sen = _parse_decimal_amount_sen(
+                amount_rm,
+                "Maybank QR requested amount",
+            )
+            response_amount_sen = _parse_decimal_amount_sen(
+                response_amount,
+                "Maybank QR generation response amount",
+            )
+        except frappe.ValidationError as error:
+            # Once Maybank has returned a valid provider reference, malformed
+            # amount evidence is an identity conflict rather than an unknown
+            # generation outcome. Carry the reference into the durable support
+            # fence so neither a retry nor a replacement can lose it.
+            raise MaybankQrGenerationIdentityMismatch(
+                str(error),
+                result=result,
+                transaction_refno=refno,
+                qr_data=qr_data,
+                expires_at=expires_at,
+            ) from error
         if response_amount_sen != expected_amount_sen:
-            frappe.throw(
+            raise MaybankQrGenerationIdentityMismatch(
                 "Maybank QR generation response amount does not match the prepared sale",
-                frappe.ValidationError,
+                result=result,
+                transaction_refno=refno,
+                qr_data=qr_data,
+                expires_at=expires_at,
             )
 
-    expires_at = add_to_date(now, seconds=_extract_expiry_seconds(qr_entry))
     return result, refno, qr_data, expires_at
 
 
 def _mark_generation_ambiguous(
     request_fingerprint: str,
     reason: str,
+    *,
+    result: dict[str, Any] | None = None,
+    transaction_refno: str = "",
+    qr_data: str = "",
+    expires_at: Any | None = None,
 ) -> None:
     reserved = _load_reserved_txn_with_order_lock(request_fingerprint)
     if not reserved or cstr(_existing_value(reserved, "status")) != "creating":
         return
+    updates: dict[str, Any] = {
+        "raw_response": redacted_json(
+            {
+                "status": "generation_ambiguous",
+                "reason": reason,
+                "provider_replay_blocked": True,
+                **(
+                    {
+                        "provider_transaction_refno": transaction_refno,
+                        "provider_result": result,
+                        "support_required": True,
+                    }
+                    if transaction_refno
+                    else {}
+                ),
+            }
+        )
+    }
+    if transaction_refno:
+        current_reference = cstr(
+            _existing_value(reserved, "transaction_refno")
+        ).strip()
+        if current_reference not in {
+            _reservation_reference(request_fingerprint),
+            transaction_refno,
+        }:
+            frappe.throw(
+                "Maybank QR reservation reference changed before ambiguity fencing",
+                frappe.ValidationError,
+            )
+        updates.update(
+            {
+                "transaction_refno": transaction_refno,
+                "qr_data": qr_data,
+                "expires_at": expires_at,
+                "status": UNKNOWN_STATUS,
+            }
+        )
     frappe.db.set_value(
         "Maybank QR Transaction",
         _existing_value(reserved, "name"),
-        {
-            "raw_response": redacted_json(
-                {
-                    "status": "generation_ambiguous",
-                    "reason": reason,
-                    "provider_replay_blocked": True,
-                }
-            )
-        },
+        updates,
         update_modified=False,
     )
     fb_order = cstr(_existing_value(reserved, "fb_order")).strip()
@@ -141,6 +210,93 @@ def _mark_generation_ambiguous(
             "provider_ambiguous",
             update_modified=False,
         )
+
+
+def _recover_known_provider_result(
+    request_fingerprint: str,
+    *,
+    result: dict[str, Any],
+    transaction_refno: str,
+    qr_data: str,
+    expires_at: Any,
+) -> None:
+    """Persist a validated provider result after the first finalization failed."""
+
+    reserved = _load_reserved_txn_with_order_lock(request_fingerprint)
+    if not reserved:
+        frappe.throw(
+            "Maybank QR reservation disappeared during provider result recovery",
+            frappe.ValidationError,
+        )
+    current_status = cstr(_existing_value(reserved, "status")).strip()
+    current_reference = cstr(
+        _existing_value(reserved, "transaction_refno")
+    ).strip()
+    expected_placeholder = _reservation_reference(request_fingerprint)
+
+    # A commit-acknowledgement failure can enter this recovery after another
+    # transaction has already made the exact provider reference durable. Do
+    # not regress its monotonic status or rewrite stronger provider evidence.
+    if current_reference == transaction_refno and current_status in {
+        "pending",
+        "scanned",
+        "paid",
+        "failed",
+        "timeout",
+        UNKNOWN_STATUS,
+    }:
+        return
+
+    if current_status == UNKNOWN_STATUS:
+        if (
+            current_reference == expected_placeholder
+            and _durable_generation_release(reserved)
+            == "provider_transaction_absent"
+        ):
+            # Support may have released the still-in-flight reservation while
+            # the first finalization was failing. Preserve the late reference
+            # under the existing no-display/no-reuse incident fence.
+            _record_late_provider_result_after_release(
+                reserved,
+                request_fingerprint=request_fingerprint,
+                result=result,
+                transaction_refno=transaction_refno,
+                qr_data=qr_data,
+                expires_at=expires_at,
+            )
+            return
+        frappe.throw(
+            "Maybank QR provider result recovery conflicts with unresolved support evidence",
+            frappe.ValidationError,
+        )
+
+    if current_status != "creating" or current_reference not in {
+        expected_placeholder,
+        transaction_refno,
+    }:
+        frappe.throw(
+            "Maybank QR reservation state changed during provider result recovery",
+            frappe.ValidationError,
+        )
+    frappe.db.set_value(
+        "Maybank QR Transaction",
+        _existing_value(reserved, "name"),
+        {
+            "transaction_refno": transaction_refno,
+            "qr_data": qr_data,
+            "status": "pending",
+            "maybank_status": 2,
+            "expires_at": expires_at,
+            "raw_response": redacted_json(
+                {
+                    "status": "provider_result_recovered",
+                    "provider_result": result,
+                    "provider_replay_blocked": True,
+                }
+            ),
+        },
+        update_modified=False,
+    )
 
 
 def _late_provider_result_response(reserved: Any) -> dict[str, Any]:
@@ -285,13 +441,21 @@ def _finalize_reserved_generation(
     if current_reference == transaction_refno and current_status == "paid":
         return _build_paid_existing_txn_response(reserved)
     if current_status == UNKNOWN_STATUS:
-        return _record_late_provider_result_after_release(
-            reserved,
-            request_fingerprint=request_fingerprint,
-            result=result,
-            transaction_refno=transaction_refno,
-            qr_data=qr_data,
-            expires_at=expires_at,
+        if (
+            _durable_generation_release(reserved)
+            == "provider_transaction_absent"
+        ):
+            return _record_late_provider_result_after_release(
+                reserved,
+                request_fingerprint=request_fingerprint,
+                result=result,
+                transaction_refno=transaction_refno,
+                qr_data=qr_data,
+                expires_at=expires_at,
+            )
+        frappe.throw(
+            "Maybank QR reservation has unresolved provider identity evidence",
+            frappe.ValidationError,
         )
     if current_status != "creating":
         frappe.throw(
@@ -318,16 +482,18 @@ def _finalize_reserved_generation(
         },
         update_modified=False,
     )
-    return _build_existing_txn_response(
-        {
-            "transaction_refno": transaction_refno,
-            "qr_data": qr_data,
-            "sale_amount_sen": _existing_value(reserved, "sale_amount_sen"),
-            "expires_at": expires_at,
-            "fb_order": _existing_value(reserved, "fb_order"),
-            "fb_order_payment": _existing_value(reserved, "fb_order_payment"),
-        }
-    )
+    response_source = {
+        "transaction_refno": transaction_refno,
+        "qr_data": qr_data,
+        "status": "pending",
+        "sale_amount_sen": _existing_value(reserved, "sale_amount_sen"),
+        "expires_at": expires_at,
+        "fb_order": _existing_value(reserved, "fb_order"),
+        "fb_order_payment": _existing_value(reserved, "fb_order_payment"),
+    }
+    if not qr_data.strip():
+        return _build_display_unavailable_response(response_source)
+    return _build_existing_txn_response(response_source)
 
 
 def _register_preflight_rejection_fence(
@@ -869,6 +1035,17 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
         result, refno, qr_data, expires_at = _generate_qr_payload(
             client, amount_rm, provider_now
         )
+    except MaybankQrGenerationIdentityMismatch as error:
+        _mark_generation_ambiguous(
+            request_fingerprint,
+            "provider_generation_identity_mismatch",
+            result=error.result,
+            transaction_refno=error.transaction_refno,
+            qr_data=error.qr_data,
+            expires_at=error.expires_at,
+        )
+        frappe.db.commit()
+        raise
     except Exception:
         _mark_generation_ambiguous(
             request_fingerprint,
@@ -889,9 +1066,12 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
         return response
     except Exception:
         frappe.db.rollback()
-        _mark_generation_ambiguous(
+        _recover_known_provider_result(
             request_fingerprint,
-            "provider_result_persistence_failed",
+            result=result,
+            transaction_refno=refno,
+            qr_data=qr_data,
+            expires_at=expires_at,
         )
         frappe.db.commit()
         raise

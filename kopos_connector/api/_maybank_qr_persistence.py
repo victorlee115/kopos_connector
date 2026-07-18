@@ -33,6 +33,9 @@ from ._maybank_qr_contract import (
     _serialize_site_datetime,
 )
 
+
+MAYBANK_QR_DISPLAY_UNAVAILABLE = "maybank_qr_display_unavailable"
+
 def _load_existing_txn(device_id: str, idempotency_key: str) -> Any:
     rows = frappe.db.sql(
         """
@@ -142,10 +145,7 @@ def _build_existing_txn_response(existing: Any) -> dict[str, Any]:
     )
     qr_data = cstr(_existing_value(existing, "qr_data"))
     if not qr_data.strip():
-        frappe.throw(
-            "Maybank transaction QR data is missing",
-            frappe.ValidationError,
-        )
+        return _build_display_unavailable_response(existing)
     return {
         "status": "ok",
         "qr_data": qr_data,
@@ -163,8 +163,73 @@ def _build_existing_txn_response(existing: Any) -> dict[str, Any]:
     }
 
 
+def _build_display_unavailable_response(existing: Any) -> dict[str, Any]:
+    """Return durable provider identity without inventing display data."""
+
+    transaction_refno = _require_provider_transaction_reference(
+        _existing_value(existing, "transaction_refno"),
+        "Maybank transaction_refno",
+    )
+    if cstr(_existing_value(existing, "qr_data")).strip():
+        frappe.throw(
+            "Maybank display-unavailable response cannot hide persisted QR data",
+            frappe.ValidationError,
+        )
+    amount_sen = _persisted_sale_amount_sen(existing)
+    fb_order = _require_exact_persisted_text(
+        _existing_value(existing, "fb_order"),
+        "Maybank transaction fb_order",
+    )
+    fb_order_payment = _require_exact_persisted_text(
+        _existing_value(existing, "fb_order_payment"),
+        "Maybank transaction fb_order_payment",
+    )
+    provider_status = cstr(_existing_value(existing, "status")).strip()
+    if provider_status not in {
+        "pending",
+        "scanned",
+        "paid",
+        "failed",
+        "timeout",
+        UNKNOWN_STATUS,
+    }:
+        frappe.throw(
+            "Maybank display-unavailable transaction has an invalid status",
+            frappe.ValidationError,
+        )
+    replacement_authorized = provider_status in {"pending", "failed", "timeout"}
+    paid_at = _existing_value(existing, "paid_at")
+    return {
+        "status": "display_unavailable",
+        "error_code": MAYBANK_QR_DISPLAY_UNAVAILABLE,
+        "message": "Maybank did not return a usable QR display",
+        "qr_data": "",
+        "transaction_refno": transaction_refno,
+        "sale_amount": _format_sale_amount(amount_sen),
+        "sale_amount_sen": amount_sen,
+        "expires_at": _serialize_site_datetime(
+            _existing_value(existing, "expires_at")
+        ),
+        "fb_order": fb_order,
+        "fb_order_payment": fb_order_payment,
+        "provider_status": provider_status,
+        "provider_request_attempted": True,
+        "provider_reference_retained": True,
+        "display_authorized": False,
+        "replacement_authorized": replacement_authorized,
+        "replacement_reason": (
+            "unrenderable_display" if replacement_authorized else None
+        ),
+        "support_required": provider_status == UNKNOWN_STATUS,
+        "paid_at": _serialize_site_datetime(paid_at) if paid_at else None,
+        "sales_invoice": cstr(_existing_value(existing, "sales_invoice")) or None,
+    }
+
+
 def _build_paid_existing_txn_response(existing: Any) -> dict[str, Any]:
     response = _build_existing_txn_response(existing)
+    if response.get("status") == "display_unavailable":
+        return response
     paid_at = _existing_value(existing, "paid_at")
     response.update(
         {

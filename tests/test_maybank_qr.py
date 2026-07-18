@@ -312,7 +312,7 @@ class MaybankQrStatusTests(unittest.TestCase):
 
     def test_generate_qr_rejects_provider_amount_mismatch(self):
         client = Mock()
-        client.generate_qr.return_value = {
+        provider_result = {
             "status": "QR000",
             "data": [
                 {
@@ -322,16 +322,296 @@ class MaybankQrStatusTests(unittest.TestCase):
                 }
             ],
         }
+        client.generate_qr.return_value = provider_result
 
         with self.assertRaisesRegex(
-            maybank_qr.frappe.ValidationError,
+            maybank_generation.MaybankQrGenerationIdentityMismatch,
             "does not match the prepared sale",
-        ):
+        ) as raised:
             maybank_qr._generate_qr_payload(
                 client,
                 "10.00",
                 datetime(2026, 3, 13, 18, 5, 0),
             )
+
+        self.assertIs(raised.exception.result, provider_result)
+        self.assertEqual(raised.exception.transaction_refno, "ref-1")
+        self.assertEqual(raised.exception.qr_data, "QR-DATA")
+        self.assertEqual(
+            raised.exception.expires_at,
+            datetime(2026, 3, 13, 18, 6, 0),
+        )
+
+    def test_generate_qr_retains_reference_for_malformed_provider_amount(self):
+        client = Mock()
+        provider_result = {
+            "status": "QR000",
+            "data": [
+                {
+                    "transaction_refno": "ref-invalid-amount",
+                    "qr_data": "OPAQUE-PROVIDER-QR",
+                    "sale_amount": "not-money",
+                }
+            ],
+        }
+        client.generate_qr.return_value = provider_result
+
+        with self.assertRaisesRegex(
+            maybank_generation.MaybankQrGenerationIdentityMismatch,
+            "response amount is invalid",
+        ) as raised:
+            maybank_qr._generate_qr_payload(
+                client,
+                "10.00",
+                datetime(2026, 3, 13, 18, 5, 0),
+            )
+
+        self.assertIs(raised.exception.result, provider_result)
+        self.assertEqual(
+            raised.exception.transaction_refno,
+            "ref-invalid-amount",
+        )
+        self.assertEqual(raised.exception.qr_data, "OPAQUE-PROVIDER-QR")
+
+    def test_generate_qr_retains_valid_reference_when_display_data_is_empty(self):
+        client = Mock()
+        provider_result = {
+            "status": "QR000",
+            "data": [
+                {
+                    "transaction_refno": "ref-empty-display",
+                    "qr_data": "",
+                    "sale_amount": "10.00",
+                    "expires_in_seconds": 120,
+                }
+            ],
+        }
+        client.generate_qr.return_value = provider_result
+
+        result, reference, qr_data, expires_at = maybank_qr._generate_qr_payload(
+            client,
+            "10.00",
+            datetime(2026, 3, 13, 18, 5, 0),
+        )
+
+        self.assertIs(result, provider_result)
+        self.assertEqual(reference, "ref-empty-display")
+        self.assertEqual(qr_data, "")
+        self.assertEqual(expires_at, datetime(2026, 3, 13, 18, 7, 0))
+
+    def test_finalize_empty_display_persists_pollable_attempt(self):
+        reservation = {
+            "name": "MBQR-EMPTY-DISPLAY",
+            "transaction_refno": maybank_qr._reservation_reference("f" * 64),
+            "status": "creating",
+            "sale_amount_sen": 1000,
+            "fb_order": PREPARED_FB_ORDER,
+            "fb_order_payment": PREPARED_FB_ORDER_PAYMENT,
+        }
+        expires_at = datetime(2026, 3, 13, 18, 7, 0)
+        with (
+            patch.object(
+                maybank_generation,
+                "_load_reserved_txn_with_order_lock",
+                return_value=reservation,
+            ),
+            patch.object(maybank_qr.frappe.db, "set_value") as set_value,
+        ):
+            result = maybank_generation._finalize_reserved_generation(
+                "f" * 64,
+                result={"status": "QR000", "data": [{"qr_data": ""}]},
+                transaction_refno="ref-empty-display",
+                qr_data="",
+                expires_at=expires_at,
+            )
+
+        persisted = set_value.call_args.args[2]
+        self.assertEqual(persisted["transaction_refno"], "ref-empty-display")
+        self.assertEqual(persisted["status"], "pending")
+        self.assertEqual(persisted["qr_data"], "")
+        self.assertEqual(result["status"], "display_unavailable")
+        self.assertEqual(result["error_code"], "maybank_qr_display_unavailable")
+        self.assertEqual(result["transaction_refno"], "ref-empty-display")
+        self.assertTrue(result["provider_reference_retained"])
+        self.assertTrue(result["replacement_authorized"])
+        self.assertFalse(result["display_authorized"])
+
+    def test_exact_replay_returns_empty_display_evidence_without_provider_call(self):
+        existing = {
+            "name": "MBQR-EMPTY-DISPLAY",
+            "transaction_refno": "ref-empty-display",
+            "status": "pending",
+            "qr_data": "",
+            "sale_amount_sen": 1000,
+            "expires_at": datetime(2026, 3, 13, 18, 7, 0),
+            "device_id": "device-1",
+            "fb_order": PREPARED_FB_ORDER,
+            "fb_order_payment": PREPARED_FB_ORDER_PAYMENT,
+        }
+
+        result = maybank_status._resolve_existing_txn(
+            "device-1",
+            "key-empty-display",
+            1000,
+            datetime(2026, 3, 13, 18, 5, 0),
+            existing=existing,
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["status"], "display_unavailable")
+        self.assertEqual(result["transaction_refno"], "ref-empty-display")
+        self.assertEqual(result["provider_status"], "pending")
+
+    def test_provider_result_finalization_failure_recovers_known_reference(self):
+        client = Mock()
+        client.outlet_id = "outlet-1"
+        reservation = Mock()
+        provider_result = {"status": "QR000", "data": [{"qr_data": "QR"}]}
+        expires_at = datetime(2026, 3, 13, 18, 7, 0)
+        events: list[str] = []
+
+        with (
+            patch.object(maybank_generation, "_check_rate_limit"),
+            patch.object(
+                maybank_generation,
+                "_load_prepared_automatic_qr_sale",
+                return_value=_prepared_sale(),
+            ),
+            patch.object(maybank_generation, "_load_existing_txn", return_value=None),
+            patch.object(maybank_qr.frappe, "get_doc", return_value=reservation),
+            patch.object(
+                maybank_qr.MaybankClient,
+                "from_settings",
+                return_value=client,
+            ),
+            patch.object(
+                maybank_generation,
+                "_generate_qr_payload",
+                return_value=(provider_result, "ref-recovered", "QR", expires_at),
+            ),
+            patch.object(
+                maybank_generation,
+                "_finalize_reserved_generation",
+                side_effect=RuntimeError("first persistence failed"),
+            ),
+            patch.object(
+                maybank_generation,
+                "_recover_known_provider_result",
+                side_effect=lambda *_args, **_kwargs: events.append("recover"),
+            ) as recover,
+            patch.object(
+                maybank_qr.frappe.db,
+                "rollback",
+                side_effect=lambda: events.append("rollback"),
+            ),
+            patch.object(
+                maybank_qr.frappe.db,
+                "commit",
+                side_effect=lambda: events.append("commit"),
+            ),
+            patch.object(
+                maybank_generation,
+                "now_datetime",
+                return_value=datetime(2026, 3, 13, 18, 5, 0),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "first persistence failed"):
+                maybank_generation.generate_maybank_qr_payload(
+                    {
+                        "amount_sen": 1000,
+                        "device_id": "device-1",
+                        "idempotency_key": "key-recovered",
+                    }
+                )
+
+        recover.assert_called_once_with(
+            maybank_qr._request_fingerprint(
+                "device-1",
+                "key-recovered",
+                fb_order=PREPARED_FB_ORDER,
+                fb_order_payment=PREPARED_FB_ORDER_PAYMENT,
+                accepted_sale_fingerprint=PREPARED_SALE_FINGERPRINT,
+                amount_sen=1000,
+                currency="MYR",
+            ),
+            result=provider_result,
+            transaction_refno="ref-recovered",
+            qr_data="QR",
+            expires_at=expires_at,
+        )
+        self.assertEqual(
+            events,
+            ["commit", "rollback", "recover", "commit"],
+        )
+
+    def test_known_provider_result_recovery_persists_only_attempt_authority(self):
+        request_fingerprint = "f" * 64
+        reservation = {
+            "name": "MBQR-RECOVERY",
+            "transaction_refno": maybank_qr._reservation_reference(
+                request_fingerprint
+            ),
+            "status": "creating",
+            "fb_order": PREPARED_FB_ORDER,
+        }
+        provider_result = {
+            "status": "QR000",
+            "data": [{"transaction_refno": "ref-recovered", "qr_data": "QR"}],
+        }
+        expires_at = datetime(2026, 3, 13, 18, 7, 0)
+        with (
+            patch.object(
+                maybank_generation,
+                "_load_reserved_txn_with_order_lock",
+                return_value=reservation,
+            ),
+            patch.object(maybank_qr.frappe.db, "set_value") as set_value,
+        ):
+            maybank_generation._recover_known_provider_result(
+                request_fingerprint,
+                result=provider_result,
+                transaction_refno="ref-recovered",
+                qr_data="QR",
+                expires_at=expires_at,
+            )
+
+        set_value.assert_called_once()
+        self.assertEqual(
+            set_value.call_args.args[:2],
+            ("Maybank QR Transaction", "MBQR-RECOVERY"),
+        )
+        recovered = set_value.call_args.args[2]
+        self.assertEqual(recovered["transaction_refno"], "ref-recovered")
+        self.assertEqual(recovered["status"], "pending")
+        self.assertEqual(recovered["maybank_status"], 2)
+        self.assertEqual(recovered["qr_data"], "QR")
+        self.assertEqual(recovered["expires_at"], expires_at)
+
+    def test_known_provider_result_recovery_is_idempotent_after_exact_persist(self):
+        request_fingerprint = "f" * 64
+        reservation = {
+            "name": "MBQR-RECOVERY",
+            "transaction_refno": "ref-recovered",
+            "status": "paid",
+        }
+        with (
+            patch.object(
+                maybank_generation,
+                "_load_reserved_txn_with_order_lock",
+                return_value=reservation,
+            ),
+            patch.object(maybank_qr.frappe.db, "set_value") as set_value,
+        ):
+            maybank_generation._recover_known_provider_result(
+                request_fingerprint,
+                result={"status": "QR000"},
+                transaction_refno="ref-recovered",
+                qr_data="QR",
+                expires_at=datetime(2026, 3, 13, 18, 7, 0),
+            )
+
+        set_value.assert_not_called()
 
     def test_diagnostics_redacts_tokens_pins_qr_and_provider_payloads(self):
         payload = {
@@ -1540,6 +1820,40 @@ class MaybankQrStatusTests(unittest.TestCase):
         set_value.assert_not_called()
         record_attempt.assert_called_once()
 
+    def test_known_reference_unknown_status_stays_fail_closed_during_poll(self):
+        identity_conflict = {
+            "name": "txn-generation-identity-conflict",
+            "transaction_refno": "ref-generation-identity-conflict",
+            "status": "unknown",
+            "poll_count": 3,
+            "paid_at": None,
+            "scanned_at": None,
+        }
+        with (
+            patch.object(
+                maybank_status,
+                "_record_poll_observation",
+            ) as record_observation,
+            patch.object(maybank_qr.frappe.db, "set_value") as set_value,
+            patch.object(
+                maybank_status,
+                "_enqueue_paid_automatic_qr_finalization",
+            ) as enqueue_finalization,
+        ):
+            status = maybank_qr._transition_txn_status_locked(
+                identity_conflict,
+                "paid",
+                1,
+                {"status": "QR000"},
+            )
+
+        self.assertEqual(status, "unknown")
+        record_observation.assert_called_once_with(
+            "txn-generation-identity-conflict"
+        )
+        set_value.assert_not_called()
+        enqueue_finalization.assert_not_called()
+
     def test_provider_timeout_can_advance_to_authenticated_late_paid(self):
         timeout = {
             "name": "txn-late-paid",
@@ -1706,9 +2020,14 @@ class MaybankQrStatusTests(unittest.TestCase):
         self.assertEqual(stale["recovery_action"], "resolve_maybank_qr_generation")
 
     def test_audited_abandonment_requires_elapsed_safety_window(self):
+        request_fingerprint = "a" * 64
         locked = {
             "name": "MBQR-AMBIGUOUS",
             "status": "creating",
+            "request_fingerprint": request_fingerprint,
+            "transaction_refno": maybank_qr._reservation_reference(
+                request_fingerprint
+            ),
             "created_at": datetime(2026, 3, 13, 18, 0, 0),
         }
         with (
@@ -1765,6 +2084,170 @@ class MaybankQrStatusTests(unittest.TestCase):
         self.assertIsNone(updates["maybank_status"])
         audit.assert_called_once()
 
+    def test_amount_mismatch_unknown_cannot_be_marked_provider_absent(self):
+        locked = {
+            "name": "MBQR-IDENTITY-MISMATCH",
+            "status": "unknown",
+            "transaction_refno": "provider-ref-mismatch",
+            "request_fingerprint": "a" * 64,
+            "sale_amount_sen": 1000,
+            "device_id": "device-1",
+            "idempotency_key": "key-identity-mismatch",
+            "raw_response": diagnostics.redacted_json(
+                {
+                    "status": "generation_ambiguous",
+                    "reason": "provider_generation_identity_mismatch",
+                    "provider_transaction_refno": "provider-ref-mismatch",
+                    "provider_replay_blocked": True,
+                    "support_required": True,
+                }
+            ),
+        }
+        with (
+            patch.object(
+                maybank_resolution,
+                "_load_txn_for_update",
+                return_value=locked,
+            ),
+            patch.object(
+                maybank_resolution,
+                "_audit_generation_resolution",
+            ) as audit,
+        ):
+            with self.assertRaisesRegex(
+                maybank_qr.frappe.ValidationError,
+                "durable provider-absence fence",
+            ):
+                maybank_qr._abandon_ambiguous_generation(
+                    "MBQR-IDENTITY-MISMATCH",
+                    confirmation=maybank_qr.CREATION_ABANDON_CONFIRMATION,
+                    reason="Provider response has conflicting amount evidence",
+                    evidence_reference="provider-case-identity-mismatch",
+                )
+
+        audit.assert_not_called()
+
+    def test_exact_audited_provider_absence_replay_remains_idempotent(self):
+        request_fingerprint = "a" * 64
+        locked = {
+            "name": "MBQR-AUDITED-ABSENCE",
+            "status": "unknown",
+            "transaction_refno": maybank_qr._reservation_reference(
+                request_fingerprint
+            ),
+            "request_fingerprint": request_fingerprint,
+            "sale_amount_sen": 1000,
+            "device_id": "device-1",
+            "idempotency_key": "key-audited-absence",
+            "raw_response": diagnostics.redacted_json(
+                {
+                    "status": "generation_abandoned",
+                    "resolution": "provider_transaction_absent",
+                    "reason": "Provider portal confirms no transaction exists",
+                    "evidence_reference": "support-case-audited-absence",
+                    "resolved_by": "Administrator",
+                    "resolved_at": "2026-03-13T18:16:00+08:00",
+                    "provider_replay_blocked": True,
+                }
+            ),
+        }
+        with (
+            patch.object(
+                maybank_resolution,
+                "_load_txn_for_update",
+                return_value=locked,
+            ),
+            patch.object(maybank_qr.frappe.db, "set_value") as set_value,
+            patch.object(
+                maybank_resolution,
+                "_audit_generation_resolution",
+            ) as audit,
+        ):
+            result = maybank_qr._abandon_ambiguous_generation(
+                "MBQR-AUDITED-ABSENCE",
+                confirmation=maybank_qr.CREATION_ABANDON_CONFIRMATION,
+                reason="Provider portal confirms no transaction exists",
+                evidence_reference="support-case-audited-absence",
+            )
+
+        self.assertEqual(result["status"], "generation_abandoned")
+        self.assertEqual(result["resolution"], "provider_transaction_absent")
+        self.assertTrue(result["new_generation_authorized"])
+        set_value.assert_not_called()
+        audit.assert_not_called()
+
+    def test_creating_generation_with_known_reference_cannot_be_marked_absent(self):
+        locked = {
+            "name": "MBQR-KNOWN-REFERENCE",
+            "status": "creating",
+            "transaction_refno": "provider-ref-known",
+            "request_fingerprint": "a" * 64,
+            "created_at": datetime(2026, 3, 13, 18, 0, 0),
+        }
+        with (
+            patch.object(
+                maybank_resolution,
+                "_load_txn_for_update",
+                return_value=locked,
+            ),
+            patch.object(
+                maybank_resolution,
+                "_audit_generation_resolution",
+            ) as audit,
+        ):
+            with self.assertRaisesRegex(
+                maybank_qr.frappe.ValidationError,
+                "known provider reference cannot be marked absent",
+            ):
+                maybank_qr._abandon_ambiguous_generation(
+                    "MBQR-KNOWN-REFERENCE",
+                    confirmation=maybank_qr.CREATION_ABANDON_CONFIRMATION,
+                    reason="Provider response has conflicting amount evidence",
+                    evidence_reference="provider-case-known-reference",
+                )
+
+        audit.assert_not_called()
+
+    def test_finalizer_does_not_overwrite_amount_mismatch_support_fence(self):
+        reserved = {
+            "name": "MBQR-IDENTITY-MISMATCH",
+            "transaction_refno": "provider-ref-mismatch",
+            "status": "unknown",
+            "sale_amount_sen": 1000,
+            "fb_order": PREPARED_FB_ORDER,
+            "fb_order_payment": PREPARED_FB_ORDER_PAYMENT,
+            "raw_response": diagnostics.redacted_json(
+                {
+                    "status": "generation_ambiguous",
+                    "reason": "provider_generation_identity_mismatch",
+                    "provider_transaction_refno": "provider-ref-mismatch",
+                    "provider_replay_blocked": True,
+                    "support_required": True,
+                }
+            ),
+        }
+        with (
+            patch.object(
+                maybank_generation,
+                "_load_reserved_txn_with_order_lock",
+                return_value=reserved,
+            ),
+            patch.object(maybank_qr.frappe.db, "set_value") as set_value,
+        ):
+            with self.assertRaisesRegex(
+                maybank_qr.frappe.ValidationError,
+                "unresolved provider identity evidence",
+            ):
+                maybank_qr._finalize_reserved_generation(
+                    "a" * 64,
+                    result={"status": "QR000"},
+                    transaction_refno="provider-ref-mismatch",
+                    qr_data="OPAQUE-PROVIDER-QR",
+                    expires_at=datetime(2026, 3, 13, 18, 7, 0),
+                )
+
+        set_value.assert_not_called()
+
     def test_expired_pending_cannot_be_closed_during_late_settlement_window(self):
         locked = {
             "name": "MBQR-RECENTLY-EXPIRED",
@@ -1807,6 +2290,17 @@ class MaybankQrStatusTests(unittest.TestCase):
             "request_fingerprint": "b" * 64,
             "fb_order": PREPARED_FB_ORDER,
             "fb_order_payment": PREPARED_FB_ORDER_PAYMENT,
+            "raw_response": diagnostics.redacted_json(
+                {
+                    "status": "generation_abandoned",
+                    "resolution": "provider_transaction_absent",
+                    "reason": "Provider portal confirms no transaction exists",
+                    "evidence_reference": "support-case-1234",
+                    "resolved_by": "Administrator",
+                    "resolved_at": "2026-03-13T18:16:00+08:00",
+                    "provider_replay_blocked": True,
+                }
+            ),
         }
         with (
             patch.object(
