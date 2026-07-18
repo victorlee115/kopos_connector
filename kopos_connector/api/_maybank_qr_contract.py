@@ -112,8 +112,12 @@ PROVIDER_STATUS_TRANSITIONS = {
     "pending": frozenset({"scanned", "paid", "failed", "timeout"}),
     "scanned": frozenset({"paid", "failed", "timeout"}),
     "paid": frozenset(),
-    "failed": frozenset(),
-    "timeout": frozenset(),
+    # Provider failure/timeout is terminal for display, but not settlement
+    # authority. Maybank can report a late payment after the QR's display TTL
+    # or an earlier terminal-looking response, so authenticated paid truth must
+    # remain monotonic and admissible.
+    "failed": frozenset({"paid"}),
+    "timeout": frozenset({"paid"}),
     # An audited ambiguous-generation abandonment can still be superseded by
     # a late provider response from the original in-flight call.
     "unknown": frozenset({"pending", "scanned", "paid", "failed", "timeout"}),

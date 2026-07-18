@@ -44,8 +44,25 @@ from ._maybank_qr_persistence import (
     _durable_generation_release,
     _load_existing_txn,
     _load_txn_for_update,
-    _record_poll_attempt,
+    _record_poll_observation,
 )
+
+
+SALE_ATTEMPT_STATUS_FIELDS = (
+    "name",
+    "transaction_refno",
+    "status",
+    "sale_amount_sen",
+    "paid_at",
+    "expires_at",
+    "creation",
+    "device_id",
+    "provider",
+    "currency",
+    "fb_order",
+    "fb_order_payment",
+)
+
 
 def _enqueue_paid_automatic_qr_finalization(
     transaction_name: str,
@@ -176,21 +193,21 @@ def _apply_provider_poll_result(txn_name: str, result: dict[str, Any]) -> str:
         _validate_status_response(result)
         entry = _extract_status_entry(result)
     except Exception:
-        _record_poll_attempt(txn_name, result)
+        _record_poll_observation(txn_name)
         raise
     if entry is None:
         frappe.log_error(
             f"Maybank empty response for transaction {txn_name}",
             "Maybank poll: empty data",
         )
-        _record_poll_attempt(txn_name, result)
+        _record_poll_observation(txn_name)
         return cstr(frappe.db.get_value("Maybank QR Transaction", txn_name, "status"))
 
     locked_txn = _load_txn_for_update(txn_name)
     try:
         raw_status = _validate_status_entry_identity(locked_txn, entry)
     except Exception:
-        _record_poll_attempt(txn_name, result)
+        _record_poll_observation(txn_name)
         raise
     new_status = STATUS_MAP.get(str(raw_status), UNKNOWN_STATUS)
     return _transition_txn_status_locked(
@@ -261,6 +278,238 @@ def _build_payment_status_response(
     }
 
 
+def _load_sale_payment_attempts(
+    transaction: Any,
+    *,
+    expected_device_id: str | None,
+) -> list[Any]:
+    """Load every provider-issued attempt for one prepared payment.
+
+    The original reference remains the compatibility identity. The additive
+    aggregate is derived only from ERP-owned rows with the exact same prepared
+    FB Order payment, device, currency, provider, and integer-sen amount.
+    """
+
+    fb_order = cstr(_existing_value(transaction, "fb_order")).strip()
+    fb_order_payment = cstr(
+        _existing_value(transaction, "fb_order_payment")
+    ).strip()
+    if not fb_order or not fb_order_payment:
+        return [transaction]
+
+    requested_device_id = _require_exact_persisted_text(
+        _existing_value(transaction, "device_id"),
+        "Maybank transaction device_id",
+    )
+    if expected_device_id is not None and requested_device_id != expected_device_id:
+        frappe.throw(
+            "Maybank persisted transaction device does not match the authenticated device",
+            frappe.ValidationError,
+        )
+
+    filters: dict[str, Any] = {
+        "fb_order": fb_order,
+        "fb_order_payment": fb_order_payment,
+    }
+    attempts = list(
+        frappe.get_all(
+            "Maybank QR Transaction",
+            filters=filters,
+            fields=list(SALE_ATTEMPT_STATUS_FIELDS),
+            order_by="creation asc, name asc",
+            limit_page_length=0,
+        )
+        or []
+    )
+    if not attempts:
+        frappe.throw(
+            "Maybank prepared-sale payment attempts are missing",
+            frappe.ValidationError,
+        )
+
+    expected_amount_sen = _persisted_sale_amount_sen(transaction)
+    requested_reference = _require_provider_transaction_reference(
+        _existing_value(transaction, "transaction_refno"),
+        "Maybank transaction transaction_refno",
+    )
+    verified: list[Any] = []
+    requested_found = False
+    allowed_statuses = PAYMENT_STATUS_RESPONSE_STATUSES | {UNKNOWN_STATUS}
+    for attempt in attempts:
+        if (
+            cstr(_existing_value(attempt, "fb_order")).strip() != fb_order
+            or cstr(
+                _existing_value(attempt, "fb_order_payment")
+            ).strip()
+            != fb_order_payment
+            or cstr(_existing_value(attempt, "provider")).strip().lower()
+            != MAYBANK_PROVIDER
+            or cstr(_existing_value(attempt, "currency")).strip().upper()
+            != MAYBANK_CURRENCY
+            or _persisted_sale_amount_sen(attempt) != expected_amount_sen
+        ):
+            frappe.throw(
+                "Maybank linked payment attempt evidence does not match the prepared sale",
+                frappe.ValidationError,
+            )
+        if cstr(
+            _existing_value(attempt, "device_id")
+        ).strip() != requested_device_id:
+            frappe.throw(
+                "Maybank linked payment attempt belongs to another device",
+                frappe.ValidationError,
+            )
+        reference = cstr(
+            _existing_value(attempt, "transaction_refno")
+        ).strip()
+        # Preflight fences and unresolved reservations are not generated QR
+        # codes and have no provider status that can be checked.
+        if not reference or reference.startswith("REQUEST-"):
+            continue
+        reference = _require_provider_transaction_reference(
+            reference,
+            "Maybank linked transaction transaction_refno",
+        )
+        status = cstr(_existing_value(attempt, "status")).strip()
+        if status not in allowed_statuses:
+            frappe.throw(
+                "Maybank linked transaction has an invalid persisted payment status",
+                frappe.ValidationError,
+            )
+        requested_found = requested_found or reference == requested_reference
+        verified.append(attempt)
+
+    if not requested_found:
+        frappe.throw(
+            "Maybank requested transaction is missing from its prepared-sale attempts",
+            frappe.ValidationError,
+        )
+    return verified
+
+
+def _aggregate_sale_payment_response(
+    response: dict[str, Any],
+    attempts: list[Any],
+) -> dict[str, Any]:
+    status_priority = {
+        "paid": 0,
+        "scanned": 1,
+        "pending": 2,
+        "timeout": 3,
+        "failed": 4,
+        UNKNOWN_STATUS: 5,
+    }
+    ordered_attempts = sorted(
+        attempts,
+        key=lambda attempt: (
+            cstr(_existing_value(attempt, "creation")),
+            cstr(_existing_value(attempt, "name")),
+        ),
+    )
+    sale_status = min(
+        (
+            cstr(_existing_value(attempt, "status")).strip()
+            for attempt in ordered_attempts
+        ),
+        key=lambda status: status_priority.get(status, 99),
+    )
+    paid_attempts = sorted(
+        (
+            attempt
+            for attempt in ordered_attempts
+            if cstr(_existing_value(attempt, "status")).strip() == "paid"
+        ),
+        key=lambda attempt: (
+            cstr(
+                _existing_value(attempt, "paid_at")
+                or _existing_value(attempt, "creation")
+            ),
+            cstr(_existing_value(attempt, "name")),
+        ),
+    )
+    winning_attempt = paid_attempts[0] if paid_attempts else None
+    response.update(
+        {
+            "sale_payment_status": sale_status,
+            "sale_attempt_count": len(ordered_attempts),
+            "sale_attempts": [
+                {
+                    "transaction_name": cstr(
+                        _existing_value(attempt, "name")
+                    ).strip()
+                    or None,
+                    "transaction_refno": _require_provider_transaction_reference(
+                        _existing_value(attempt, "transaction_refno"),
+                        "Maybank linked transaction transaction_refno",
+                    ),
+                    "status": cstr(
+                        _existing_value(attempt, "status")
+                    ).strip(),
+                    "paid_at": (
+                        _serialize_site_datetime(
+                            _existing_value(attempt, "paid_at")
+                        )
+                        if _existing_value(attempt, "paid_at")
+                        else None
+                    ),
+                    "expires_at": (
+                        _serialize_site_datetime(
+                            _existing_value(attempt, "expires_at")
+                        )
+                        if _existing_value(attempt, "expires_at")
+                        else None
+                    ),
+                }
+                for attempt in ordered_attempts
+            ],
+            "paid_transaction_name": (
+                cstr(_existing_value(winning_attempt, "name")).strip()
+                if winning_attempt is not None
+                else None
+            ),
+            "paid_transaction_refno": (
+                _require_provider_transaction_reference(
+                    _existing_value(winning_attempt, "transaction_refno"),
+                    "Maybank paid transaction transaction_refno",
+                )
+                if winning_attempt is not None
+                else None
+            ),
+        }
+    )
+    return response
+
+
+def _enqueue_linked_sale_polling(
+    transaction: Any,
+    *,
+    exclude_transaction_name: str | None = None,
+) -> None:
+    fb_order = cstr(_existing_value(transaction, "fb_order")).strip()
+    fb_order_payment = cstr(
+        _existing_value(transaction, "fb_order_payment")
+    ).strip()
+    if not fb_order or not fb_order_payment:
+        return
+    try:
+        from kopos_connector.tasks.poll_maybank import (
+            enqueue_linked_maybank_sale_poll_attempts,
+        )
+
+        enqueue_linked_maybank_sale_poll_attempts(
+            fb_order,
+            fb_order_payment,
+            exclude_transaction_name=exclude_transaction_name,
+        )
+    except Exception as error:
+        # The scheduled ERP sweep is the durable fallback. Queue pressure must
+        # not turn a read-only status request into a cashier-blocking failure.
+        log_sanitized_error(
+            "Maybank linked-attempt poll dispatch failed",
+            error,
+        )
+
+
 def check_maybank_payment_payload(
     transaction_refno: str, device_id: str | None = None
 ) -> dict[str, Any]:
@@ -286,25 +535,49 @@ def check_maybank_payment_payload(
 
     persisted_status = cstr(txn.status)
     poll_attempted = False
-    if persisted_status in POLLABLE_STATUSES:
-        last_poll = txn.last_polled_at or txn.created_at
-        if (now_datetime() - last_poll).total_seconds() > 2:
+    if persisted_status in POLLABLE_STATUSES | {"failed", "timeout", UNKNOWN_STATUS}:
+        from kopos_connector.tasks.poll_maybank import (
+            is_maybank_attempt_pollable,
+            is_maybank_poll_due,
+        )
+
+        current_now = now_datetime()
+        if is_maybank_attempt_pollable(txn) and is_maybank_poll_due(
+            txn,
+            current_now,
+        ):
             poll_attempted = True
+            # Queue every due sibling before the compatibility poll below.
+            # The requested row is excluded because this request checks it
+            # directly; every other generated reference can proceed in its own
+            # worker at the same time.
+            _enqueue_linked_sale_polling(
+                txn,
+                exclude_transaction_name=txn_name,
+            )
             try:
                 _poll_txn_status(txn)
             except Exception as error:
                 log_sanitized_error("Maybank on-demand poll failed", error)
+
+    if not poll_attempted:
+        _enqueue_linked_sale_polling(txn)
 
     # Polling persists provider truth under a row lock. Re-read after an
     # attempted poll so the response cannot be assembled from the stale
     # pre-poll document or from untrusted provider/client payload fields.
     if poll_attempted:
         txn = frappe.get_doc("Maybank QR Transaction", txn_name)
-    return _build_payment_status_response(
+    response = _build_payment_status_response(
         txn,
         expected_transaction_refno=expected_transaction_refno,
         expected_device_id=expected_device_id,
     )
+    attempts = _load_sale_payment_attempts(
+        txn,
+        expected_device_id=expected_device_id,
+    )
+    return _aggregate_sale_payment_response(response, attempts)
 
 
 def _update_txn_status(
@@ -341,7 +614,11 @@ def _transition_txn_status_locked(
     if status != current_status and status not in PROVIDER_STATUS_TRANSITIONS[
         current_status
     ]:
-        _record_poll_attempt(name, raw_response)
+        # A slower response may finish after a newer worker has persisted
+        # scanned/paid truth or after support has stored a terminal release
+        # fence. Count that observation, but never replace the stronger raw
+        # evidence with a stale or regressive payload.
+        _record_poll_observation(name)
         return current_status
 
     poll_now = now_datetime()

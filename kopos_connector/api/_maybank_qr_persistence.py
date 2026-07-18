@@ -338,6 +338,20 @@ def _record_poll_attempt(txn_name: str, payload: object) -> None:
     )
 
 
+def _record_poll_observation(txn_name: str) -> None:
+    """Count a stale/untrusted response without replacing durable evidence."""
+
+    frappe.db.sql(
+        """
+        UPDATE `tabMaybank QR Transaction`
+        SET last_polled_at = %s,
+            poll_count = poll_count + 1
+        WHERE name = %s
+        """,
+        (now_datetime(), txn_name),
+    )
+
+
 def _load_txn_for_update(txn_name: str) -> Any:
     rows = frappe.db.sql(
         """
@@ -346,6 +360,7 @@ def _load_txn_for_update(txn_name: str) -> Any:
             sale_amount_sen, expires_at, device_id, provider, company, currency,
             business_date, request_fingerprint, outlet_id, created_at,
             idempotency_key, fb_order, fb_order_payment, sales_invoice,
+            raw_response,
             last_polled_at, poll_count, maybank_status, paid_at, scanned_at,
             is_test_simulation, test_simulation_key,
             test_simulation_identity_sha256, test_simulated_by,

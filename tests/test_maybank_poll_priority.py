@@ -7,6 +7,8 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock, patch
 
+import pytest
+
 from tests.fake_frappe import install_fake_frappe_modules
 
 install_fake_frappe_modules()
@@ -47,6 +49,9 @@ def _transaction(
     status: str = "pending",
     expires_at: datetime = datetime(2026, 3, 13, 18, 10, 0),
     last_polled_at: datetime | None = None,
+    fb_order: str | None = None,
+    fb_order_payment: str | None = None,
+    raw_response: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         name=name,
@@ -61,6 +66,13 @@ def _transaction(
         currency="MYR",
         device_id="device-1",
         provider="maybank_qr",
+        idempotency_key=f"idem-{name}",
+        request_fingerprint=name.rjust(64, "0")[-64:],
+        maybank_status=2,
+        qr_data=f"qr-{name}",
+        raw_response=raw_response,
+        fb_order=fb_order,
+        fb_order_payment=fb_order_payment,
     )
 
 
@@ -291,3 +303,199 @@ def test_job_identity_deduplicates_the_same_transaction_across_lanes() -> None:
     assert first["job_id"] == second["job_id"]
     assert first["deduplicate"] is True
     assert second["deduplicate"] is True
+
+
+def test_selected_sale_expands_to_every_due_linked_attempt_in_same_tick() -> None:
+    first = _transaction(
+        "attempt-current",
+        fb_order="FB-ORDER-1",
+        fb_order_payment="PAY-1",
+    )
+    earlier = _transaction(
+        "attempt-earlier",
+        status="timeout",
+        fb_order="FB-ORDER-1",
+        fb_order_payment="PAY-1",
+    )
+
+    with (
+        patch.object(
+            poll_maybank.frappe,
+            "get_all",
+            side_effect=[[], [first]],
+        ),
+        patch.object(
+            poll_maybank,
+            "_load_linked_poll_attempts",
+            return_value=[first, earlier],
+        ) as load_linked,
+    ):
+        scanned, pending = poll_maybank._load_due_active_transactions(POLL_NOW)
+
+    assert scanned == []
+    assert [row.name for row in pending] == [
+        "attempt-current",
+        "attempt-earlier",
+    ]
+    load_linked.assert_called_once_with({("FB-ORDER-1", "PAY-1")})
+
+
+def test_scheduler_dispatches_cross_lane_siblings_in_the_same_tick() -> None:
+    cache, _redis_client = _redis_cache()
+    active = _transaction(
+        "attempt-active",
+        fb_order="FB-ORDER-1",
+        fb_order_payment="PAY-1",
+    )
+    expired = _transaction(
+        "attempt-expired",
+        status="timeout",
+        expires_at=datetime(2026, 3, 13, 18, 4, 0),
+        last_polled_at=datetime(2026, 3, 13, 18, 4, 0),
+        fb_order="FB-ORDER-1",
+        fb_order_payment="PAY-1",
+    )
+    jobs: list[tuple[str, str]] = []
+
+    with (
+        patch.object(poll_maybank.frappe, "cache", return_value=cache),
+        patch.object(poll_maybank, "now_datetime", return_value=POLL_NOW),
+        patch.object(
+            poll_maybank.frappe,
+            "get_all",
+            side_effect=[[], [active], []],
+        ),
+        patch.object(
+            poll_maybank,
+            "_load_linked_poll_attempts",
+            return_value=[active, expired],
+        ),
+        patch.object(
+            poll_maybank,
+            "_enqueue_poll_job",
+            side_effect=lambda name, *, lane: jobs.append((name, lane)),
+        ),
+    ):
+        poll_maybank.poll_pending_maybank_transactions()
+
+    assert jobs == [
+        ("attempt-active", "active"),
+        ("attempt-expired", "stale"),
+    ]
+
+
+def test_linked_status_read_enqueues_active_and_expired_attempts_independently() -> None:
+    active = _transaction(
+        "attempt-active",
+        fb_order="FB-ORDER-1",
+        fb_order_payment="PAY-1",
+    )
+    expired = _transaction(
+        "attempt-expired",
+        status="failed",
+        expires_at=datetime(2026, 3, 13, 18, 5, 0),
+        last_polled_at=datetime(2026, 3, 13, 18, 4, 0),
+        fb_order="FB-ORDER-1",
+        fb_order_payment="PAY-1",
+    )
+    jobs: list[tuple[str, str]] = []
+
+    with (
+        patch.object(poll_maybank, "now_datetime", return_value=POLL_NOW),
+        patch.object(
+            poll_maybank,
+            "_load_linked_poll_attempts",
+            return_value=[active, expired],
+        ),
+        patch.object(
+            poll_maybank,
+            "_enqueue_poll_job",
+            side_effect=lambda name, *, lane: jobs.append((name, lane)),
+        ),
+    ):
+        dispatched = poll_maybank.enqueue_linked_maybank_sale_poll_attempts(
+            "FB-ORDER-1",
+            "PAY-1",
+        )
+
+    assert dispatched == 2
+    assert jobs == [
+        ("attempt-active", "active"),
+        ("attempt-expired", "stale"),
+    ]
+
+
+def test_on_demand_poll_excludes_reference_already_checked_by_request() -> None:
+    requested = _transaction(
+        "attempt-requested",
+        fb_order="FB-ORDER-1",
+        fb_order_payment="PAY-1",
+    )
+    sibling = _transaction(
+        "attempt-sibling",
+        fb_order="FB-ORDER-1",
+        fb_order_payment="PAY-1",
+    )
+    jobs: list[tuple[str, str]] = []
+
+    with (
+        patch.object(poll_maybank, "now_datetime", return_value=POLL_NOW),
+        patch.object(
+            poll_maybank,
+            "_load_linked_poll_attempts",
+            return_value=[requested, sibling],
+        ),
+        patch.object(
+            poll_maybank,
+            "_enqueue_poll_job",
+            side_effect=lambda name, *, lane: jobs.append((name, lane)),
+        ),
+    ):
+        dispatched = poll_maybank.enqueue_linked_maybank_sale_poll_attempts(
+            "FB-ORDER-1",
+            "PAY-1",
+            exclude_transaction_name="attempt-requested",
+        )
+
+    assert dispatched == 1
+    assert jobs == [("attempt-sibling", "active")]
+
+
+def test_transport_failure_preserves_last_provider_evidence() -> None:
+    transaction = _transaction("attempt-network-error")
+    client = Mock()
+    client.check_status.side_effect = TimeoutError("provider unavailable")
+
+    with patch.object(
+        poll_maybank,
+        "_record_poll_observation",
+    ) as record_observation:
+        with pytest.raises(TimeoutError, match="provider unavailable"):
+            poll_maybank._poll_single(client, transaction, now=POLL_NOW)
+
+    record_observation.assert_called_once_with("attempt-network-error")
+
+
+def test_provider_timeout_remains_pollable_without_durable_cancellation() -> None:
+    provider_timeout = _transaction("attempt-timeout", status="timeout")
+    provider_timeout.maybank_status = 6
+
+    assert poll_maybank.is_maybank_attempt_pollable(provider_timeout) is True
+
+
+def test_audited_provider_cancellation_is_not_polled_again() -> None:
+    cancelled = _transaction(
+        "attempt-cancelled",
+        status="timeout",
+        raw_response=(
+            '{"status":"timeout","resolution":"provider_transaction_cancelled",'
+            '"reason":"Provider portal confirms cancellation",'
+            '"evidence_reference":"case-123",'
+            '"resolved_by":"manager@example.test",'
+            '"resolved_at":"2026-03-13T18:05:00+08:00",'
+            '"provider_reference":"ref-attempt-cancelled"}'
+        ),
+    )
+    cancelled.maybank_status = None
+
+    assert poll_maybank.is_maybank_attempt_pollable(cancelled) is False

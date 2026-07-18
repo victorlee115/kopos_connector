@@ -711,6 +711,9 @@ class MaybankQrStatusTests(unittest.TestCase):
         txn.status = "pending"
         txn.last_polled_at = datetime(2026, 3, 13, 18, 3, 0)
         txn.created_at = datetime(2026, 3, 13, 18, 0, 0)
+        txn.expires_at = datetime(2026, 3, 13, 18, 10, 0)
+        txn.fb_order = None
+        txn.fb_order_payment = None
         txn.device_id = "device-1"
         txn.sale_amount = "10.00"
         txn.sale_amount_sen = 1000
@@ -766,6 +769,139 @@ class MaybankQrStatusTests(unittest.TestCase):
         self.assertEqual(result["sale_amount_sen"], 1000)
         self.assertEqual(result["sale_amount"], "10.00")
         self.assertIsNotNone(result["paid_at"])
+
+    def test_check_payment_aggregates_every_attempt_for_the_prepared_sale(self):
+        current = SimpleNamespace(
+            name="MBQR-CURRENT",
+            transaction_refno="ref-current",
+            status="pending",
+            last_polled_at=datetime(2026, 3, 13, 18, 6, 0),
+            created_at=datetime(2026, 3, 13, 18, 5, 0),
+            creation=datetime(2026, 3, 13, 18, 5, 0),
+            expires_at=datetime(2026, 3, 13, 18, 10, 0),
+            device_id="device-1",
+            sale_amount_sen=1000,
+            currency="MYR",
+            provider="maybank_qr",
+            paid_at=None,
+            fb_order="FB-ORDER-1",
+            fb_order_payment="PAY-1",
+        )
+        earlier_paid = {
+            "name": "MBQR-EARLIER",
+            "transaction_refno": "ref-earlier",
+            "status": "paid",
+            "sale_amount_sen": 1000,
+            "paid_at": datetime(2026, 3, 13, 18, 4, 30),
+            "expires_at": datetime(2026, 3, 13, 18, 4, 0),
+            "creation": datetime(2026, 3, 13, 18, 3, 0),
+            "device_id": "device-1",
+            "provider": "maybank_qr",
+            "currency": "MYR",
+            "fb_order": "FB-ORDER-1",
+            "fb_order_payment": "PAY-1",
+        }
+        current_row = {
+            fieldname: getattr(current, fieldname, None)
+            for fieldname in maybank_status.SALE_ATTEMPT_STATUS_FIELDS
+        }
+
+        with (
+            patch.object(maybank_qr.frappe.db, "get_value", return_value=current.name),
+            patch.object(maybank_qr.frappe, "get_doc", return_value=current),
+            patch.object(
+                maybank_qr.frappe,
+                "get_all",
+                return_value=[earlier_paid, current_row],
+            ),
+            patch.object(
+                maybank_status,
+                "now_datetime",
+                return_value=datetime(2026, 3, 13, 18, 6, 0),
+            ),
+            patch.object(maybank_status, "_enqueue_linked_sale_polling") as enqueue_all,
+        ):
+            result = maybank_qr.check_maybank_payment_payload(
+                "ref-current",
+                "device-1",
+            )
+
+        self.assertEqual(result["status"], "pending")
+        self.assertEqual(result["transaction_refno"], "ref-current")
+        self.assertEqual(result["sale_payment_status"], "paid")
+        self.assertEqual(result["sale_attempt_count"], 2)
+        self.assertEqual(result["paid_transaction_name"], "MBQR-EARLIER")
+        self.assertEqual(result["paid_transaction_refno"], "ref-earlier")
+        self.assertEqual(
+            [attempt["transaction_refno"] for attempt in result["sale_attempts"]],
+            ["ref-earlier", "ref-current"],
+        )
+        enqueue_all.assert_called_once_with(current)
+
+    def test_check_payment_rejects_cross_device_linked_attempt(self):
+        current = SimpleNamespace(
+            name="MBQR-CURRENT",
+            transaction_refno="ref-current",
+            status="pending",
+            sale_amount_sen=1000,
+            device_id="device-1",
+            provider="maybank_qr",
+            currency="MYR",
+            fb_order="FB-ORDER-1",
+            fb_order_payment="PAY-1",
+        )
+        other_device = {
+            "name": "MBQR-OTHER",
+            "transaction_refno": "ref-other",
+            "status": "pending",
+            "sale_amount_sen": 1000,
+            "device_id": "device-2",
+            "provider": "maybank_qr",
+            "currency": "MYR",
+            "fb_order": "FB-ORDER-1",
+            "fb_order_payment": "PAY-1",
+        }
+
+        with patch.object(
+            maybank_status.frappe,
+            "get_all",
+            return_value=[other_device],
+        ):
+            with self.assertRaisesRegex(
+                maybank_qr.frappe.ValidationError,
+                "belongs to another device",
+            ):
+                maybank_status._load_sale_payment_attempts(
+                    current,
+                    expected_device_id="device-1",
+                )
+
+    def test_check_payment_rejects_missing_prepared_sale_attempts(self):
+        current = SimpleNamespace(
+            name="MBQR-CURRENT",
+            transaction_refno="ref-current",
+            status="pending",
+            sale_amount_sen=1000,
+            device_id="device-1",
+            provider="maybank_qr",
+            currency="MYR",
+            fb_order="FB-ORDER-1",
+            fb_order_payment="PAY-1",
+        )
+
+        with patch.object(
+            maybank_status.frappe,
+            "get_all",
+            return_value=[],
+        ):
+            with self.assertRaisesRegex(
+                maybank_qr.frappe.ValidationError,
+                "payment attempts are missing",
+            ):
+                maybank_status._load_sale_payment_attempts(
+                    current,
+                    expected_device_id="device-1",
+                )
 
     def test_check_payment_rejects_persisted_reference_drift(self):
         txn = SimpleNamespace(
@@ -1125,6 +1261,9 @@ class MaybankQrStatusTests(unittest.TestCase):
                         created_at=datetime(2026, 3, 13, 18, 0, 0),
                         expires_at=datetime(2026, 3, 13, 18, 5, 0),
                         poll_count=1,
+                        sale_amount_sen=1000,
+                        device_id="device-1",
+                        provider="maybank_qr",
                     )
                 ],
             ),
@@ -1185,7 +1324,10 @@ class MaybankQrStatusTests(unittest.TestCase):
         self.assertEqual(get_all.call_count, 3)
         scanned_call, pending_call, stale_call = get_all.call_args_list
         self.assertEqual(scanned_call.kwargs["filters"]["status"], "scanned")
-        self.assertEqual(pending_call.kwargs["filters"]["status"], "pending")
+        self.assertEqual(
+            pending_call.kwargs["filters"]["status"],
+            ["in", ["failed", "pending", "timeout", "unknown"]],
+        )
         self.assertEqual(scanned_call.kwargs["filters"]["expires_at"][0], ">")
         self.assertEqual(pending_call.kwargs["filters"]["expires_at"][0], ">")
         self.assertEqual(stale_call.kwargs["filters"]["expires_at"][0], "<=")
@@ -1361,7 +1503,7 @@ class MaybankQrStatusTests(unittest.TestCase):
         }
         stale_response = {"status": "QR000", "data": [{"status": 2}]}
         with (
-            patch.object(maybank_status, "_record_poll_attempt") as record_attempt,
+            patch.object(maybank_status, "_record_poll_observation") as record_attempt,
             patch.object(maybank_qr.frappe.db, "set_value") as set_value,
         ):
             status = maybank_qr._transition_txn_status_locked(
@@ -1373,7 +1515,7 @@ class MaybankQrStatusTests(unittest.TestCase):
 
         self.assertEqual(status, "paid")
         set_value.assert_not_called()
-        record_attempt.assert_called_once_with("txn-paid", stale_response)
+        record_attempt.assert_called_once_with("txn-paid")
 
     def test_scanned_cannot_regress_to_pending(self):
         scanned = {
@@ -1384,7 +1526,7 @@ class MaybankQrStatusTests(unittest.TestCase):
             "scanned_at": datetime(2026, 3, 13, 18, 4, 0),
         }
         with (
-            patch.object(maybank_status, "_record_poll_attempt") as record_attempt,
+            patch.object(maybank_status, "_record_poll_observation") as record_attempt,
             patch.object(maybank_qr.frappe.db, "set_value") as set_value,
         ):
             status = maybank_qr._transition_txn_status_locked(
@@ -1397,6 +1539,54 @@ class MaybankQrStatusTests(unittest.TestCase):
         self.assertEqual(status, "scanned")
         set_value.assert_not_called()
         record_attempt.assert_called_once()
+
+    def test_provider_timeout_can_advance_to_authenticated_late_paid(self):
+        timeout = {
+            "name": "txn-late-paid",
+            "transaction_refno": "ref-late-paid",
+            "status": "timeout",
+            "poll_count": 8,
+            "paid_at": None,
+            "scanned_at": None,
+            "fb_order": "FB-ORDER-1",
+            "fb_order_payment": "PAY-1",
+        }
+        txn_doc = SimpleNamespace(
+            transaction_refno="ref-late-paid",
+            owner="device-user@example.test",
+        )
+        with (
+            patch.object(maybank_qr.frappe.db, "set_value") as set_value,
+            patch.object(maybank_qr.frappe, "get_doc", return_value=txn_doc),
+            patch.object(
+                maybank_qr.frappe,
+                "publish_realtime",
+                create=True,
+            ),
+            patch.object(
+                maybank_status,
+                "_enqueue_paid_automatic_qr_finalization",
+            ) as enqueue_finalization,
+            patch.object(
+                maybank_status,
+                "now_datetime",
+                return_value=datetime(2026, 3, 13, 20, 0, 0),
+            ),
+        ):
+            status = maybank_qr._transition_txn_status_locked(
+                timeout,
+                "paid",
+                1,
+                {"status": "QR000", "data": [{"status": 1}]},
+            )
+
+        self.assertEqual(status, "paid")
+        updates = set_value.call_args.args[2]
+        self.assertEqual(updates["status"], "paid")
+        self.assertEqual(updates["maybank_status"], 1)
+        self.assertEqual(updates["poll_count"], 9)
+        self.assertEqual(updates["paid_at"], datetime(2026, 3, 13, 20, 0, 0))
+        enqueue_finalization.assert_called_once_with("txn-late-paid", timeout)
 
     def test_pending_to_paid_is_locked_then_later_stale_result_is_ignored(self):
         pending = {
@@ -1420,7 +1610,7 @@ class MaybankQrStatusTests(unittest.TestCase):
                 "publish_realtime",
                 create=True,
             ) as publish,
-            patch.object(maybank_status, "_record_poll_attempt") as record_attempt,
+            patch.object(maybank_status, "_record_poll_observation") as record_attempt,
             patch.object(
                 maybank_status,
                 "now_datetime",
@@ -1472,7 +1662,7 @@ class MaybankQrStatusTests(unittest.TestCase):
         }
         with (
             patch.object(maybank_status, "_load_txn_for_update", return_value=locked),
-            patch.object(maybank_status, "_record_poll_attempt") as record_attempt,
+            patch.object(maybank_status, "_record_poll_observation") as record_attempt,
             patch.object(maybank_qr.frappe.db, "set_value") as set_value,
         ):
             with self.assertRaisesRegex(
@@ -1482,7 +1672,7 @@ class MaybankQrStatusTests(unittest.TestCase):
                 maybank_qr._apply_provider_poll_result("txn-locked", response)
 
         set_value.assert_not_called()
-        record_attempt.assert_called_once_with("txn-locked", response)
+        record_attempt.assert_called_once_with("txn-locked")
 
     def test_creating_reservation_never_replays_provider_and_escalates_when_stale(self):
         existing = {
