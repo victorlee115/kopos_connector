@@ -117,7 +117,7 @@ archival snapshot.
 | `kopos_connector/kopos/services/accounting/qr_reconciliation_service.py` | `_qr_reconciliation_context.py`, `_qr_reconciliation_success.py`, `_qr_reconciliation_failure.py` |
 | `kopos_connector/kopos/services/accounting/duplicate_qr_payment_service.py` | `_duplicate_qr_contract.py`, `_duplicate_qr_incident.py`, `_duplicate_qr_journal.py`, `_duplicate_qr_refund.py`, `_duplicate_qr_terminal_evidence.py` |
 | `kopos_connector/kopos/services/accounting/automatic_qr_finalization_service.py` | `automatic_qr_finalization_core.py`, `automatic_qr_finalization_recovery.py` |
-| `kopos_connector/api/maybank_qr.py` | `_maybank_qr_contract.py`, `_maybank_qr_persistence.py`, `_maybank_qr_rate_limit.py`, `_maybank_qr_generation.py`, `_maybank_qr_status.py`, `_maybank_qr_resolution.py`, `maybank_qr_simulation.py` |
+| `kopos_connector/api/maybank_qr.py` | `_maybank_qr_contract.py`, `_maybank_qr_persistence.py`, `_maybank_qr_rate_limit.py`, `_maybank_qr_prepared_sale.py`, `_maybank_qr_generation.py`, `_maybank_qr_replacement.py`, `_maybank_qr_status.py`, `_maybank_qr_resolution.py`, `maybank_qr_simulation.py` |
 
 The compatibility facades preserve the scheduler callable, DocType-controller
 imports, public Frappe method names, request/response fields, GET payment-status

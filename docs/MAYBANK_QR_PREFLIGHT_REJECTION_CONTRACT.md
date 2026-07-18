@@ -36,6 +36,8 @@ JSON shape only after committing the terminal rejection fence:
 - `provider_configuration_rejected`
 - `rate_limit_exceeded`
 - `rate_limiter_unavailable`
+- `replacement_request_rejected` (only for a valid, bound Automatic QR display
+  replacement; see `MAYBANK_QR_DISPLAY_REPLACEMENT_CONTRACT.md`)
 
 The mobile client must require HTTP `409`, every fixed discriminator above,
 an explicit-timezone `checked_at`, and exact equality of `device_id`,

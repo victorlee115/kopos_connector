@@ -206,6 +206,15 @@ provider-timeout attempts that can still become paid late. Display expiry uses
 is the only timeout release that stops polling. See the
 [Maybank QR polling contract](docs/MAYBANK_QR_POLLING_CONTRACT.md).
 
+If a provider-issued QR cannot be rendered, or its display expiry has passed,
+the tablet may invisibly request a new display using the same generation route
+and the exact old provider reference. ERP permits at most three issued QRs for
+one prepared payment and never releases an old reference; every attempt remains
+pollable and the earliest paid attempt wins. The successful response stays
+backward compatible, while a no-provider replacement rejection is a durable
+`409` scoped only to the fresh replacement intent. See the
+[Maybank QR display replacement contract](docs/MAYBANK_QR_DISPLAY_REPLACEMENT_CONTRACT.md).
+
 The **DuitNow QR** Mode of Payment must be type **Bank** and resolve to exactly
 one enabled, non-group Bank or untyped Asset clearing account for the company
 and currency. A physical Cash ledger is rejected during provider preflight, so

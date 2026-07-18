@@ -20,6 +20,11 @@ transition to authenticated `paid`. An exact audited
 `provider_transaction_cancelled` release is no longer polled. A QR display
 expiry alone never releases or closes provider settlement.
 
+An automatically replaced display follows
+`MAYBANK_QR_DISPLAY_REPLACEMENT_CONTRACT.md`. Replacement never changes an old
+attempt's provider status or pollability; it only adds another independently
+polled reference for the same prepared payment.
+
 ## Cadence
 
 - Before display expiry: scanned attempts are eligible after 1 second; other
