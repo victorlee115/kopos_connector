@@ -35,6 +35,7 @@ ALLOWED_DEVICE_API_PATHS = frozenset(
         "/api/method/kopos_connector.api.process_refund",
         "/api/method/kopos_connector.api.request_shift_manager_approval",
         "/api/method/kopos_connector.api.generate_maybank_qr",
+        "/api/method/kopos_connector.api.get_maybank_qr_readiness",
         "/api/method/kopos_connector.api.check_maybank_payment",
         "/api/method/kopos_connector.api.upload_manual_qr_receipt",
         "/api/method/kopos_connector.api.fetch_manual_qr_reconciliation_status",

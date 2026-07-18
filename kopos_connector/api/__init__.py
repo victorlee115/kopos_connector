@@ -1835,6 +1835,47 @@ def request_shift_manager_approval(**kwargs: Any) -> None:
         )
 
 
+@frappe.whitelist(methods=["GET"])
+def get_maybank_qr_readiness(device_id: str | None = None) -> None:
+    """Return read-only Automatic QR capability without provider side effects."""
+    from .maybank_qr_readiness import get_maybank_qr_readiness_payload
+
+    try:
+        require_kopos_api_access()
+        resolved_device_id = frappe.utils.cstr(device_id).strip() or None
+        if resolved_device_id:
+            device_doc, profile_doc = require_device_operational_scope(
+                resolved_device_id,
+                currency="MYR",
+            )
+        else:
+            authenticated_device = get_authenticated_device_doc()
+            resolved_device_id = frappe.utils.cstr(
+                getattr(authenticated_device, "device_id", None)
+            ).strip()
+            device_doc, profile_doc = require_device_operational_scope(
+                resolved_device_id,
+                currency="MYR",
+            )
+        _write_response(
+            get_maybank_qr_readiness_payload(device_doc, profile_doc)
+        )
+    except frappe.ValidationError as exc:
+        _write_response(
+            {"status": "error", "message": str(exc)},
+            http_status_code=400,
+        )
+    except Exception as error:
+        log_sanitized_error("KoPOS Maybank QR readiness check failed", error)
+        _write_response(
+            {
+                "status": "error",
+                "message": "Failed to check Automatic QR availability",
+            },
+            http_status_code=500,
+        )
+
+
 @frappe.whitelist(methods=["POST"])
 def generate_maybank_qr(**kwargs: Any) -> None:
     """Generate a Maybank DuitNow QR code for POS payment."""
@@ -2119,6 +2160,7 @@ __all__ = [
     "create_pos_provisioning",
     "fetch_manual_qr_reconciliation_status",
     "generate_maybank_qr",
+    "get_maybank_qr_readiness",
     "get_catalog",
     "get_device_config",
     "get_item_modifiers",
