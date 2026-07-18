@@ -418,3 +418,21 @@ class TestFBSchemaContract(unittest.TestCase):
         ]:
             doc = load_doctype(child)
             self.assertEqual(doc.get("istable"), 1, child)
+
+    def test_maybank_qr_replacement_identity_is_durable(self):
+        doc = load_doctype("maybank_qr_transaction")
+        names = fieldnames(doc)
+        self.assertTrue(
+            {
+                "replacement_reason",
+                "replaces_transaction_refno",
+                "round_number",
+            }.issubset(names)
+        )
+        reason_field = next(
+            field
+            for field in doc["fields"]
+            if field.get("fieldname") == "replacement_reason"
+        )
+        self.assertIn("expired_display", reason_field["options"])
+        self.assertIn("unrenderable_display", reason_field["options"])

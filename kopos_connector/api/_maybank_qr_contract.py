@@ -149,11 +149,41 @@ PREFLIGHT_REASON_RATE_LIMIT = "rate_limit_exceeded"
 PREFLIGHT_REASON_RATE_LIMITER_UNAVAILABLE = "rate_limiter_unavailable"
 
 
+PREFLIGHT_REASON_REPLACEMENT_REQUEST = "replacement_request_rejected"
+
+
+PREFLIGHT_REASON_REPLACEMENT_NOT_EXPIRED = "replacement_not_yet_expired"
+
+
+PREFLIGHT_REASON_REPLACEMENT_LIMIT = "replacement_attempt_limit_reached"
+
+
+PREFLIGHT_REASON_REPLACEMENT_STATE = "replacement_state_not_eligible"
+
+
+PREFLIGHT_REASON_REPLACEMENT_TARGET = "replacement_target_mismatch"
+
+
+PREFLIGHT_REASON_REPLACEMENT_SALE_TERMINAL = "replacement_sale_terminal"
+
+
+REPLACEMENT_REJECTION_CODES = frozenset(
+    {
+        PREFLIGHT_REASON_REPLACEMENT_NOT_EXPIRED,
+        PREFLIGHT_REASON_REPLACEMENT_LIMIT,
+        PREFLIGHT_REASON_REPLACEMENT_STATE,
+        PREFLIGHT_REASON_REPLACEMENT_TARGET,
+        PREFLIGHT_REASON_REPLACEMENT_SALE_TERMINAL,
+    }
+)
+
+
 PREFLIGHT_REASON_CODES = frozenset(
     {
         PREFLIGHT_REASON_PROVIDER_CONFIGURATION,
         PREFLIGHT_REASON_RATE_LIMIT,
         PREFLIGHT_REASON_RATE_LIMITER_UNAVAILABLE,
+        PREFLIGHT_REASON_REPLACEMENT_REQUEST,
     }
 )
 
@@ -394,17 +424,30 @@ def _request_fingerprint(
     accepted_sale_fingerprint: str = "",
     amount_sen: int | None = None,
     currency: str = "",
+    replacement_reason: str = "",
+    replaces_transaction_refno: str = "",
 ) -> str:
+    identity = {
+        "accepted_sale_fingerprint": accepted_sale_fingerprint,
+        "amount_sen": amount_sen,
+        "currency": currency,
+        "device_id": device_id,
+        "fb_order": fb_order,
+        "fb_order_payment": fb_order_payment,
+        "idempotency_key": idempotency_key,
+    }
+    # Keep the legacy first-attempt fingerprint byte-for-byte compatible. The
+    # additive fields participate only in a display-replacement identity, so a
+    # replay cannot silently change which QR it replaces or why.
+    if replacement_reason or replaces_transaction_refno:
+        identity.update(
+            {
+                "replacement_reason": replacement_reason,
+                "replaces_transaction_refno": replaces_transaction_refno,
+            }
+        )
     value = json.dumps(
-        {
-            "accepted_sale_fingerprint": accepted_sale_fingerprint,
-            "amount_sen": amount_sen,
-            "currency": currency,
-            "device_id": device_id,
-            "fb_order": fb_order,
-            "fb_order_payment": fb_order_payment,
-            "idempotency_key": idempotency_key,
-        },
+        identity,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")

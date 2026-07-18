@@ -18,6 +18,8 @@ from ._maybank_qr_contract import (
     MAYBANK_CURRENCY,
     MAYBANK_QR_REQUEST_REJECTED_NO_PROVIDER_ATTEMPT,
     PREFLIGHT_REASON_CODES,
+    PREFLIGHT_REASON_REPLACEMENT_REQUEST,
+    REPLACEMENT_REJECTION_CODES,
     UNKNOWN_STATUS,
     _coerce_site_datetime,
     _existing_value,
@@ -38,6 +40,7 @@ def _load_existing_txn(device_id: str, idempotency_key: str) -> Any:
             name, transaction_refno, status, qr_data, sale_amount,
             sale_amount_sen, expires_at, device_id, provider, company, currency,
             business_date, idempotency_key, request_fingerprint, outlet_id, created_at,
+            replacement_reason, replaces_transaction_refno,
             fb_order, fb_order_payment, sales_invoice,
             raw_response,
             last_polled_at, poll_count, maybank_status, paid_at, scanned_at
@@ -62,6 +65,7 @@ def _load_reserved_txn_for_update(request_fingerprint: str) -> Any:
             name, transaction_refno, status, qr_data, sale_amount,
             sale_amount_sen, expires_at, device_id, provider, company, currency,
             business_date, idempotency_key, request_fingerprint, outlet_id, created_at,
+            replacement_reason, replaces_transaction_refno,
             fb_order, fb_order_payment, sales_invoice,
             raw_response,
             last_polled_at, poll_count, maybank_status, paid_at, scanned_at
@@ -200,6 +204,48 @@ def _parse_preflight_rejection_evidence(existing: Any) -> dict[str, Any] | None:
         != "release_local_provider_intent"
     ):
         return None
+
+    replacement_intent_rejected = evidence.get("replacement_intent_rejected")
+    if replacement_intent_rejected is True:
+        replacement_reason = cstr(evidence.get("replacement_reason"))
+        replaces_reference = cstr(
+            evidence.get("replaces_transaction_refno")
+        )
+        try:
+            _require_provider_transaction_reference(
+                replaces_reference,
+                "preflight replacement transaction_refno",
+            )
+        except frappe.ValidationError:
+            return None
+        if (
+            replacement_reason
+            not in {"expired_display", "unrenderable_display"}
+            or evidence.get("prior_provider_reference_retained") is not True
+            or cstr(evidence.get("release_scope")).strip()
+            != "replacement_intent_only"
+        ):
+            return None
+        replacement_rejection_code = cstr(
+            evidence.get("replacement_rejection_code")
+        ).strip()
+        if reason_code == PREFLIGHT_REASON_REPLACEMENT_REQUEST:
+            if replacement_rejection_code not in REPLACEMENT_REJECTION_CODES:
+                return None
+        elif replacement_rejection_code != reason_code:
+            return None
+    elif any(
+        key in evidence
+        for key in (
+            "replacement_intent_rejected",
+            "replacement_reason",
+            "replaces_transaction_refno",
+            "prior_provider_reference_retained",
+            "release_scope",
+            "replacement_rejection_code",
+        )
+    ):
+        return None
     return evidence
 
 
@@ -211,10 +257,13 @@ def _build_preflight_rejection_response(
     reason_code: str,
     message: str,
     checked_at: str,
+    replacement_reason: str = "",
+    replaces_transaction_refno: str = "",
+    replacement_rejection_code: str = "",
 ) -> dict[str, Any]:
     if reason_code not in PREFLIGHT_REASON_CODES:
         raise ValueError("unsupported Maybank QR preflight rejection reason")
-    return {
+    response = {
         "status": "rejected",
         "error_code": MAYBANK_QR_REQUEST_REJECTED_NO_PROVIDER_ATTEMPT,
         "message": message,
@@ -229,6 +278,35 @@ def _build_preflight_rejection_response(
         "currency": MAYBANK_CURRENCY,
         "checked_at": checked_at,
     }
+    if replacement_reason or replaces_transaction_refno:
+        if (
+            replacement_reason
+            not in {"expired_display", "unrenderable_display"}
+            or not replaces_transaction_refno
+        ):
+            raise ValueError("invalid Automatic QR replacement rejection identity")
+        _require_provider_transaction_reference(
+            replaces_transaction_refno,
+            "preflight replacement transaction_refno",
+        )
+        if reason_code == PREFLIGHT_REASON_REPLACEMENT_REQUEST:
+            if replacement_rejection_code not in REPLACEMENT_REJECTION_CODES:
+                raise ValueError("invalid Automatic QR replacement rejection code")
+        elif replacement_rejection_code != reason_code:
+            raise ValueError(
+                "replacement preflight failure must retain its exact reason code"
+            )
+        response.update(
+            {
+                "replacement_intent_rejected": True,
+                "replacement_rejection_code": replacement_rejection_code,
+                "replacement_reason": replacement_reason,
+                "replaces_transaction_refno": replaces_transaction_refno,
+                "prior_provider_reference_retained": True,
+                "release_scope": "replacement_intent_only",
+            }
+        )
+    return response
 
 
 def _build_persisted_preflight_rejection_response(
@@ -263,6 +341,23 @@ def _build_persisted_preflight_rejection_response(
     evidence = _parse_preflight_rejection_evidence(existing)
     if evidence is None:
         return None
+    evidence_replacement = evidence.get("replacement_intent_rejected") is True
+    persisted_replacement_reason = cstr(
+        _existing_value(existing, "replacement_reason")
+    )
+    persisted_replaces_reference = cstr(
+        _existing_value(existing, "replaces_transaction_refno")
+    )
+    if evidence_replacement:
+        if (
+            persisted_replacement_reason
+            != cstr(evidence.get("replacement_reason"))
+            or persisted_replaces_reference
+            != cstr(evidence.get("replaces_transaction_refno"))
+        ):
+            return None
+    elif persisted_replacement_reason or persisted_replaces_reference:
+        return None
     try:
         evidence_amount_sen = _parse_integer_sen(
             evidence.get("amount_sen"),
@@ -286,6 +381,13 @@ def _build_persisted_preflight_rejection_response(
         message=cstr(evidence.get("message")).strip()
         or "Automatic QR request was rejected before contacting the provider",
         checked_at=cstr(evidence.get("checked_at")).strip(),
+        replacement_reason=cstr(evidence.get("replacement_reason")),
+        replaces_transaction_refno=cstr(
+            evidence.get("replaces_transaction_refno")
+        ),
+        replacement_rejection_code=cstr(
+            evidence.get("replacement_rejection_code")
+        ),
     )
 
 
@@ -390,10 +492,12 @@ def _load_linked_generation_attempts_for_update(
             """
             SELECT
                 name, transaction_refno, status, maybank_status,
-                sale_amount_sen, currency, provider, company, device_id,
+                qr_data, expires_at, sale_amount_sen, currency, provider,
+                company, device_id,
                 idempotency_key, request_fingerprint,
+                replacement_reason, replaces_transaction_refno, round_number,
                 fb_order, fb_order_payment, sales_invoice,
-                created_at, paid_at, raw_response
+                creation, created_at, paid_at, raw_response
             FROM `tabMaybank QR Transaction`
             WHERE fb_order = %s AND fb_order_payment = %s
             ORDER BY creation, name

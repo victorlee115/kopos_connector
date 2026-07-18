@@ -11,9 +11,7 @@ from typing import Any
 import frappe
 from frappe.utils import add_to_date, cint, cstr, get_datetime, now_datetime
 
-from kopos_connector.kopos.api.money_contract import MoneyContractValidationError, persisted_money_to_sen
 from kopos_connector.kopos.services.accounting.maybank_payment_service import (
-    normalize_qr_token,
     resolve_manual_qr_suspense_account,
     resolve_verified_qr_settlement_account,
 )
@@ -25,6 +23,8 @@ from ._maybank_qr_contract import (
     MAYBANK_CURRENCY,
     MAYBANK_PROVIDER,
     PREFLIGHT_REASON_PROVIDER_CONFIGURATION,
+    PREFLIGHT_REASON_REPLACEMENT_REQUEST,
+    PREFLIGHT_REASON_REPLACEMENT_SALE_TERMINAL,
     REUSABLE_STATUSES,
     UNKNOWN_STATUS,
     MaybankQrPreflightRejection,
@@ -45,12 +45,18 @@ from ._maybank_qr_persistence import (
     _build_preflight_rejection_response,
     _durable_generation_release,
     _load_existing_txn,
-    _load_linked_generation_attempts_for_update,
     _load_reserved_txn_for_update,
     _load_reserved_txn_with_order_lock,
     _raw_response_object,
 )
+from ._maybank_qr_prepared_sale import load_prepared_automatic_qr_sale
 from ._maybank_qr_rate_limit import _check_rate_limit
+from ._maybank_qr_replacement import (
+    MaybankQrReplacementRequest,
+    MaybankQrReplacementRejection,
+    parse_maybank_qr_replacement_request,
+    validate_maybank_qr_display_replacement,
+)
 from ._maybank_qr_resolution import _audit_generation_resolution
 from ._maybank_qr_status import _resolve_existing_txn
 
@@ -331,8 +337,9 @@ def _register_preflight_rejection_fence(
     amount_sen: int,
     currency: str,
     outlet_id: str,
-    rejection: MaybankQrPreflightRejection,
-    prepared_sale: dict[str, str],
+    rejection: MaybankQrPreflightRejection | MaybankQrReplacementRejection,
+    prepared_sale: dict[str, Any],
+    replacement_request: MaybankQrReplacementRequest | None = None,
 ) -> dict[str, Any]:
     """Durably fence a request that is proven not to have reached Maybank.
 
@@ -348,17 +355,47 @@ def _register_preflight_rejection_fence(
         accepted_sale_fingerprint=prepared_sale["accepted_sale_fingerprint"],
         amount_sen=amount_sen,
         currency=currency,
+        replacement_reason=(
+            replacement_request.replacement_reason
+            if replacement_request is not None
+            else ""
+        ),
+        replaces_transaction_refno=(
+            replacement_request.replaces_transaction_refno
+            if replacement_request is not None
+            else ""
+        ),
     )
     checked_now = now_datetime()
     checked_at = _serialize_site_datetime(checked_now)
+    response_reason_code = (
+        PREFLIGHT_REASON_REPLACEMENT_REQUEST
+        if isinstance(rejection, MaybankQrReplacementRejection)
+        else rejection.reason_code
+    )
     response = _build_preflight_rejection_response(
         device_id=device_id,
         idempotency_key=idempotency_key,
         amount_sen=amount_sen,
-        reason_code=rejection.reason_code,
+        reason_code=response_reason_code,
         message=cstr(rejection).strip()
         or "Automatic QR request was rejected before contacting the provider",
         checked_at=checked_at,
+        replacement_reason=(
+            replacement_request.replacement_reason
+            if replacement_request is not None
+            else ""
+        ),
+        replaces_transaction_refno=(
+            replacement_request.replaces_transaction_refno
+            if replacement_request is not None
+            else ""
+        ),
+        replacement_rejection_code=(
+            rejection.reason_code
+            if replacement_request is not None
+            else ""
+        ),
     )
     fence = frappe.get_doc(
         {
@@ -374,9 +411,19 @@ def _register_preflight_rejection_fence(
             "provider": MAYBANK_PROVIDER,
             "idempotency_key": idempotency_key,
             "request_fingerprint": request_fingerprint,
+            "replacement_reason": (
+                replacement_request.replacement_reason
+                if replacement_request is not None
+                else None
+            ),
+            "replaces_transaction_refno": (
+                replacement_request.replaces_transaction_refno
+                if replacement_request is not None
+                else None
+            ),
             "fb_order": prepared_sale["fb_order"],
             "fb_order_payment": prepared_sale["fb_order_payment"],
-            "round_number": 1,
+            "round_number": int(prepared_sale.get("provider_round_number") or 1),
             "created_at": checked_now,
             "business_date": get_datetime(checked_now).date().isoformat(),
             # This envelope contains only server-authored contract fields and
@@ -406,13 +453,14 @@ def _register_preflight_rejection_fence(
             return existing_response
         raise
 
-    frappe.db.set_value(
-        "FB Order",
-        prepared_sale["fb_order"],
-        "automatic_qr_state",
-        "provider_rejected",
-        update_modified=False,
-    )
+    if replacement_request is None:
+        frappe.db.set_value(
+            "FB Order",
+            prepared_sale["fb_order"],
+            "automatic_qr_state",
+            "provider_rejected",
+            update_modified=False,
+        )
     frappe.db.commit()
     return response
 
@@ -433,11 +481,15 @@ def _validate_new_generation_attempt(
     request_fingerprint: str,
     amount_sen: int,
     currency: str,
-) -> None:
+    accepted_sale_fingerprint: str = "",
+    replacement_request: MaybankQrReplacementRequest | None = None,
+    now: Any | None = None,
+) -> int:
     order_name = cstr(getattr(order_doc, "name", None)).strip()
     payment_row_name = cstr(
         getattr(order_doc, "automatic_qr_payment", None)
     ).strip()
+    order_company = cstr(getattr(order_doc, "company", None)).strip()
     for attempt in attempts:
         try:
             linked_amount_sen = _parse_integer_sen(
@@ -456,6 +508,11 @@ def _validate_new_generation_attempt(
             or cstr(_existing_value(attempt, "device_id")).strip() != device_id
             or cstr(_existing_value(attempt, "currency")).strip().upper()
             != currency
+            or (
+                order_company
+                and cstr(_existing_value(attempt, "company")).strip()
+                != order_company
+            )
             or linked_amount_sen != amount_sen
             or cstr(_existing_value(attempt, "fb_order")).strip()
             != order_name
@@ -485,20 +542,40 @@ def _validate_new_generation_attempt(
             )
         # Exact replay is always allowed to reach the persisted-attempt resolver,
         # even after the order was submitted or the provider request was fenced.
-        return
+        return int(_existing_value(same_key_attempts[0], "round_number") or 1)
 
     if cstr(getattr(order_doc, "status", None)).strip().lower() in {
         "cancelled",
         "canceled",
     }:
-        frappe.throw(
-            "Cancelled Automatic QR sales cannot create another provider attempt",
-            frappe.ValidationError,
-        )
+        message = "Cancelled Automatic QR sales cannot create another provider attempt"
+        if replacement_request is not None:
+            raise MaybankQrReplacementRejection(
+                message,
+                PREFLIGHT_REASON_REPLACEMENT_SALE_TERMINAL,
+            )
+        frappe.throw(message, frappe.ValidationError)
     if cint(getattr(order_doc, "docstatus", 0)) != 0:
-        frappe.throw(
-            "Submitted Automatic QR sales cannot create another provider attempt",
-            frappe.ValidationError,
+        message = "Submitted Automatic QR sales cannot create another provider attempt"
+        if replacement_request is not None:
+            raise MaybankQrReplacementRejection(
+                message,
+                PREFLIGHT_REASON_REPLACEMENT_SALE_TERMINAL,
+            )
+        frappe.throw(message, frappe.ValidationError)
+
+    if replacement_request is not None:
+        return validate_maybank_qr_display_replacement(
+            attempts=attempts,
+            request=replacement_request,
+            accepted_sale_fingerprint=accepted_sale_fingerprint,
+            device_id=device_id,
+            company=order_company,
+            currency=currency,
+            amount_sen=amount_sen,
+            fb_order=order_name,
+            fb_order_payment=payment_row_name,
+            now=now,
         )
 
     automatic_state = cstr(
@@ -510,7 +587,7 @@ def _validate_new_generation_attempt(
                 "Prepared Automatic QR sale has inconsistent provider-attempt state",
                 frappe.ValidationError,
             )
-        return
+        return 1
 
     unsafe_attempts = [
         cstr(_existing_value(attempt, "name")).strip()
@@ -533,6 +610,7 @@ def _validate_new_generation_attempt(
             "Prepared Automatic QR sale is not eligible for another provider attempt",
             frappe.ValidationError,
         )
+    return 1
 
 
 def _load_prepared_automatic_qr_sale(
@@ -544,109 +622,19 @@ def _load_prepared_automatic_qr_sale(
     amount_sen: int,
     idempotency_key: str,
     currency: str,
-) -> dict[str, str]:
-    if not fb_order:
-        frappe.throw("fb_order is required", frappe.ValidationError)
-    if not fb_order_payment:
-        frappe.throw("fb_order_payment is required", frappe.ValidationError)
-    if not accepted_sale_fingerprint:
-        frappe.throw(
-            "accepted_sale_fingerprint is required",
-            frappe.ValidationError,
-        )
-
-    frappe.db.sql(
-        "SELECT name FROM `tabFB Order` WHERE name = %s LIMIT 1 FOR UPDATE",
-        (fb_order,),
-    )
-    order_doc = frappe.get_doc("FB Order", fb_order)
-    if cstr(getattr(order_doc, "device_id", None)).strip() != device_id:
-        frappe.throw(
-            "Prepared Automatic QR sale belongs to another device",
-            frappe.ValidationError,
-        )
-    if cstr(getattr(order_doc, "currency", None)).strip().upper() != MAYBANK_CURRENCY:
-        frappe.throw(
-            "Prepared Automatic QR sale currency must be MYR",
-            frappe.ValidationError,
-        )
-    if cstr(
-        getattr(order_doc, "accepted_sale_fingerprint", None)
-    ).strip() != accepted_sale_fingerprint:
-        frappe.throw(
-            "accepted_sale_fingerprint does not match the prepared sale",
-            frappe.ValidationError,
-        )
-    if cstr(getattr(order_doc, "automatic_qr_payment", None)).strip() != (
-        fb_order_payment
-    ):
-        frappe.throw(
-            "fb_order_payment does not match the prepared sale",
-            frappe.ValidationError,
-        )
-    matching_payments = [
-        payment
-        for payment in list(order_doc.get("payments") or [])
-        if cstr(getattr(payment, "name", None)).strip() == fb_order_payment
-    ]
-    if len(matching_payments) != 1:
-        frappe.throw(
-            "Prepared Automatic QR payment row was not found",
-            frappe.ValidationError,
-        )
-    payment = matching_payments[0]
-    if normalize_qr_token(
-        getattr(payment, "payment_channel_code", None)
-    ) not in {"maybank", "maybank qr"}:
-        frappe.throw(
-            "Prepared payment is not a Maybank QR payment",
-            frappe.ValidationError,
-        )
-    try:
-        persisted_amount_sen = persisted_money_to_sen(
-            getattr(payment, "amount", None),
-            "Prepared Automatic QR payment amount",
-        )
-    except MoneyContractValidationError as error:
-        frappe.throw(str(error), frappe.ValidationError)
-        raise AssertionError("frappe.throw must raise") from error
-    if persisted_amount_sen != amount_sen:
-        frappe.throw(
-            "Prepared Automatic QR payment amount does not match",
-            frappe.ValidationError,
-        )
-    request_fingerprint = _request_fingerprint(
-        device_id,
-        idempotency_key,
+    replacement_request: MaybankQrReplacementRequest | None = None,
+) -> dict[str, Any]:
+    return load_prepared_automatic_qr_sale(
         fb_order=fb_order,
         fb_order_payment=fb_order_payment,
         accepted_sale_fingerprint=accepted_sale_fingerprint,
-        amount_sen=amount_sen,
-        currency=currency,
-    )
-    attempts = _load_linked_generation_attempts_for_update(
-        fb_order,
-        fb_order_payment,
-    )
-    _validate_new_generation_attempt(
-        order_doc=order_doc,
-        attempts=attempts,
         device_id=device_id,
-        idempotency_key=idempotency_key,
-        request_fingerprint=request_fingerprint,
         amount_sen=amount_sen,
+        idempotency_key=idempotency_key,
         currency=currency,
+        replacement_request=replacement_request,
+        validate_generation_attempt=_validate_new_generation_attempt,
     )
-    return {
-        "fb_order": fb_order,
-        "fb_order_payment": fb_order_payment,
-        "accepted_sale_fingerprint": accepted_sale_fingerprint,
-        "payment_method": cstr(
-            getattr(payment, "payment_method", None)
-        ).strip(),
-        "company": cstr(getattr(order_doc, "company", None)).strip(),
-        "currency": cstr(getattr(order_doc, "currency", None)).strip().upper(),
-    }
 
 
 def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -659,6 +647,7 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
         payload.get("accepted_sale_fingerprint")
     ).strip()
     currency = cstr(payload.get("currency") or MAYBANK_CURRENCY).strip().upper()
+    replacement_request = parse_maybank_qr_replacement_request(payload)
 
     if not idempotency_key:
         frappe.throw("idempotency_key is required")
@@ -674,6 +663,7 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
         amount_sen=amount_sen,
         idempotency_key=idempotency_key,
         currency=currency,
+        replacement_request=replacement_request,
     )
     expected_request_fingerprint = _request_fingerprint(
         device_id,
@@ -683,6 +673,16 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
         accepted_sale_fingerprint=prepared_sale["accepted_sale_fingerprint"],
         amount_sen=amount_sen,
         currency=currency,
+        replacement_reason=(
+            replacement_request.replacement_reason
+            if replacement_request is not None
+            else ""
+        ),
+        replaces_transaction_refno=(
+            replacement_request.replaces_transaction_refno
+            if replacement_request is not None
+            else ""
+        ),
     )
 
     now = now_datetime()
@@ -719,6 +719,19 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if existing_response:
         return existing_response
 
+    replacement_rejection = prepared_sale.get("replacement_rejection")
+    if isinstance(replacement_rejection, MaybankQrReplacementRejection):
+        return _register_preflight_rejection_fence(
+            device_id=device_id,
+            idempotency_key=idempotency_key,
+            amount_sen=amount_sen,
+            currency=currency,
+            outlet_id="",
+            rejection=replacement_rejection,
+            prepared_sale=prepared_sale,
+            replacement_request=replacement_request,
+        )
+
     try:
         resolve_manual_qr_suspense_account(prepared_sale)
         resolve_verified_qr_settlement_account(
@@ -735,6 +748,7 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
             outlet_id="",
             rejection=_configuration_preflight_rejection(),
             prepared_sale=prepared_sale,
+            replacement_request=replacement_request,
         )
 
     try:
@@ -748,6 +762,7 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
             outlet_id="",
             rejection=_configuration_preflight_rejection(),
             prepared_sale=prepared_sale,
+            replacement_request=replacement_request,
         )
     outlet_id = cstr(client.outlet_id).strip()
     if not outlet_id:
@@ -759,6 +774,7 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
             outlet_id="",
             rejection=_configuration_preflight_rejection(),
             prepared_sale=prepared_sale,
+            replacement_request=replacement_request,
         )
     try:
         _check_rate_limit(device_id, outlet_id)
@@ -771,6 +787,7 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
             outlet_id=outlet_id,
             rejection=rejection,
             prepared_sale=prepared_sale,
+            replacement_request=replacement_request,
         )
     except frappe.ValidationError:
         return _register_preflight_rejection_fence(
@@ -781,6 +798,7 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
             outlet_id=outlet_id,
             rejection=_configuration_preflight_rejection(),
             prepared_sale=prepared_sale,
+            replacement_request=replacement_request,
         )
     amount_rm = f"{Decimal(amount_sen) / Decimal('100'):.2f}"
     current_now = now_datetime()
@@ -799,9 +817,19 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "provider": MAYBANK_PROVIDER,
             "idempotency_key": idempotency_key,
             "request_fingerprint": request_fingerprint,
+            "replacement_reason": (
+                replacement_request.replacement_reason
+                if replacement_request is not None
+                else None
+            ),
+            "replaces_transaction_refno": (
+                replacement_request.replaces_transaction_refno
+                if replacement_request is not None
+                else None
+            ),
             "fb_order": prepared_sale["fb_order"],
             "fb_order_payment": prepared_sale["fb_order_payment"],
-            "round_number": 1,
+            "round_number": int(prepared_sale.get("provider_round_number") or 1),
             "created_at": current_now,
             "business_date": get_datetime(current_now).date().isoformat(),
             "raw_response": redacted_json({"status": "creating"}),

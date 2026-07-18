@@ -29,6 +29,8 @@
     "suspense_account",
     "idempotency_key",
     "request_fingerprint",
+    "replacement_reason",
+    "replaces_transaction_refno",
     "consumption_key",
     "invoice_consumption_key",
     "section_receipt",
@@ -241,6 +243,22 @@
      "label": "Request Fingerprint",
      "read_only": 1,
      "unique": 1
+    },
+    {
+     "fieldname": "replacement_reason",
+     "fieldtype": "Select",
+     "hidden": 1,
+     "label": "Display Replacement Reason",
+     "options": "\nexpired_display\nunrenderable_display",
+     "read_only": 1
+    },
+    {
+     "fieldname": "replaces_transaction_refno",
+     "fieldtype": "Data",
+     "hidden": 1,
+     "label": "Replaces Provider Transaction Ref",
+     "read_only": 1,
+     "search_index": 1
     },
     {
      "fieldname": "consumption_key",
