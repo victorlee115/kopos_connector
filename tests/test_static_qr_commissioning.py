@@ -27,6 +27,42 @@ FIXED_AMOUNT_STATIC_QR = (
 )
 
 
+def _tlv(tag: str, value: str) -> str:
+    return f"{tag}{len(value):02d}{value}"
+
+
+def _static_qr(
+    *,
+    acquirer_id: str = "501664",
+    merchant_id: str = "123456789",
+    merchant_name: str = "QRCSDNBHD",
+    merchant_city: str = "BANGI",
+    extra_top_level: str = "",
+) -> str:
+    merchant_account = "".join(
+        (
+            _tlv("00", static_qr.PAYNET_MALAYSIA_AID),
+            _tlv("01", acquirer_id),
+            _tlv("02", merchant_id),
+        )
+    )
+    before_crc = "".join(
+        (
+            _tlv("00", static_qr.PAYNET_PAYLOAD_VERSION),
+            _tlv("01", static_qr.PAYNET_STATIC_INITIATION_METHOD),
+            _tlv("26", merchant_account),
+            _tlv("52", "9999"),
+            _tlv("53", static_qr.PAYNET_MYR_CURRENCY_CODE),
+            extra_top_level,
+            _tlv("58", static_qr.PAYNET_MALAYSIA_COUNTRY_CODE),
+            _tlv("59", merchant_name),
+            _tlv("60", merchant_city),
+            "6304",
+        )
+    )
+    return f"{before_crc}{static_qr._crc16_ccitt_false(before_crc.encode('ascii'))}"
+
+
 def _commissioned_device(**overrides: Any) -> SimpleNamespace:
     inspection = static_qr.inspect_paynet_static_qr(VALID_STATIC_QR)
     values = {
@@ -90,6 +126,45 @@ def test_reusable_static_qr_rejects_fixed_amount_payload() -> None:
         match="must not contain a fixed amount",
     ):
         static_qr.inspect_paynet_static_qr(FIXED_AMOUNT_STATIC_QR)
+
+
+def test_static_qr_identifier_bounds_match_the_tablet_contract() -> None:
+    inspection = static_qr.inspect_paynet_static_qr(
+        _static_qr(
+            acquirer_id="7",
+            merchant_id="ABCD1234EFGH5678IJKL9012MNOP",
+        )
+    )
+
+    assert inspection["acquirer_id"] == "7"
+    assert inspection["merchant_id"] == "ABCD1234EFGH5678IJKL9012MNOP"
+
+
+@pytest.mark.parametrize("tag", ("55", "56", "57"))
+def test_reusable_static_qr_rejects_convenience_fee_tags(tag: str) -> None:
+    with pytest.raises(
+        static_qr.frappe.ValidationError,
+        match="fixed amount or convenience fee",
+    ):
+        static_qr.inspect_paynet_static_qr(
+            _static_qr(extra_top_level=_tlv(tag, "01"))
+        )
+
+
+def test_static_qr_rejects_identifiers_outside_the_commissioning_contract() -> None:
+    with pytest.raises(
+        static_qr.frappe.ValidationError,
+        match="invalid PayNet acquirer ID",
+    ):
+        static_qr.inspect_paynet_static_qr(_static_qr(acquirer_id="1234567"))
+
+    with pytest.raises(
+        static_qr.frappe.ValidationError,
+        match="invalid PayNet QR ID",
+    ):
+        static_qr.inspect_paynet_static_qr(
+            _static_qr(merchant_id="merchant-with-dashes")
+        )
 
 
 def test_commissioned_config_rejects_metadata_or_company_drift() -> None:
