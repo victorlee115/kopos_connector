@@ -332,6 +332,81 @@ def test_fetch_manual_qr_reconciliation_status_returns_requested_rows(reconcilia
     ]
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "payments": [
+                {
+                    "payment_id": f"PAY-{index}",
+                    "provider_session_id": f"TXN-{index}",
+                }
+                for index in range(51)
+            ]
+        },
+        {"transaction_refnos": [f"TXN-{index}" for index in range(51)]},
+        {
+            "payments": json.dumps(
+                [
+                    {
+                        "payment_id": f"PAY-{index}",
+                        "provider_session_id": f"TXN-JSON-{index}",
+                    }
+                    for index in range(51)
+                ]
+            )
+        },
+        {
+            "transaction_refnos": json.dumps(
+                [f"TXN-JSON-{index}" for index in range(51)]
+            )
+        },
+        {
+            "payments": [
+                {
+                    "payment_id": f"PAY-{index}",
+                    "provider_session_id": f"TXN-PAY-{index}",
+                }
+                for index in range(25)
+            ],
+            "transaction_refnos": [f"TXN-REF-{index}" for index in range(25)],
+            "transaction_refno": "TXN-SINGLE",
+        },
+    ],
+)
+def test_fetch_manual_qr_reconciliation_status_rejects_every_oversized_input_before_db(
+    reconciliation_module,
+    monkeypatch,
+    payload,
+):
+    def fail_if_queried(*_args, **_kwargs):
+        raise AssertionError("oversized reconciliation status request reached the database")
+
+    monkeypatch.setattr(reconciliation_module.frappe, "get_all", fail_if_queried)
+
+    with pytest.raises(reconciliation_module.frappe.ValidationError) as excinfo:
+        reconciliation_module.module.fetch_manual_qr_reconciliation_status(**payload)
+
+    assert "no more than 50 QR payments" in str(excinfo.value)
+
+
+def test_fetch_manual_qr_reconciliation_status_allows_exactly_fifty_combined_requests(
+    reconciliation_module,
+):
+    result = reconciliation_module.module.fetch_manual_qr_reconciliation_status(
+        payments=[
+            {
+                "payment_id": f"PAY-{index}",
+                "provider_session_id": f"TXN-PAY-{index}",
+            }
+            for index in range(25)
+        ],
+        transaction_refnos=[f"TXN-REF-{index}" for index in range(25)],
+    )
+
+    assert len(result["statuses"]) == 50
+
+
 def test_static_qr_list_fetch_and_reconcile_route_to_manual_record(
     reconciliation_module,
 ):

@@ -56,6 +56,7 @@ RECONCILIATION_FAILED_REASONS = {
 }
 MAYBANK_TRANSACTION_DOCTYPE = "Maybank QR Transaction"
 MANUAL_QR_RECONCILIATION_DOCTYPE = "Manual QR Reconciliation"
+MAX_RECONCILIATION_STATUS_BATCH = 50
 
 
 @frappe.whitelist(methods=["GET"])
@@ -124,6 +125,7 @@ def list_pending_manual_qr_reconciliations() -> list[dict[str, Any]]:
 @frappe.whitelist(methods=["POST"])
 def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> dict[str, list[dict[str, Any]]]:
     payload = _collect_status_payload(kwargs)
+    _assert_status_request_batch_size(payload)
     device_id = _resolve_status_device_id(payload)
     requests = _extract_status_requests(payload)
     if not requests:
@@ -514,6 +516,26 @@ def _resolve_status_device_id(payload: dict[str, Any]) -> str | None:
     if not device_id:
         frappe.throw(_("Authenticated KoPOS Device has no device_id"), frappe.ValidationError)
     return device_id
+
+
+def _assert_status_request_batch_size(payload: dict[str, Any]) -> None:
+    """Reject oversized combined inputs before any reconciliation DB lookup."""
+    request_count = 0
+    payments = payload.get("payments")
+    if isinstance(payments, list):
+        request_count += len(payments)
+    refnos = payload.get("transaction_refnos")
+    if isinstance(refnos, list):
+        request_count += len(refnos)
+    if cstr(payload.get("transaction_refno")).strip():
+        request_count += 1
+    if request_count > MAX_RECONCILIATION_STATUS_BATCH:
+        frappe.throw(
+            _("Check no more than {0} QR payments at a time").format(
+                MAX_RECONCILIATION_STATUS_BATCH
+            ),
+            frappe.ValidationError,
+        )
 
 
 def _extract_status_requests(payload: dict[str, Any]) -> list[dict[str, str]]:
