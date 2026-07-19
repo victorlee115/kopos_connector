@@ -27,11 +27,12 @@ from kopos_connector.api import maybank_qr_readiness as readiness  # noqa: E402
 
 
 def test_readiness_validates_configuration_without_provider_transaction() -> None:
+    test_outlet_id = "TEST-OUTLET-2524334"
     client = SimpleNamespace(
         username="merchant-user",
         encrypted_pin="encrypted-pin",
         user_type="corporate",
-        outlet_id="MBBQR2524334",
+        outlet_id=test_outlet_id,
         generate_qr=Mock(),
         check_status=Mock(),
     )
@@ -51,7 +52,7 @@ def test_readiness_validates_configuration_without_provider_transaction() -> Non
     assert result == {
         "status": "ready",
         "device_id": "TAB-1",
-        "outlet_id_sha256": hashlib.sha256(b"MBBQR2524334").hexdigest(),
+        "outlet_id_sha256": hashlib.sha256(test_outlet_id.encode("utf-8")).hexdigest(),
         "checked_at": "2026-07-19T10:00:00",
         "contract_version": "maybank-qr-readiness-v1",
         "provider_request_attempted": False,
