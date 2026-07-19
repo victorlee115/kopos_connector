@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
+
 from .fake_frappe import install_fake_frappe_modules
 
 
@@ -19,11 +21,18 @@ def test_patch_backfills_deterministic_fail_closed_legacy_guards(monkeypatch):
             {"name": "FB-RETURN-1", "return_id": "REFUND-1"}
         ],
     }
+    reload_calls: list[tuple[str, str, str]] = []
     queried_doctypes: list[str] = []
     updates: list[tuple[str, str, str]] = []
 
     monkeypatch.setattr(
         patch.frappe.db, "table_exists", lambda doctype: True, raising=False
+    )
+    monkeypatch.setattr(
+        patch.frappe,
+        "reload_doc",
+        lambda *args: reload_calls.append(args),
+        raising=False,
     )
     monkeypatch.setattr(
         patch.frappe.db,
@@ -54,6 +63,10 @@ def test_patch_backfills_deterministic_fail_closed_legacy_guards(monkeypatch):
 
     patch.execute()
 
+    assert reload_calls == [
+        ("kopos", "doctype", "fb_order"),
+        ("kopos", "doctype", "fb_return_event"),
+    ]
     assert queried_doctypes == ["FB Order", "FB Return Event"]
     assert updates == [
         (
@@ -73,9 +86,18 @@ def test_patch_backfills_deterministic_fail_closed_legacy_guards(monkeypatch):
     ]
 
 
-def test_patch_skips_doctypes_without_new_fingerprint_column(monkeypatch):
+def test_patch_fails_closed_when_reloaded_fingerprint_column_is_missing(
+    monkeypatch,
+):
+    reload_calls: list[tuple[str, str, str]] = []
     monkeypatch.setattr(
         patch.frappe.db, "table_exists", lambda doctype: True, raising=False
+    )
+    monkeypatch.setattr(
+        patch.frappe,
+        "reload_doc",
+        lambda *args: reload_calls.append(args),
+        raising=False,
     )
     monkeypatch.setattr(patch.frappe.db, "has_column", lambda *args: False)
     monkeypatch.setattr(
@@ -86,4 +108,10 @@ def test_patch_skips_doctypes_without_new_fingerprint_column(monkeypatch):
         ),
     )
 
-    patch.execute()
+    with pytest.raises(
+        patch.frappe.ValidationError,
+        match="column is unavailable after reload",
+    ):
+        patch.execute()
+
+    assert reload_calls == [("kopos", "doctype", "fb_order")]

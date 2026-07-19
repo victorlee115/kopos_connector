@@ -10,19 +10,33 @@ from frappe.utils import cstr
 def execute() -> None:
     _backfill_legacy_guards(
         "FB Order",
+        doctype_file="fb_order",
         idempotency_field="external_idempotency_key",
     )
     _backfill_legacy_guards(
         "FB Return Event",
+        doctype_file="fb_return_event",
         idempotency_field="return_id",
     )
 
 
-def _backfill_legacy_guards(doctype: str, *, idempotency_field: str) -> None:
+def _backfill_legacy_guards(
+    doctype: str,
+    *,
+    doctype_file: str,
+    idempotency_field: str,
+) -> None:
     if not frappe.db.table_exists(doctype):
         return
+
+    reload_doc = getattr(frappe, "reload_doc", None)
+    if callable(reload_doc):
+        reload_doc("kopos", "doctype", doctype_file)
     if not frappe.db.has_column(doctype, "request_fingerprint"):
-        return
+        frappe.throw(
+            f"{doctype} request fingerprint column is unavailable after reload; backfill was not applied",
+            frappe.ValidationError,
+        )
     rows = frappe.db.sql(
         f"""
         SELECT name, `{idempotency_field}`
