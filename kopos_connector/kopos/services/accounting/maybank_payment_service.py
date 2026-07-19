@@ -11,6 +11,10 @@ from typing import Any
 frappe = import_module("frappe")
 frappe_utils = import_module("frappe.utils")
 
+from kopos_connector.kopos.services.orders.sale_datetime import (
+    normalize_site_datetime,
+)
+
 cstr = frappe_utils.cstr
 cint = frappe_utils.cint
 get_datetime = frappe_utils.get_datetime
@@ -611,7 +615,10 @@ def _register_manual_qr_reconciliation(order_doc: Any, payment: Any) -> str:
             "reconciliation_idempotency_key": idempotency_key,
             "suspense_account": suspense_account,
             "evidence_kind": cstr(evidence.get("evidence_kind")).strip(),
-            "evidence_captured_at": get_datetime(evidence.get("captured_at")),
+            "evidence_captured_at": normalize_site_datetime(
+                evidence.get("captured_at"),
+                fieldname="static_qr evidence captured_at",
+            ),
             "evidence_json": json.dumps(
                 evidence, sort_keys=True, separators=(",", ":")
             ),

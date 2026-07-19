@@ -639,6 +639,69 @@ def _install_static_reconciliation_db(monkeypatch):
     return reconciliations, db_updates
 
 
+@pytest.mark.parametrize(
+    ("captured_at", "expected"),
+    [
+        (
+            "2026-07-19T19:53:56.376Z",
+            datetime(2026, 7, 20, 3, 53, 56, 376000),
+        ),
+        (
+            "2026-07-19T19:53:56.376+00:00",
+            datetime(2026, 7, 20, 3, 53, 56, 376000),
+        ),
+        (
+            "2026-07-20T03:53:56.376+08:00",
+            datetime(2026, 7, 20, 3, 53, 56, 376000),
+        ),
+        (
+            "2026-07-20 03:53:56.376",
+            datetime(2026, 7, 20, 3, 53, 56, 376000),
+        ),
+    ],
+    ids=("utc-z", "utc-offset", "site-offset", "site-naive"),
+)
+def test_static_qr_normalizes_wire_timestamp_for_frappe_datetime(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_at: str,
+    expected: datetime,
+) -> None:
+    reconciliations, _ = _install_static_reconciliation_db(monkeypatch)
+    evidence = _static_evidence()
+    evidence["captured_at"] = captured_at
+    payment = _static_payment(
+        manual_confirmation_evidence_json=json.dumps(evidence)
+    )
+
+    service.register_qr_payment_settlement(_order(payment))
+
+    stored = reconciliations["MQR-1"]
+    assert stored["evidence_captured_at"] == expected
+    assert stored["evidence_captured_at"].tzinfo is None
+    assert json.loads(stored["evidence_json"])["captured_at"] == captured_at
+
+
+def test_static_qr_aware_timestamp_replay_remains_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reconciliations, _ = _install_static_reconciliation_db(monkeypatch)
+    evidence = _static_evidence()
+    evidence["captured_at"] = "2026-07-19T19:53:56.376Z"
+    payment = _static_payment(
+        manual_confirmation_evidence_json=json.dumps(evidence)
+    )
+    order = _order(payment)
+
+    first = service.register_qr_payment_settlement(order)
+    second = service.register_qr_payment_settlement(order)
+
+    assert first == second == "MQR-1"
+    assert list(reconciliations) == ["MQR-1"]
+    assert reconciliations["MQR-1"]["evidence_captured_at"] == datetime(
+        2026, 7, 20, 3, 53, 56, 376000
+    )
+
+
 def test_static_qr_creates_pending_reconciliation_and_binds_invoice(monkeypatch):
     reconciliations, db_updates = _install_static_reconciliation_db(monkeypatch)
     payment = _static_payment()
