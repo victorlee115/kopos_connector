@@ -95,7 +95,7 @@ def test_legacy_modifier_analytics_are_migration_only() -> None:
         for path in legacy_report_dir.iterdir()
     )
 
-    patch_entries = (CONNECTOR_ROOT.parent / "patches.txt").read_text().splitlines()
+    patch_entries = (CONNECTOR_ROOT / "patches.txt").read_text().splitlines()
     assert "kopos_connector.patches.backfill_fb_modifiers_from_kopos" in patch_entries
     assert "kopos_connector.patches.quarantine_legacy_modifier_report" in patch_entries
 

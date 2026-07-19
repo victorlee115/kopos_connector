@@ -1,6 +1,7 @@
 include requirements.txt
 include license.txt
 include README.md
+include kopos_connector/patches.txt
 recursive-include kopos_connector *.json
 recursive-include kopos_connector *.py
 recursive-include kopos_connector *.html
