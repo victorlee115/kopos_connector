@@ -527,7 +527,7 @@ def _load_txn_for_update(txn_name: str) -> Any:
             sale_amount_sen, expires_at, device_id, provider, company, currency,
             business_date, request_fingerprint, outlet_id, created_at,
             idempotency_key, fb_order, fb_order_payment, sales_invoice,
-            raw_response,
+            replacement_reason, replaces_transaction_refno, raw_response,
             last_polled_at, poll_count, maybank_status, paid_at, scanned_at,
             is_test_simulation, test_simulation_key,
             test_simulation_identity_sha256, test_simulated_by,

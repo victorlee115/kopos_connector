@@ -284,6 +284,12 @@ def _validate_maybank_simulation_prepared_sale(
         accepted_sale_fingerprint=accepted_sale_fingerprint,
         amount_sen=identity["amount_sen"],
         currency=identity["currency"],
+        replacement_reason=cstr(
+            _existing_value(transaction, "replacement_reason")
+        ).strip(),
+        replaces_transaction_refno=cstr(
+            _existing_value(transaction, "replaces_transaction_refno")
+        ).strip(),
     )
     if not hmac.compare_digest(
         identity["request_fingerprint"],

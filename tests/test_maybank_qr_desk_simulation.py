@@ -18,6 +18,9 @@ install_fake_frappe_modules()
 api = importlib.import_module("kopos_connector.api")
 devices = importlib.import_module("kopos_connector.api.devices")
 maybank_qr = importlib.import_module("kopos_connector.api.maybank_qr_simulation")
+maybank_persistence = importlib.import_module(
+    "kopos_connector.api._maybank_qr_persistence"
+)
 maybank_client = importlib.import_module("kopos_connector.services.maybank.client")
 transaction_controller = importlib.import_module(
     "kopos_connector.kopos.doctype.maybank_qr_transaction.maybank_qr_transaction"
@@ -253,6 +256,109 @@ def test_simulation_prevalidates_exact_prepared_sale_before_paid_transition(
 
 def test_simulation_rejects_transaction_fingerprint_not_bound_to_prepared_sale() -> None:
     transaction = _transaction(request_fingerprint="a" * 64)
+    identity, _digest, _key = maybank_qr._build_maybank_test_simulation_identity(
+        transaction
+    )
+
+    with pytest.raises(
+        maybank_qr.frappe.ValidationError,
+        match="fingerprint does not match",
+    ):
+        maybank_qr._validate_maybank_simulation_prepared_sale(
+            transaction,
+            identity,
+            _prepared_order(),
+            [transaction],
+        )
+
+
+def test_simulation_accepts_exact_display_replacement_fingerprint() -> None:
+    replacement_reason = "expired_display"
+    replaced_reference = "MOCK-TXN-FEDCBA9876543210"
+    replacement_idempotency_key = "MOCK-QR-IDEMPOTENCY-2"
+    request_fingerprint = maybank_qr._request_fingerprint(
+        "SMOKE-TAB-A001",
+        replacement_idempotency_key,
+        fb_order="FB-ORDER-MOCK-1",
+        fb_order_payment="FBPAY-MOCK-1",
+        accepted_sale_fingerprint=ACCEPTED_SALE_FINGERPRINT,
+        amount_sen=1234,
+        currency="MYR",
+        replacement_reason=replacement_reason,
+        replaces_transaction_refno=replaced_reference,
+    )
+    transaction = _transaction(
+        idempotency_key=replacement_idempotency_key,
+        request_fingerprint=request_fingerprint,
+        replacement_reason=replacement_reason,
+        replaces_transaction_refno=replaced_reference,
+        round_number=2,
+    )
+    previous_attempt = _transaction(
+        name="MBQR-MOCK-TXN-FEDCBA9876543210",
+        transaction_refno=replaced_reference,
+        round_number=1,
+    )
+    identity, _digest, _key = maybank_qr._build_maybank_test_simulation_identity(
+        transaction
+    )
+
+    maybank_qr._validate_maybank_simulation_prepared_sale(
+        transaction,
+        identity,
+        _prepared_order(),
+        [previous_attempt, transaction],
+    )
+
+
+def test_locked_transaction_projection_includes_display_replacement_identity() -> None:
+    locked_row = {"name": "MBQR-MOCK-TXN-0123456789ABCDEF"}
+    with patch.object(
+        maybank_persistence.frappe.db,
+        "sql",
+        return_value=[locked_row],
+    ) as sql:
+        assert maybank_persistence._load_txn_for_update(locked_row["name"]) == locked_row
+
+    query = sql.call_args.args[0]
+    assert "replacement_reason" in query
+    assert "replaces_transaction_refno" in query
+    assert "FOR UPDATE" in query
+
+
+@pytest.mark.parametrize(
+    ("fieldname", "tampered_value"),
+    [
+        ("replacement_reason", "unrenderable_display"),
+        ("replaces_transaction_refno", "MOCK-TXN-0000000000000000"),
+    ],
+)
+def test_simulation_rejects_tampered_display_replacement_identity(
+    fieldname: str,
+    tampered_value: str,
+) -> None:
+    replacement_reason = "expired_display"
+    replaced_reference = "MOCK-TXN-FEDCBA9876543210"
+    replacement_idempotency_key = "MOCK-QR-IDEMPOTENCY-2"
+    request_fingerprint = maybank_qr._request_fingerprint(
+        "SMOKE-TAB-A001",
+        replacement_idempotency_key,
+        fb_order="FB-ORDER-MOCK-1",
+        fb_order_payment="FBPAY-MOCK-1",
+        accepted_sale_fingerprint=ACCEPTED_SALE_FINGERPRINT,
+        amount_sen=1234,
+        currency="MYR",
+        replacement_reason=replacement_reason,
+        replaces_transaction_refno=replaced_reference,
+    )
+    transaction = _transaction(
+        idempotency_key=replacement_idempotency_key,
+        request_fingerprint=request_fingerprint,
+        replacement_reason=replacement_reason,
+        replaces_transaction_refno=replaced_reference,
+        round_number=2,
+    )
+    transaction[fieldname] = tampered_value
     identity, _digest, _key = maybank_qr._build_maybank_test_simulation_identity(
         transaction
     )
