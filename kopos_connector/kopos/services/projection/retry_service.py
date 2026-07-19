@@ -400,10 +400,8 @@ def _row_value(row: Any, fieldname: str) -> Any:
 
 def _acquire_worker_lock(cache: Any) -> str | None:
     token = uuid4().hex
-    redis_client = getattr(cache, "redis_client", None)
-    if callable(redis_client):
-        redis_client = redis_client()
-    if redis_client and hasattr(redis_client, "set"):
+    redis_client = _resolve_redis_client(cache)
+    if redis_client is not None and hasattr(redis_client, "set"):
         acquired = redis_client.set(
             RETRY_LOCK_KEY,
             token,
@@ -418,10 +416,8 @@ def _acquire_worker_lock(cache: Any) -> str | None:
 
 
 def _release_worker_lock(cache: Any, token: str) -> None:
-    redis_client = getattr(cache, "redis_client", None)
-    if callable(redis_client):
-        redis_client = redis_client()
-    if not redis_client or not hasattr(redis_client, "eval"):
+    redis_client = _resolve_redis_client(cache)
+    if redis_client is None or not hasattr(redis_client, "eval"):
         # Never use a get-then-delete fallback here.  The lease can expire
         # between those two commands, allowing an old worker to delete a new
         # worker's lease.  Leaving the short-lived key to expire is safe.
@@ -432,6 +428,15 @@ def _release_worker_lock(cache: Any, token: str) -> None:
         RETRY_LOCK_KEY,
         token,
     )
+
+
+def _resolve_redis_client(cache: Any) -> Any | None:
+    """Accept both Frappe's direct RedisWrapper and older wrapped caches."""
+
+    redis_client = getattr(cache, "redis_client", None)
+    if callable(redis_client):
+        redis_client = redis_client()
+    return redis_client if redis_client is not None else cache
 
 
 def _log_dead_letter(log_name: str, retry_count: int) -> None:

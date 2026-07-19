@@ -580,12 +580,10 @@ def _acquire_lock(
     ttl_seconds: int = SCHEDULER_LOCK_TTL_SECONDS,
 ) -> str | None:
     token = uuid4().hex
-    redis_client = getattr(cache, "redis_client", None)
-    if callable(redis_client):
-        redis_client = redis_client()
+    redis_client = _resolve_redis_client(cache)
 
     if (
-        redis_client
+        redis_client is not None
         and hasattr(redis_client, "set")
         and hasattr(redis_client, "eval")
     ):
@@ -599,11 +597,9 @@ def _acquire_lock(
 
 
 def _release_lock(cache: object, lock_key: str, token: str) -> None:
-    redis_client = getattr(cache, "redis_client", None)
-    if callable(redis_client):
-        redis_client = redis_client()
+    redis_client = _resolve_redis_client(cache)
 
-    if redis_client and hasattr(redis_client, "eval"):
+    if redis_client is not None and hasattr(redis_client, "eval"):
         try:
             redis_client.eval(LOCK_RELEASE_SCRIPT, 1, lock_key, token)
         except Exception as error:
@@ -617,10 +613,8 @@ def _refresh_lock(
     *,
     ttl_seconds: int = SCHEDULER_LOCK_TTL_SECONDS,
 ) -> bool:
-    redis_client = getattr(cache, "redis_client", None)
-    if callable(redis_client):
-        redis_client = redis_client()
-    if not redis_client or not hasattr(redis_client, "eval"):
+    redis_client = _resolve_redis_client(cache)
+    if redis_client is None or not hasattr(redis_client, "eval"):
         return False
     try:
         refreshed = redis_client.eval(
@@ -634,6 +628,15 @@ def _refresh_lock(
         log_sanitized_error("Maybank poll lock refresh failed", error)
         return False
     return bool(cint(refreshed))
+
+
+def _resolve_redis_client(cache: object) -> Any | None:
+    """Accept both Frappe's direct RedisWrapper and older wrapped caches."""
+
+    redis_client = getattr(cache, "redis_client", None)
+    if callable(redis_client):
+        redis_client = redis_client()
+    return redis_client if redis_client is not None else cache
 
 
 def _commit_poll_writes_or_rollback() -> None:

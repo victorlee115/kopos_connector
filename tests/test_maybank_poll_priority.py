@@ -83,6 +83,50 @@ def _redis_cache() -> tuple[SimpleNamespace, Mock]:
     return SimpleNamespace(redis_client=lambda: redis_client), redis_client
 
 
+def test_poll_lock_supports_frappe_v16_direct_redis_cache() -> None:
+    redis_client = SimpleNamespace(
+        set=Mock(return_value=True),
+        eval=Mock(return_value=1),
+    )
+    lock_key = "maybank_poll_lock:test.localhost"
+
+    token = poll_maybank._acquire_lock(redis_client, lock_key)
+
+    assert token is not None
+    redis_client.set.assert_called_once_with(
+        lock_key,
+        token,
+        ex=poll_maybank.SCHEDULER_LOCK_TTL_SECONDS,
+        nx=True,
+    )
+    poll_maybank._release_lock(redis_client, lock_key, token)
+    redis_client.eval.assert_called_once_with(
+        poll_maybank.LOCK_RELEASE_SCRIPT,
+        1,
+        lock_key,
+        token,
+    )
+
+
+def test_poll_lock_refresh_supports_frappe_v16_direct_redis_cache() -> None:
+    redis_client = SimpleNamespace(eval=Mock(return_value=1))
+
+    refreshed = poll_maybank._refresh_lock(
+        redis_client,
+        "maybank_poll_lock:test.localhost",
+        "owner-token",
+    )
+
+    assert refreshed is True
+    redis_client.eval.assert_called_once_with(
+        poll_maybank.LOCK_REFRESH_SCRIPT,
+        1,
+        "maybank_poll_lock:test.localhost",
+        "owner-token",
+        poll_maybank.SCHEDULER_LOCK_TTL_SECONDS,
+    )
+
+
 def test_scheduler_dispatches_scanned_then_current_before_stale_recovery() -> None:
     cache, _redis_client = _redis_cache()
     enqueued: list[dict[str, Any]] = []

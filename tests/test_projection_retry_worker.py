@@ -163,6 +163,17 @@ def test_worker_runs_real_handler_under_atomic_worker_lease(monkeypatch) -> None
     assert retry_service.RETRY_LOCK_KEY not in redis.values
 
 
+def test_worker_lock_supports_frappe_v16_direct_redis_cache() -> None:
+    redis = FakeRedis()
+
+    token = retry_service._acquire_worker_lock(redis)
+
+    assert token is not None
+    assert redis.values[retry_service.RETRY_LOCK_KEY] == token
+    retry_service._release_worker_lock(redis, token)
+    assert retry_service.RETRY_LOCK_KEY not in redis.values
+
+
 def test_forced_worker_can_recover_projection_after_retry_ceiling(monkeypatch) -> None:
     redis = FakeRedis()
     candidate = {
