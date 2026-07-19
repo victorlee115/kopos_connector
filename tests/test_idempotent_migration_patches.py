@@ -19,6 +19,7 @@ from kopos_connector.patches import (
 
 def test_order_reference_schema_patch_is_safe_to_replay(monkeypatch) -> None:
     column_exists = False
+    reload_calls: list[tuple[str, str, str]] = []
     sql_calls: list[str] = []
     commit_calls: list[None] = []
 
@@ -26,7 +27,7 @@ def test_order_reference_schema_patch_is_safe_to_replay(monkeypatch) -> None:
     monkeypatch.setattr(
         add_order_reference.frappe,
         "reload_doc",
-        lambda *_args: None,
+        lambda *args: reload_calls.append(args),
         raising=False,
     )
     monkeypatch.setattr(
@@ -50,6 +51,10 @@ def test_order_reference_schema_patch_is_safe_to_replay(monkeypatch) -> None:
     add_order_reference.execute()
     add_order_reference.execute()
 
+    assert reload_calls == [
+        ("kopos", "doctype", "fb_stock_override_log"),
+        ("kopos", "doctype", "fb_stock_override_log"),
+    ]
     assert len(sql_calls) == 1
     assert "ADD COLUMN `order_reference`" in sql_calls[0]
     assert len(commit_calls) == 1
