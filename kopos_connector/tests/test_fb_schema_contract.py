@@ -6,7 +6,6 @@ from pathlib import Path
 
 
 ERP_ROOT = Path(__file__).resolve().parents[1]
-WORKTREE_ROOT = ERP_ROOT.parent
 DOCTYPE_ROOT = ERP_ROOT / "kopos" / "doctype"
 
 
@@ -242,7 +241,7 @@ class TestFBSchemaContract(unittest.TestCase):
         self.assertIn("Temperature contains Hot and Iced", script)
 
     def test_fb_modifier_dependency_authoring_doc_exists(self):
-        doc_path = WORKTREE_ROOT / "docs" / "FB_MODIFIER_AUTHORING.md"
+        doc_path = ERP_ROOT / "docs" / "FB_MODIFIER_AUTHORING.md"
 
         self.assertTrue(doc_path.exists())
         content = doc_path.read_text()
