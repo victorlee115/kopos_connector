@@ -431,6 +431,10 @@ def prepare_automatic_qr_sale_payload(payload: dict[str, Any]) -> dict[str, Any]
             lock=True,
         )
         order_doc = _build_fb_order(validated)
+        # Resolve server-default recipe identity before the first insert. Once
+        # accepted_sale_fingerprint is persisted, recipe fields are part of the
+        # immutable prepared-sale snapshot and must never be enriched afterward.
+        line_resolutions = order_doc.build_line_resolutions()
         order_doc.accepted_sale_fingerprint = validated[
             "accepted_sale_fingerprint"
         ]
@@ -438,7 +442,6 @@ def prepare_automatic_qr_sale_payload(payload: dict[str, Any]) -> dict[str, Any]
         order_doc.automatic_qr_accepted_at = now_datetime()
         order_doc.insert(ignore_permissions=True)
 
-        line_resolutions = order_doc.build_line_resolutions()
         order_doc.validate_stock_availability(line_resolutions)
         order_doc.create_resolved_sales(line_resolutions)
         payment_rows = list(order_doc.get("payments") or [])

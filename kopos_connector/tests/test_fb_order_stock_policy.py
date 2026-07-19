@@ -492,6 +492,40 @@ def test_prepared_sale_rejects_persisted_price_customer_or_payment_edits(
         order.validate_prepared_sale_immutability()
 
 
+def test_prepared_sale_rejects_persisted_recipe_identity_edits(
+    fake_frappe,
+) -> None:
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    before = SimpleNamespace(
+        accepted_sale_fingerprint="f" * 64,
+        items=[
+            SimpleNamespace(
+                line_id="LINE-1",
+                item="ITEM-1",
+                qty=1,
+                recipe="RECIPE-1",
+                recipe_version=3,
+                is_recipe_managed=1,
+            )
+        ],
+        payments=[],
+    )
+    order = fb_order_module.FBOrder()
+    order.accepted_sale_fingerprint = "f" * 64
+    order.items = [SimpleNamespace(**vars(before.items[0]))]
+    order.items[0].recipe_version = 4
+    order.payments = []
+    order.get_doc_before_save = lambda: before
+
+    with pytest.raises(
+        fb_order_module.frappe.ValidationError,
+        match=r"immutable sale snapshot cannot be changed: items\[1\]\.recipe_version",
+    ):
+        order.validate_prepared_sale_immutability()
+
+
 def test_prepared_sale_allows_only_qr_settlement_lifecycle_updates(
     fake_frappe,
 ) -> None:

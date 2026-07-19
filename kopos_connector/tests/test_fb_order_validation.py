@@ -12,6 +12,114 @@ install_fake_frappe_modules()
 
 
 class TestFBOrderModifierValidation(unittest.TestCase):
+    def test_prepare_resolves_default_recipe_before_freezing_sale(self):
+        from kopos_connector.kopos.api import fb_orders
+
+        events = []
+        line = SimpleNamespace(
+            recipe=None,
+            recipe_version=None,
+            is_recipe_managed=0,
+        )
+        payment = SimpleNamespace(name="PAY-1", settlement_status=None)
+
+        class FakePreparedOrder:
+            def __init__(self):
+                self.items = [line]
+                self.payments = [payment]
+                self.name = "FB-ORDER-1"
+                self._inserted_recipe_identity = None
+
+            def build_line_resolutions(self):
+                events.append("resolve")
+                line.recipe = "RECIPE-1"
+                line.recipe_version = 3
+                line.is_recipe_managed = 1
+                return [{"line": line, "resolved_components": []}]
+
+            def insert(self, ignore_permissions=False):
+                self._inserted_recipe_identity = (
+                    line.recipe,
+                    line.recipe_version,
+                    line.is_recipe_managed,
+                )
+                events.append("insert")
+                return self
+
+            def validate_stock_availability(self, resolutions):
+                events.append("stock")
+
+            def create_resolved_sales(self, resolutions):
+                events.append("snapshot")
+
+            def get(self, fieldname):
+                return getattr(self, fieldname)
+
+            def save(self, ignore_permissions=False):
+                current_recipe_identity = (
+                    line.recipe,
+                    line.recipe_version,
+                    line.is_recipe_managed,
+                )
+                if current_recipe_identity != self._inserted_recipe_identity:
+                    raise AssertionError(
+                        "recipe identity changed after the prepared sale was frozen"
+                    )
+                events.append("save")
+                return self
+
+        order = FakePreparedOrder()
+        normalized = {
+            "external_idempotency_key": "IDEMP-1",
+            "accepted_sale_fingerprint": "f" * 64,
+            "payments": [],
+        }
+        validated = {
+            **normalized,
+            "shift": "FB-SHIFT-1",
+            "device_id": "DEVICE-1",
+            "staff_id": "cashier@example.com",
+        }
+
+        with patch.object(
+            fb_orders,
+            "_normalize_submit_order_payload",
+            return_value=normalized,
+        ), patch.object(
+            fb_orders,
+            "_validate_automatic_qr_prepare_payment",
+        ), patch.object(
+            fb_orders,
+            "_get_existing_fb_order_name",
+            return_value=None,
+        ), patch.object(
+            fb_orders,
+            "_validate_new_submit_order_state",
+            return_value=validated,
+        ), patch.object(
+            fb_orders,
+            "_validate_submit_shift",
+        ), patch.object(
+            fb_orders,
+            "_build_fb_order",
+            return_value=order,
+        ), patch.object(
+            fb_orders,
+            "_build_automatic_qr_prepare_response",
+            return_value={"status": "ok"},
+        ):
+            response = fb_orders.prepare_automatic_qr_sale_payload({})
+
+        self.assertEqual(response, {"status": "ok"})
+        self.assertEqual(
+            events,
+            ["resolve", "insert", "stock", "snapshot", "save"],
+        )
+        self.assertEqual(
+            order._inserted_recipe_identity,
+            ("RECIPE-1", 3, 1),
+        )
+
     def test_fully_discounted_line_normalizes_to_zero_sen(self):
         from kopos_connector.kopos.api.fb_orders import _normalize_order_item
 
