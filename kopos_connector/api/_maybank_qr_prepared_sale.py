@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 import frappe
-from frappe.utils import cstr, now_datetime
+from frappe.utils import cint, cstr, now_datetime
 
 from kopos_connector.kopos.api.money_contract import (
     MoneyContractValidationError,
@@ -18,7 +18,11 @@ from kopos_connector.kopos.services.accounting.maybank_payment_service import (
     normalize_qr_token,
 )
 
-from ._maybank_qr_contract import MAYBANK_CURRENCY, _request_fingerprint
+from ._maybank_qr_contract import (
+    MAYBANK_CURRENCY,
+    MaybankQrPreflightRejection,
+    _request_fingerprint,
+)
 from ._maybank_qr_persistence import _load_linked_generation_attempts_for_update
 from ._maybank_qr_replacement import (
     MaybankQrReplacementRequest,
@@ -90,9 +94,38 @@ def load_prepared_automatic_qr_sale(
             frappe.ValidationError,
         )
     payment = matching_payments[0]
-    if normalize_qr_token(
+    payment_channel = normalize_qr_token(
         getattr(payment, "payment_channel_code", None)
-    ) not in {"maybank", "maybank qr"}:
+    )
+    static_reconciliation = cstr(
+        getattr(payment, "manual_qr_reconciliation", None)
+    ).strip()
+    is_submitted_static_winner = bool(
+        payment_channel == "static qr"
+        and cint(getattr(order_doc, "docstatus", 0)) == 1
+        and cstr(getattr(order_doc, "automatic_qr_state", None)).strip()
+        == "finalized"
+        and cstr(
+            getattr(order_doc, "automatic_qr_winner_channel", None)
+        ).strip()
+        == "static_qr"
+        and static_reconciliation
+        and static_reconciliation
+        == cstr(
+            getattr(
+                order_doc,
+                "automatic_qr_static_reconciliation",
+                None,
+            )
+        ).strip()
+        and cint(getattr(payment, "is_manual_confirmation", 0))
+        and not cstr(
+            getattr(payment, "maybank_qr_transaction", None)
+        ).strip()
+    )
+    if payment_channel not in {"maybank", "maybank qr"} and not (
+        is_submitted_static_winner
+    ):
         frappe.throw(
             "Prepared payment is not a Maybank QR payment",
             frappe.ValidationError,
@@ -134,6 +167,7 @@ def load_prepared_automatic_qr_sale(
         fb_order_payment,
     )
     replacement_rejection: MaybankQrReplacementRejection | None = None
+    preflight_rejection: MaybankQrPreflightRejection | None = None
     try:
         provider_round_number = validate_generation_attempt(
             order_doc=order_doc,
@@ -152,6 +186,12 @@ def load_prepared_automatic_qr_sale(
         # The outer workflow will register a durable no-provider fence.
         replacement_rejection = rejection
         provider_round_number = 1
+    except MaybankQrPreflightRejection as rejection:
+        # A submitted static winner cannot start a new provider call. The
+        # outer workflow persists an exact no-provider fence for this request
+        # identity so a late background job can release its local candidate.
+        preflight_rejection = rejection
+        provider_round_number = 1
     prepared_sale: dict[str, Any] = {
         "fb_order": fb_order,
         "fb_order_payment": fb_order_payment,
@@ -165,4 +205,6 @@ def load_prepared_automatic_qr_sale(
     }
     if replacement_rejection is not None:
         prepared_sale["replacement_rejection"] = replacement_rejection
+    if preflight_rejection is not None:
+        prepared_sale["preflight_rejection"] = preflight_rejection
     return prepared_sale

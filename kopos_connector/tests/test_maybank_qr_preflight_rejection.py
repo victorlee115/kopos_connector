@@ -157,6 +157,87 @@ def test_configuration_rejection_is_bound_and_durably_fenced_before_release(
     assert json.loads(captured["raw_response"]) == response
 
 
+def test_static_winner_late_generation_is_durably_fenced_and_replays_exactly(
+    monkeypatch: Any,
+) -> None:
+    persisted: dict[str, Any] = {}
+    commits: list[str] = []
+    prepared = {
+        **_prepared_sale(),
+        "preflight_rejection": maybank_qr_contract.MaybankQrPreflightRejection(
+            "Static QR already completed this prepared sale",
+            maybank_qr_contract.PREFLIGHT_REASON_STATIC_WINNER,
+        ),
+    }
+
+    class FenceDocument:
+        def __init__(self, values: dict[str, Any]) -> None:
+            self.values = values
+
+        def insert(self, *, ignore_permissions: bool) -> None:
+            assert ignore_permissions is True
+            persisted.update(self.values)
+
+    monkeypatch.setattr(
+        maybank_qr_generation,
+        "_load_prepared_automatic_qr_sale",
+        lambda **_kwargs: prepared,
+    )
+    monkeypatch.setattr(
+        maybank_qr_generation,
+        "_load_existing_txn",
+        lambda *_args: dict(persisted) if persisted else None,
+    )
+    monkeypatch.setattr(
+        maybank_qr_generation.frappe,
+        "get_doc",
+        lambda values: FenceDocument(values),
+    )
+    monkeypatch.setattr(
+        maybank_qr_generation.frappe.db,
+        "set_value",
+        lambda *_args, **_kwargs: pytest.fail(
+            "static winner state must not be regressed"
+        ),
+    )
+    monkeypatch.setattr(
+        maybank_qr_generation.frappe.db,
+        "commit",
+        lambda: commits.append("commit"),
+    )
+    monkeypatch.setattr(
+        maybank_qr_generation.MaybankClient,
+        "from_settings",
+        classmethod(lambda _cls: pytest.fail("provider must not be contacted")),
+    )
+
+    payload = {
+        "amount_sen": AMOUNT_SEN,
+        "device_id": DEVICE_ID,
+        "idempotency_key": IDEMPOTENCY_KEY,
+        "fb_order": FB_ORDER,
+        "fb_order_payment": FB_ORDER_PAYMENT,
+        "accepted_sale_fingerprint": ACCEPTED_SALE_FINGERPRINT,
+    }
+    first = maybank_qr.generate_maybank_qr_payload(payload)
+    replay = maybank_qr.generate_maybank_qr_payload(payload)
+
+    assert first == replay
+    assert first["status"] == "rejected"
+    assert first["preflight_reason_code"] == "prepared_sale_static_winner"
+    assert first["provider_request_attempted"] is False
+    assert first["rejection_fence_registered"] is True
+    assert first["local_release_authorized"] is True
+    assert first["device_id"] == DEVICE_ID
+    assert first["idempotency_key"] == IDEMPOTENCY_KEY
+    assert first["amount_sen"] == AMOUNT_SEN
+    assert first["currency"] == "MYR"
+    assert persisted["fb_order"] == FB_ORDER
+    assert persisted["fb_order_payment"] == FB_ORDER_PAYMENT
+    assert persisted["transaction_refno"].startswith("REQUEST-")
+    assert commits == ["commit"]
+
+
 @pytest.mark.parametrize(
     ("configured_account", "account_row"),
     [

@@ -60,6 +60,8 @@ class TestFBSchemaContract(unittest.TestCase):
                 "accepted_sale_fingerprint",
                 "automatic_qr_state",
                 "automatic_qr_payment",
+                "automatic_qr_winner_channel",
+                "automatic_qr_static_reconciliation",
                 "automatic_qr_accepted_at",
                 "sale_datetime",
                 "shift",
@@ -97,6 +99,101 @@ class TestFBSchemaContract(unittest.TestCase):
             "finalized",
         ):
             self.assertIn(state, automatic_qr_state["options"])
+
+        winner_channel = next(
+            field
+            for field in doc["fields"]
+            if field.get("fieldname") == "automatic_qr_winner_channel"
+        )
+        self.assertIn("maybank_qr", winner_channel["options"])
+        self.assertIn("static_qr", winner_channel["options"])
+        static_reconciliation = next(
+            field
+            for field in doc["fields"]
+            if field.get("fieldname")
+            == "automatic_qr_static_reconciliation"
+        )
+        self.assertEqual(
+            static_reconciliation["options"],
+            "Manual QR Reconciliation",
+        )
+
+    def test_maybank_duplicate_winner_schema_supports_static_sales(self):
+        doc = load_doctype("maybank_qr_transaction")
+        fields = {
+            field["fieldname"]: field
+            for field in doc["fields"]
+            if field.get("fieldname")
+        }
+        self.assertIn("maybank_qr", fields["duplicate_winning_channel"]["options"])
+        self.assertIn("static_qr", fields["duplicate_winning_channel"]["options"])
+        self.assertEqual(
+            fields["duplicate_winning_static_reconciliation"]["options"],
+            "Manual QR Reconciliation",
+        )
+
+    def test_manual_qr_reconciliation_distinguishes_secondary_static_claims(self):
+        doc = load_doctype("manual_qr_reconciliation")
+        fields = {
+            field["fieldname"]: field
+            for field in doc["fields"]
+            if field.get("fieldname")
+        }
+        self.assertIn("winning_settlement", fields["claim_role"]["options"])
+        self.assertIn(
+            "secondary_possible_duplicate",
+            fields["claim_role"]["options"],
+        )
+        self.assertEqual(
+            fields["winning_maybank_qr_transaction"]["options"],
+            "Maybank QR Transaction",
+        )
+        self.assertNotEqual(fields["suspense_account"].get("reqd"), 1)
+        self.assertIn(
+            "pending_review",
+            fields["finance_resolution_status"]["options"],
+        )
+        self.assertIn(
+            "no_second_credit",
+            fields["finance_resolution_status"]["options"],
+        )
+        self.assertIn(
+            "refund_required",
+            fields["finance_resolution_status"]["options"],
+        )
+        self.assertIn(
+            "refunded",
+            fields["finance_resolution_status"]["options"],
+        )
+        for required_field in (
+            "finance_resolution_key",
+            "finance_resolution_idempotency_key",
+            "finance_credit_evidence_file",
+            "finance_credit_evidence_sha256",
+            "finance_credit_evidence_byte_length",
+            "finance_liability_journal_entry",
+            "finance_refund_key",
+            "finance_refund_idempotency_key",
+            "finance_refund_evidence_file",
+            "finance_refund_evidence_sha256",
+            "finance_refund_evidence_byte_length",
+            "finance_refund_journal_entry",
+            "finance_resolved_by",
+            "finance_resolved_at",
+        ):
+            self.assertIn(required_field, fields)
+        for optional_unique_field in (
+            "finance_resolution_key",
+            "finance_resolution_idempotency_key",
+            "finance_credit_reference",
+            "finance_refund_key",
+            "finance_refund_idempotency_key",
+            "finance_refund_reference",
+        ):
+            field = fields[optional_unique_field]
+            self.assertEqual(field.get("unique"), 1)
+            self.assertNotEqual(field.get("reqd"), 1)
+            self.assertNotIn("default", field)
 
     def test_prepared_resolved_sale_schema(self):
         doc = load_doctype("fb_resolved_sale")

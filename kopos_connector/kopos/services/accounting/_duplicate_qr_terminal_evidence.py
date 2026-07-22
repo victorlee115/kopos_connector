@@ -211,6 +211,11 @@ def assert_duplicate_refund_terminal_evidence(
         "fb_order": resolved_identity["order_name"],
         "sales_invoice": resolved_identity["invoice_name"],
         "winning_transaction": resolved_identity["winning_transaction"],
+        "winning_channel": resolved_identity["winning_channel"],
+        "winning_static_reconciliation": resolved_identity[
+            "winning_static_reconciliation"
+        ]
+        or None,
         "amount_sen": resolved_identity["amount_sen"],
         "currency": resolved_identity["currency"],
         "liability_journal_entry": liability["journal_entry"],
@@ -255,6 +260,15 @@ def lock_and_assert_duplicate_refund_terminal_evidence(
             frappe.ValidationError,
         )
 
+    static_reconciliation = _text(
+        _value(transaction, "duplicate_winning_static_reconciliation")
+    )
+    if static_reconciliation:
+        _lock_exact_row(
+            "Manual QR Reconciliation",
+            static_reconciliation,
+            "winning static QR reconciliation",
+        )
     for fieldname, label in (
         ("duplicate_liability_journal_entry", "liability Journal Entry"),
         ("duplicate_refund_journal_entry", "refund Journal Entry"),
@@ -289,6 +303,7 @@ def _validate_private_provider_evidence_file(
     *,
     expected_sha256: str,
     source_name: str,
+    source_doctype: str = MAYBANK_TRANSACTION_DOCTYPE,
 ) -> dict[str, Any]:
     try:
         evidence_file = frappe.get_doc("File", file_name)
@@ -302,11 +317,18 @@ def _validate_private_provider_evidence_file(
         _text(_value(evidence_file, "name")) != file_name
         or not cint(_value(evidence_file, "is_private"))
         or _text(_value(evidence_file, "attached_to_doctype"))
-        != MAYBANK_TRANSACTION_DOCTYPE
+        != source_doctype
         or _text(_value(evidence_file, "attached_to_name")) != source_name
     ):
+        message = (
+            "Provider refund evidence must be a private File attached to the "
+            "duplicate transaction"
+            if source_doctype == MAYBANK_TRANSACTION_DOCTYPE
+            else "Payment evidence must be a private File attached to the exact "
+            "resolution record"
+        )
         frappe.throw(
-            "Provider refund evidence must be a private File attached to the duplicate transaction",
+            message,
             frappe.ValidationError,
         )
     declared_size = cint(_value(evidence_file, "file_size"))

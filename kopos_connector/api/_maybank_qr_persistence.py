@@ -558,10 +558,11 @@ def _load_linked_generation_attempts_for_update(
             SELECT
                 name, transaction_refno, status, maybank_status,
                 qr_data, expires_at, sale_amount_sen, currency, provider,
-                company, device_id,
+                company, device_id, outlet_id,
                 idempotency_key, request_fingerprint,
                 replacement_reason, replaces_transaction_refno, round_number,
                 fb_order, fb_order_payment, sales_invoice,
+                consumption_key, invoice_consumption_key, consumed_at,
                 creation, created_at, paid_at, raw_response
             FROM `tabMaybank QR Transaction`
             WHERE fb_order = %s AND fb_order_payment = %s

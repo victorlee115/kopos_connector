@@ -302,9 +302,13 @@ def test_fetch_manual_qr_reconciliation_status_returns_requested_rows(reconcilia
         {
             "payment_id": "PAY-1",
             "provider_session_id": "TXN-PENDING-1",
-            "transaction_refno": "TXN-PENDING-1",
-            "reconciliation_status": "pending_reconciliation",
-            "reconciled_by": None,
+                "transaction_refno": "TXN-PENDING-1",
+                "reconciliation_status": "pending_reconciliation",
+                    "static_claim_role": None,
+                    "winning_maybank_qr_transaction": None,
+                    "finance_resolution_status": None,
+                    "finance_resolution_decision": None,
+                "reconciled_by": None,
             "reconciled_at": None,
             "reconciliation_note": None,
             "reconciliation_failed_reason": None,
@@ -312,9 +316,13 @@ def test_fetch_manual_qr_reconciliation_status_returns_requested_rows(reconcilia
         {
             "payment_id": "PAY-2",
             "provider_session_id": "TXN-RECONCILED",
-            "transaction_refno": "TXN-RECONCILED",
-            "reconciliation_status": "reconciled",
-            "reconciled_by": "manager-a",
+                "transaction_refno": "TXN-RECONCILED",
+                "reconciliation_status": "reconciled",
+                    "static_claim_role": None,
+                    "winning_maybank_qr_transaction": None,
+                    "finance_resolution_status": None,
+                    "finance_resolution_decision": None,
+                "reconciled_by": "manager-a",
             "reconciled_at": None,
             "reconciliation_note": None,
             "reconciliation_failed_reason": None,
@@ -322,9 +330,13 @@ def test_fetch_manual_qr_reconciliation_status_returns_requested_rows(reconcilia
         {
             "payment_id": "PAY-3",
             "provider_session_id": "TXN-NORMAL",
-            "transaction_refno": "TXN-NORMAL",
-            "reconciliation_status": None,
-            "reconciled_by": None,
+                "transaction_refno": "TXN-NORMAL",
+                "reconciliation_status": None,
+                    "static_claim_role": None,
+                    "winning_maybank_qr_transaction": None,
+                    "finance_resolution_status": None,
+                    "finance_resolution_decision": None,
+                "reconciled_by": None,
             "reconciled_at": None,
             "reconciliation_note": None,
             "reconciliation_failed_reason": None,
@@ -1080,6 +1092,27 @@ def build_manual_reconciliation() -> SimpleNamespace:
         reconciliation_note=None,
         reconciliation_failed_reason=None,
     )
+
+
+def test_secondary_static_claim_cannot_reclassify_maybank_winner(
+    reconciliation_module,
+) -> None:
+    source = build_manual_reconciliation()
+    source.claim_role = "secondary_possible_duplicate"
+    source.winning_maybank_qr_transaction = "MBQR-WINNER-1"
+    source.suspense_account = None
+
+    with pytest.raises(reconciliation_module.frappe.ValidationError):
+        reconciliation_module.module._reject_secondary_static_claim_accounting(
+            source
+        )
+
+    from kopos_connector.kopos.services.accounting import (
+        _qr_reconciliation_context as accounting_context,
+    )
+
+    with pytest.raises(reconciliation_module.frappe.ValidationError):
+        accounting_context._build_context(source)
 
 
 class FakeCommentDoc:

@@ -261,6 +261,7 @@ def install_fake_frappe_modules() -> None:
         lambda user=None: ["System Manager"] if user == "Administrator" else [],
     )
     setattr(frappe_module, "utils", utils_module)
+    setattr(utils_module, "password", password_module)
 
     setattr(twofactor_module, "get_qr_svg_code", lambda value: b"svg-data")
     setattr(password_module, "get_decrypted_password", lambda *args, **kwargs: None)

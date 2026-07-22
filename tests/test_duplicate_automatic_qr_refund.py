@@ -214,6 +214,16 @@ def duplicate_env(
                         for name in list(fieldname)
                     }
                 return getattr(doc, str(fieldname), None)
+            if doctype == "Manual QR Reconciliation":
+                doc = env.docs.get((doctype, str(name_or_filters)))
+                if not doc:
+                    return None
+                if as_dict:
+                    return {
+                        name: getattr(doc, name, None)
+                        for name in list(fieldname)
+                    }
+                return getattr(doc, str(fieldname), None)
             if doctype == "Sales Invoice":
                 doc = env.docs.get((doctype, str(name_or_filters)))
                 if not doc:
@@ -387,6 +397,38 @@ def _register(order: FakeDoc, source: FakeDoc) -> dict[str, Any]:
     )
 
 
+def _configure_static_winner(
+    env: DuplicateAccountingEnv,
+    order: FakeDoc,
+) -> FakeDoc:
+    payment = order.payments[0]
+    payment.payment_channel_code = "static_qr"
+    payment.reference_no = "STATIC-RECEIPT-1"
+    payment.external_transaction_id = "static-local-payment-1"
+    payment.maybank_qr_transaction = None
+    payment.is_manual_confirmation = 1
+    payment.settlement_status = "pending_reconciliation"
+    payment.manual_qr_reconciliation = "MQR-STATIC-1"
+    order.automatic_qr_winner_channel = "static_qr"
+    order.automatic_qr_static_reconciliation = "MQR-STATIC-1"
+    reconciliation = FakeDoc(
+        doctype="Manual QR Reconciliation",
+        name="MQR-STATIC-1",
+        status="pending_reconciliation",
+        fb_order=order.name,
+        fb_order_payment=payment.name,
+        sales_invoice=order.sales_invoice,
+        device_id=order.device_id,
+        company=order.company,
+        currency=order.currency,
+        amount_sen=1250,
+        provider_session_id="static-local-payment-1",
+        reconciliation_idempotency_key="RECONCILE-STATIC-1",
+    )
+    env.docs[(reconciliation.doctype, reconciliation.name)] = reconciliation
+    return reconciliation
+
+
 def _refund_payload(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "transaction": "MBQR-DUPLICATE",
@@ -453,6 +495,73 @@ def test_duplicate_paid_attempt_posts_liability_without_second_invoice_or_sale_m
             "credit_in_account_currency": Decimal("12.50"),
         },
     ]
+
+
+def test_late_maybank_payment_after_static_winner_posts_one_refund_liability(
+    duplicate_env: tuple[DuplicateAccountingEnv, FakeDoc, FakeDoc],
+) -> None:
+    env, order, source = duplicate_env
+    _configure_static_winner(env, order)
+
+    result = service.register_duplicate_paid_incident(
+        source,
+        order_doc=order,
+        winning_transaction_name="",
+    )
+    replay = service.register_duplicate_paid_incident(
+        source,
+        order_doc=order,
+        winning_transaction_name="",
+    )
+
+    assert result["duplicate_payment_status"] == "refund_required"
+    assert replay["liability_journal_entry"] == result["liability_journal_entry"]
+    assert result["winning_channel"] == "static_qr"
+    assert result["winning_transaction"] == ""
+    assert result["winning_static_reconciliation"] == "MQR-STATIC-1"
+    assert source.duplicate_winning_channel == "static_qr"
+    assert source.duplicate_winning_transaction is None
+    assert source.duplicate_winning_static_reconciliation == "MQR-STATIC-1"
+    assert env.journals_created == 1
+    journal = env.docs[("Journal Entry", "JV-DUP-1")]
+    assert journal.custom_kopos_qr_winning_channel == "static_qr"
+    assert journal.custom_kopos_qr_winning_transaction is None
+    assert journal.custom_kopos_qr_winning_static_reconciliation == "MQR-STATIC-1"
+    assert order.sales_invoice == "SINV-1"
+
+
+@pytest.mark.parametrize(
+    ("fieldname", "changed_value"),
+    [
+        ("amount_sen", 1249),
+        ("device_id", "OTHER-TABLET"),
+        ("company", "Other Company"),
+        ("currency", "SGD"),
+        ("fb_order", "FB-ORDER-OTHER"),
+        ("fb_order_payment", "FBPAY-OTHER"),
+        ("sales_invoice", "SINV-OTHER"),
+        ("provider_session_id", "MBB-NOT-STATIC"),
+    ],
+)
+def test_static_winner_must_have_exact_durable_reconciliation_before_incident(
+    duplicate_env: tuple[DuplicateAccountingEnv, FakeDoc, FakeDoc],
+    fieldname: str,
+    changed_value: Any,
+) -> None:
+    env, order, source = duplicate_env
+    reconciliation = _configure_static_winner(env, order)
+    setattr(reconciliation, fieldname, changed_value)
+
+    with pytest.raises(service.frappe.ValidationError):
+        service.register_duplicate_paid_incident(
+            source,
+            order_doc=order,
+            winning_transaction_name="",
+        )
+
+    assert source.duplicate_payment_status is None
+    assert env.journals_created == 0
+    assert order.sales_invoice == "SINV-1"
 
 
 def test_missing_liability_configuration_stays_accounting_pending_and_nonblocking(
@@ -544,6 +653,29 @@ def test_liability_registration_exact_retry_reuses_one_verified_journal(
     assert second["liability_journal_entry"] == "JV-DUP-1"
     assert env.journals_created == 1
     assert source.duplicate_payment_status == "refund_required"
+
+
+def test_preupgrade_dynamic_liability_replay_preserves_key_and_blank_additive_fields(
+    duplicate_env: tuple[DuplicateAccountingEnv, FakeDoc, FakeDoc],
+) -> None:
+    env, order, source = duplicate_env
+    first = _register(order, source)
+    historical_key = source.duplicate_accounting_key
+    historical_journal = env.docs[("Journal Entry", "JV-DUP-1")]
+
+    # Simulate a submitted incident and immutable Journal Entry created before
+    # the additive winner-channel fields existed.
+    source.duplicate_winning_channel = None
+    historical_journal.custom_kopos_qr_winning_channel = None
+    historical_journal.custom_kopos_qr_winning_static_reconciliation = None
+
+    replay = _register(order, source)
+
+    assert first["liability_journal_entry"] == "JV-DUP-1"
+    assert replay["liability_journal_entry"] == "JV-DUP-1"
+    assert source.duplicate_accounting_key == historical_key
+    assert source.duplicate_winning_channel is None
+    assert env.journals_created == 1
 
 
 def test_missing_gl_proof_rolls_back_partial_journal_then_recovers_exactly_once(
@@ -687,6 +819,37 @@ def test_exact_provider_refund_posts_inverse_entry_and_exact_retry_is_idempotent
                 provider_evidence_reference="MAYBANK-CASE-20260717-CHANGED"
             )
         )
+    assert env.journals_created == 2
+
+
+def test_preupgrade_dynamic_refund_replay_reproves_old_keys_and_journals(
+    duplicate_env: tuple[DuplicateAccountingEnv, FakeDoc, FakeDoc],
+) -> None:
+    env, order, source = duplicate_env
+    _register(order, source)
+    first = service.resolve_duplicate_paid_refund(_refund_payload())
+    recognition_key = source.duplicate_accounting_key
+    refund_key = source.duplicate_refund_key
+
+    source.duplicate_winning_channel = None
+    for journal_name in ("JV-DUP-1", "JV-DUP-2"):
+        journal = env.docs[("Journal Entry", journal_name)]
+        journal.custom_kopos_qr_winning_channel = None
+        journal.custom_kopos_qr_winning_static_reconciliation = None
+
+    replay = service.resolve_duplicate_paid_refund(_refund_payload())
+    terminal = service.assert_duplicate_refund_terminal_evidence(
+        source,
+        order_doc=order,
+    )
+
+    assert first["status"] == "refunded"
+    assert replay["status"] == "already_refunded"
+    assert source.duplicate_accounting_key == recognition_key
+    assert source.duplicate_refund_key == refund_key
+    assert terminal["liability_journal_entry"] == "JV-DUP-1"
+    assert terminal["refund_journal_entry"] == "JV-DUP-2"
+    assert source.duplicate_winning_channel is None
     assert env.journals_created == 2
 
 
@@ -948,9 +1111,11 @@ def test_schema_and_install_contract_expose_first_class_duplicate_liability_fiel
     fields = {row["fieldname"]: row for row in schema["fields"]}
 
     assert fields["duplicate_payment_status"]["options"].splitlines()[1:] == [
+        "possible_duplicate",
         "accounting_pending",
         "refund_required",
         "refunded",
+        "settled_existing_sale",
     ]
     assert fields["duplicate_accounting_key"]["unique"] == 1
     assert fields["duplicate_refund_key"]["unique"] == 1
@@ -958,6 +1123,10 @@ def test_schema_and_install_contract_expose_first_class_duplicate_liability_fiel
     assert fields["duplicate_refund_journal_entry"]["options"] == "Journal Entry"
     assert fields["duplicate_refund_evidence_file"]["options"] == "File"
     assert fields["duplicate_refund_date"]["fieldtype"] == "Date"
+    assert "static_qr" in fields["duplicate_winning_channel"]["options"]
+    assert fields["duplicate_winning_static_reconciliation"]["options"] == (
+        "Manual QR Reconciliation"
+    )
 
     custom_fields_source = (
         ROOT / "kopos_connector/kopos/install/fb_custom_fields.py"
@@ -965,6 +1134,10 @@ def test_schema_and_install_contract_expose_first_class_duplicate_liability_fiel
     assert service.COMPANY_CLEARING_ACCOUNT_FIELD in custom_fields_source
     assert service.COMPANY_LIABILITY_ACCOUNT_FIELD in custom_fields_source
     assert "custom_kopos_qr_duplicate_key" in custom_fields_source
+    assert "custom_kopos_qr_winning_channel" in custom_fields_source
+    assert "custom_kopos_qr_winning_static_reconciliation" in (
+        custom_fields_source
+    )
 
 
 def test_active_refund_api_is_non_device_system_manager_only() -> None:

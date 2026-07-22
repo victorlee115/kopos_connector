@@ -139,10 +139,16 @@ def _create_or_recover_journal(context: dict[str, Any]) -> str:
         )
         journal.custom_kopos_qr_duplicate_key = context["journal_key"]
         journal.custom_kopos_qr_duplicate_stage = context["stage"]
-        journal.custom_kopos_qr_provider_transaction = context["source_name"]
+        journal.custom_kopos_qr_provider_transaction = context.get(
+            "provider_transaction", context["source_name"]
+        ) or None
         journal.custom_kopos_qr_winning_transaction = context[
             "winning_transaction"
-        ]
+        ] or None
+        journal.custom_kopos_qr_winning_channel = context["winning_channel"]
+        journal.custom_kopos_qr_winning_static_reconciliation = context[
+            "winning_static_reconciliation"
+        ] or None
         journal.custom_kopos_qr_provider_evidence_reference = context[
             "evidence_reference"
         ]
@@ -152,7 +158,9 @@ def _create_or_recover_journal(context: dict[str, Any]) -> str:
         journal.custom_kopos_qr_provider_evidence_sha256 = context.get(
             "evidence_sha256"
         )
-        journal.custom_kopos_qr_source_doctype = MAYBANK_TRANSACTION_DOCTYPE
+        journal.custom_kopos_qr_source_doctype = context.get(
+            "source_doctype", MAYBANK_TRANSACTION_DOCTYPE
+        )
         journal.custom_kopos_qr_source_name = context["source_name"]
         journal.custom_kopos_qr_fb_order = context["order_name"]
         journal.custom_kopos_qr_sales_invoice = context["invoice_name"]
@@ -220,7 +228,9 @@ def _validate_journal(
     expected_fields = {
         "custom_kopos_qr_duplicate_key": context["journal_key"],
         "custom_kopos_qr_duplicate_stage": context["stage"],
-        "custom_kopos_qr_provider_transaction": context["source_name"],
+        "custom_kopos_qr_provider_transaction": context.get(
+            "provider_transaction", context["source_name"]
+        ),
         "custom_kopos_qr_winning_transaction": context[
             "winning_transaction"
         ],
@@ -231,7 +241,9 @@ def _validate_journal(
         "custom_kopos_qr_provider_evidence_sha256": context.get(
             "evidence_sha256"
         ),
-        "custom_kopos_qr_source_doctype": MAYBANK_TRANSACTION_DOCTYPE,
+        "custom_kopos_qr_source_doctype": context.get(
+            "source_doctype", MAYBANK_TRANSACTION_DOCTYPE
+        ),
         "custom_kopos_qr_source_name": context["source_name"],
         "custom_kopos_qr_fb_order": context["order_name"],
         "custom_kopos_qr_sales_invoice": context["invoice_name"],
@@ -248,6 +260,32 @@ def _validate_journal(
                 f"Journal Entry {journal_name} {fieldname} does not match duplicate QR accounting",
                 frappe.ValidationError,
             )
+    actual_winning_channel = _text(
+        _value(journal, "custom_kopos_qr_winning_channel")
+    )
+    expected_winning_channel = _text(context["winning_channel"])
+    if (
+        context.get("legacy_dynamic_winner_metadata")
+        and expected_winning_channel == "maybank_qr"
+    ):
+        allowed_winning_channels = {"", "maybank_qr"}
+    else:
+        allowed_winning_channels = {expected_winning_channel}
+    if actual_winning_channel not in allowed_winning_channels:
+        frappe.throw(
+            f"Journal Entry {journal_name} custom_kopos_qr_winning_channel does not match duplicate QR accounting",
+            frappe.ValidationError,
+        )
+    if _text(
+        _value(
+            journal,
+            "custom_kopos_qr_winning_static_reconciliation",
+        )
+    ) != _text(context["winning_static_reconciliation"]):
+        frappe.throw(
+            f"Journal Entry {journal_name} custom_kopos_qr_winning_static_reconciliation does not match duplicate QR accounting",
+            frappe.ValidationError,
+        )
     if _strict_positive_sen(
         _value(journal, "custom_kopos_qr_amount_sen"),
         "Journal Entry duplicate QR amount_sen",
@@ -348,8 +386,11 @@ def _set_source_values(transaction: Any, values: dict[str, Any]) -> None:
             "Duplicate Automatic QR source name is required",
             frappe.ValidationError,
         )
+    source_doctype = _text(_value(transaction, "doctype")) or (
+        MAYBANK_TRANSACTION_DOCTYPE
+    )
     frappe.db.set_value(
-        MAYBANK_TRANSACTION_DOCTYPE,
+        source_doctype,
         source_name,
         values,
         update_modified=False,

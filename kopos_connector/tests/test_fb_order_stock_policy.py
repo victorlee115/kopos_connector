@@ -561,6 +561,58 @@ def test_prepared_sale_allows_only_qr_settlement_lifecycle_updates(
     order.validate_prepared_sale_immutability()
 
 
+def test_prepared_sale_allows_only_evidence_bound_static_winner_channel_transition(
+    fake_frappe,
+) -> None:
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    payment_before = SimpleNamespace(
+        name="FBPAY-1",
+        source_payment_id="PAY-1",
+        payment_method="DuitNow QR",
+        payment_channel_code="maybank",
+        amount=Decimal("12.50"),
+        tendered_amount=Decimal("12.50"),
+        change_amount=Decimal("0"),
+        is_manual_confirmation=0,
+        manual_confirmation_evidence_json=None,
+        reconciliation_idempotency_key=None,
+        external_transaction_id=None,
+    )
+    payment_after = SimpleNamespace(**vars(payment_before))
+    payment_after.payment_channel_code = "static_qr"
+    payment_after.is_manual_confirmation = 1
+    payment_after.manual_confirmation_evidence_json = '{"evidence_kind":"no_receipt_acknowledgement"}'
+    payment_after.reconciliation_idempotency_key = "RECONCILE-STATIC-1"
+    payment_after.external_transaction_id = "static-payment-1"
+    before = SimpleNamespace(
+        accepted_sale_fingerprint="f" * 64,
+        automatic_qr_state="provider_ambiguous",
+        automatic_qr_winner_channel=None,
+        automatic_qr_payment="FBPAY-1",
+        items=[],
+        payments=[payment_before],
+    )
+    order = fb_order_module.FBOrder()
+    order.accepted_sale_fingerprint = "f" * 64
+    order.automatic_qr_state = "manual_pending_reconciliation"
+    order.automatic_qr_winner_channel = "static_qr"
+    order.automatic_qr_payment = "FBPAY-1"
+    order.items = []
+    order.payments = [payment_after]
+    order.get_doc_before_save = lambda: before
+
+    order.validate_prepared_sale_immutability()
+
+    order.automatic_qr_winner_channel = None
+    with pytest.raises(
+        fb_order_module.frappe.ValidationError,
+        match=r"immutable sale snapshot cannot be changed: payments\[1\]\.payment_channel_code",
+    ):
+        order.validate_prepared_sale_immutability()
+
+
 def test_prepared_sale_tax_rate_canonicalizes_omitted_float_to_zero(
     fake_frappe,
 ) -> None:

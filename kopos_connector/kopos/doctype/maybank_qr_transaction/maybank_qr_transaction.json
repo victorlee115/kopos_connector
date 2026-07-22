@@ -58,7 +58,9 @@
      "reconciliation_failed_reason",
      "section_duplicate_payment",
      "duplicate_payment_status",
+     "duplicate_winning_channel",
      "duplicate_winning_transaction",
+     "duplicate_winning_static_reconciliation",
      "duplicate_accounting_key",
      "duplicate_clearing_account",
      "duplicate_liability_account",
@@ -448,7 +450,15 @@
      "fieldtype": "Select",
      "in_list_view": 1,
      "label": "Duplicate Payment Status",
-     "options": "\naccounting_pending\nrefund_required\nrefunded",
+     "options": "\npossible_duplicate\naccounting_pending\nrefund_required\nrefunded\nsettled_existing_sale",
+     "read_only": 1,
+     "search_index": 1
+    },
+    {
+     "fieldname": "duplicate_winning_channel",
+     "fieldtype": "Select",
+     "label": "Winning QR Channel",
+     "options": "\nmaybank_qr\nstatic_qr",
      "read_only": 1,
      "search_index": 1
     },
@@ -457,6 +467,14 @@
      "fieldtype": "Link",
      "label": "Winning Maybank QR Transaction",
      "options": "Maybank QR Transaction",
+     "read_only": 1,
+     "search_index": 1
+    },
+    {
+     "fieldname": "duplicate_winning_static_reconciliation",
+     "fieldtype": "Link",
+     "label": "Winning Static QR Reconciliation",
+     "options": "Manual QR Reconciliation",
      "read_only": 1,
      "search_index": 1
     },

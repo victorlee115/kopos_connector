@@ -48,6 +48,7 @@ def recover_paid_automatic_qr_sales(
             frappe.db.commit()
             if result.get("settlement_status") in {
                 "pending_reconciliation",
+                "possible_duplicate",
                 "accounting_pending",
             }:
                 _record_recovery_backoff(transaction_name)
@@ -101,7 +102,7 @@ def _recovery_candidates(batch_size: int) -> list[Any]:
         sale.docstatus = 1
         AND COALESCE(txn.consumption_key, '') = ''
         AND COALESCE(txn.duplicate_payment_status, '') IN (
-            '', 'accounting_pending'
+            '', 'possible_duplicate', 'accounting_pending'
         )
         """,
         descending=False,

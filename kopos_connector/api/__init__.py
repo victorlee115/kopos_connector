@@ -947,6 +947,41 @@ def cancel_prepared_automatic_qr_sale(**kwargs: Any) -> None:
 
 
 @frappe.whitelist(methods=["POST"])
+def confirm_prepared_automatic_qr_static_payment(**kwargs: Any) -> None:
+    """Finalize a prepared Automatic QR sale with exact static-QR evidence."""
+    from kopos_connector.kopos.services.accounting.prepared_static_qr_finalization import (
+        confirm_prepared_static_qr_payment,
+    )
+
+    try:
+        payload = _get_submit_payload(kwargs)
+        device_id = frappe.utils.cstr(payload.get("device_id")).strip()
+        lock_device_for_operational_mutation(device_id=device_id)
+        require_device_operational_scope(
+            device_id,
+            company=frappe.utils.cstr(payload.get("company")),
+            currency=frappe.utils.cstr(payload.get("currency")),
+        )
+        _write_response(confirm_prepared_static_qr_payment(payload))
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error(
+            "KoPOS prepared static QR confirmation failed",
+            error,
+        )
+        _write_response(
+            {
+                "status": "error",
+                "message": "Failed to confirm the prepared static QR payment",
+            },
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
 def submit_order(**kwargs: Any) -> None:
     """Public KoPOS endpoint for FB Order submission with raw JSON responses."""
     from kopos_connector.kopos.api.fb_orders import submit_order_payload
@@ -2105,6 +2140,42 @@ def resolve_duplicate_automatic_qr_refund(**kwargs: Any) -> None:
 
 
 @frappe.whitelist(methods=["POST"])
+def resolve_secondary_static_qr_claim(**kwargs: Any) -> None:
+    """Resolve a static QR claim received after Maybank already won the sale."""
+    from .secondary_static_qr_claim import (
+        resolve_secondary_static_qr_claim_payload,
+    )
+
+    try:
+        require_system_manager()
+        if KOPOS_DEVICE_API_ROLE in get_session_roles():
+            frappe.throw(
+                _(
+                    "Secondary static QR finance resolution requires a non-device System Manager session"
+                ),
+                frappe.ValidationError,
+            )
+        payload = _get_submit_payload(kwargs)
+        _write_response(resolve_secondary_static_qr_claim_payload(payload))
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error(
+            "KoPOS secondary static QR finance resolution failed",
+            error,
+        )
+        _write_response(
+            {
+                "status": "error",
+                "message": "Failed to resolve the secondary static QR claim",
+            },
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["POST"])
 def upload_manual_qr_receipt(**kwargs: Any) -> None:
     """Attach a validated private receipt JPEG to a Maybank QR transaction."""
     from .manual_qr_receipt import upload_manual_qr_receipt as upload_payload
@@ -2151,6 +2222,7 @@ __all__ = [
     "abandon_unregistered_device_safe_reset_request",
     "authorize_device_safe_reset",
     "cancel_prepared_automatic_qr_sale",
+    "confirm_prepared_automatic_qr_static_payment",
     "cancel_device_safe_reset",
     "cancel_device_safe_reset_as_system_manager",
     "check_maybank_payment",
@@ -2181,6 +2253,7 @@ __all__ = [
     "request_shift_manager_approval",
     "resolve_duplicate_automatic_qr_refund",
     "resolve_maybank_qr_generation",
+    "resolve_secondary_static_qr_claim",
     "review_promotion_reconciliation",
     "simulate_maybank_qr_payment",
     "submit_order",

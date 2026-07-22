@@ -463,6 +463,68 @@ def test_later_paid_attempt_becomes_incident_without_second_invoice(
     assert "manual_reconciliation_status" not in incident_write[2]
 
 
+def test_late_paid_attempt_after_static_winner_is_never_a_second_sale(
+    monkeypatch: Any,
+) -> None:
+    payment = _payment(
+        payment_channel_code="static_qr",
+        reference_no="STATIC-RECEIPT-1",
+        external_transaction_id="static-local-payment-1",
+        maybank_qr_transaction=None,
+        is_manual_confirmation=1,
+        settlement_status="pending_reconciliation",
+        manual_qr_reconciliation="MQR-STATIC-1",
+    )
+    order = _order(
+        payment,
+        docstatus=1,
+        automatic_qr_state="finalized",
+        automatic_qr_winner_channel="static_qr",
+        automatic_qr_static_reconciliation="MQR-STATIC-1",
+        invoice_status="Posted",
+        sales_invoice="SINV-1",
+    )
+    later = _attempt("MBQR-LATE", "MBB-LATE")
+    _install_finalizer_state(
+        monkeypatch,
+        order=order,
+        attempts=[later],
+        requested_name="MBQR-LATE",
+    )
+    observed: list[tuple[str, list[str]]] = []
+
+    def resolve(
+        transaction: Any,
+        *,
+        order_doc: Any,
+        paid_attempts: list[Any],
+    ) -> dict[str, Any]:
+        observed.append(
+            (transaction["name"], [attempt["name"] for attempt in paid_attempts])
+        )
+        assert order_doc is order
+        return {
+            "status": "payment_incident",
+            "transaction": transaction["name"],
+            "fb_order": order_doc.name,
+            "winning_channel": "static_qr",
+            "winning_static_reconciliation": "MQR-STATIC-1",
+            "duplicate_payment_status": "possible_duplicate",
+            "sales_invoice_created": False,
+        }
+
+    monkeypatch.setattr(core, "resolve_late_paid_after_static_winner", resolve)
+
+    result = service.finalize_paid_automatic_qr_sale("MBQR-LATE")
+
+    assert result["status"] == "payment_incident"
+    assert result["duplicate_payment_status"] == "possible_duplicate"
+    assert result["winning_channel"] == "static_qr"
+    assert observed == [("MBQR-LATE", ["MBQR-LATE"])]
+    assert order.submit_count == 0
+    assert order.sales_invoice == "SINV-1"
+
+
 def test_earliest_provider_paid_attempt_wins_even_if_later_job_runs_first(
     monkeypatch: Any,
 ) -> None:

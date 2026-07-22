@@ -162,6 +162,16 @@ def _finalize_prepared_automatic_qr_order(
 ) -> dict[str, Any]:
     """Submit the preaccepted order once payment truth is available."""
 
+    incoming_payments = list(normalized["payments"])
+    if (
+        len(incoming_payments) == 1
+        and _normalize_token(
+            incoming_payments[0].get("payment_channel_code")
+        )
+        == "static qr"
+    ):
+        return _finalize_prepared_static_qr_submission(normalized, order_doc)
+
     frappe.db.sql(
         "SELECT name FROM `tabFB Order` WHERE name = %s LIMIT 1 FOR UPDATE",
         (order_doc.name,),
@@ -175,7 +185,6 @@ def _finalize_prepared_automatic_qr_order(
             frappe.ValidationError,
         )
 
-    incoming_payments = list(normalized["payments"])
     stored_payments = list(order_doc.get("payments") or [])
     if len(incoming_payments) != 1 or len(stored_payments) != 1:
         frappe.throw(
@@ -315,6 +324,7 @@ def _finalize_prepared_automatic_qr_order(
     order_doc.automatic_qr_state = (
         "provider_paid" if provider_paid else "manual_pending_reconciliation"
     )
+    order_doc.automatic_qr_winner_channel = "maybank_qr"
     order_doc.save(ignore_permissions=True)
     order_doc.submit()
     frappe.db.set_value(
@@ -326,6 +336,72 @@ def _finalize_prepared_automatic_qr_order(
     )
     order_doc.automatic_qr_state = "finalized"
     return _build_submit_response("ok", order_doc)
+
+
+def _finalize_prepared_static_qr_submission(
+    normalized: dict[str, Any],
+    order_doc: Any,
+) -> dict[str, Any]:
+    """Route a legacy/order-outbox static replay through the versioned service."""
+
+    from kopos_connector.kopos.services.accounting.prepared_static_qr_finalization import (
+        CONFIRMATION_CONTRACT_VERSION,
+        confirm_prepared_static_qr_payment,
+    )
+
+    payments = list(normalized["payments"])
+    if len(payments) != 1:
+        frappe.throw(
+            "Prepared Automatic QR static confirmation requires exactly one payment",
+            frappe.ValidationError,
+        )
+    payment = payments[0]
+    evidence_json = cstr(
+        payment.get("manual_confirmation_evidence_json")
+    ).strip()
+    try:
+        evidence = json.loads(evidence_json)
+    except (TypeError, ValueError) as error:
+        frappe.throw(
+            "Prepared Automatic QR static confirmation evidence is invalid",
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw must raise") from error
+    if not isinstance(evidence, dict):
+        frappe.throw(
+            "Prepared Automatic QR static confirmation evidence must be an object",
+            frappe.ValidationError,
+        )
+    stored_payment_name = cstr(
+        getattr(order_doc, "automatic_qr_payment", None)
+    ).strip()
+    result = confirm_prepared_static_qr_payment(
+        {
+            "confirmation_contract_version": CONFIRMATION_CONTRACT_VERSION,
+            "money_contract_version": "sen_v1",
+            "device_id": normalized["device_id"],
+            "fb_order": cstr(order_doc.name).strip(),
+            "fb_order_payment": stored_payment_name,
+            "order_id": normalized["order_id"],
+            "idempotency_key": normalized["external_idempotency_key"],
+            "accepted_sale_fingerprint": cstr(
+                getattr(order_doc, "accepted_sale_fingerprint", None)
+            ).strip(),
+            "payment_id": payment.get("payment_id"),
+            "company": normalized["company"],
+            "currency": normalized["currency"],
+            "amount_sen": payment.get("amount_sen"),
+            "provider_session_id": payment.get("external_transaction_id"),
+            "payment_reference": payment.get("reference_no"),
+            "local_confirmed_at": evidence.get("local_confirmed_at"),
+            "manual_confirmation_evidence": evidence,
+        }
+    )
+    refreshed_order = frappe.get_doc("FB Order", cstr(order_doc.name).strip())
+    return _build_submit_response(
+        "duplicate" if result.get("status") == "duplicate" else "ok",
+        refreshed_order,
+    )
 
 
 def _validate_exact_prepared_qr_settlement_replay(
@@ -3021,11 +3097,64 @@ def _validate_existing_accepted_sale_fingerprint(
             "idempotency_key is already used by a sale that was not prepared for Automatic QR",
             frappe.ValidationError,
         )
-    if existing_fingerprint != normalized["accepted_sale_fingerprint"]:
+    incoming_fingerprint = normalized["accepted_sale_fingerprint"]
+    if (
+        existing_fingerprint != incoming_fingerprint
+        and _static_qr_settlement_fingerprint(normalized, order_doc)
+        != existing_fingerprint
+    ):
         frappe.throw(
             "idempotency_key was already used with a different accepted sale",
             frappe.ValidationError,
         )
+
+
+def _static_qr_settlement_fingerprint(
+    normalized: dict[str, Any],
+    order_doc: Any,
+) -> str:
+    """Re-prove original Maybank preparation for an exact static settlement."""
+
+    payments = list(normalized.get("payments") or [])
+    if len(payments) != 1:
+        return ""
+    payment = payments[0]
+    if (
+        _normalize_token(payment.get("payment_channel_code")) != "static qr"
+        or not payment.get("manual_confirmation_evidence_json")
+        or cstr(payment.get("payment_id")).strip()
+        == ""
+    ):
+        return ""
+    stored_payments = list(order_doc.get("payments") or [])
+    if len(stored_payments) != 1:
+        return ""
+    stored_payment = stored_payments[0]
+    if cstr(payment.get("payment_id")).strip() != cstr(
+        getattr(stored_payment, "source_payment_id", None)
+    ).strip():
+        return ""
+    original_channel = "maybank"
+    stored_channel = _normalize_token(
+        getattr(stored_payment, "payment_channel_code", None)
+    )
+    if stored_channel in {"maybank", "maybank qr"}:
+        original_channel = cstr(
+            getattr(stored_payment, "payment_channel_code", None)
+        ).strip()
+    elif (
+        stored_channel != "static qr"
+        or cstr(
+            getattr(order_doc, "automatic_qr_winner_channel", None)
+        ).strip()
+        != "static_qr"
+    ):
+        return ""
+    fingerprint_input = dict(normalized)
+    fingerprint_payment = dict(payment)
+    fingerprint_payment["payment_channel_code"] = original_channel
+    fingerprint_input["payments"] = [fingerprint_payment]
+    return _canonical_accepted_sale_fingerprint(fingerprint_input)
 
 
 def _set_selected_modifiers_payload(

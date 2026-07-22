@@ -25,6 +25,7 @@ from ._maybank_qr_contract import (
     PREFLIGHT_REASON_PROVIDER_CONFIGURATION,
     PREFLIGHT_REASON_REPLACEMENT_REQUEST,
     PREFLIGHT_REASON_REPLACEMENT_SALE_TERMINAL,
+    PREFLIGHT_REASON_STATIC_WINNER,
     REUSABLE_STATUSES,
     UNKNOWN_STATUS,
     MaybankQrPreflightRejection,
@@ -203,13 +204,42 @@ def _mark_generation_ambiguous(
     )
     fb_order = cstr(_existing_value(reserved, "fb_order")).strip()
     if fb_order:
-        frappe.db.set_value(
-            "FB Order",
+        _set_provider_state_for_unsubmitted_order(
             fb_order,
-            "automatic_qr_state",
             "provider_ambiguous",
-            update_modified=False,
         )
+
+
+def _set_provider_state_for_unsubmitted_order(
+    order_name: str,
+    provider_state: str,
+) -> None:
+    """Do not let a delayed provider result regress a completed static sale."""
+
+    order = frappe.db.get_value(
+        "FB Order",
+        order_name,
+        ["name", "docstatus", "automatic_qr_winner_channel"],
+        as_dict=True,
+    )
+    if not order:
+        frappe.throw(
+            "Prepared Automatic QR FB Order was not found",
+            frappe.ValidationError,
+        )
+    if cint(_existing_value(order, "docstatus")) != 0:
+        return
+    if cstr(_existing_value(order, "automatic_qr_winner_channel")).strip() == (
+        "static_qr"
+    ):
+        return
+    frappe.db.set_value(
+        "FB Order",
+        order_name,
+        "automatic_qr_state",
+        provider_state,
+        update_modified=False,
+    )
 
 
 def _recover_known_provider_result(
@@ -619,7 +649,10 @@ def _register_preflight_rejection_fence(
             return existing_response
         raise
 
-    if replacement_request is None:
+    if (
+        replacement_request is None
+        and response_reason_code != PREFLIGHT_REASON_STATIC_WINNER
+    ):
         frappe.db.set_value(
             "FB Order",
             prepared_sale["fb_order"],
@@ -722,6 +755,21 @@ def _validate_new_generation_attempt(
             )
         frappe.throw(message, frappe.ValidationError)
     if cint(getattr(order_doc, "docstatus", 0)) != 0:
+        if (
+            replacement_request is None
+            and cstr(
+                getattr(order_doc, "automatic_qr_winner_channel", None)
+            ).strip()
+            == "static_qr"
+            and cstr(
+                getattr(order_doc, "automatic_qr_state", None)
+            ).strip()
+            == "finalized"
+        ):
+            raise MaybankQrPreflightRejection(
+                "Static QR already completed this prepared sale",
+                PREFLIGHT_REASON_STATIC_WINNER,
+            )
         message = "Submitted Automatic QR sales cannot create another provider attempt"
         if replacement_request is not None:
             raise MaybankQrReplacementRejection(
@@ -896,6 +944,19 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
             rejection=replacement_rejection,
             prepared_sale=prepared_sale,
             replacement_request=replacement_request,
+        )
+
+    preflight_rejection = prepared_sale.get("preflight_rejection")
+    if isinstance(preflight_rejection, MaybankQrPreflightRejection):
+        return _register_preflight_rejection_fence(
+            device_id=device_id,
+            idempotency_key=idempotency_key,
+            amount_sen=amount_sen,
+            currency=currency,
+            outlet_id="",
+            rejection=preflight_rejection,
+            prepared_sale=prepared_sale,
+            replacement_request=None,
         )
 
     try:

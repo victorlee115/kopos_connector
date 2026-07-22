@@ -309,6 +309,77 @@ def _prepared_sale_changed_paths(
     return changed_paths
 
 
+def _is_static_qr_winner_transition(
+    before: Any,
+    current: Any,
+    changed_paths: list[str],
+) -> bool:
+    """Allow only the audited Maybank-prepared -> static-winner transition.
+
+    Payment channel is part of the accepted fingerprint so arbitrary edits stay
+    forbidden.  The versioned confirmation service is the sole caller that sets
+    the explicit winner marker and exact manual evidence before this save.
+    """
+
+    if changed_paths != ["payments[1].payment_channel_code"]:
+        return False
+    if cstr(getattr(before, "automatic_qr_winner_channel", None)).strip():
+        return False
+    if cstr(getattr(current, "automatic_qr_winner_channel", None)).strip() != (
+        "static_qr"
+    ):
+        return False
+    if cstr(getattr(current, "automatic_qr_state", None)).strip() != (
+        "manual_pending_reconciliation"
+    ):
+        return False
+    if cstr(getattr(before, "automatic_qr_state", None)).strip() not in {
+        "prepared",
+        "provider_pending",
+        "provider_ambiguous",
+        "provider_rejected",
+        "provider_paid",
+        "manual_pending_reconciliation",
+    }:
+        return False
+    before_payments = list(getattr(before, "payments", None) or [])
+    current_payments = list(getattr(current, "payments", None) or [])
+    if len(before_payments) != 1 or len(current_payments) != 1:
+        return False
+    before_payment = before_payments[0]
+    current_payment = current_payments[0]
+    payment_name = cstr(getattr(current_payment, "name", None)).strip()
+    if not payment_name or payment_name != cstr(
+        getattr(current, "automatic_qr_payment", None)
+    ).strip():
+        return False
+    if cstr(getattr(before_payment, "name", None)).strip() != payment_name:
+        return False
+    if cstr(getattr(before_payment, "payment_channel_code", None)).strip().lower() not in {
+        "maybank",
+        "maybank qr",
+        "maybank-qr",
+        "maybank_qr",
+    }:
+        return False
+    if cstr(getattr(current_payment, "payment_channel_code", None)).strip() != (
+        "static_qr"
+    ):
+        return False
+    return bool(
+        int(getattr(current_payment, "is_manual_confirmation", 0) or 0)
+        and cstr(
+            getattr(current_payment, "manual_confirmation_evidence_json", None)
+        ).strip()
+        and cstr(
+            getattr(current_payment, "reconciliation_idempotency_key", None)
+        ).strip()
+        and cstr(getattr(current_payment, "external_transaction_id", None))
+        .strip()
+        .startswith("static-")
+    )
+
+
 class FBOrder(BaseDocument):
     def get_selected_modifier_rows(self, line) -> list[Any]:
         persisted_rows = list(line.get("selected_modifiers") or [])
@@ -354,7 +425,11 @@ class FBOrder(BaseDocument):
             before_snapshot,
             current_snapshot,
         )
-        if changed_paths:
+        if changed_paths and not _is_static_qr_winner_transition(
+            before,
+            self,
+            changed_paths,
+        ):
             displayed_paths = changed_paths[:12]
             undisplayed_count = len(changed_paths) - len(displayed_paths)
             suffix = (

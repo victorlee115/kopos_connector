@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
@@ -496,3 +497,106 @@ def test_manual_confirmation_stays_pending_without_exact_provider_paid_truth(
 
     assert order.payments[0].is_manual_confirmation == 1
     assert order.payments[0].settlement_status == "pending_reconciliation"
+
+
+def test_ordinary_static_submit_replay_routes_to_same_prepared_invoice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kopos_connector.kopos.services.accounting import (
+        prepared_static_qr_finalization as static_service,
+    )
+
+    evidence = {
+        "local_confirmed_at": "2026-07-23T12:00:00+08:00",
+        "evidence_kind": "no_receipt_acknowledgement",
+    }
+    incoming = _normalized_payment(
+        payment_channel_code="static_qr",
+        reference_no="STATIC-RECEIPT-1",
+        external_transaction_id="static-local-payment-1",
+        manual_confirmation_evidence_json=json.dumps(
+            evidence,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        reconciliation_idempotency_key="RECONCILE-STATIC-1",
+        is_manual_confirmation=1,
+        settlement_status="pending_reconciliation",
+    )
+    normalized = _normalized(
+        order_id="LOCAL-ORDER-1",
+        company="KoPOS Sdn Bhd",
+        currency="MYR",
+        payments=[incoming],
+    )
+    order = _prepared_order(docstatus=1)
+    order.company = "KoPOS Sdn Bhd"
+    order.sales_invoice = "SINV-STATIC-1"
+    order.invoice_status = "Posted"
+    order.stock_status = "Posted"
+    order.status = "Submitted"
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        static_service,
+        "confirm_prepared_static_qr_payment",
+        lambda payload: seen.append(payload)
+        or {"status": "duplicate", "sales_invoice": "SINV-STATIC-1"},
+    )
+    monkeypatch.setattr(fb_orders.frappe, "get_doc", lambda *args: order)
+    monkeypatch.setattr(
+        fb_orders,
+        "_build_submit_response",
+        lambda status, document: {
+            "status": status,
+            "fb_order": document.name,
+            "sales_invoice": document.sales_invoice,
+        },
+    )
+
+    result = fb_orders._finalize_prepared_automatic_qr_order(normalized, order)
+
+    assert result == {
+        "status": "duplicate",
+        "fb_order": "FB-ORDER-1",
+        "sales_invoice": "SINV-STATIC-1",
+    }
+    assert seen[0]["fb_order"] == "FB-ORDER-1"
+    assert seen[0]["fb_order_payment"] == "FB-ORDER-PAYMENT-1"
+    assert seen[0]["payment_id"] == "LOCAL-PAYMENT-1"
+    assert order.submitted is False
+
+
+def test_static_settlement_fingerprint_reproves_original_maybank_preparation() -> None:
+    incoming = _normalized_payment(
+        payment_channel_code="static_qr",
+        reference_no="STATIC-RECEIPT-1",
+        external_transaction_id="static-local-payment-1",
+        manual_confirmation_evidence_json='{"evidence_kind":"no_receipt_acknowledgement"}',
+        reconciliation_idempotency_key="RECONCILE-STATIC-1",
+        is_manual_confirmation=1,
+        settlement_status="pending_reconciliation",
+    )
+    normalized = _normalized(payments=[incoming])
+    original = dict(normalized)
+    original_payment = dict(incoming)
+    original_payment["payment_channel_code"] = "maybank"
+    original["payments"] = [original_payment]
+    expected = fb_orders._canonical_accepted_sale_fingerprint(original)
+    order = _prepared_order()
+    order.payments[0].payment_channel_code = "maybank"
+    order.accepted_sale_fingerprint = expected
+
+    fb_orders._validate_existing_accepted_sale_fingerprint(normalized, order)
+
+    changed = dict(normalized)
+    changed_payment = dict(incoming)
+    changed_payment["amount_sen"] = 1251
+    changed["payments"] = [changed_payment]
+    changed["accepted_sale_fingerprint"] = fb_orders._canonical_accepted_sale_fingerprint(
+        changed
+    )
+    with pytest.raises(
+        fb_orders.frappe.ValidationError,
+        match="different accepted sale",
+    ):
+        fb_orders._validate_existing_accepted_sale_fingerprint(changed, order)

@@ -19,6 +19,8 @@
   "accepted_sale_fingerprint",
   "automatic_qr_state",
   "automatic_qr_payment",
+  "automatic_qr_winner_channel",
+  "automatic_qr_static_reconciliation",
   "automatic_qr_accepted_at",
   "source",
         "sale_datetime",
@@ -122,6 +124,24 @@
    "fieldtype": "Data",
    "hidden": 1,
    "label": "Automatic QR Payment Row",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "automatic_qr_winner_channel",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Automatic QR Winner Channel",
+   "options": "\nmaybank_qr\nstatic_qr",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "automatic_qr_static_reconciliation",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Automatic QR Static Reconciliation",
+   "options": "Manual QR Reconciliation",
    "read_only": 1,
    "search_index": 1
   },

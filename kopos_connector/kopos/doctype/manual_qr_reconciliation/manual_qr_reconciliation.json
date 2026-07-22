@@ -13,6 +13,8 @@
   "fb_order",
   "sales_invoice",
   "fb_order_payment",
+  "claim_role",
+  "winning_maybank_qr_transaction",
   "device_id",
   "staff_id",
   "company",
@@ -44,6 +46,34 @@
   "failure_variance_account",
   "failure_cost_center",
   "failure_accounting_reason",
+  "section_finance_resolution",
+  "finance_resolution_status",
+  "finance_resolution_decision",
+  "finance_resolution_key",
+  "finance_resolution_idempotency_key",
+  "finance_reviewed_through_date",
+  "finance_credit_reference",
+  "finance_credit_date",
+  "finance_credit_evidence_reference",
+  "finance_credit_evidence_file",
+  "finance_credit_evidence_sha256",
+  "finance_credit_evidence_byte_length",
+  "finance_clearing_account",
+  "finance_liability_account",
+  "finance_liability_journal_entry",
+  "finance_resolution_note",
+  "finance_refund_key",
+  "finance_refund_idempotency_key",
+  "finance_refund_reference",
+  "finance_refund_date",
+  "finance_refund_evidence_reference",
+  "finance_refund_evidence_file",
+  "finance_refund_evidence_sha256",
+  "finance_refund_evidence_byte_length",
+  "finance_refund_journal_entry",
+  "finance_refund_note",
+  "finance_resolved_by",
+  "finance_resolved_at",
   "reconciled_by",
   "reconciled_at",
   "reconciliation_note",
@@ -92,6 +122,25 @@
    "label": "FB Order Payment Row",
    "read_only": 1,
    "unique": 1
+  },
+  {
+   "default": "winning_settlement",
+   "description": "Winning settlement records account for the sale. Secondary possible-duplicate records preserve a late static confirmation after Maybank already won and never reclassify the winning payment.",
+   "fieldname": "claim_role",
+   "fieldtype": "Select",
+   "label": "Static Claim Role",
+   "options": "winning_settlement\nsecondary_possible_duplicate",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "winning_maybank_qr_transaction",
+   "fieldtype": "Link",
+   "label": "Winning Maybank QR Transaction",
+   "options": "Maybank QR Transaction",
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "device_id",
@@ -169,8 +218,7 @@
    "fieldtype": "Link",
    "label": "Suspense Account",
    "options": "Account",
-   "read_only": 1,
-   "reqd": 1
+   "read_only": 1
   },
   {
    "fieldname": "section_evidence",
@@ -323,6 +371,205 @@
    "hidden": 1,
    "label": "Failure Accounting Reason Snapshot",
    "options": "\nno_bank_transaction\namount_mismatch\nduplicate\nwrong_device\ncustomer_dispute\nother",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_finance_resolution",
+   "fieldtype": "Section Break",
+   "label": "Secondary Static QR Finance Resolution"
+  },
+  {
+   "fieldname": "finance_resolution_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Finance Resolution Status",
+   "options": "\npending_review\nno_second_credit\nrefund_required\nrefunded",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "finance_resolution_decision",
+   "fieldtype": "Select",
+   "label": "Finance Resolution Decision",
+   "options": "\nno_second_credit\nindependent_second_credit",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_resolution_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Finance Resolution Key",
+   "no_copy": 1,
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "finance_resolution_idempotency_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Finance Resolution Idempotency Key",
+   "no_copy": 1,
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "finance_reviewed_through_date",
+   "fieldtype": "Date",
+   "label": "Bank Records Reviewed Through",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_credit_reference",
+   "fieldtype": "Data",
+   "label": "Independent Credit Reference",
+   "no_copy": 1,
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "finance_credit_date",
+   "fieldtype": "Date",
+   "label": "Independent Credit Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_credit_evidence_reference",
+   "fieldtype": "Data",
+   "label": "Credit Review Evidence Reference",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_credit_evidence_file",
+   "fieldtype": "Link",
+   "label": "Private Credit Review Evidence",
+   "options": "File",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_credit_evidence_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Credit Evidence SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_credit_evidence_byte_length",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "Credit Evidence Byte Length",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_clearing_account",
+   "fieldtype": "Link",
+   "label": "Clearing Account Snapshot",
+   "options": "Account",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_liability_account",
+   "fieldtype": "Link",
+   "label": "Customer Liability Account Snapshot",
+   "options": "Account",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_liability_journal_entry",
+   "fieldtype": "Link",
+   "label": "Second Credit Liability Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "finance_resolution_note",
+   "fieldtype": "Small Text",
+   "label": "Finance Resolution Note",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_refund_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Finance Refund Key",
+   "no_copy": 1,
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "finance_refund_idempotency_key",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Finance Refund Idempotency Key",
+   "no_copy": 1,
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "finance_refund_reference",
+   "fieldtype": "Data",
+   "label": "Refund Reference",
+   "no_copy": 1,
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "finance_refund_date",
+   "fieldtype": "Date",
+   "label": "Refund Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_refund_evidence_reference",
+   "fieldtype": "Data",
+   "label": "Refund Evidence Reference",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_refund_evidence_file",
+   "fieldtype": "Link",
+   "label": "Private Refund Evidence",
+   "options": "File",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_refund_evidence_sha256",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Refund Evidence SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_refund_evidence_byte_length",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "Refund Evidence Byte Length",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_refund_journal_entry",
+   "fieldtype": "Link",
+   "label": "Second Credit Refund Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "finance_refund_note",
+   "fieldtype": "Small Text",
+   "label": "Finance Refund Note",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_resolved_by",
+   "fieldtype": "Data",
+   "label": "Finance Resolved By",
+   "read_only": 1
+  },
+  {
+   "fieldname": "finance_resolved_at",
+   "fieldtype": "Datetime",
+   "label": "Finance Resolved At",
    "read_only": 1
   },
   {

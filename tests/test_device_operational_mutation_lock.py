@@ -225,6 +225,7 @@ class TestDeviceOperationalMutationLock(unittest.TestCase):
             "api/__init__.py": {
                 "prepare_automatic_qr_sale": "prepare_automatic_qr_sale_payload",
                 "cancel_prepared_automatic_qr_sale": "cancel_prepared_automatic_qr_sale_payload",
+                "confirm_prepared_automatic_qr_static_payment": "confirm_prepared_static_qr_payment",
                 "submit_order": "submit_order_payload",
                 "open_shift": "open_shift_payload",
                 "close_shift": "close_shift_payload",

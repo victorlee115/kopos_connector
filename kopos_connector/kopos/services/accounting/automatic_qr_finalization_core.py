@@ -22,6 +22,9 @@ from kopos_connector.kopos.services.accounting.maybank_payment_service import (
 from kopos_connector.kopos.services.accounting.qr_reconciliation_service import (
     ensure_qr_suspense_reclassification,
 )
+from kopos_connector.kopos.services.accounting.static_winner_late_payment import (
+    resolve_late_paid_after_static_winner,
+)
 from kopos_connector.utils.diagnostics import log_sanitized_error
 
 
@@ -136,6 +139,12 @@ def finalize_paid_automatic_qr_sale(transaction_name: str) -> dict[str, Any]:
 
     docstatus = cint(_value(order_doc, "docstatus"))
     if docstatus == 1:
+        if _is_submitted_static_qr_winner(order_doc, payment):
+            return resolve_late_paid_after_static_winner(
+                requested_attempt,
+                order_doc=order_doc,
+                paid_attempts=paid_attempts,
+            )
         if _submitted_payment_matches_attempt(
             order_doc,
             payment,
@@ -188,6 +197,7 @@ def finalize_paid_automatic_qr_sale(transaction_name: str) -> dict[str, Any]:
 
     _apply_provider_paid_payment(payment, winner)
     order_doc.automatic_qr_state = "provider_paid"
+    order_doc.automatic_qr_winner_channel = MAYBANK_PROVIDER
     order_doc.save(ignore_permissions=True)
     order_doc.submit()
     _mark_order_finalized(order_doc)
@@ -224,7 +234,9 @@ def _load_paid_attempts_for_update(
             company, suspense_account,
             reclassification_journal_entry,
             reconciliation_failed_reason, failure_journal_entry,
-            duplicate_payment_status, duplicate_winning_transaction,
+            duplicate_payment_status, duplicate_winning_channel,
+            duplicate_winning_transaction,
+            duplicate_winning_static_reconciliation,
             duplicate_accounting_key, duplicate_clearing_account,
             duplicate_liability_account, duplicate_liability_journal_entry,
             duplicate_refund_key, duplicate_refund_journal_entry,
@@ -271,14 +283,36 @@ def _get_exact_payment(order_doc: Any, payment_row_name: str) -> Any:
             "Prepared Automatic QR payment method is invalid",
             frappe.ValidationError,
         )
-    if _normalized(_value(payment, "payment_channel_code")) not in (
-        MAYBANK_PAYMENT_CHANNELS
-    ):
+    channel = _normalized(_value(payment, "payment_channel_code"))
+    is_static_winner = (
+        channel == "static qr"
+        and cstr(_value(order_doc, "automatic_qr_winner_channel")).strip()
+        == "static_qr"
+        and cstr(_value(payment, "manual_qr_reconciliation")).strip()
+        and cint(_value(payment, "is_manual_confirmation"))
+    )
+    if channel not in MAYBANK_PAYMENT_CHANNELS and not is_static_winner:
         frappe.throw(
             "Prepared Automatic QR payment channel is invalid",
             frappe.ValidationError,
         )
     return payment
+
+
+def _is_submitted_static_qr_winner(order_doc: Any, payment: Any) -> bool:
+    reconciliation = cstr(_value(payment, "manual_qr_reconciliation")).strip()
+    return bool(
+        cint(_value(order_doc, "docstatus")) == 1
+        and cstr(_value(order_doc, "automatic_qr_winner_channel")).strip()
+        == "static_qr"
+        and _normalized(_value(payment, "payment_channel_code")) == "static qr"
+        and cint(_value(payment, "is_manual_confirmation"))
+        and reconciliation
+        and reconciliation
+        == cstr(
+            _value(order_doc, "automatic_qr_static_reconciliation")
+        ).strip()
+    )
 
 
 def _validate_paid_attempt(
@@ -667,11 +701,22 @@ def _register_late_paid_incidents_after_sale_commit(
                 cstr(_value(order_doc, "name")).strip(),
                 transaction_name,
             )
-            _mark_late_paid_incident(
-                fresh_attempt,
-                order_doc=fresh_order,
-                winning_transaction_name=winning_transaction_name,
+            fresh_payment = _get_exact_payment(
+                fresh_order,
+                cstr(_value(fresh_attempt, "fb_order_payment")).strip(),
             )
+            if _is_submitted_static_qr_winner(fresh_order, fresh_payment):
+                resolve_late_paid_after_static_winner(
+                    fresh_attempt,
+                    order_doc=fresh_order,
+                    paid_attempts=later_attempts,
+                )
+            else:
+                _mark_late_paid_incident(
+                    fresh_attempt,
+                    order_doc=fresh_order,
+                    winning_transaction_name=winning_transaction_name,
+                )
             frappe.db.commit()
         except Exception as error:
             frappe.db.rollback()

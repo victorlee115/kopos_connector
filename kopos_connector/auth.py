@@ -26,6 +26,10 @@ ALLOWED_DEVICE_API_PATHS = frozenset(
         "/api/method/kopos_connector.api.complete_device_safe_reset",
         "/api/method/kopos_connector.api.prepare_automatic_qr_sale",
         "/api/method/kopos_connector.api.cancel_prepared_automatic_qr_sale",
+        (
+            "/api/method/kopos_connector.api."
+            "confirm_prepared_automatic_qr_static_payment"
+        ),
         "/api/method/kopos_connector.api.submit_order",
         "/api/method/kopos_connector.api.open_shift",
         "/api/method/kopos_connector.api.close_shift",
@@ -56,6 +60,10 @@ DEVICE_API_HTTP_METHODS.update(
         "/api/method/kopos_connector.api.cancel_prepared_automatic_qr_sale": frozenset(
             {"POST"}
         ),
+        (
+            "/api/method/kopos_connector.api."
+            "confirm_prepared_automatic_qr_static_payment"
+        ): frozenset({"POST"}),
         "/api/method/kopos_connector.api.submit_order": frozenset({"POST"}),
         "/api/method/kopos_connector.api.request_device_safe_reset": frozenset(
             {"POST"}

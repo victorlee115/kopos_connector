@@ -602,6 +602,8 @@ def _register_manual_qr_reconciliation(order_doc: Any, payment: Any) -> str:
         {
             "doctype": "Manual QR Reconciliation",
             "status": "pending_reconciliation",
+            "claim_role": "winning_settlement",
+            "winning_maybank_qr_transaction": None,
             "fb_order": order_name,
             "fb_order_payment": payment_row_name,
             "device_id": order_device,
@@ -673,6 +675,16 @@ def _bind_manual_qr_reconciliation(
     ).strip():
         frappe.throw(
             "Manual QR Reconciliation belongs to another FB Order",
+            frappe.ValidationError,
+        )
+    if cstr(_value(reconciliation, "claim_role")).strip() not in {
+        "",
+        "winning_settlement",
+    } or cstr(
+        _value(reconciliation, "winning_maybank_qr_transaction")
+    ).strip():
+        frappe.throw(
+            "Secondary static QR claim cannot account for the winning sale",
             frappe.ValidationError,
         )
     linked_invoice = cstr(_value(reconciliation, "sales_invoice")).strip()
@@ -923,6 +935,7 @@ def _load_manual_reconciliation_for_update(
         f"""
         SELECT
             name, status, fb_order, sales_invoice, fb_order_payment,
+            claim_role, winning_maybank_qr_transaction,
             device_id, company, currency, amount_sen, payment_reference,
             provider_session_id, reconciliation_idempotency_key,
             suspense_account
@@ -966,6 +979,16 @@ def _validate_existing_manual_reconciliation(
                 f"Manual QR Reconciliation {fieldname} does not match",
                 frappe.ValidationError,
             )
+    if cstr(_value(reconciliation, "claim_role")).strip() not in {
+        "",
+        "winning_settlement",
+    } or cstr(
+        _value(reconciliation, "winning_maybank_qr_transaction")
+    ).strip():
+        frappe.throw(
+            "Manual QR Reconciliation is not a winning static settlement",
+            frappe.ValidationError,
+        )
     if _strict_integer_sen(
         _value(reconciliation, "amount_sen"),
         "Manual QR Reconciliation amount_sen",

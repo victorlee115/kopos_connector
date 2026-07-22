@@ -17,17 +17,23 @@ from kopos_connector.kopos.api.money_contract import (
 
 
 MAYBANK_TRANSACTION_DOCTYPE = "Maybank QR Transaction"
+MANUAL_QR_RECONCILIATION_DOCTYPE = "Manual QR Reconciliation"
 JOURNAL_ENTRY_DOCTYPE = "Journal Entry"
 MAYBANK_PROVIDER = "maybank_qr"
+STATIC_QR_PROVIDER = "static_qr"
 MAYBANK_CURRENCY = "MYR"
 
 ACCOUNTING_PENDING_STATUS = "accounting_pending"
+POSSIBLE_DUPLICATE_STATUS = "possible_duplicate"
 REFUND_REQUIRED_STATUS = "refund_required"
 REFUNDED_STATUS = "refunded"
+SETTLED_EXISTING_SALE_STATUS = "settled_existing_sale"
 DUPLICATE_STATUSES = {
+    POSSIBLE_DUPLICATE_STATUS,
     ACCOUNTING_PENDING_STATUS,
     REFUND_REQUIRED_STATUS,
     REFUNDED_STATUS,
+    SETTLED_EXISTING_SALE_STATUS,
 }
 
 LIABILITY_RECOGNITION_STAGE = "liability_recognition"
@@ -45,7 +51,9 @@ MAX_PROVIDER_EVIDENCE_BYTES = 10 * 1024 * 1024
 
 REQUIRED_SOURCE_FIELDS = (
     "duplicate_payment_status",
+    "duplicate_winning_channel",
     "duplicate_winning_transaction",
+    "duplicate_winning_static_reconciliation",
     "duplicate_accounting_key",
     "duplicate_clearing_account",
     "duplicate_liability_account",
@@ -68,6 +76,8 @@ REQUIRED_JOURNAL_FIELDS = (
     "custom_kopos_qr_duplicate_stage",
     "custom_kopos_qr_provider_transaction",
     "custom_kopos_qr_winning_transaction",
+    "custom_kopos_qr_winning_channel",
+    "custom_kopos_qr_winning_static_reconciliation",
     "custom_kopos_qr_provider_evidence_reference",
     "custom_kopos_qr_provider_evidence_file",
     "custom_kopos_qr_provider_evidence_sha256",
@@ -83,21 +93,15 @@ def _validate_duplicate_identity(
     transaction: Any,
     *,
     order_doc: Any,
-    winning_transaction_name: str,
+    winning_transaction_name: str = "",
     require_submitted_sale: bool,
 ) -> dict[str, Any]:
     source_name = _text(_value(transaction, "name"))
     order_name = _text(_value(order_doc, "name"))
     payment_row_name = _text(_value(transaction, "fb_order_payment"))
-    winning_name = _text(winning_transaction_name)
-    if not source_name or not order_name or not payment_row_name or not winning_name:
+    if not source_name or not order_name or not payment_row_name:
         frappe.throw(
             "Duplicate Automatic QR incident identity is incomplete",
-            frappe.ValidationError,
-        )
-    if source_name == winning_name:
-        frappe.throw(
-            "Winning Automatic QR payment cannot be registered as a duplicate",
             frappe.ValidationError,
         )
     if require_submitted_sale and cint(_value(order_doc, "docstatus")) != 1:
@@ -169,15 +173,60 @@ def _validate_duplicate_identity(
             frappe.ValidationError,
         )
     payment = matching_payments[0]
-    linked_winner = _text(_value(payment, "maybank_qr_transaction"))
-    if (
-        (require_submitted_sale and linked_winner != winning_name)
-        or (linked_winner and linked_winner != winning_name)
-    ):
-        frappe.throw(
-            "Duplicate Automatic QR incident does not match the winning provider transaction",
-            frappe.ValidationError,
+    order_winner_channel = _text(
+        _value(order_doc, "automatic_qr_winner_channel")
+    )
+    if order_winner_channel == STATIC_QR_PROVIDER:
+        winning_channel = STATIC_QR_PROVIDER
+        winning_name = ""
+        if _text(winning_transaction_name):
+            frappe.throw(
+                "Static QR winning sale cannot name a Maybank winning transaction",
+                frappe.ValidationError,
+            )
+        winning_static_reconciliation = _text(
+            _value(order_doc, "automatic_qr_static_reconciliation")
+            or _value(payment, "manual_qr_reconciliation")
         )
+        if (
+            not winning_static_reconciliation
+            or winning_static_reconciliation
+            != _text(_value(payment, "manual_qr_reconciliation"))
+            or _normalize_channel(_value(payment, "payment_channel_code"))
+            != "static qr"
+            or not cint(_value(payment, "is_manual_confirmation"))
+            or _text(_value(payment, "maybank_qr_transaction"))
+        ):
+            frappe.throw(
+                "Duplicate Automatic QR incident lacks exact static QR winning evidence",
+                frappe.ValidationError,
+            )
+    else:
+        winning_channel = MAYBANK_PROVIDER
+        winning_name = _text(
+            winning_transaction_name
+            or _value(transaction, "duplicate_winning_transaction")
+        )
+        winning_static_reconciliation = ""
+        if not winning_name:
+            frappe.throw(
+                "Duplicate Automatic QR winning provider transaction is required",
+                frappe.ValidationError,
+            )
+        if source_name == winning_name:
+            frappe.throw(
+                "Winning Automatic QR payment cannot be registered as a duplicate",
+                frappe.ValidationError,
+            )
+        linked_winner = _text(_value(payment, "maybank_qr_transaction"))
+        if (
+            (require_submitted_sale and linked_winner != winning_name)
+            or (linked_winner and linked_winner != winning_name)
+        ):
+            frappe.throw(
+                "Duplicate Automatic QR incident does not match the winning provider transaction",
+                frappe.ValidationError,
+            )
     try:
         payment_amount_sen = persisted_money_to_sen(
             _value(payment, "amount"),
@@ -202,12 +251,21 @@ def _validate_duplicate_identity(
             "Duplicate Automatic QR winning sale accounting context is incomplete",
             frappe.ValidationError,
         )
-    return {
+    identity = {
         "source_name": source_name,
         "transaction_refno": transaction_refno,
         "order_name": order_name,
         "payment_row_name": payment_row_name,
+        "winning_channel": winning_channel,
         "winning_transaction": winning_name,
+        "winning_static_reconciliation": winning_static_reconciliation,
+        "winning_identity": winning_name or winning_static_reconciliation,
+        "legacy_dynamic_winner_metadata": bool(
+            winning_channel == MAYBANK_PROVIDER
+            and _text(_value(transaction, "duplicate_payment_status"))
+            and not _text(_value(transaction, "duplicate_winning_channel"))
+            and _text(_value(transaction, "duplicate_winning_transaction"))
+        ),
         "invoice_name": invoice_name,
         "company": company,
         "currency": currency,
@@ -215,6 +273,18 @@ def _validate_duplicate_identity(
         "device_id": device_id,
         "paid_at": _value(transaction, "paid_at"),
     }
+    if winning_channel == STATIC_QR_PROVIDER:
+        # Static settlement is cashier evidence rather than provider-paid
+        # authority.  Prove its exact durable reconciliation record before the
+        # Maybank row is even labelled as a duplicate-payment incident.
+        _validate_winning_static_reconciliation(identity)
+    return identity
+
+
+def _normalize_channel(value: Any) -> str:
+    return " ".join(
+        cstr(value).strip().lower().replace("_", " ").replace("-", " ").split()
+    )
 
 
 def _build_accounting_context(
@@ -225,7 +295,10 @@ def _build_accounting_context(
     stage: str,
     refund: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    _validate_winning_provider_transaction(identity)
+    if identity["winning_channel"] == STATIC_QR_PROVIDER:
+        _validate_winning_static_reconciliation(identity)
+    else:
+        _validate_winning_provider_transaction(identity)
     invoice = frappe.db.get_value(
         "Sales Invoice",
         identity["invoice_name"],
@@ -452,7 +525,14 @@ def _build_accounting_posting_context(
         "stage": stage,
         "journal_key": journal_key,
         "recognition_key": recognition_key,
+        "winning_channel": identity["winning_channel"],
         "winning_transaction": identity["winning_transaction"],
+        "winning_static_reconciliation": identity[
+            "winning_static_reconciliation"
+        ],
+        "legacy_dynamic_winner_metadata": identity[
+            "legacy_dynamic_winner_metadata"
+        ],
         "order_name": identity["order_name"],
         "invoice_name": identity["invoice_name"],
         "company": identity["company"],
@@ -535,6 +615,84 @@ def _validate_winning_provider_transaction(identity: Mapping[str, Any]) -> None:
     ) != identity["amount_sen"]:
         frappe.throw(
             "Winning provider transaction amount does not match the duplicate incident",
+            frappe.ValidationError,
+        )
+
+
+def _validate_winning_static_reconciliation(identity: Mapping[str, Any]) -> None:
+    reconciliation = frappe.db.get_value(
+        MANUAL_QR_RECONCILIATION_DOCTYPE,
+        identity["winning_static_reconciliation"],
+        [
+            "name",
+            "status",
+            "claim_role",
+            "winning_maybank_qr_transaction",
+            "fb_order",
+            "fb_order_payment",
+            "sales_invoice",
+            "device_id",
+            "company",
+            "currency",
+            "amount_sen",
+            "provider_session_id",
+            "reconciliation_idempotency_key",
+        ],
+        as_dict=True,
+    )
+    if not reconciliation:
+        frappe.throw(
+            "Duplicate Automatic QR winning static reconciliation was not found",
+            frappe.ValidationError,
+        )
+    if _text(_value(reconciliation, "claim_role")) not in {
+        "",
+        "winning_settlement",
+    } or _text(_value(reconciliation, "winning_maybank_qr_transaction")):
+        frappe.throw(
+            "Duplicate Automatic QR winning static reconciliation is a secondary claim",
+            frappe.ValidationError,
+        )
+    expected = {
+        "name": identity["winning_static_reconciliation"],
+        "fb_order": identity["order_name"],
+        "fb_order_payment": identity["payment_row_name"],
+        "sales_invoice": identity["invoice_name"],
+        "device_id": identity["device_id"],
+        "company": identity["company"],
+        "currency": identity["currency"],
+    }
+    for fieldname, expected_value in expected.items():
+        actual = _text(_value(reconciliation, fieldname))
+        if fieldname == "currency":
+            actual = actual.upper()
+        if actual != _text(expected_value):
+            frappe.throw(
+                f"Winning static QR reconciliation {fieldname} does not match the submitted sale",
+                frappe.ValidationError,
+            )
+    if _text(_value(reconciliation, "status")) not in {
+        "pending_reconciliation",
+        "reconciled",
+        "reconciliation_failed",
+    }:
+        frappe.throw(
+            "Winning static QR reconciliation state is invalid",
+            frappe.ValidationError,
+        )
+    if not _text(_value(reconciliation, "provider_session_id")).startswith(
+        "static-"
+    ) or not _text(_value(reconciliation, "reconciliation_idempotency_key")):
+        frappe.throw(
+            "Winning static QR reconciliation evidence is incomplete",
+            frappe.ValidationError,
+        )
+    if _strict_positive_sen(
+        _value(reconciliation, "amount_sen"),
+        "Winning static QR reconciliation amount_sen",
+    ) != identity["amount_sen"]:
+        frappe.throw(
+            "Winning static QR reconciliation amount does not match the duplicate incident",
             frappe.ValidationError,
         )
 
@@ -628,12 +786,22 @@ def _provider_paid_posting_date(identity: Mapping[str, Any]) -> str:
     return paid_date.isoformat()
 
 def _recognition_key(identity: Mapping[str, Any]) -> str:
+    if _text(identity.get("winning_channel")) == STATIC_QR_PROVIDER:
+        winner_fields = [
+            STATIC_QR_PROVIDER,
+            _text(identity.get("winning_static_reconciliation")),
+        ]
+    else:
+        # This exact input order is the released Maybank duplicate-accounting
+        # contract. Never version it in place: existing immutable Journal
+        # Entries and refund keys must replay after an additive migration.
+        winner_fields = [_text(identity.get("winning_transaction"))]
     raw = "|".join(
         [
             _text(identity.get("source_name")),
             _text(identity.get("transaction_refno")),
             _text(identity.get("order_name")),
-            _text(identity.get("winning_transaction")),
+            *winner_fields,
             _text(identity.get("amount_sen")),
             _text(identity.get("currency")),
             _provider_paid_posting_date(identity),

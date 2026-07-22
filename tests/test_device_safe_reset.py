@@ -555,6 +555,7 @@ class DeviceSafeResetTests(unittest.TestCase):
             "idx_kopos_maybank_device_status",
             "idx_kopos_maybank_device_reconciliation",
             "idx_kopos_manual_qr_device_status",
+            "idx_kopos_manual_qr_device_finance_status",
             "idx_kopos_fb_order_shift_status",
             "idx_kopos_fb_order_shift_qr_state",
             "idx_kopos_fb_order_device_qr_state",
@@ -2834,7 +2835,7 @@ class DeviceSafeResetTests(unittest.TestCase):
         with patch.object(safe_reset.frappe.db, "sql", sql):
             safe_reset._assert_no_open_shift_or_unresolved_projection("tab-a-001")
 
-        self.assertEqual(sql.call_count, 10)
+        self.assertEqual(sql.call_count, 11)
         normalized_queries = [
             " ".join(call.args[0].split()) for call in sql.call_args_list
         ]
@@ -2844,7 +2845,7 @@ class DeviceSafeResetTests(unittest.TestCase):
         )
         self.assertEqual(
             sum("LIMIT 65" in query for query in normalized_queries),
-            2,
+            3,
         )
         self.assertEqual(
             sum("FOR UPDATE" in query for query in normalized_queries),
@@ -2885,7 +2886,11 @@ class DeviceSafeResetTests(unittest.TestCase):
                 "manual_reconciliation_status",
                 "duplicate_payment_status",
             },
-            "manual_qr_reconciliation": {"device_id", "status"},
+            "manual_qr_reconciliation": {
+                "device_id",
+                "status",
+                "finance_resolution_status",
+            },
         }
         for doctype_path, expected_fields in indexed_fields.items():
             schema = json.loads(
@@ -2921,7 +2926,19 @@ class DeviceSafeResetTests(unittest.TestCase):
             ),
             (
                 "manual QR reconciliation",
-                [[], [], [], [], [], [], [], [], [], [{"name": "MQR-1"}]],
+                [
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [{"name": "MQR-1"}],
+                ],
             ),
         )
         for expected_message, query_results in cases:
@@ -2960,6 +2977,13 @@ class DeviceSafeResetTests(unittest.TestCase):
             query
             for query in normalized_queries
             if "tabManual QR Reconciliation" in query
+            and "LEFT JOIN `tabFile`" not in query
+        )
+        terminal_secondary_query = next(
+            query
+            for query in normalized_queries
+            if "tabManual QR Reconciliation" in query
+            and "LEFT JOIN `tabFile`" in query
         )
         self.assertIn("status IS NULL", maybank_query)
         self.assertIn("consumed_at IS NULL", maybank_query)
@@ -2971,7 +2995,7 @@ class DeviceSafeResetTests(unittest.TestCase):
             maybank_query,
         )
         self.assertIn(
-            "duplicate_payment_status, '') IN ('accounting_pending', 'refund_required')",
+            "duplicate_payment_status, '') IN ('possible_duplicate', 'accounting_pending', 'refund_required')",
             maybank_query,
         )
         self.assertNotIn("tabJournal Entry", maybank_query)
@@ -2980,6 +3004,10 @@ class DeviceSafeResetTests(unittest.TestCase):
         self.assertIn("LIMIT 65", refunded_query)
         self.assertIn("status IS NULL", manual_query)
         self.assertIn("reconciliation_failed", manual_query)
+        self.assertIn("secondary_possible_duplicate", terminal_secondary_query)
+        self.assertIn("no_second_credit", terminal_secondary_query)
+        self.assertIn("refunded", terminal_secondary_query)
+        self.assertIn("LIMIT 65", terminal_secondary_query)
 
     def test_unsubmitted_prepared_automatic_qr_blocks_safe_reset(self) -> None:
         sql = MagicMock(
@@ -3013,6 +3041,7 @@ class DeviceSafeResetTests(unittest.TestCase):
                 [],
                 [],
                 [{"name": "FB-ORDER-REJECTED-1"}],
+                [],
                 [],
                 [],
                 [],
@@ -3110,7 +3139,19 @@ class DeviceSafeResetTests(unittest.TestCase):
             "fb_order": "FB-ORDER-1",
             "evidence_file_size": 4096,
         }
-        sql_results = [[], [], [], [], [], [], [], [], [refunded_row], []]
+        sql_results = [
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [],
+            [refunded_row],
+            [],
+            [],
+        ]
         proof_path = (
             "kopos_connector.kopos.services.accounting."
             "duplicate_qr_payment_service."
@@ -3165,6 +3206,99 @@ class DeviceSafeResetTests(unittest.TestCase):
             self.assertRaisesRegex(
                 safe_reset.frappe.ValidationError,
                 "exact GL or retained File",
+            ),
+        ):
+            safe_reset._assert_no_open_shift_or_unresolved_projection(
+                "tab-a-001"
+            )
+
+    def test_terminal_secondary_static_claim_is_reproved_before_safe_reset(
+        self,
+    ) -> None:
+        terminal_row = {
+            "name": "MQR-SECONDARY-1",
+            "fb_order": "FB-ORDER-1",
+            "credit_evidence_file_size": 2048,
+            "refund_evidence_file_size": None,
+        }
+        proof_path = (
+            "kopos_connector.kopos.services.accounting."
+            "secondary_static_claim_resolution."
+            "lock_and_assert_secondary_static_claim_terminal"
+        )
+        with (
+            patch.object(
+                safe_reset.frappe.db,
+                "sql",
+                side_effect=[
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [terminal_row],
+                    [],
+                ],
+            ),
+            patch(
+                proof_path,
+                return_value={"evidence_byte_length": 2048},
+            ) as terminal_proof,
+        ):
+            safe_reset._assert_no_open_shift_or_unresolved_projection(
+                "tab-a-001"
+            )
+
+        terminal_proof.assert_called_once_with(
+            "MQR-SECONDARY-1",
+            expected_order_name="FB-ORDER-1",
+            expected_device_id="tab-a-001",
+        )
+
+    def test_tampered_secondary_static_terminal_proof_blocks_safe_reset(
+        self,
+    ) -> None:
+        terminal_row = {
+            "name": "MQR-SECONDARY-1",
+            "fb_order": "FB-ORDER-1",
+            "credit_evidence_file_size": 2048,
+            "refund_evidence_file_size": 2048,
+        }
+        proof_path = (
+            "kopos_connector.kopos.services.accounting."
+            "secondary_static_claim_resolution."
+            "lock_and_assert_secondary_static_claim_terminal"
+        )
+        with (
+            patch.object(
+                safe_reset.frappe.db,
+                "sql",
+                side_effect=[
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [terminal_row],
+                ],
+            ),
+            patch(
+                proof_path,
+                side_effect=safe_reset.frappe.ValidationError(
+                    "secondary static QR evidence digest changed"
+                ),
+            ),
+            self.assertRaisesRegex(
+                safe_reset.frappe.ValidationError,
+                "evidence digest changed",
             ),
         ):
             safe_reset._assert_no_open_shift_or_unresolved_projection(

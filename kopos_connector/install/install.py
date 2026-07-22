@@ -98,6 +98,16 @@ def ensure_operational_composite_indexes() -> None:
             "idx_kopos_manual_qr_device_status",
         ),
         (
+            "Manual QR Reconciliation",
+            [
+                "device_id",
+                "claim_role",
+                "finance_resolution_status",
+                "status",
+            ],
+            "idx_kopos_manual_qr_device_finance_status",
+        ),
+        (
             "FB Order",
             ["shift", "status"],
             "idx_kopos_fb_order_shift_status",

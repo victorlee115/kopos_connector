@@ -56,6 +56,7 @@ RECONCILIATION_FAILED_REASONS = {
 }
 MAYBANK_TRANSACTION_DOCTYPE = "Maybank QR Transaction"
 MANUAL_QR_RECONCILIATION_DOCTYPE = "Manual QR Reconciliation"
+SECONDARY_STATIC_CLAIM_ROLE = "secondary_possible_duplicate"
 MAX_RECONCILIATION_STATUS_BATCH = 50
 
 
@@ -98,6 +99,10 @@ def list_pending_manual_qr_reconciliations() -> list[dict[str, Any]]:
             "created_at",
             "business_date",
             "status",
+            "claim_role",
+            "winning_maybank_qr_transaction",
+            "finance_resolution_status",
+            "finance_resolution_decision",
             "payment_reference",
             "evidence_kind",
             "receipt_file",
@@ -180,6 +185,10 @@ def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> dict[str, list[dict[
                     "device_id",
                     "receipt_payment_id",
                     "status",
+                    "claim_role",
+                    "winning_maybank_qr_transaction",
+                    "finance_resolution_status",
+                    "finance_resolution_decision",
                     "reconciled_by",
                     "reconciled_at",
                     "reconciliation_note",
@@ -211,6 +220,7 @@ def mark_manual_qr_reconciled(**kwargs: Any) -> dict[str, str]:
 def _mark_manual_qr_reconciled(**kwargs: Any) -> dict[str, str]:
     payload = _collect_reconciliation_payload(kwargs, required_fields=("note",))
     txn = _load_pending_reconciliation_transaction(payload["transaction_refno"])
+    _reject_secondary_static_claim_accounting(txn)
     _validate_reconciliation_bank_match(txn, payload)
     _ensure_reconciliation_accounting_context(txn)
     accounting_evidence = ensure_qr_suspense_reclassification(txn)
@@ -273,6 +283,7 @@ def _mark_manual_qr_reconciliation_failed(**kwargs: Any) -> dict[str, str]:
             RECONCILIATION_FAILED_STATUS,
         },
     )
+    _reject_secondary_static_claim_accounting(txn)
     if _has_provider_paid_truth(txn):
         frappe.throw(
             _("Provider-paid Maybank QR truth cannot be marked reconciliation_failed"),
@@ -592,6 +603,20 @@ def _manual_reconciliation_status_row(
         "provider_session_id": request["transaction_refno"],
         "transaction_refno": request["transaction_refno"],
         "reconciliation_status": _record_status(source) or None,
+        "static_claim_role": cstr(_row_value(source, "claim_role")).strip()
+        or None,
+        "winning_maybank_qr_transaction": cstr(
+            _row_value(source, "winning_maybank_qr_transaction")
+        ).strip()
+        or None,
+        "finance_resolution_status": cstr(
+            _row_value(source, "finance_resolution_status")
+        ).strip()
+        or None,
+        "finance_resolution_decision": cstr(
+            _row_value(source, "finance_resolution_decision")
+        ).strip()
+        or None,
         "reconciled_by": cstr(_row_value(source, "reconciled_by")).strip() or None,
         "reconciled_at": cstr(_row_value(source, "reconciled_at")).strip() or None,
         "reconciliation_note": cstr(_row_value(source, "reconciliation_note")).strip()
@@ -692,6 +717,7 @@ def _validate_reconciliation_bank_match(txn: Any, payload: dict[str, str]) -> No
 
 
 def _ensure_reconciliation_accounting_context(txn: Any) -> None:
+    _reject_secondary_static_claim_accounting(txn)
     if _is_static_reconciliation(txn):
         return
 
@@ -816,6 +842,7 @@ def _record_status_field(row: Any) -> str:
 
 
 def _update_linked_payment_settlement(row: Any, settlement_status: str) -> None:
+    _reject_secondary_static_claim_accounting(row)
     payment_row = cstr(_row_value(row, "fb_order_payment")).strip()
     if not payment_row:
         if not _is_static_reconciliation(row):
@@ -860,6 +887,20 @@ def _manual_reconciliation_row(row: Any) -> dict[str, Any]:
         or None,
         "evidence_kind": cstr(_row_value(row, "evidence_kind")).strip() or None,
         "manual_reconciliation_status": _record_status(row),
+        "static_claim_role": cstr(_row_value(row, "claim_role")).strip()
+        or None,
+        "winning_maybank_qr_transaction": cstr(
+            _row_value(row, "winning_maybank_qr_transaction")
+        ).strip()
+        or None,
+        "finance_resolution_status": cstr(
+            _row_value(row, "finance_resolution_status")
+        ).strip()
+        or None,
+        "finance_resolution_decision": cstr(
+            _row_value(row, "finance_resolution_decision")
+        ).strip()
+        or None,
         "receipt_file": cstr(_row_value(row, "receipt_file")).strip() or None,
         "receipt_uploaded_at": _row_value(row, "receipt_uploaded_at"),
         "receipt_idempotency_key": cstr(
@@ -878,6 +919,20 @@ def _manual_reconciliation_row(row: Any) -> dict[str, Any]:
         ).strip()
         or None,
     }
+
+
+def _reject_secondary_static_claim_accounting(row: Any) -> None:
+    if not _is_static_reconciliation(row) or cstr(
+        _row_value(row, "claim_role")
+    ).strip() != SECONDARY_STATIC_CLAIM_ROLE:
+        return
+    frappe.throw(
+        _(
+            "This may be a second payment. Review the bank payment separately; "
+            "do not change the completed Maybank sale."
+        ),
+        frappe.ValidationError,
+    )
 
 
 def _write_reconciliation_comment(

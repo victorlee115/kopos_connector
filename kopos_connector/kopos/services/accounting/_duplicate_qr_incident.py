@@ -13,6 +13,7 @@ from kopos_connector.kopos.services.accounting._duplicate_qr_contract import (
     LIABILITY_RECOGNITION_STAGE,
     REFUNDED_STATUS,
     REFUND_REQUIRED_STATUS,
+    SETTLED_EXISTING_SALE_STATUS,
     _build_accounting_context,
     _require_schema_fields,
     _text,
@@ -36,7 +37,7 @@ def register_duplicate_paid_incident(
     transaction: Any,
     *,
     order_doc: Any,
-    winning_transaction_name: str,
+    winning_transaction_name: str = "",
 ) -> dict[str, Any]:
     """Register and account for one later provider-paid QR attempt.
 
@@ -59,6 +60,11 @@ def register_duplicate_paid_incident(
             "Duplicate Automatic QR payment status is invalid",
             frappe.ValidationError,
         )
+    if existing_status == SETTLED_EXISTING_SALE_STATUS:
+        frappe.throw(
+            "Maybank payment already settled the existing sale and cannot become a refund liability",
+            frappe.ValidationError,
+        )
 
     existing_winner = _text(_value(transaction, "duplicate_winning_transaction"))
     if existing_winner and existing_winner != identity["winning_transaction"]:
@@ -66,11 +72,33 @@ def register_duplicate_paid_incident(
             "Duplicate Automatic QR payment is bound to another winning transaction",
             frappe.ValidationError,
         )
+    existing_channel = _text(_value(transaction, "duplicate_winning_channel"))
+    if existing_channel and existing_channel != identity["winning_channel"]:
+        frappe.throw(
+            "Duplicate Automatic QR payment is bound to another winning channel",
+            frappe.ValidationError,
+        )
+    existing_static_winner = _text(
+        _value(transaction, "duplicate_winning_static_reconciliation")
+    )
+    if (
+        existing_static_winner
+        and existing_static_winner != identity["winning_static_reconciliation"]
+    ):
+        frappe.throw(
+            "Duplicate Automatic QR payment is bound to another static reconciliation",
+            frappe.ValidationError,
+        )
 
     if not existing_status:
         updates: dict[str, Any] = {
             "duplicate_payment_status": ACCOUNTING_PENDING_STATUS,
-            "duplicate_winning_transaction": identity["winning_transaction"],
+            "duplicate_winning_channel": identity["winning_channel"],
+            "duplicate_winning_transaction": identity["winning_transaction"] or None,
+            "duplicate_winning_static_reconciliation": identity[
+                "winning_static_reconciliation"
+            ]
+            or None,
             "reconciliation_note": (
                 "Authenticated provider evidence reported an additional paid "
                 f"Automatic QR attempt for FB Order {identity['order_name']}. "
@@ -95,10 +123,36 @@ def register_duplicate_paid_incident(
             )
         _set_source_values(transaction, updates)
         existing_status = ACCOUNTING_PENDING_STATUS
-    elif not existing_winner:
+    elif (
+        (
+            identity["winning_channel"] == "static_qr"
+            and (
+                not existing_channel
+                or not existing_static_winner
+            )
+        )
+        or (identity["winning_transaction"] and not existing_winner)
+    ):
+        # Do not backfill the new channel onto a historical dynamic incident.
+        # Its blank field is the narrow compatibility marker that permits the
+        # already-submitted pre-upgrade Journal Entry to retain blank additive
+        # winner metadata while every original identity/GL field is re-proved.
+        winner_channel_update = (
+            identity["winning_channel"]
+            if identity["winning_channel"] == "static_qr"
+            else existing_channel or None
+        )
         _set_source_values(
             transaction,
-            {"duplicate_winning_transaction": identity["winning_transaction"]},
+            {
+                "duplicate_winning_channel": winner_channel_update,
+                "duplicate_winning_transaction": identity["winning_transaction"]
+                or None,
+                "duplicate_winning_static_reconciliation": identity[
+                    "winning_static_reconciliation"
+                ]
+                or None,
+            },
         )
 
     if cint(_value(order_doc, "docstatus")) != 1 or not identity["invoice_name"]:
@@ -107,6 +161,11 @@ def register_duplicate_paid_incident(
             "transaction": source_name,
             "fb_order": identity["order_name"],
             "winning_transaction": identity["winning_transaction"],
+            "winning_channel": identity["winning_channel"],
+            "winning_static_reconciliation": identity[
+                "winning_static_reconciliation"
+            ]
+            or None,
             "settlement_status": ACCOUNTING_PENDING_STATUS,
             "duplicate_payment_status": ACCOUNTING_PENDING_STATUS,
             "liability_journal_entry": None,
@@ -140,6 +199,11 @@ def register_duplicate_paid_incident(
             "transaction": source_name,
             "fb_order": identity["order_name"],
             "winning_transaction": identity["winning_transaction"],
+            "winning_channel": identity["winning_channel"],
+            "winning_static_reconciliation": identity[
+                "winning_static_reconciliation"
+            ]
+            or None,
             "settlement_status": ACCOUNTING_PENDING_STATUS,
             "duplicate_payment_status": ACCOUNTING_PENDING_STATUS,
             "liability_journal_entry": None,
@@ -157,6 +221,11 @@ def register_duplicate_paid_incident(
             "transaction": source_name,
             "fb_order": identity["order_name"],
             "winning_transaction": identity["winning_transaction"],
+            "winning_channel": identity["winning_channel"],
+            "winning_static_reconciliation": identity[
+                "winning_static_reconciliation"
+            ]
+            or None,
             "settlement_status": ACCOUNTING_PENDING_STATUS,
             "duplicate_payment_status": ACCOUNTING_PENDING_STATUS,
             "liability_journal_entry": None,
@@ -174,6 +243,11 @@ def register_duplicate_paid_incident(
             "transaction": source_name,
             "fb_order": identity["order_name"],
             "winning_transaction": identity["winning_transaction"],
+            "winning_channel": identity["winning_channel"],
+            "winning_static_reconciliation": identity[
+                "winning_static_reconciliation"
+            ]
+            or None,
             "settlement_status": REFUNDED_STATUS,
             "duplicate_payment_status": REFUNDED_STATUS,
             "liability_journal_entry": journal_entry,
@@ -203,6 +277,11 @@ def register_duplicate_paid_incident(
         "transaction": source_name,
         "fb_order": identity["order_name"],
         "winning_transaction": identity["winning_transaction"],
+        "winning_channel": identity["winning_channel"],
+        "winning_static_reconciliation": identity[
+            "winning_static_reconciliation"
+        ]
+        or None,
         "settlement_status": existing_status,
         "duplicate_payment_status": existing_status,
         "liability_journal_entry": journal_entry,

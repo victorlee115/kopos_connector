@@ -17,6 +17,7 @@ from frappe.utils import cstr
 JOURNAL_ENTRY_DOCTYPE = "Journal Entry"
 MAYBANK_TRANSACTION_DOCTYPE = "Maybank QR Transaction"
 MANUAL_RECONCILIATION_DOCTYPE = "Manual QR Reconciliation"
+SECONDARY_STATIC_CLAIM_ROLE = "secondary_possible_duplicate"
 SUPPORTED_SOURCE_DOCTYPES = {
     MAYBANK_TRANSACTION_DOCTYPE,
     MANUAL_RECONCILIATION_DOCTYPE,
@@ -97,6 +98,16 @@ def _build_context(
 ) -> dict[str, Any]:
     source_doctype = cstr(_value(source, "doctype")).strip()
     source_name = cstr(_value(source, "name")).strip()
+    if (
+        source_doctype == MANUAL_RECONCILIATION_DOCTYPE
+        and cstr(_value(source, "claim_role")).strip()
+        == SECONDARY_STATIC_CLAIM_ROLE
+    ):
+        frappe.throw(
+            "Secondary static QR claim must remain pending duplicate-payment review; "
+            "it cannot reclassify the completed Maybank sale",
+            frappe.ValidationError,
+        )
     status_field = (
         "manual_reconciliation_status"
         if source_doctype == MAYBANK_TRANSACTION_DOCTYPE

@@ -53,6 +53,7 @@ EXPORT_EVIDENCE_MAX_FUTURE_SKEW_SECONDS = 5 * 60
 MAX_SUPPORT_ARCHIVE_BYTES = 8 * 1024 * 1024 * 1024 + 64 * 1024 * 1024
 MAX_PROVIDER_REJECTED_DRAFTS_PER_SAFE_RESET = 64
 MAX_REFUNDED_DUPLICATE_PAYMENTS_PER_SAFE_RESET = 64
+MAX_TERMINAL_SECONDARY_STATIC_CLAIMS_PER_SAFE_RESET = 64
 MAX_REFUND_EVIDENCE_WORKLOAD_BYTES = 64 * 1024 * 1024
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
@@ -4012,9 +4013,10 @@ def _assert_no_open_shift_or_unresolved_projection(device_id: str) -> None:
               )
             )
             OR COALESCE(duplicate_payment_status, '') NOT IN
-              ('', 'accounting_pending', 'refund_required', 'refunded')
+              ('', 'possible_duplicate', 'accounting_pending',
+               'refund_required', 'refunded', 'settled_existing_sale')
             OR COALESCE(duplicate_payment_status, '') IN
-              ('accounting_pending', 'refund_required')
+              ('possible_duplicate', 'accounting_pending', 'refund_required')
             OR (
               status = 'paid'
               AND COALESCE(duplicate_payment_status, '') != 'refunded'
@@ -4090,12 +4092,12 @@ def _assert_no_open_shift_or_unresolved_projection(device_id: str) -> None:
             )
         declared_evidence_workload += declared_bytes
 
+    verified_evidence_workload = 0
     if refunded_duplicate_rows:
         from kopos_connector.kopos.services.accounting.duplicate_qr_payment_service import (
             lock_and_assert_duplicate_refund_terminal_evidence,
         )
 
-        verified_evidence_workload = 0
         for row in refunded_duplicate_rows:
             proof = lock_and_assert_duplicate_refund_terminal_evidence(
                 cstr(_row_value(row, "name")).strip(),
@@ -4117,6 +4119,91 @@ def _assert_no_open_shift_or_unresolved_projection(device_id: str) -> None:
                 )
             verified_evidence_workload += verified_bytes
 
+    terminal_secondary_claim_rows = frappe.db.sql(
+        """
+        SELECT
+          claim.name,
+          claim.fb_order,
+          credit_evidence.file_size AS credit_evidence_file_size,
+          refund_evidence.file_size AS refund_evidence_file_size
+        FROM `tabManual QR Reconciliation` AS claim
+        LEFT JOIN `tabFile` AS credit_evidence
+          ON credit_evidence.name = claim.finance_credit_evidence_file
+        LEFT JOIN `tabFile` AS refund_evidence
+          ON refund_evidence.name = claim.finance_refund_evidence_file
+        WHERE claim.device_id = %s
+          AND claim.claim_role = 'secondary_possible_duplicate'
+          AND claim.finance_resolution_status IN
+            ('no_second_credit', 'refunded')
+        ORDER BY claim.name
+        LIMIT 65
+        """,
+        (device_id,),
+        as_dict=True,
+    )
+    if (
+        len(terminal_secondary_claim_rows or [])
+        > MAX_TERMINAL_SECONDARY_STATIC_CLAIMS_PER_SAFE_RESET
+    ):
+        frappe.throw(
+            _(
+                "Safe reset terminal secondary static QR evidence exceeds the "
+                "bounded verification limit"
+            ),
+            frappe.ValidationError,
+        )
+    for row in terminal_secondary_claim_rows or []:
+        for fieldname in (
+            "credit_evidence_file_size",
+            "refund_evidence_file_size",
+        ):
+            declared_bytes = cint(_row_value(row, fieldname))
+            if not declared_bytes:
+                continue
+            if (
+                declared_bytes < 0
+                or declared_evidence_workload
+                > MAX_REFUND_EVIDENCE_WORKLOAD_BYTES - declared_bytes
+            ):
+                frappe.throw(
+                    _(
+                        "Safe reset QR finance evidence exceeds the bounded "
+                        "verification workload"
+                    ),
+                    frappe.ValidationError,
+                )
+            declared_evidence_workload += declared_bytes
+
+    if terminal_secondary_claim_rows:
+        from kopos_connector.kopos.services.accounting.secondary_static_claim_resolution import (
+            lock_and_assert_secondary_static_claim_terminal,
+        )
+
+        for row in terminal_secondary_claim_rows:
+            proof = lock_and_assert_secondary_static_claim_terminal(
+                cstr(_row_value(row, "name")).strip(),
+                expected_order_name=cstr(
+                    _row_value(row, "fb_order")
+                ).strip(),
+                expected_device_id=device_id,
+            )
+            verified_bytes = cint(proof.get("evidence_byte_length")) + cint(
+                proof.get("credit_evidence_byte_length")
+            ) + cint(proof.get("refund_evidence_byte_length"))
+            if (
+                verified_bytes <= 0
+                or verified_evidence_workload
+                > MAX_REFUND_EVIDENCE_WORKLOAD_BYTES - verified_bytes
+            ):
+                frappe.throw(
+                    _(
+                        "Safe reset QR finance evidence exceeds the bounded "
+                        "verification workload"
+                    ),
+                    frappe.ValidationError,
+                )
+            verified_evidence_workload += verified_bytes
+
     unresolved_manual_qr_rows = frappe.db.sql(
         """
         SELECT name
@@ -4125,6 +4212,21 @@ def _assert_no_open_shift_or_unresolved_projection(device_id: str) -> None:
           AND (
             status IS NULL
             OR status NOT IN ('reconciled', 'reconciliation_failed')
+            OR (
+              claim_role = 'secondary_possible_duplicate'
+              AND (
+                COALESCE(finance_resolution_status, '') NOT IN
+                  ('no_second_credit', 'refunded')
+                OR (
+                  finance_resolution_status = 'no_second_credit'
+                  AND status != 'reconciliation_failed'
+                )
+                OR (
+                  finance_resolution_status = 'refunded'
+                  AND status != 'reconciled'
+                )
+              )
+            )
           )
         ORDER BY name
         LIMIT 1
