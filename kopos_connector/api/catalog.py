@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
@@ -15,6 +15,11 @@ from kopos_connector.api.devices import (
     KOPOS_DEVICE_API_ROLE,
     get_device_doc,
     get_session_roles,
+)
+from kopos_connector.kopos.services.recipe.modifier_bounds import (
+    ModifierBoundsError,
+    resolve_effective_modifier_bounds,
+    validate_published_modifier_bounds,
 )
 
 
@@ -53,12 +58,24 @@ def build_catalog_payload(
         for item in items
         if cstr(item.get("category_id")).strip()
     }
+    referenced_modifier_group_ids = sorted(
+        {
+            cstr(group_id).strip()
+            for item in items
+            for group_id in (item.get("modifier_group_ids") or [])
+            if cstr(group_id).strip()
+        }
+    )
 
     snapshot = {
         "categories": get_categories(category_ids=category_ids),
         "items": items,
-        "modifier_groups": get_modifier_groups(),
-        "modifier_options": get_modifier_options(),
+        "modifier_groups": get_modifier_groups(
+            group_ids=referenced_modifier_group_ids
+        ),
+        "modifier_options": get_modifier_options(
+            group_ids=referenced_modifier_group_ids
+        ),
         "metadata": {
             "company": company,
             "pos_profile": (pos_profile or {}).get("name"),
@@ -137,7 +154,7 @@ def validate_catalog_snapshot(snapshot: Mapping[str, Any]) -> None:
     category_ids = _unique_catalog_ids(categories, "category")
     modifier_group_ids = _unique_catalog_ids(modifier_groups, "modifier group")
     _unique_catalog_ids(items, "item")
-    _unique_catalog_ids(modifier_options, "modifier option")
+    modifier_option_ids = _unique_catalog_ids(modifier_options, "modifier option")
 
     barcodes: set[str] = set()
     for item in items:
@@ -196,6 +213,40 @@ def validate_catalog_snapshot(snapshot: Mapping[str, Any]) -> None:
         if isinstance(adjustment_sen, bool) or not isinstance(adjustment_sen, int):
             _throw_catalog_validation(
                 f"Modifier option {option_id} price_adjustment_sen must be an integer"
+            )
+
+    options_by_group: dict[str, list[ERPRecord]] = {}
+    for option in modifier_options:
+        options_by_group.setdefault(cstr(option.get("group_id")).strip(), []).append(
+            option
+        )
+    for group in modifier_groups:
+        group_id = cstr(group.get("id")).strip()
+        if not cstr(group.get("name")).strip():
+            _throw_catalog_validation(f"Modifier group {group_id} has no name")
+        try:
+            bounds = validate_published_modifier_bounds(
+                selection_type=group.get("selection_type"),
+                is_required=group.get("is_required"),
+                min_selection=group.get("min_selections"),
+                max_selection=group.get("max_selections"),
+            )
+        except ModifierBoundsError as error:
+            _throw_catalog_validation(f"Modifier group {group_id}: {error}")
+            raise AssertionError("frappe.throw must raise") from error
+        active_option_count = sum(
+            1
+            for option in options_by_group.get(group_id, [])
+            if cint(option.get("is_active"))
+        )
+        if active_option_count < bounds.min_selection:
+            _throw_catalog_validation(
+                f"Modifier group {group_id} has fewer active options than its minimum selection"
+            )
+        parent_option_id = cstr(group.get("parent_option_id")).strip()
+        if parent_option_id and parent_option_id not in modifier_option_ids:
+            _throw_catalog_validation(
+                f"Modifier group {group_id} references unknown parent option {parent_option_id}"
             )
 
 
@@ -576,7 +627,15 @@ def get_item_modifier_groups_map(
             "parenttype": "FB Recipe",
             "parentfield": "allowed_modifier_groups",
         },
-        fields=["parent", "modifier_group", "display_order", "idx"],
+        fields=[
+            "parent",
+            "modifier_group",
+            "required",
+            "override_min_selection",
+            "override_max_selection",
+            "display_order",
+            "idx",
+        ],
         order_by="parent asc, display_order asc, idx asc",
     )
     allowed_group_ids = sorted(
@@ -586,13 +645,24 @@ def get_item_modifier_groups_map(
             if cstr(row.get("modifier_group")).strip()
         }
     )
-    active_group_ids = set(
-        frappe.get_all(
-            "FB Modifier Group",
-            filters={"active": 1, "name": ["in", allowed_group_ids]},
-            pluck="name",
-        )
+    if not allowed_group_ids:
+        return {}
+    active_group_rows = frappe.get_all(
+        "FB Modifier Group",
+        filters={"active": 1, "name": ["in", allowed_group_ids]},
+        fields=[
+            "name",
+            "selection_type",
+            "is_required",
+            "min_selection",
+            "max_selection",
+        ],
     )
+    active_groups_by_id = {
+        cstr(row.get("name")).strip(): row
+        for row in active_group_rows
+        if cstr(row.get("name")).strip()
+    }
 
     item_code_by_recipe_name = {
         cstr(snapshot.get("recipe_id")).strip(): item_code
@@ -607,15 +677,62 @@ def get_item_modifier_groups_map(
         if (
             not item_code
             or not modifier_group
-            or modifier_group not in active_group_ids
+            or modifier_group not in active_groups_by_id
         ):
             continue
+
+        _validate_recipe_modifier_bounds_parity(
+            recipe_name=recipe_name,
+            modifier_group=modifier_group,
+            group=active_groups_by_id[modifier_group],
+            recipe_group=row,
+        )
 
         item_group_ids = group_ids_by_item.setdefault(item_code, [])
         if modifier_group not in item_group_ids:
             item_group_ids.append(modifier_group)
 
     return group_ids_by_item
+
+
+def _validate_recipe_modifier_bounds_parity(
+    *,
+    recipe_name: str,
+    modifier_group: str,
+    group: Mapping[str, Any],
+    recipe_group: Mapping[str, Any],
+) -> None:
+    """Reject item-specific bounds that the current catalog wire cannot express."""
+    try:
+        published_bounds = resolve_effective_modifier_bounds(
+            selection_type=group.get("selection_type"),
+            group_is_required=group.get("is_required"),
+            group_min_selection=group.get("min_selection"),
+            group_max_selection=group.get("max_selection"),
+        )
+        recipe_bounds = resolve_effective_modifier_bounds(
+            selection_type=group.get("selection_type"),
+            group_is_required=group.get("is_required"),
+            group_min_selection=group.get("min_selection"),
+            group_max_selection=group.get("max_selection"),
+            recipe_required=recipe_group.get("required"),
+            override_min_selection=recipe_group.get("override_min_selection"),
+            override_max_selection=recipe_group.get("override_max_selection"),
+        )
+    except ModifierBoundsError as error:
+        _throw_catalog_validation(
+            f"Recipe {recipe_name} modifier group {modifier_group}: {error}"
+        )
+        raise AssertionError("frappe.throw must raise") from error
+
+    if recipe_bounds != published_bounds:
+        _throw_catalog_validation(
+            "Recipe {0} changes the selection rules for modifier group {1}; "
+            "use a separate modifier group so every tablet enforces the same rules".format(
+                recipe_name,
+                modifier_group,
+            )
+        )
 
 
 def get_item_recipe_snapshots_map(
@@ -954,10 +1071,18 @@ def money_to_sen(value: Any) -> int:
     return int((amount * Decimal("100")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def get_modifier_groups(since: str | None = None) -> list[ERPRecord]:
+def get_modifier_groups(
+    since: str | None = None,
+    group_ids: Collection[str] | None = None,
+) -> list[ERPRecord]:
     filters: dict[str, Any] = {"active": 1}
     if since:
         filters["modified"] = [">=", since]
+    normalized_group_ids = _normalized_catalog_group_ids(group_ids)
+    if group_ids is not None:
+        if not normalized_group_ids:
+            return []
+        filters["name"] = ["in", normalized_group_ids]
 
     rows = frappe.get_all(
         "FB Modifier Group",
@@ -975,29 +1100,54 @@ def get_modifier_groups(since: str | None = None) -> list[ERPRecord]:
         order_by="display_order asc, group_name asc",
     )
 
-    return [
-        {
-            "id": row.get("id"),
-            "name": row.get("name"),
-            "selection_type": "multiple"
-            if cstr(row.get("selection_type")).strip().lower() == "multiple"
-            else "single",
-            "is_required": cint(row.get("is_required")),
-            "min_selections": cint(row.get("min_selection") or 0),
-            "max_selections": cint(row.get("max_selection") or 1),
-            "display_order": cint(row.get("display_order") or 0),
-            "parent_option_id": cstr(row.get("parent_modifier")).strip() or None,
-        }
-        for row in rows
-    ]
+    groups: list[ERPRecord] = []
+    for row in rows:
+        group_id = cstr(row.get("id")).strip()
+        try:
+            bounds = resolve_effective_modifier_bounds(
+                selection_type=row.get("selection_type"),
+                group_is_required=row.get("is_required"),
+                group_min_selection=row.get("min_selection"),
+                group_max_selection=row.get("max_selection"),
+            )
+        except ModifierBoundsError as error:
+            _throw_catalog_validation(f"Modifier group {group_id}: {error}")
+            raise AssertionError("frappe.throw must raise") from error
+        groups.append(
+            {
+                "id": group_id,
+                "name": row.get("name"),
+                "selection_type": bounds.selection_type,
+                "is_required": int(bounds.is_required),
+                "min_selections": bounds.min_selection,
+                "max_selections": bounds.max_selection,
+                "display_order": cint(row.get("display_order") or 0),
+                "parent_option_id": cstr(row.get("parent_modifier")).strip()
+                or None,
+            }
+        )
+    return groups
 
 
-def get_modifier_options(since: str | None = None) -> list[ERPRecord]:
+def get_modifier_options(
+    since: str | None = None,
+    group_ids: Collection[str] | None = None,
+) -> list[ERPRecord]:
     conditions = ["opt.active = 1", "grp.active = 1"]
     values: list[Any] = []
     if since:
         conditions.append("(opt.modified >= %s OR grp.modified >= %s)")
         values.extend([since, since])
+    normalized_group_ids = _normalized_catalog_group_ids(group_ids)
+    if group_ids is not None:
+        if not normalized_group_ids:
+            return []
+        conditions.append(
+            "opt.modifier_group IN ({0})".format(
+                ", ".join(["%s"] * len(normalized_group_ids))
+            )
+        )
+        values.extend(normalized_group_ids)
 
     rows = frappe.db.sql(
         f"""
@@ -1033,6 +1183,21 @@ def get_modifier_options(since: str | None = None) -> list[ERPRecord]:
         }
         for row in rows
     ]
+
+
+def _normalized_catalog_group_ids(
+    group_ids: Collection[str] | None,
+) -> list[str]:
+    if group_ids is None:
+        return []
+    source_group_ids = [group_ids] if isinstance(group_ids, str) else group_ids
+    return sorted(
+        {
+            cstr(group_id).strip()
+            for group_id in source_group_ids
+            if cstr(group_id).strip()
+        }
+    )
 
 
 def get_tax_rate_value(
@@ -1076,11 +1241,11 @@ def get_item_modifiers_payload(
         return []
 
     options_by_group: dict[str, list[ERPRecord]] = {}
-    for option in get_modifier_options():
+    for option in get_modifier_options(group_ids=group_ids):
         options_by_group.setdefault(cstr(option.get("group_id")), []).append(option)
 
     groups = []
-    for group in get_modifier_groups():
+    for group in get_modifier_groups(group_ids=group_ids):
         group_id = cstr(group.get("id"))
         if group_id not in group_ids:
             continue

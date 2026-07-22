@@ -12,6 +12,50 @@ install_fake_frappe_modules()
 
 
 class TestFBOrderModifierValidation(unittest.TestCase):
+    def test_legacy_required_single_bounds_match_catalog_semantics(self):
+        from kopos_connector.kopos.doctype.fb_order.fb_order import FBOrder
+
+        bounds = FBOrder().resolve_modifier_bounds(
+            SimpleNamespace(
+                name="ADDITIONAL_ESPRESSO_SHOT",
+                selection_type="Single",
+                is_required=1,
+                min_selection=0,
+                max_selection=1,
+            ),
+            SimpleNamespace(
+                required=0,
+                override_min_selection=None,
+                override_max_selection=None,
+            ),
+        )
+
+        self.assertTrue(bounds.is_required)
+        self.assertEqual(bounds.min_selection, 1)
+        self.assertEqual(bounds.max_selection, 1)
+
+    def test_fb_order_rejects_invalid_modifier_bounds(self):
+        from kopos_connector.kopos.doctype.fb_order.fb_order import FBOrder
+
+        with self.assertRaisesRegex(
+            Exception,
+            "single-select modifier group cannot allow more than one selection",
+        ):
+            FBOrder().resolve_modifier_bounds(
+                SimpleNamespace(
+                    name="INVALID-SINGLE",
+                    selection_type="Single",
+                    is_required=0,
+                    min_selection=0,
+                    max_selection=2,
+                ),
+                SimpleNamespace(
+                    required=0,
+                    override_min_selection=None,
+                    override_max_selection=None,
+                ),
+            )
+
     def test_prepare_resolves_default_recipe_before_freezing_sale(self):
         from kopos_connector.kopos.api import fb_orders
 

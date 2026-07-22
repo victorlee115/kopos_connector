@@ -218,8 +218,16 @@ def test_build_catalog_payload_includes_stock_warning_in_items(
             }
         ],
     )
-    monkeypatch.setattr(catalog_module, "get_modifier_groups", lambda since=None: [])
-    monkeypatch.setattr(catalog_module, "get_modifier_options", lambda since=None: [])
+    monkeypatch.setattr(
+        catalog_module,
+        "get_modifier_groups",
+        lambda since=None, group_ids=None: [],
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_modifier_options",
+        lambda since=None, group_ids=None: [],
+    )
     monkeypatch.setattr(
         catalog_module, "get_tax_rate_value", lambda device_id=None: 0.06
     )
@@ -298,8 +306,16 @@ def test_build_catalog_payload_returns_small_unchanged_response(
             {"id": "DRINKS", "name": "Drinks", "display_order": 1, "is_active": 1}
         ],
     )
-    monkeypatch.setattr(catalog_module, "get_modifier_groups", lambda since=None: [])
-    monkeypatch.setattr(catalog_module, "get_modifier_options", lambda since=None: [])
+    monkeypatch.setattr(
+        catalog_module,
+        "get_modifier_groups",
+        lambda since=None, group_ids=None: [],
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_modifier_options",
+        lambda since=None, group_ids=None: [],
+    )
     monkeypatch.setattr(catalog_module, "get_tax_rate_value", lambda device_id=None: 0.08)
     monkeypatch.setattr(catalog_module, "now_datetime", lambda: fixed_time)
 
@@ -316,6 +332,95 @@ def test_build_catalog_payload_returns_small_unchanged_response(
         "catalog_version": full["catalog_version"],
         "timestamp": fixed_time.isoformat(),
         "metadata": full["metadata"],
+    }
+
+
+def test_build_catalog_payload_publishes_only_referenced_modifier_rows(
+    catalog_module, monkeypatch
+):
+    requested_group_ids: list[tuple[str, ...]] = []
+    requested_option_group_ids: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(
+        catalog_module,
+        "resolve_catalog_pos_profile",
+        lambda device_id=None: {
+            "name": "POS-1",
+            "company": "KoPOS Cafe",
+            "warehouse": "WH-1",
+            "selling_price_list": "Standard Selling",
+            "currency": "MYR",
+        },
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_items",
+        lambda **kwargs: [
+            {
+                "id": "LATTE",
+                "name": "Latte",
+                "category_id": "DRINKS",
+                "price_sen": 1200,
+                "modifier_group_ids": ["ADDITIONAL_ESPRESSO_SHOT"],
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_categories",
+        lambda since=None, category_ids=None: [
+            {"id": "DRINKS", "name": "Drinks", "display_order": 1}
+        ],
+    )
+
+    def get_groups(since=None, group_ids=None):
+        del since
+        requested_group_ids.append(tuple(group_ids or []))
+        return [
+            {
+                "id": "ADDITIONAL_ESPRESSO_SHOT",
+                "name": "Additional espresso shot",
+                "selection_type": "single",
+                "is_required": 1,
+                "min_selections": 1,
+                "max_selections": 1,
+                "parent_option_id": None,
+            }
+        ]
+
+    def get_options(since=None, group_ids=None):
+        del since
+        requested_option_group_ids.append(tuple(group_ids or []))
+        return [
+            {
+                "id": "NO_ADD_ESPRESSO",
+                "group_id": "ADDITIONAL_ESPRESSO_SHOT",
+                "name": "No additional shot",
+                "price_adjustment_sen": 0,
+                "is_active": 1,
+            },
+            {
+                "id": "ADD_ESPRESSO",
+                "group_id": "ADDITIONAL_ESPRESSO_SHOT",
+                "name": "Add espresso shot",
+                "price_adjustment_sen": 300,
+                "is_active": 1,
+            },
+        ]
+
+    monkeypatch.setattr(catalog_module, "get_modifier_groups", get_groups)
+    monkeypatch.setattr(catalog_module, "get_modifier_options", get_options)
+    monkeypatch.setattr(catalog_module, "get_tax_rate_value", lambda **kwargs: 0)
+
+    payload = catalog_module.build_catalog_payload(device_id="DEVICE-1")
+
+    assert requested_group_ids == [("ADDITIONAL_ESPRESSO_SHOT",)]
+    assert requested_option_group_ids == [("ADDITIONAL_ESPRESSO_SHOT",)]
+    assert [group["id"] for group in payload["modifier_groups"]] == [
+        "ADDITIONAL_ESPRESSO_SHOT"
+    ]
+    assert {option["group_id"] for option in payload["modifier_options"]} == {
+        "ADDITIONAL_ESPRESSO_SHOT"
     }
 
 
@@ -362,6 +467,128 @@ def test_validate_catalog_snapshot_rejects_orphan_modifier_references(
                 ],
                 "metadata": {},
             }
+        )
+
+
+def _modifier_catalog_snapshot(
+    group: dict[str, object], *, active_option_count: int = 2
+) -> dict[str, object]:
+    group_id = str(group.get("id") or "GROUP-1")
+    return {
+        "categories": [{"id": "DRINKS", "name": "Drinks"}],
+        "items": [
+            {
+                "id": "LATTE",
+                "name": "Latte",
+                "category_id": "DRINKS",
+                "price_sen": 1200,
+                "modifier_group_ids": [group_id],
+            }
+        ],
+        "modifier_groups": [group],
+        "modifier_options": [
+            {
+                "id": f"OPTION-{index}",
+                "group_id": group_id,
+                "price_adjustment_sen": 0,
+                "is_active": 1,
+            }
+            for index in range(active_option_count)
+        ],
+        "metadata": {},
+    }
+
+
+@pytest.mark.parametrize(
+    ("group", "message"),
+    [
+        pytest.param(
+            {
+                "id": "REQUIRED-ZERO",
+                "name": "Required zero",
+                "selection_type": "single",
+                "is_required": 1,
+                "min_selections": 0,
+                "max_selections": 1,
+            },
+            "must require at least one selection",
+            id="required-minimum-zero",
+        ),
+        pytest.param(
+            {
+                "id": "NEGATIVE-MIN",
+                "name": "Negative minimum",
+                "selection_type": "multiple",
+                "is_required": 0,
+                "min_selections": -1,
+                "max_selections": 2,
+            },
+            "cannot be negative",
+            id="negative-minimum",
+        ),
+        pytest.param(
+            {
+                "id": "NEGATIVE-MAX",
+                "name": "Negative maximum",
+                "selection_type": "multiple",
+                "is_required": 0,
+                "min_selections": 0,
+                "max_selections": -1,
+            },
+            "cannot be negative",
+            id="negative-maximum",
+        ),
+        pytest.param(
+            {
+                "id": "MIN-OVER-MAX",
+                "name": "Minimum over maximum",
+                "selection_type": "multiple",
+                "is_required": 1,
+                "min_selections": 2,
+                "max_selections": 1,
+            },
+            "cannot exceed maximum",
+            id="minimum-over-maximum",
+        ),
+        pytest.param(
+            {
+                "id": "SINGLE-MAX-TWO",
+                "name": "Single max two",
+                "selection_type": "single",
+                "is_required": 0,
+                "min_selections": 0,
+                "max_selections": 2,
+            },
+            "cannot allow more than one selection",
+            id="single-maximum-over-one",
+        ),
+    ],
+)
+def test_validate_catalog_snapshot_rejects_invalid_modifier_bounds(
+    catalog_module, group, message
+):
+    with pytest.raises(catalog_module.frappe.ValidationError, match=message):
+        catalog_module.validate_catalog_snapshot(_modifier_catalog_snapshot(group))
+
+
+def test_validate_catalog_snapshot_rejects_too_few_active_modifier_options(
+    catalog_module,
+):
+    group = {
+        "id": "EXTRAS",
+        "name": "Extras",
+        "selection_type": "multiple",
+        "is_required": 1,
+        "min_selections": 2,
+        "max_selections": 3,
+    }
+
+    with pytest.raises(
+        catalog_module.frappe.ValidationError,
+        match="fewer active options than its minimum selection",
+    ):
+        catalog_module.validate_catalog_snapshot(
+            _modifier_catalog_snapshot(group, active_option_count=1)
         )
 
 

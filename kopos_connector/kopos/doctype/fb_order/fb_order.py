@@ -44,6 +44,11 @@ from kopos_connector.kopos.services.projection.log_service import (
     create_projection_log,
     update_projection_state,
 )
+from kopos_connector.kopos.services.recipe.modifier_bounds import (
+    EffectiveModifierBounds,
+    ModifierBoundsError,
+    resolve_effective_modifier_bounds,
+)
 
 
 def cstr(value: Any) -> str:
@@ -1261,10 +1266,11 @@ class FBOrder(BaseDocument):
         for group_name, group_row in visible_group_map.items():
             group_doc = frappe.get_cached_doc("FB Modifier Group", group_name)
             selected_count = len(selections_by_group.get(group_name, []))
-            min_selection = self.resolve_min_selection(group_doc, group_row)
-            max_selection = self.resolve_max_selection(group_doc, group_row)
+            bounds = self.resolve_modifier_bounds(group_doc, group_row)
+            min_selection = bounds.min_selection
+            max_selection = bounds.max_selection
 
-            if group_doc.selection_type == "Single" and selected_count > 1:
+            if bounds.selection_type == "single" and selected_count > 1:
                 frappe.throw(
                     "Order line {0} modifier group {1} allows only one selection".format(
                         self.describe_line(line_index, line), group_name
@@ -1290,25 +1296,36 @@ class FBOrder(BaseDocument):
 
         return selected_modifiers
 
+    def resolve_modifier_bounds(
+        self, group_doc: DocumentLike, group_row: DocumentLike
+    ) -> EffectiveModifierBounds:
+        group_name = cstr(getattr(group_doc, "name", None)).strip() or "(unnamed)"
+        try:
+            return resolve_effective_modifier_bounds(
+                selection_type=getattr(group_doc, "selection_type", None),
+                group_is_required=getattr(group_doc, "is_required", None),
+                group_min_selection=getattr(group_doc, "min_selection", None),
+                group_max_selection=getattr(group_doc, "max_selection", None),
+                recipe_required=getattr(group_row, "required", None),
+                override_min_selection=getattr(
+                    group_row, "override_min_selection", None
+                ),
+                override_max_selection=getattr(
+                    group_row, "override_max_selection", None
+                ),
+            )
+        except ModifierBoundsError as error:
+            frappe.throw(
+                f"Modifier group {group_name} has invalid selection rules: {error}",
+                frappe.ValidationError,
+            )
+            raise AssertionError("frappe.throw must raise") from error
+
     def resolve_min_selection(self, group_doc: DocumentLike, group_row) -> int:
-        if group_row.override_min_selection is not None:
-            return int(group_row.override_min_selection or 0)
-        if int(group_row.required):
-            if group_doc.selection_type == "Single":
-                return 1
-            return int(group_doc.min_selection or 1)
-        if int(group_doc.is_required):
-            if group_doc.selection_type == "Single":
-                return 1
-            return int(group_doc.min_selection or 1)
-        return int(group_doc.min_selection or 0)
+        return self.resolve_modifier_bounds(group_doc, group_row).min_selection
 
     def resolve_max_selection(self, group_doc: DocumentLike, group_row) -> int:
-        if group_row.override_max_selection is not None:
-            return int(group_row.override_max_selection or 0)
-        if group_doc.selection_type == "Single":
-            return 1
-        return int(group_doc.max_selection or 0)
+        return self.resolve_modifier_bounds(group_doc, group_row).max_selection
 
     def resolve_components_for_line(
         self,

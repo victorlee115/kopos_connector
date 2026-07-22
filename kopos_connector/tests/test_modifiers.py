@@ -292,7 +292,7 @@ class TestCatalogModifierGroups(unittest.TestCase):
     def test_get_modifier_groups_includes_parent_option_id(self, mock_get_all):
         from kopos_connector.api.catalog import get_modifier_groups
 
-        mock_get_all.return_value = [
+        source_rows = [
             {
                 "id": "grp-temp",
                 "name": "Temperature",
@@ -314,13 +314,59 @@ class TestCatalogModifierGroups(unittest.TestCase):
                 "parent_modifier": "mod-iced",
             },
         ]
+        mock_get_all.return_value = source_rows
 
         result = get_modifier_groups()
 
         self.assertEqual(len(result), 2)
         self.assertIsNone(result[0]["parent_option_id"])
         self.assertEqual(result[1]["parent_option_id"], "mod-iced")
+        self.assertEqual(result[0]["min_selections"], 1)
+        self.assertEqual(result[1]["min_selections"], 1)
+        self.assertEqual(source_rows[0]["min_selection"], 0)
+        self.assertEqual(source_rows[1]["min_selection"], 0)
         self.assertEqual(mock_get_all.call_args[0][0], "FB Modifier Group")
+
+    @patch("kopos_connector.api.catalog.frappe.get_all")
+    def test_get_modifier_groups_canonicalizes_legacy_additional_espresso_shape(
+        self, mock_get_all
+    ):
+        from kopos_connector.api.catalog import get_modifier_groups
+
+        legacy_row = {
+            "id": "ADDITIONAL_ESPRESSO_SHOT",
+            "name": "Additional Espresso Shot",
+            "selection_type": "Single",
+            "is_required": 1,
+            "min_selection": 0,
+            "max_selection": 1,
+            "display_order": 8,
+            "parent_modifier": None,
+        }
+        mock_get_all.return_value = [legacy_row]
+
+        result = get_modifier_groups(group_ids={"ADDITIONAL_ESPRESSO_SHOT"})
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "id": "ADDITIONAL_ESPRESSO_SHOT",
+                    "name": "Additional Espresso Shot",
+                    "selection_type": "single",
+                    "is_required": 1,
+                    "min_selections": 1,
+                    "max_selections": 1,
+                    "display_order": 8,
+                    "parent_option_id": None,
+                }
+            ],
+        )
+        self.assertEqual(legacy_row["min_selection"], 0)
+        self.assertEqual(
+            mock_get_all.call_args.kwargs["filters"]["name"],
+            ["in", ["ADDITIONAL_ESPRESSO_SHOT"]],
+        )
 
     @patch("kopos_connector.api.catalog.frappe.get_all")
     def test_get_modifier_groups_handles_missing_parent_option_id(self, mock_get_all):
@@ -448,24 +494,48 @@ class TestCatalogFBSource(unittest.TestCase):
                     {
                         "parent": "RECIPE-ITEM-1",
                         "modifier_group": "grp-temp",
+                        "required": 0,
+                        "override_min_selection": None,
+                        "override_max_selection": None,
                         "display_order": 1,
                         "idx": 1,
                     },
                     {
                         "parent": "RECIPE-ITEM-1",
                         "modifier_group": "grp-ice",
+                        "required": 0,
+                        "override_min_selection": None,
+                        "override_max_selection": None,
                         "display_order": 2,
                         "idx": 2,
                     },
                     {
                         "parent": "RECIPE-ITEM-1",
                         "modifier_group": "grp-inactive",
+                        "required": 0,
+                        "override_min_selection": None,
+                        "override_max_selection": None,
                         "display_order": 3,
                         "idx": 3,
                     },
                 ]
             if doctype == "FB Modifier Group":
-                return ["grp-temp", "grp-ice"]
+                return [
+                    {
+                        "name": "grp-temp",
+                        "selection_type": "Single",
+                        "is_required": 1,
+                        "min_selection": 0,
+                        "max_selection": 1,
+                    },
+                    {
+                        "name": "grp-ice",
+                        "selection_type": "Single",
+                        "is_required": 1,
+                        "min_selection": 0,
+                        "max_selection": 1,
+                    },
+                ]
             raise AssertionError(f"Unexpected doctype lookup: {doctype}")
 
         mock_get_all.side_effect = fake_get_all
@@ -482,6 +552,54 @@ class TestCatalogFBSource(unittest.TestCase):
         )
 
         self.assertEqual(result, {"ITEM-1": ["grp-temp", "grp-ice"]})
+
+    @patch("kopos_connector.api.catalog.frappe.get_all")
+    def test_get_item_modifier_groups_rejects_recipe_bounds_not_on_catalog_wire(
+        self, mock_get_all
+    ):
+        from kopos_connector.api.catalog import get_item_modifier_groups_map
+
+        def fake_get_all(doctype, **kwargs):
+            if doctype == "FB Allowed Modifier Group":
+                return [
+                    {
+                        "parent": "RECIPE-LATTE",
+                        "modifier_group": "ADDITIONAL_ESPRESSO_SHOT",
+                        "required": 0,
+                        "override_min_selection": 0,
+                        "override_max_selection": 1,
+                        "display_order": 1,
+                        "idx": 1,
+                    }
+                ]
+            if doctype == "FB Modifier Group":
+                return [
+                    {
+                        "name": "ADDITIONAL_ESPRESSO_SHOT",
+                        "selection_type": "Single",
+                        "is_required": 1,
+                        "min_selection": 0,
+                        "max_selection": 1,
+                    }
+                ]
+            raise AssertionError(f"Unexpected doctype lookup: {doctype}")
+
+        mock_get_all.side_effect = fake_get_all
+
+        with self.assertRaisesRegex(
+            Exception,
+            "changes the selection rules.*use a separate modifier group",
+        ):
+            get_item_modifier_groups_map(
+                [{"id": "LATTE"}],
+                company="JiJi",
+                recipe_snapshots_by_item={
+                    "LATTE": {
+                        "recipe_id": "RECIPE-LATTE",
+                        "recipe_version": 1,
+                    }
+                },
+            )
 
     @patch("kopos_connector.api.catalog.frappe.get_all")
     def test_catalog_recipe_snapshot_exposes_exact_active_version(self, mock_get_all):
