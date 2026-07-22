@@ -83,8 +83,8 @@ return {failures, locked_until}
 """
 PIN_RATE_LIMIT_CLEAR_SCRIPT = "return redis.call('DEL', KEYS[1])"
 DUMMY_PIN_HASH = (
-    "scrypt$16384$d00df00dd00df00dd00df00dd00df00d$"
-    "a28eea15d5b67089f17e4daa3f10a436ba9b6d1dd25ca3eb1e6fafe21e3e59c8"
+    "scrypt$256$d00df00dd00df00dd00df00dd00df00d$"
+    "970c84b0c7a95c6c8f80550ea302c4c2dc682396d317432e7348bcedf9e83df5"
 )
 APPROVAL_DOCTYPE = "KoPOS Manager Approval"
 ACTION_PERMISSION_FIELDS = {

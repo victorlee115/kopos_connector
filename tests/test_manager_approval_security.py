@@ -491,10 +491,10 @@ def test_manager_pin_limiter_fails_closed_without_atomic_redis(monkeypatch):
 
 
 def test_manager_pin_upgrade_bumps_locked_parent_config_version(monkeypatch):
-    legacy_hash = hash_pin("1234", cost=256)
+    legacy_hash = hash_pin("1234", cost=16_384)
     upgraded_hash = (
-        "scrypt$16384$00112233445566778899aabbccddeeff$"
-        "bd32905894891fff625cb7f496cbf8b7f9ef0cee823bd0aceda87857c65a77d9"
+        "scrypt$256$00112233445566778899aabbccddeeff$"
+        "c7e2546b0c0257ce6bec0fcd48d39b871e58619a042f2360ee46596373e1c093"
     )
     row: dict[str, object] = {
         "name": "DEVICE-USER-1",

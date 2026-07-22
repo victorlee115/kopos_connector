@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import os
+import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -26,6 +29,24 @@ CROSS_RUNTIME_HASH = (
 )
 VALID_SALT = "a" * 32
 VALID_KEY = "b" * 64
+
+
+def _typescript_pin_auth_source() -> str | None:
+    configured_root = os.environ.get("KOPOS_TYPESCRIPT_ROOT")
+    if configured_root:
+        source_path = Path(configured_root) / "services" / "security" / "pin-auth.ts"
+    else:
+        workspace_root = Path(__file__).resolve().parents[2]
+        source_path = (
+            workspace_root
+            / "JiJiPOS"
+            / "kopos"
+            / "src"
+            / "services"
+            / "security"
+            / "pin-auth.ts"
+        )
+    return source_path.read_text() if source_path.exists() else None
 
 
 def _device_user(pin_hash: str) -> SimpleNamespace:
@@ -100,13 +121,35 @@ def test_pin_contract_rejects_noncanonical_or_out_of_range_hashes(
     assert not pin.verify_pin("1234", encoded_hash)
 
 
-def test_hash_pin_keeps_production_cost_and_rejects_non_power_of_two() -> None:
+def test_hash_pin_matches_the_tablet_default_and_rejects_non_power_of_two() -> None:
     encoded_hash = pin.hash_pin("1234")
-    assert encoded_hash.split("$", 2)[1] == "16384"
+    assert encoded_hash.split("$", 2)[1] == "256"
     assert pin.is_supported_pin_hash(encoded_hash)
 
     with pytest.raises(pin.frappe.ValidationError, match="power of two"):
         pin.hash_pin("1234", cost=300)
+
+
+def test_erp_and_typescript_default_costs_match_when_both_sources_are_present() -> None:
+    typescript_source = _typescript_pin_auth_source()
+    if typescript_source is None:
+        pytest.skip(
+            "TypeScript checkout is absent; cross-repository CI supplies "
+            "KOPOS_TYPESCRIPT_ROOT"
+        )
+
+    match = re.search(r"const DEFAULT_COST = ([0-9_]+);", typescript_source)
+    assert match is not None
+    assert int(match.group(1).replace("_", "")) == pin.DEFAULT_COST == 256
+
+
+def test_only_the_current_default_skips_post_authentication_rehash() -> None:
+    current_hash = pin.hash_pin("1234", cost=256)
+    historical_high_cost_hash = pin.hash_pin("1234", cost=16_384)
+
+    assert not pin.pin_hash_needs_upgrade(current_hash)
+    assert pin.pin_hash_needs_upgrade(historical_high_cost_hash)
+    assert pin.pin_hash_needs_upgrade("not-a-hash")
 
 
 def test_device_save_boundary_rejects_an_existing_invalid_pin_hash() -> None:

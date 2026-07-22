@@ -10,7 +10,11 @@ import frappe
 from frappe import _
 
 
-DEFAULT_COST = 16_384
+# Device-user PIN verifiers are copied to the managed tablet and checked on
+# every cashier sign-in. Keep this default byte-for-byte aligned with the
+# TypeScript and Android contract. Higher historical costs remain readable so
+# an existing user can authenticate before their verifier is safely rotated.
+DEFAULT_COST = 256
 MIN_COST = 256
 MAX_COST = 16_384
 
@@ -76,8 +80,14 @@ def verify_pin(pin: str, encoded_hash: str) -> bool:
 
 
 def pin_hash_needs_upgrade(encoded_hash: str) -> bool:
+    """Return whether a verified hash should be normalized to today's contract.
+
+    This predicate is deliberately used only after ``verify_pin`` succeeds.
+    It accepts historical higher-cost hashes for compatibility, but asks the
+    caller to replace any non-default cost while the raw PIN is available.
+    """
     parsed = _parse_pin_hash(encoded_hash)
-    return parsed is None or parsed.cost < DEFAULT_COST
+    return parsed is None or parsed.cost != DEFAULT_COST
 
 
 def is_supported_pin_hash(encoded_hash: object) -> bool:
