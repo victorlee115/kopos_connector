@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr, get_datetime, getdate, nowdate
+from frappe.utils import (
+    cint,
+    cstr,
+    get_datetime,
+    get_system_timezone,
+    getdate,
+    now_datetime,
+    nowdate,
+)
 
 from kopos_connector.api.devices import (
     elevate_device_api_user,
@@ -21,6 +33,8 @@ from kopos_connector.api.devices import (
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 100
 MONEY_QUANTUM = Decimal("0.01")
+HISTORY_CURSOR_VERSION = 1
+MAX_CURSOR_LENGTH = 4096
 
 
 def get_order_history_payload(
@@ -59,7 +73,6 @@ def get_order_history_payload(
         )
 
     resolved_limit = normalize_limit(limit)
-    offset = normalize_cursor(cursor)
     effective_since_date, effective_since_datetime = resolve_since_date(
         device_id=device_id_value,
         pos_profile=pos_profile_name,
@@ -73,7 +86,7 @@ def get_order_history_payload(
             since_date=effective_since_date,
             since_datetime=effective_since_datetime,
             limit=resolved_limit + 1,
-            offset=offset,
+            cursor=cursor,
             device_id=device_id_value,
         )
 
@@ -113,6 +126,7 @@ def get_order_history_payload(
 
     return {
         "status": "ok",
+        "timestamp_contract_version": "utc-ms-v1",
         "device_id": device_id_value,
         "company": company,
         "pos_profile": pos_profile_name,
@@ -155,13 +169,221 @@ def normalize_limit(limit: str | int | None) -> int:
     return min(requested_limit, MAX_LIMIT)
 
 
-def normalize_cursor(cursor: str | int | None) -> int:
+def _urlsafe_b64encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _urlsafe_b64decode(value: str) -> bytes:
+    if not value or not value.replace("-", "A").replace("_", "A").isalnum():
+        raise ValueError("invalid base64url")
+    return base64.urlsafe_b64decode(value + ("=" * (-len(value) % 4)))
+
+
+def get_history_cursor_secret() -> bytes:
+    """Return a site-local secret so a cursor cannot be forged or cross-scoped."""
+    local = getattr(frappe, "local", None)
+    candidates = [getattr(local, "conf", None), getattr(frappe, "conf", None)]
+    for config in candidates:
+        if config is None:
+            continue
+        value = config.get("encryption_key") if hasattr(config, "get") else getattr(
+            config, "encryption_key", None
+        )
+        secret = cstr(value).strip()
+        if secret:
+            return secret.encode("utf-8")
+    frappe.throw(
+        _("ERP site encryption key is required for order history paging"),
+        frappe.ValidationError,
+    )
+    raise AssertionError("frappe.throw did not reject a missing cursor secret")
+
+
+def _canonical_cursor_json(value: dict[str, Any]) -> bytes:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+
+
+def _history_scope_digest(scope: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_cursor_json(scope)).hexdigest()
+
+
+def _cursor_scope(
+    *,
+    company: str,
+    pos_profile: str,
+    device_id: str | None,
+    since_date: str,
+    since_datetime: datetime | None,
+) -> dict[str, Any]:
+    return {
+        "company": company,
+        "device_id": cstr(device_id).strip(),
+        "pos_profile": pos_profile,
+        "since_date": since_date,
+        "since_datetime": format_datetime(since_datetime),
+    }
+
+
+def _db_datetime(value: Any, fieldname: str) -> str:
+    try:
+        parsed = value if isinstance(value, datetime) else get_datetime(value)
+    except Exception:
+        frappe.throw(
+            _("Order history {0} is invalid").format(fieldname),
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw did not reject an invalid cursor datetime")
+    if not isinstance(parsed, datetime):
+        frappe.throw(
+            _("Order history {0} is invalid").format(fieldname),
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw did not reject an invalid cursor datetime")
+    if parsed.tzinfo is not None:
+        timezone_name = cstr(get_system_timezone()).strip()
+        try:
+            parsed = parsed.astimezone(ZoneInfo(timezone_name)).replace(tzinfo=None)
+        except ZoneInfoNotFoundError:
+            frappe.throw(
+                _("ERP system timezone {0} is invalid").format(timezone_name),
+                frappe.ValidationError,
+            )
+            raise AssertionError("frappe.throw did not reject an invalid timezone")
+    return parsed.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def _db_time(value: Any, fieldname: str) -> str:
+    try:
+        parsed = value if isinstance(value, time) else time.fromisoformat(
+            cstr(value).strip()
+        )
+    except (TypeError, ValueError):
+        frappe.throw(
+            _("Order history {0} is invalid").format(fieldname),
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw did not reject an invalid cursor time")
+    if not isinstance(parsed, time) or parsed.tzinfo is not None:
+        frappe.throw(
+            _("Order history {0} is invalid").format(fieldname),
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw did not reject an invalid cursor time")
+    return parsed.isoformat(timespec="microseconds")
+
+
+def _history_sort_key(row: dict[str, Any]) -> dict[str, str]:
+    posting_date = format_date(row.get("posting_date"))
+    creation = row.get("creation")
+    name = cstr(row.get("name")).strip()
+    if not posting_date or not creation or not name:
+        frappe.throw(
+            _("Order history row is missing its stable paging identity"),
+            frappe.ValidationError,
+        )
+    return {
+        "posting_date": posting_date,
+        "posting_time": _db_time(
+            row.get("posting_time") or "00:00:00", "posting time"
+        ),
+        "creation": _db_datetime(creation, "creation"),
+        "name": name,
+    }
+
+
+def _validate_sort_key(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict) or set(value) != {
+        "posting_date",
+        "posting_time",
+        "creation",
+        "name",
+    }:
+        raise ValueError("invalid cursor sort key")
+    posting_date = cstr(value.get("posting_date")).strip()
+    posting_time = _db_time(value.get("posting_time"), "cursor posting time")
+    creation = cstr(value.get("creation")).strip()
+    name = cstr(value.get("name")).strip()
+    if (
+        not posting_date
+        or parse_date_value(posting_date) is None
+        or not posting_time
+        or not creation
+        or not name
+    ):
+        raise ValueError("invalid cursor sort key")
+    return {
+        "posting_date": posting_date,
+        "posting_time": posting_time,
+        "creation": _db_datetime(creation, "cursor creation"),
+        "name": name,
+    }
+
+
+def encode_history_cursor(
+    *, snapshot_ceiling: str, after: dict[str, str], scope: dict[str, Any]
+) -> str:
+    payload = {
+        "after": after,
+        "scope_sha256": _history_scope_digest(scope),
+        "snapshot_ceiling": snapshot_ceiling,
+        "v": HISTORY_CURSOR_VERSION,
+    }
+    encoded_payload = _urlsafe_b64encode(_canonical_cursor_json(payload))
+    signature = hmac.new(
+        get_history_cursor_secret(),
+        encoded_payload.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    return f"{encoded_payload}.{_urlsafe_b64encode(signature)}"
+
+
+def decode_history_cursor(
+    cursor: str | int | None, *, scope: dict[str, Any]
+) -> tuple[str, dict[str, str] | None]:
     if cursor in (None, ""):
-        return 0
-    offset = cint(cursor)
-    if offset < 0:
-        frappe.throw(_("cursor must be 0 or greater"), frappe.ValidationError)
-    return offset
+        return _db_datetime(now_datetime(), "snapshot ceiling"), None
+    encoded = cstr(cursor).strip()
+    if len(encoded) > MAX_CURSOR_LENGTH or encoded.count(".") != 1:
+        frappe.throw(_("Order history cursor is invalid"), frappe.ValidationError)
+    try:
+        encoded_payload, encoded_signature = encoded.split(".", 1)
+        supplied_signature = _urlsafe_b64decode(encoded_signature)
+        expected_signature = hmac.new(
+            get_history_cursor_secret(),
+            encoded_payload.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(supplied_signature, expected_signature):
+            raise ValueError("cursor signature mismatch")
+        payload = json.loads(_urlsafe_b64decode(encoded_payload).decode("utf-8"))
+        if not isinstance(payload, dict) or set(payload) != {
+            "after",
+            "scope_sha256",
+            "snapshot_ceiling",
+            "v",
+        }:
+            raise ValueError("invalid cursor payload")
+        if payload.get("v") != HISTORY_CURSOR_VERSION:
+            raise ValueError("unsupported cursor version")
+        if not hmac.compare_digest(
+            cstr(payload.get("scope_sha256")), _history_scope_digest(scope)
+        ):
+            raise ValueError("cursor scope mismatch")
+        snapshot_ceiling = _db_datetime(
+            payload.get("snapshot_ceiling"), "cursor snapshot ceiling"
+        )
+        after = _validate_sort_key(payload.get("after"))
+        return snapshot_ceiling, after
+    except frappe.ValidationError:
+        raise
+    except Exception:
+        frappe.throw(_("Order history cursor is invalid"), frappe.ValidationError)
+    raise AssertionError("frappe.throw did not reject an invalid order history cursor")
 
 
 def resolve_since_date(
@@ -232,7 +454,7 @@ def query_invoice_rows(
     since_date: str,
     since_datetime: datetime | None,
     limit: int,
-    offset: int,
+    cursor: str | int | None,
     device_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     filters: dict[str, Any] = {
@@ -245,47 +467,153 @@ def query_invoice_rows(
     if device_id:
         filters["custom_fb_device_id"] = device_id
 
+    scope = _cursor_scope(
+        company=company,
+        pos_profile=pos_profile,
+        device_id=device_id,
+        since_date=since_date,
+        since_datetime=since_datetime,
+    )
+    snapshot_ceiling, scan_after = decode_history_cursor(cursor, scope=scope)
     accepted_rows: list[dict[str, Any]] = []
-    cursor_after_accepted_row: list[int] = []
-    raw_offset = offset
+    cursor_after_accepted_row: list[dict[str, str]] = []
     batch_size = max(limit * 2, MAX_LIMIT + 1)
     while len(accepted_rows) < limit:
-        raw_rows = [
-            dict(row)
-            for row in frappe.get_all(
-                "Sales Invoice",
-                filters=filters,
-                fields=filter_existing_fields("Sales Invoice", get_invoice_fields()),
-                order_by="posting_date desc, posting_time desc, creation desc, name desc",
-                limit_start=raw_offset,
-                limit_page_length=batch_size,
-            )
-        ]
+        raw_rows = query_invoice_keyset_batch(
+            filters=filters,
+            fields=filter_existing_fields("Sales Invoice", get_invoice_fields()),
+            snapshot_ceiling=snapshot_ceiling,
+            after=scan_after,
+            limit=batch_size,
+        )
         if not raw_rows:
             break
 
-        for index, row in enumerate(raw_rows):
-            next_raw_cursor = raw_offset + index + 1
+        for row in raw_rows:
+            row_sort_key = _history_sort_key(row)
+            scan_after = row_sort_key
             if not is_visible_history_invoice(row, device_id=device_id):
                 continue
             if since_datetime and get_datetime(row.get("creation")) < since_datetime:
                 continue
             accepted_rows.append(row)
-            cursor_after_accepted_row.append(next_raw_cursor)
+            cursor_after_accepted_row.append(row_sort_key)
             if len(accepted_rows) >= limit:
                 break
 
         if len(accepted_rows) >= limit or len(raw_rows) < batch_size:
             break
-        raw_offset += len(raw_rows)
 
     visible_page_length = max(limit - 1, 0)
     next_cursor = (
-        str(cursor_after_accepted_row[visible_page_length - 1])
+        encode_history_cursor(
+            snapshot_ceiling=snapshot_ceiling,
+            after=cursor_after_accepted_row[visible_page_length - 1],
+            scope=scope,
+        )
         if visible_page_length > 0 and len(accepted_rows) > visible_page_length
         else None
     )
     return accepted_rows, next_cursor
+
+
+def query_invoice_keyset_batch(
+    *,
+    filters: dict[str, Any],
+    fields: list[str],
+    snapshot_ceiling: str,
+    after: dict[str, str] | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Read one immutable newest-first page without a lifetime-history offset."""
+    if not fields or "name" not in fields:
+        frappe.throw(
+            _("Sales Invoice history fields are incomplete"),
+            frappe.ValidationError,
+        )
+    allowed_fields = set(get_invoice_fields()) | {
+        "docstatus",
+        "creation",
+        "modified",
+        "name",
+    }
+    if any(field not in allowed_fields for field in fields):
+        frappe.throw(
+            _("Sales Invoice history fields are invalid"),
+            frappe.ValidationError,
+        )
+
+    if after is None:
+        initial_filters = dict(filters)
+        initial_filters["creation"] = ["<=", snapshot_ceiling]
+        return [
+            dict(row)
+            for row in frappe.get_all(
+                "Sales Invoice",
+                filters=initial_filters,
+                fields=fields,
+                order_by="posting_date desc, posting_time desc, creation desc, name desc",
+                limit_page_length=max(1, min(int(limit), (MAX_LIMIT + 1) * 4)),
+            )
+        ]
+
+    selected_fields = ", ".join(f"`{field}`" for field in fields)
+    clauses = [
+        "`docstatus` IN (1, 2)",
+        "`is_return` = 0",
+        "`company` = %s",
+        "`pos_profile` = %s",
+        "`posting_date` >= %s",
+        "`creation` <= %s",
+    ]
+    values: list[Any] = [
+        filters["company"],
+        filters["pos_profile"],
+        filters["posting_date"][1],
+        snapshot_ceiling,
+    ]
+    device_id = filters.get("custom_fb_device_id")
+    if device_id:
+        clauses.append("`custom_fb_device_id` = %s")
+        values.append(device_id)
+
+    if after is not None:
+        clauses.append(
+            "("
+            "`posting_date` < %s OR "
+            "(`posting_date` = %s AND COALESCE(`posting_time`, '00:00:00') < %s) OR "
+            "(`posting_date` = %s AND COALESCE(`posting_time`, '00:00:00') = %s AND `creation` < %s) OR "
+            "(`posting_date` = %s AND COALESCE(`posting_time`, '00:00:00') = %s AND `creation` = %s AND `name` < %s)"
+            ")"
+        )
+        values.extend(
+            [
+                after["posting_date"],
+                after["posting_date"],
+                after["posting_time"],
+                after["posting_date"],
+                after["posting_time"],
+                after["creation"],
+                after["posting_date"],
+                after["posting_time"],
+                after["creation"],
+                after["name"],
+            ]
+        )
+    values.append(max(1, min(int(limit), (MAX_LIMIT + 1) * 4)))
+    rows = frappe.db.sql(
+        f"""SELECT {selected_fields}
+            FROM `tabSales Invoice`
+            WHERE {' AND '.join(clauses)}
+            ORDER BY `posting_date` DESC,
+                     COALESCE(`posting_time`, '00:00:00') DESC,
+                     `creation` DESC,
+                     `name` DESC
+            LIMIT %s""",
+        values=values,
+        as_dict=True,
+    )
+    return [dict(row) for row in rows]
 
 
 def is_visible_history_invoice(
@@ -836,12 +1164,37 @@ def format_time(value: Any) -> str | None:
 def format_datetime(value: Any) -> str | None:
     if not value:
         return None
-    if isinstance(value, datetime):
-        return value.isoformat()
     try:
-        return get_datetime(value).isoformat()
+        parsed = value if isinstance(value, datetime) else get_datetime(value)
     except Exception:
-        return cstr(value)
+        frappe.throw(_("Order history timestamp is invalid"), frappe.ValidationError)
+        raise AssertionError("frappe.throw did not reject an invalid timestamp")
+    if not isinstance(parsed, datetime):
+        frappe.throw(_("Order history timestamp is invalid"), frappe.ValidationError)
+        raise AssertionError("frappe.throw did not reject an invalid timestamp")
+
+    if parsed.tzinfo is None:
+        timezone_name = cstr(get_system_timezone()).strip()
+        if not timezone_name:
+            frappe.throw(
+                _("ERP system timezone is required for order history"),
+                frappe.ValidationError,
+            )
+            raise AssertionError("frappe.throw did not reject a missing timezone")
+        try:
+            parsed = parsed.replace(tzinfo=ZoneInfo(timezone_name))
+        except ZoneInfoNotFoundError:
+            frappe.throw(
+                _("ERP system timezone {0} is invalid").format(timezone_name),
+                frappe.ValidationError,
+            )
+            raise AssertionError("frappe.throw did not reject an invalid timezone")
+
+    return (
+        parsed.astimezone(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def empty_to_none(value: Any) -> str | None:

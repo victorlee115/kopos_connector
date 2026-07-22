@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, time, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -44,6 +44,11 @@ def order_history_module(monkeypatch):
         ),
     )
     monkeypatch.setattr(order_history, "nowdate", lambda: "2026-03-13")
+    monkeypatch.setattr(
+        order_history,
+        "get_history_cursor_secret",
+        lambda: b"order-history-test-secret-not-for-production",
+    )
     return order_history
 
 
@@ -154,6 +159,7 @@ def test_get_order_history_blocks_cross_profile_leakage(
             "pos_profile": "Counter 1",
             "posting_date": "2026-03-13",
             "posting_time": "10:00:00",
+            "creation": datetime(2026, 3, 13, 10, 0),
             "custom_fb_device_id": "DEVICE-1",
             "grand_total": 10,
             "paid_amount": 10,
@@ -166,6 +172,7 @@ def test_get_order_history_blocks_cross_profile_leakage(
             "pos_profile": "Counter 2",
             "posting_date": "2026-03-13",
             "posting_time": "10:05:00",
+            "creation": datetime(2026, 3, 13, 10, 5),
             "custom_fb_device_id": "DEVICE-1",
             "grand_total": 20,
             "paid_amount": 20,
@@ -205,10 +212,11 @@ def test_get_order_history_blocks_cross_profile_leakage(
             "is_return": 0,
             "company": "KoPOS Cafe",
             "pos_profile": "Counter 1",
-            "posting_date": [">=", "2026-03-01"],
-            "custom_fb_device_id": "DEVICE-1",
-        }
-    ]
+                "posting_date": [">=", "2026-03-01"],
+                "custom_fb_device_id": "DEVICE-1",
+                "creation": ["<=", "2026-03-13 18:05:00.000000"],
+            }
+        ]
     assert result["status"] == "ok"
     assert [order["name"] for order in result["orders"]] == ["PINV-COUNTER-1"]
     assert all(order["pos_profile"] == "Counter 1" for order in result["orders"])
@@ -363,6 +371,7 @@ def test_get_order_history_filters_by_server_device_context_and_paginates(
         limit=1,
     )
 
+    assert result["timestamp_contract_version"] == "utc-ms-v1"
     assert captured_filters == [
         {
             "docstatus": ["in", [1, 2]],
@@ -371,11 +380,13 @@ def test_get_order_history_filters_by_server_device_context_and_paginates(
             "pos_profile": "POS-MAIN",
             "posting_date": [">=", "2026-03-13"],
             "custom_fb_device_id": "DEVICE-1",
+            "creation": ["<=", "2026-03-13 18:05:00.000000"],
         }
     ]
     assert [order["name"] for order in result["orders"]] == ["PINV-001"]
     assert result["orders"][0]["grand_total"] == "12.35"
-    assert result["next_cursor"] == "1"
+    assert isinstance(result["next_cursor"], str)
+    assert "." in result["next_cursor"]
 
 
 def test_serialize_invoice_row_returns_kopos_display_number_and_modifiers(
@@ -407,6 +418,8 @@ def test_serialize_invoice_row_returns_kopos_display_number_and_modifiers(
     payload = order_history_module.serialize_invoice_row(row, items=[item], payments=[])
 
     assert payload["display_number"] == "A001"
+    assert payload["created_at"] == "2026-03-13T02:00:00.000Z"
+    assert payload["modified_at"] == "2026-03-13T02:01:00.000Z"
     assert payload["items"][0]["modifier_total"] == "2.00"
     assert payload["items"][0]["modifiers"] == [
         {
@@ -416,6 +429,32 @@ def test_serialize_invoice_row_returns_kopos_display_number_and_modifiers(
             "price_adjustment": "2.00",
         }
     ]
+
+
+def test_format_datetime_uses_the_configured_site_timezone_and_emits_utc_z(
+    order_history_module, monkeypatch
+):
+    monkeypatch.setattr(
+        order_history_module,
+        "get_system_timezone",
+        lambda: "Europe/Berlin",
+    )
+
+    assert order_history_module.format_datetime(
+        datetime(2026, 7, 20, 12, 34, 56, 987654)
+    ) == "2026-07-20T10:34:56.987Z"
+    assert order_history_module.format_datetime(
+        datetime(
+            2026,
+            7,
+            20,
+            12,
+            34,
+            56,
+            123456,
+            tzinfo=timezone(timedelta(hours=-4)),
+        )
+    ) == "2026-07-20T16:34:56.123Z"
 
 
 def test_serialize_invoice_row_falls_back_to_display_number_in_remarks(
@@ -489,7 +528,7 @@ def test_get_order_history_excludes_same_day_before_shift_open(
     result = order_history_module.get_order_history_payload(device_id="DEVICE-1")
 
     assert result["since_date"] == "2026-03-13"
-    assert result["since_datetime"] == "2026-03-13T14:00:00"
+    assert result["since_datetime"] == "2026-03-13T06:00:00.000Z"
     assert [order["name"] for order in result["orders"]] == ["PINV-AFTER-SHIFT"]
 
 
@@ -514,9 +553,10 @@ def test_get_order_history_returns_refunds_separately_with_decimal_strings(
                     "is_return": 0,
                     "company": "KoPOS Cafe",
                     "pos_profile": "POS-MAIN",
-                    "posting_date": "2026-03-13",
-                    "posting_time": "10:00:00",
-                    "grand_total": "12.00",
+                        "posting_date": "2026-03-13",
+                        "posting_time": "10:00:00",
+                        "creation": datetime(2026, 3, 13, 10, 0),
+                        "grand_total": "12.00",
                     "paid_amount": "12.00",
                 }
             ]
@@ -529,9 +569,9 @@ def test_get_order_history_returns_refunds_separately_with_decimal_strings(
                     "return_against": "PINV-001",
                     "company": "KoPOS Cafe",
                     "pos_profile": "POS-MAIN",
-                    "posting_date": "2026-03-13",
-                    "posting_time": "10:05:00",
-                    "grand_total": -3.5,
+                        "posting_date": "2026-03-13",
+                        "posting_time": "10:05:00",
+                        "grand_total": -3.5,
                     "paid_amount": -3.5,
                     "custom_kopos_refund_reason_code": "other",
                     "custom_kopos_refund_reason": "Wrong order",
@@ -815,6 +855,38 @@ def test_unproven_cancelled_invoice_does_not_hide_next_history_page(
 
     monkeypatch.setattr(order_history_module.frappe, "get_all", fake_get_all)
 
+    def fake_keyset_batch(*, filters, fields, snapshot_ceiling, after, limit):
+        del fields
+        rows = [row for row in invoices if matches_filters(row, filters)]
+        rows = [
+            row for row in rows
+            if order_history_module._db_datetime(row["creation"], "creation")
+            <= snapshot_ceiling
+        ]
+        if after is not None:
+            after_tuple = (
+                after["posting_date"],
+                after["posting_time"],
+                after["creation"],
+                after["name"],
+            )
+            rows = [
+                row for row in rows
+                if tuple(order_history_module._history_sort_key(row).values())
+                < after_tuple
+            ]
+        rows.sort(
+            key=lambda row: tuple(order_history_module._history_sort_key(row).values()),
+            reverse=True,
+        )
+        return rows[:limit]
+
+    monkeypatch.setattr(
+        order_history_module,
+        "query_invoice_keyset_batch",
+        fake_keyset_batch,
+    )
+
     first_page = order_history_module.get_order_history_payload(
         device_id="DEVICE-1", limit=1
     )
@@ -823,7 +895,8 @@ def test_unproven_cancelled_invoice_does_not_hide_next_history_page(
     )
 
     assert [order["name"] for order in first_page["orders"]] == ["PINV-001"]
-    assert first_page["next_cursor"] == "1"
+    assert isinstance(first_page["next_cursor"], str)
+    assert "." in first_page["next_cursor"]
     assert [order["name"] for order in second_page["orders"]] == ["PINV-002"]
     assert second_page["next_cursor"] is None
 
@@ -843,6 +916,216 @@ def test_get_order_history_handles_empty_current_shift(order_history_module, mon
     assert result["next_cursor"] is None
 
 
+def test_history_cursor_rejects_tampering_and_cross_scope_replay(
+    order_history_module,
+):
+    scope = order_history_module._cursor_scope(
+        company="KoPOS Cafe",
+        pos_profile="POS-MAIN",
+        device_id="DEVICE-1",
+        since_date="2026-03-13",
+        since_datetime=None,
+    )
+    after = {
+        "posting_date": "2026-03-13",
+        "posting_time": "10:00:00.000000",
+        "creation": "2026-03-13 10:00:00.000000",
+        "name": "SINV-0002",
+    }
+    cursor = order_history_module.encode_history_cursor(
+        snapshot_ceiling="2026-03-13 18:05:00.000000",
+        after=after,
+        scope=scope,
+    )
+
+    assert order_history_module.decode_history_cursor(cursor, scope=scope) == (
+        "2026-03-13 18:05:00.000000",
+        after,
+    )
+    replacement = "A" if cursor[-1] != "A" else "B"
+    with pytest.raises(order_history_module.frappe.ValidationError):
+        order_history_module.decode_history_cursor(
+            f"{cursor[:-1]}{replacement}", scope=scope
+        )
+    other_scope = {**scope, "device_id": "DEVICE-2"}
+    with pytest.raises(order_history_module.frappe.ValidationError):
+        order_history_module.decode_history_cursor(cursor, scope=other_scope)
+
+
+def test_history_sort_key_preserves_posting_time_microseconds(
+    order_history_module,
+):
+    row = {
+        "name": "SINV-MICROSECOND",
+        "posting_date": "2026-03-13",
+        "posting_time": time(10, 0, 0, 500_000),
+        "creation": datetime(2026, 3, 13, 10, 0),
+    }
+
+    assert order_history_module._history_sort_key(row)["posting_time"] == (
+        "10:00:00.500000"
+    )
+
+
+def test_history_cursor_rejects_invalid_posting_time(order_history_module):
+    scope = order_history_module._cursor_scope(
+        company="KoPOS Cafe",
+        pos_profile="POS-MAIN",
+        device_id="DEVICE-1",
+        since_date="2026-03-13",
+        since_datetime=None,
+    )
+    cursor = order_history_module.encode_history_cursor(
+        snapshot_ceiling="2026-03-13 18:05:00.000000",
+        after={
+            "posting_date": "2026-03-13",
+            "posting_time": "25:00:00",
+            "creation": "2026-03-13 10:00:00.000000",
+            "name": "SINV-BAD-TIME",
+        },
+        scope=scope,
+    )
+
+    with pytest.raises(order_history_module.frappe.ValidationError):
+        order_history_module.decode_history_cursor(cursor, scope=scope)
+
+
+def test_history_keyset_sql_uses_strict_full_tuple(order_history_module, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    def fake_sql(query, values=None, as_dict=False):
+        captured.update(query=query, values=list(values or []), as_dict=as_dict)
+        return []
+
+    monkeypatch.setattr(order_history_module.frappe.db, "sql", fake_sql)
+    order_history_module.query_invoice_keyset_batch(
+        filters={
+            "company": "KoPOS Cafe",
+            "pos_profile": "POS-MAIN",
+            "posting_date": [">=", "2026-03-13"],
+            "custom_fb_device_id": "DEVICE-1",
+        },
+        fields=order_history_module.get_invoice_fields(),
+        snapshot_ceiling="2026-03-13 18:05:00.000000",
+        after={
+            "posting_date": "2026-03-13",
+            "posting_time": "10:00:00",
+            "creation": "2026-03-13 10:00:00.000000",
+            "name": "SINV-0002",
+        },
+        limit=100,
+    )
+
+    query = captured["query"]
+    assert "`creation` <= %s" in query
+    assert "`posting_date` < %s" in query
+    assert "COALESCE(`posting_time`, '00:00:00') < %s" in query
+    assert "`creation` < %s" in query
+    assert "`name` < %s" in query
+    assert "limit_start" not in query.lower()
+    assert captured["as_dict"] is True
+
+
+def test_keyset_pages_one_thousand_orders_once_during_concurrent_insert(
+    order_history_module, monkeypatch
+):
+    invoices: list[dict[str, Any]] = []
+    for index in range(1_000):
+        created_at = datetime(2026, 3, 13, 8, 0) + timedelta(seconds=index)
+        if index < 3:
+            created_at = datetime(2026, 3, 13, 8, 0)
+        invoices.append(
+            {
+                "name": f"SINV-{index:04d}",
+                "docstatus": 1,
+                "is_return": 0,
+                "company": "KoPOS Cafe",
+                "pos_profile": "POS-MAIN",
+                "posting_date": "2026-03-13",
+                "posting_time": created_at.strftime("%H:%M:%S"),
+                "creation": created_at,
+                "modified": created_at,
+                "custom_fb_device_id": "DEVICE-1",
+                "custom_fb_idempotency_key": f"idem-{index:04d}",
+                "grand_total": 1,
+                "paid_amount": 1,
+            }
+        )
+
+    def fake_get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        filters = kwargs.get("filters") or {}
+        if doctype == "FB Shift":
+            return []
+        if doctype == "Sales Invoice" and filters.get("is_return") == 1:
+            return []
+        return []
+
+    def fake_keyset_batch(*, filters, fields, snapshot_ceiling, after, limit):
+        del fields
+        rows = [
+            row for row in invoices
+            if row["company"] == filters["company"]
+            and row["pos_profile"] == filters["pos_profile"]
+            and row["custom_fb_device_id"] == filters["custom_fb_device_id"]
+            and row["posting_date"] >= filters["posting_date"][1]
+            and order_history_module._db_datetime(row["creation"], "creation")
+            <= snapshot_ceiling
+        ]
+        if after is not None:
+            after_tuple = tuple(after[field] for field in (
+                "posting_date", "posting_time", "creation", "name"
+            ))
+            rows = [
+                row for row in rows
+                if tuple(order_history_module._history_sort_key(row).values())
+                < after_tuple
+            ]
+        rows.sort(
+            key=lambda row: tuple(order_history_module._history_sort_key(row).values()),
+            reverse=True,
+        )
+        return rows[:limit]
+
+    monkeypatch.setattr(order_history_module.frappe, "get_all", fake_get_all)
+    monkeypatch.setattr(
+        order_history_module, "query_invoice_keyset_batch", fake_keyset_batch
+    )
+
+    names: list[str] = []
+    cursor = None
+    pages = 0
+    while True:
+        page = order_history_module.get_order_history_payload(
+            device_id="DEVICE-1",
+            since_date="2026-03-13",
+            cursor=cursor,
+            limit=100,
+        )
+        pages += 1
+        names.extend(order["name"] for order in page["orders"])
+        cursor = page["next_cursor"]
+        if pages == 1:
+            invoices.append(
+                {
+                    **invoices[-1],
+                    "name": "SINV-NEW-DURING-PAGING",
+                    "creation": datetime(2026, 3, 13, 18, 6),
+                    "modified": datetime(2026, 3, 13, 18, 6),
+                    "posting_time": "18:06:00",
+                    "custom_fb_idempotency_key": "idem-new-during-paging",
+                }
+            )
+        if cursor is None:
+            break
+        assert pages <= 10
+
+    assert pages == 10
+    assert len(names) == 1_000
+    assert len(set(names)) == 1_000
+    assert "SINV-NEW-DURING-PAGING" not in names
+    assert {"SINV-0000", "SINV-0001", "SINV-0002"}.issubset(names)
+
+
 def matches_filters(row: dict[str, Any], filters: dict[str, Any]) -> bool:
     for fieldname, expected in filters.items():
         actual = row.get(fieldname)
@@ -850,6 +1133,9 @@ def matches_filters(row: dict[str, Any], filters: dict[str, Any]) -> bool:
             operator, expected_value = expected
             if operator == ">=":
                 if str(actual) < str(expected_value):
+                    return False
+            elif operator == "<=":
+                if str(actual) > str(expected_value):
                     return False
             elif operator == "in":
                 if actual not in expected_value:

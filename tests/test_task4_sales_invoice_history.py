@@ -393,6 +393,11 @@ def test_order_history_reads_generated_sales_invoice_for_device_profile_shift(
         "get_cached_doc",
         lambda doctype, name: make_doc(name=name, company="KoPOS Cafe"),
     )
+    monkeypatch.setattr(
+        order_history,
+        "now_datetime",
+        lambda: datetime(2026, 5, 16, 11, 0),
+    )
     monkeypatch.setattr(order_history.frappe, "get_all", fake_get_all)
 
     result = order_history.get_order_history_payload(
@@ -408,9 +413,11 @@ def test_order_history_reads_generated_sales_invoice_for_device_profile_shift(
             "pos_profile": "Counter 1",
             "posting_date": [">=", "2026-05-16"],
             "custom_fb_device_id": "DEVICE-1",
+            "creation": ["<=", "2026-05-16 11:00:00.000000"],
         }
     ]
-    assert result["since_datetime"] == "2026-05-16T10:00:00"
+    assert result["timestamp_contract_version"] == "utc-ms-v1"
+    assert result["since_datetime"] == "2026-05-16T02:00:00.000Z"
     assert [order["name"] for order in result["orders"]] == ["SINV-GENERATED-1"]
     assert result["orders"][0]["device_id"] == "DEVICE-1"
     assert result["orders"][0]["pos_profile"] == "Counter 1"
@@ -425,6 +432,9 @@ def matches_filters(row: dict[str, Any], filters: dict[str, Any]) -> bool:
             operator, expected_value = expected
             if operator == ">=":
                 if str(actual) < str(expected_value):
+                    return False
+            elif operator == "<=":
+                if str(actual) > str(expected_value):
                     return False
             elif operator == "in":
                 if actual not in expected_value:
