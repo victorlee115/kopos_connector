@@ -193,6 +193,7 @@ def test_smoke_duplicate_qr_integrity_requires_live_exact_journals_and_file() ->
         "device_id": "SMOKE-TAB-A001",
         "transaction_refno": "MBB-DUPLICATE-1",
         "fb_order": "FB-ORDER-1",
+        "fb_order_payment": "PAY-1",
         "winning_sales_invoice": "SINV-1",
         "winning_company": "KoPOS Malaysia Sdn Bhd",
         "winning_sale": {
@@ -205,6 +206,10 @@ def test_smoke_duplicate_qr_integrity_requires_live_exact_journals_and_file() ->
             "invoice_status": "Posted",
             "company": "KoPOS Malaysia Sdn Bhd",
             "currency": "MYR",
+            "automatic_qr_state": "finalized",
+            "automatic_qr_payment": "PAY-1",
+            "automatic_qr_winner_channel": "maybank_qr",
+            "automatic_qr_static_reconciliation": None,
         },
         "winning_invoice": {
             "name": "SINV-1",
@@ -222,7 +227,9 @@ def test_smoke_duplicate_qr_integrity_requires_live_exact_journals_and_file() ->
             "void_approval": None,
         },
         "duplicate_payment_status": "refunded",
+        "duplicate_winning_channel": "maybank_qr",
         "duplicate_winning_transaction": "MBQR-WINNER-1",
+        "duplicate_winning_static_reconciliation": None,
         "duplicate_accounting_key": "LIABILITY-KEY-1",
         "duplicate_liability_journal_entry": "JV-liability_recognition",
         "duplicate_refund_key": "REFUND-KEY-1",
@@ -276,6 +283,12 @@ def test_smoke_duplicate_qr_integrity_requires_live_exact_journals_and_file() ->
             "custom_kopos_qr_provider_transaction": row["name"],
             "custom_kopos_qr_winning_transaction": row[
                 "duplicate_winning_transaction"
+            ],
+            "custom_kopos_qr_winning_channel": row[
+                "duplicate_winning_channel"
+            ],
+            "custom_kopos_qr_winning_static_reconciliation": row[
+                "duplicate_winning_static_reconciliation"
             ],
             "custom_kopos_qr_provider_evidence_reference": evidence_reference,
             "custom_kopos_qr_provider_evidence_file": evidence_file,
@@ -342,6 +355,112 @@ def test_smoke_duplicate_qr_integrity_requires_live_exact_journals_and_file() ->
         }
     )
     assert smoke._duplicate_qr_accounting_integrity_proven(row) is True
+
+
+def test_smoke_duplicate_qr_integrity_proves_exact_static_winner() -> None:
+    row: dict[str, Any] = {
+        "name": "MBQR-DUPLICATE-STATIC-1",
+        "device_id": "SMOKE-TAB-A001",
+        "transaction_refno": "MBB-DUPLICATE-STATIC-1",
+        "fb_order": "FB-ORDER-STATIC-1",
+        "fb_order_payment": "PAY-STATIC-1",
+        "winning_sales_invoice": "SINV-STATIC-1",
+        "winning_company": "KoPOS Malaysia Sdn Bhd",
+        "winning_sale": {
+            "name": "FB-ORDER-STATIC-1",
+            "docstatus": 1,
+            "sales_invoice": "SINV-STATIC-1",
+            "external_idempotency_key": "SALE-STATIC-1",
+            "device_id": "SMOKE-TAB-A001",
+            "status": "Submitted",
+            "invoice_status": "Posted",
+            "company": "KoPOS Malaysia Sdn Bhd",
+            "currency": "MYR",
+            "automatic_qr_state": "finalized",
+            "automatic_qr_payment": "PAY-STATIC-1",
+            "automatic_qr_winner_channel": "static_qr",
+            "automatic_qr_static_reconciliation": "MQR-STATIC-1",
+        },
+        "winning_invoice": {
+            "name": "SINV-STATIC-1",
+            "docstatus": 1,
+            "is_return": 0,
+            "custom_fb_order": "FB-ORDER-STATIC-1",
+            "custom_fb_idempotency_key": "SALE-STATIC-1",
+            "custom_fb_device_id": "SMOKE-TAB-A001",
+            "custom_fb_void_idempotency_key": None,
+            "custom_fb_void_request_fingerprint": None,
+            "custom_fb_void_manager": None,
+            "custom_fb_void_approval_token_id": None,
+            "company": "KoPOS Malaysia Sdn Bhd",
+            "currency": "MYR",
+        },
+        "winning_static_reconciliation": {
+            "name": "MQR-STATIC-1",
+            "status": "pending_reconciliation",
+            "fb_order": "FB-ORDER-STATIC-1",
+            "fb_order_payment": "PAY-STATIC-1",
+            "sales_invoice": "SINV-STATIC-1",
+            "device_id": "SMOKE-TAB-A001",
+            "company": "KoPOS Malaysia Sdn Bhd",
+            "currency": "MYR",
+            "amount_sen": 1250,
+            "provider_session_id": "static-session-1",
+            "reconciliation_idempotency_key": "static-recon-1",
+        },
+        "duplicate_payment_status": "refund_required",
+        "duplicate_winning_channel": "static_qr",
+        "duplicate_winning_transaction": None,
+        "duplicate_winning_static_reconciliation": "MQR-STATIC-1",
+        "duplicate_accounting_key": "LIABILITY-STATIC-1",
+        "duplicate_liability_journal_entry": "JV-STATIC-1",
+        "duplicate_refund_journal_entry": None,
+        "duplicate_clearing_account": "Maybank Clearing - KMY",
+        "duplicate_liability_account": "Customer Refund Liability - KMY",
+        "sale_amount_sen": 1250,
+        "currency": "MYR",
+        "paid_at": "2026-03-12 23:59:00",
+    }
+    row["duplicate_liability_journal"] = {
+        "name": "JV-STATIC-1",
+        "docstatus": 1,
+        "posting_date": "2026-03-12",
+        "company": row["winning_company"],
+        "custom_kopos_qr_duplicate_key": "LIABILITY-STATIC-1",
+        "custom_kopos_qr_duplicate_stage": "liability_recognition",
+        "custom_kopos_qr_provider_transaction": row["name"],
+        "custom_kopos_qr_winning_transaction": None,
+        "custom_kopos_qr_winning_channel": "static_qr",
+        "custom_kopos_qr_winning_static_reconciliation": "MQR-STATIC-1",
+        "custom_kopos_qr_provider_evidence_reference": row[
+            "transaction_refno"
+        ],
+        "custom_kopos_qr_provider_evidence_file": None,
+        "custom_kopos_qr_provider_evidence_sha256": None,
+        "custom_kopos_qr_source_doctype": "Maybank QR Transaction",
+        "custom_kopos_qr_source_name": row["name"],
+        "custom_kopos_qr_fb_order": row["fb_order"],
+        "custom_kopos_qr_sales_invoice": row["winning_sales_invoice"],
+        "custom_kopos_qr_amount_sen": row["sale_amount_sen"],
+        "custom_kopos_qr_currency": row["currency"],
+        "gl_entries": [
+            {
+                "account": "Maybank Clearing - KMY",
+                "debit": "12.50",
+                "credit": "0",
+            },
+            {
+                "account": "Customer Refund Liability - KMY",
+                "debit": "0",
+                "credit": "12.50",
+            },
+        ],
+    }
+
+    assert smoke._duplicate_qr_accounting_integrity_proven(row) is True
+
+    row["winning_static_reconciliation"]["amount_sen"] = 1249
+    assert smoke._duplicate_qr_accounting_integrity_proven(row) is False
 
 
 def _passing_state() -> dict[str, Any]:

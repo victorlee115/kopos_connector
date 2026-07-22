@@ -177,10 +177,42 @@ failures remain fail-closed. See
 
 ```http
 POST /api/method/kopos_connector.api.prepare_automatic_qr_sale
+POST /api/method/kopos_connector.api.confirm_prepared_automatic_qr_static_payment
 GET /api/method/kopos_connector.api.get_maybank_qr_readiness?device_id=...
 POST /api/method/kopos_connector.api.generate_maybank_qr
 GET /api/method/kopos_connector.api.check_maybank_payment?transaction_refno=...
 ```
+
+The tablet may confirm the prepared sale against the always-available static QR
+at any time. The confirmation route requires the exact prepared order, payment,
+device, integer-sen amount, accepted-sale fingerprint, local static session, and
+versioned manual evidence. Under the same order and attempt locks, ERP submits
+that FB Order once, creates the one Sales Invoice and stock issue, and records
+the exact Manual QR Reconciliation as the `static_qr` winner. The response and
+an exact `submit_order` retry both return that same sale and invoice. The payment
+remains visibly `pending_reconciliation` for back-office work, but this state
+does not block fulfillment, printing, or the cashier's next sale.
+
+If Maybank finishes the prepared sale before an offline static confirmation
+reaches ERP, ERP keeps the already-posted Maybank payment, invoice, stock issue,
+and ledger unchanged. It accepts the exact static evidence once as a
+`secondary_possible_duplicate` claim and returns the same completed sale to the
+tablet. Exact retries return that same claim. The claim stays visibly pending
+for bank review and cannot use the ordinary suspense reclassification actions,
+so it cannot create a second invoice or silently change the winning payment.
+
+Static confirmation never deletes or cancels a Maybank attempt. Every attempt
+stays linked to the prepared payment as evidence. Each issued nonterminal,
+expired, ambiguous, provider-failed, or never-displayed reference remains in the
+fair grouped polling schedule unless ERP has exact durable proof of a
+pre-provider release or audited provider cancellation. A reservation with no
+provider reference is retained but cannot be polled until a reference is known.
+A provider result that returns after static confirmation cannot change the
+winning channel or create another invoice. If any retained attempt is later
+reported paid, ERP first proves the exact static reconciliation and winning
+invoice, then records the provider payment as duplicate customer liability for
+the existing refund workflow. Missing accounting setup may delay that secondary
+incident record, but it cannot roll back or interrupt the completed sale.
 
 The readiness route is a read-only capability prewarm. It validates the
 authenticated device, local provider settings, and QR accounting destinations;

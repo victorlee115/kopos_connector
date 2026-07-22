@@ -3782,6 +3782,8 @@ def _collect_manual_qr_reconciliations(device_id: str) -> list[dict[str, Any]]:
         fields=[
             "name",
             "status",
+            "claim_role",
+            "winning_maybank_qr_transaction",
             "fb_order",
             "sales_invoice",
             "fb_order_payment",
@@ -3976,6 +3978,7 @@ def _collect_maybank_qr_transactions(device_id: str) -> list[dict[str, Any]]:
             "sale_amount",
             "sale_amount_sen",
             "fb_order",
+            "fb_order_payment",
             "sales_invoice",
             "outlet_id",
             "device_id",
@@ -3986,7 +3989,9 @@ def _collect_maybank_qr_transactions(device_id: str) -> list[dict[str, Any]]:
             "consumption_key",
             "invoice_consumption_key",
             "duplicate_payment_status",
+            "duplicate_winning_channel",
             "duplicate_winning_transaction",
+            "duplicate_winning_static_reconciliation",
             "duplicate_accounting_key",
             "duplicate_clearing_account",
             "duplicate_liability_account",
@@ -4141,6 +4146,10 @@ def _collect_maybank_qr_transactions(device_id: str) -> list[dict[str, Any]]:
                     "invoice_status",
                     "company",
                     "currency",
+                    "automatic_qr_state",
+                    "automatic_qr_payment",
+                    "automatic_qr_winner_channel",
+                    "automatic_qr_static_reconciliation",
                 ],
                 as_dict=True,
             )
@@ -4156,6 +4165,10 @@ def _collect_maybank_qr_transactions(device_id: str) -> list[dict[str, Any]]:
                     "invoice_status",
                     "company",
                     "currency",
+                    "automatic_qr_state",
+                    "automatic_qr_payment",
+                    "automatic_qr_winner_channel",
+                    "automatic_qr_static_reconciliation",
                 )
             }
             row["winning_sales_invoice"] = _value(
@@ -4165,6 +4178,14 @@ def _collect_maybank_qr_transactions(device_id: str) -> list[dict[str, Any]]:
             row["winning_company"] = _value(sale_context, "company")
             row["winning_invoice"] = _collect_duplicate_qr_winning_invoice(
                 str(row.get("winning_sales_invoice") or "")
+            )
+            row["winning_static_reconciliation"] = (
+                _collect_duplicate_qr_static_reconciliation(
+                    str(
+                        row.get("duplicate_winning_static_reconciliation")
+                        or ""
+                    )
+                )
             )
             row["duplicate_liability_journal"] = _collect_duplicate_qr_journal(
                 str(row.get("duplicate_liability_journal_entry") or "")
@@ -4198,6 +4219,8 @@ def _collect_duplicate_qr_journal(journal_name: str) -> dict[str, Any] | None:
             "custom_kopos_qr_duplicate_stage",
             "custom_kopos_qr_provider_transaction",
             "custom_kopos_qr_winning_transaction",
+            "custom_kopos_qr_winning_channel",
+            "custom_kopos_qr_winning_static_reconciliation",
             "custom_kopos_qr_provider_evidence_reference",
             "custom_kopos_qr_provider_evidence_file",
             "custom_kopos_qr_provider_evidence_sha256",
@@ -4217,6 +4240,35 @@ def _collect_duplicate_qr_journal(journal_name: str) -> dict[str, Any] | None:
         journal_name,
     )
     return journal
+
+
+def _collect_duplicate_qr_static_reconciliation(
+    reconciliation_name: str,
+) -> dict[str, Any] | None:
+    if not reconciliation_name:
+        return None
+    rows = _get_rows(
+        "Manual QR Reconciliation",
+        filters={"name": reconciliation_name},
+        fields=[
+            "name",
+            "status",
+            "claim_role",
+            "winning_maybank_qr_transaction",
+            "fb_order",
+            "fb_order_payment",
+            "sales_invoice",
+            "device_id",
+            "company",
+            "currency",
+            "amount_sen",
+            "provider_session_id",
+            "reconciliation_idempotency_key",
+        ],
+    )
+    if len(rows) != 1:
+        return {"name": reconciliation_name, "missing_or_ambiguous": True}
+    return rows[0]
 
 
 def _collect_duplicate_qr_winning_invoice(
@@ -4299,10 +4351,27 @@ def _duplicate_qr_accounting_integrity_proven(row: dict[str, Any]) -> bool:
         return not row.get("duplicate_liability_journal_entry") and not row.get(
             "duplicate_refund_journal_entry"
         )
-    if (
+    winning_channel = str(row.get("duplicate_winning_channel") or "").strip()
+    if not winning_channel and row.get("duplicate_winning_transaction"):
+        # Historical dynamic-payment incidents predate the explicit channel
+        # field. Their exact winning transaction remains durable authority.
+        winning_channel = "maybank_qr"
+    if winning_channel not in {"maybank_qr", "static_qr"}:
+        return False
+    if winning_channel == "maybank_qr" and (
         not row.get("duplicate_winning_transaction")
         or row.get("duplicate_winning_transaction") == row.get("name")
-        or not row.get("duplicate_accounting_key")
+        or row.get("duplicate_winning_static_reconciliation")
+    ):
+        return False
+    if winning_channel == "static_qr" and (
+        row.get("duplicate_winning_transaction")
+        or not row.get("duplicate_winning_static_reconciliation")
+        or not _duplicate_qr_static_winner_integrity_proven(row)
+    ):
+        return False
+    if (
+        not row.get("duplicate_accounting_key")
         or not row.get("duplicate_clearing_account")
         or not row.get("duplicate_liability_account")
         or row.get("duplicate_clearing_account")
@@ -4373,6 +4442,49 @@ def _duplicate_qr_accounting_integrity_proven(row: dict[str, Any]) -> bool:
         row,
         row.get("duplicate_refund_journal"),
         stage="refund",
+    )
+
+
+def _duplicate_qr_static_winner_integrity_proven(row: dict[str, Any]) -> bool:
+    sale = row.get("winning_sale")
+    reconciliation = row.get("winning_static_reconciliation")
+    if not isinstance(sale, dict) or not isinstance(reconciliation, dict):
+        return False
+    expected = {
+        "name": row.get("duplicate_winning_static_reconciliation"),
+        "fb_order": row.get("fb_order"),
+        "fb_order_payment": row.get("fb_order_payment"),
+        "sales_invoice": row.get("winning_sales_invoice"),
+        "device_id": row.get("device_id"),
+        "company": row.get("winning_company"),
+        "currency": row.get("currency"),
+    }
+    if any(
+        str(reconciliation.get(fieldname) or "") != str(expected_value or "")
+        for fieldname, expected_value in expected.items()
+    ):
+        return False
+    return bool(
+        sale.get("automatic_qr_winner_channel") == "static_qr"
+        and sale.get("automatic_qr_state") == "finalized"
+        and sale.get("automatic_qr_payment") == row.get("fb_order_payment")
+        and sale.get("automatic_qr_static_reconciliation")
+        == row.get("duplicate_winning_static_reconciliation")
+        and reconciliation.get("status")
+        in {
+            "pending_reconciliation",
+            "reconciled",
+            "reconciliation_failed",
+        }
+        and str(reconciliation.get("claim_role") or "winning_settlement")
+        == "winning_settlement"
+        and not reconciliation.get("winning_maybank_qr_transaction")
+        and cint(reconciliation.get("amount_sen"))
+        == cint(row.get("sale_amount_sen"))
+        and str(reconciliation.get("provider_session_id") or "").startswith(
+            "static-"
+        )
+        and reconciliation.get("reconciliation_idempotency_key")
     )
 
 
@@ -4484,6 +4596,9 @@ def _duplicate_qr_journal_integrity_proven(
         "custom_kopos_qr_winning_transaction": row.get(
             "duplicate_winning_transaction"
         ),
+        "custom_kopos_qr_winning_static_reconciliation": row.get(
+            "duplicate_winning_static_reconciliation"
+        ),
         "custom_kopos_qr_provider_evidence_reference": expected_reference,
         "custom_kopos_qr_provider_evidence_file": expected_file,
         "custom_kopos_qr_provider_evidence_sha256": expected_hash,
@@ -4497,6 +4612,22 @@ def _duplicate_qr_journal_integrity_proven(
         str(journal.get(fieldname) or "") != str(expected or "")
         for fieldname, expected in expected_fields.items()
     ):
+        return False
+    source_winning_channel = str(
+        row.get("duplicate_winning_channel") or ""
+    ).strip()
+    journal_winning_channel = str(
+        journal.get("custom_kopos_qr_winning_channel") or ""
+    ).strip()
+    if source_winning_channel:
+        if journal_winning_channel != source_winning_channel:
+            return False
+    elif row.get("duplicate_winning_transaction") and (
+        journal_winning_channel not in {"", "maybank_qr"}
+    ):
+        # Historical Maybank incidents and immutable submitted journals predate
+        # the additive channel field. Their original winning transaction, key,
+        # invoice, and exact GL remain mandatory.
         return False
     if (
         cint(journal.get("custom_kopos_qr_amount_sen"))
