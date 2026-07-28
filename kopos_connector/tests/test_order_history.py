@@ -814,7 +814,7 @@ def test_unproven_cancelled_invoice_does_not_hide_next_history_page(
             "company": "KoPOS Cafe",
             "pos_profile": "POS-MAIN",
             "posting_date": "2026-03-13",
-            "posting_time": "10:10:00",
+            "posting_time": timedelta(hours=10, minutes=10),
             "creation": datetime(2026, 3, 13, 10, 10),
             "custom_fb_device_id": "DEVICE-1",
         },
@@ -825,7 +825,7 @@ def test_unproven_cancelled_invoice_does_not_hide_next_history_page(
             "company": "KoPOS Cafe",
             "pos_profile": "POS-MAIN",
             "posting_date": "2026-03-13",
-            "posting_time": "10:05:00",
+            "posting_time": timedelta(hours=10, minutes=5),
             "creation": datetime(2026, 3, 13, 10, 5),
             "custom_fb_device_id": "DEVICE-1",
         },
@@ -836,7 +836,7 @@ def test_unproven_cancelled_invoice_does_not_hide_next_history_page(
             "company": "KoPOS Cafe",
             "pos_profile": "POS-MAIN",
             "posting_date": "2026-03-13",
-            "posting_time": "10:00:00",
+            "posting_time": timedelta(hours=10),
             "creation": datetime(2026, 3, 13, 10, 0),
             "custom_fb_device_id": "DEVICE-1",
         },
@@ -965,6 +965,47 @@ def test_history_sort_key_preserves_posting_time_microseconds(
     assert order_history_module._history_sort_key(row)["posting_time"] == (
         "10:00:00.500000"
     )
+
+
+def test_history_sort_key_accepts_mariadb_timedelta_posting_time(
+    order_history_module,
+):
+    row = {
+        "name": "SINV-MARIADB-TIME",
+        "posting_date": "2026-03-13",
+        "posting_time": timedelta(
+            hours=2,
+            minutes=16,
+            seconds=14,
+            microseconds=250_000,
+        ),
+        "creation": datetime(2026, 3, 13, 2, 16, 14),
+    }
+
+    assert order_history_module._history_sort_key(row)["posting_time"] == (
+        "02:16:14.250000"
+    )
+
+
+def test_database_time_accepts_midnight_timedelta(order_history_module):
+    assert order_history_module._db_time(timedelta(0), "posting time") == (
+        "00:00:00.000000"
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_time",
+    [
+        timedelta(microseconds=-1),
+        timedelta(days=1),
+    ],
+)
+def test_database_time_rejects_timedelta_outside_one_day(
+    order_history_module,
+    invalid_time,
+):
+    with pytest.raises(order_history_module.frappe.ValidationError):
+        order_history_module._db_time(invalid_time, "posting time")
 
 
 def test_history_cursor_rejects_invalid_posting_time(order_history_module):

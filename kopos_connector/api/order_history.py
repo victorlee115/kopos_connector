@@ -6,7 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -259,9 +259,16 @@ def _db_datetime(value: Any, fieldname: str) -> str:
 
 def _db_time(value: Any, fieldname: str) -> str:
     try:
-        parsed = value if isinstance(value, time) else time.fromisoformat(
-            cstr(value).strip()
-        )
+        if isinstance(value, time):
+            parsed = value
+        elif isinstance(value, timedelta):
+            if value < timedelta(0) or value >= timedelta(days=1):
+                raise ValueError("database time is outside one day")
+            hour, remainder = divmod(value.seconds, 60 * 60)
+            minute, second = divmod(remainder, 60)
+            parsed = time(hour, minute, second, value.microseconds)
+        else:
+            parsed = time.fromisoformat(cstr(value).strip())
     except (TypeError, ValueError):
         frappe.throw(
             _("Order history {0} is invalid").format(fieldname),
