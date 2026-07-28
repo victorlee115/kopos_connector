@@ -317,3 +317,4 @@ def test_connector_version_is_consistent() -> None:
 
     assert package.__version__ == "1.0.10"
     assert 'version = { attr = "kopos_connector.__version__" }' in pyproject_source
+    assert '"requests>=2.31.0,<3.0.0"' in pyproject_source
