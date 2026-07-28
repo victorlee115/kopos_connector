@@ -1,6 +1,11 @@
+from __future__ import annotations
+
 import hashlib
+import json
 import re
 import secrets
+from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import urlsplit
 
 import requests
@@ -35,6 +40,130 @@ MAYBANK_MOCK_PAYMENT_MODES = frozenset(
         MAYBANK_MOCK_PAYMENT_MODE_MANUAL,
     }
 )
+TLS_PEER_CERTIFICATE_SHA256_ATTR = "_kopos_tls_peer_certificate_sha256"
+TLS_VERIFIED_ATTR = "_kopos_tls_verified"
+
+
+def _peer_certificate_der(response: requests.Response) -> bytes | None:
+    """Read the live peer certificate before urllib3 releases the connection."""
+
+    raw_response = getattr(response, "raw", None)
+    connection = getattr(raw_response, "connection", None) or getattr(
+        raw_response, "_connection", None
+    )
+    sock = getattr(connection, "sock", None)
+    get_peer_certificate = getattr(sock, "getpeercert", None)
+    if not callable(get_peer_certificate):
+        return None
+    try:
+        certificate = get_peer_certificate(binary_form=True)
+    except Exception:
+        return None
+    return bytes(certificate) if certificate else None
+
+
+class _TlsEvidenceAdapter(HTTPAdapter):
+    """Attach only verified peer-certificate evidence to each response."""
+
+    def send(
+        self,
+        request: Any,
+        stream: bool = False,
+        timeout: Any = None,
+        verify: bool | str = True,
+        cert: Any = None,
+        proxies: Any = None,
+    ) -> requests.Response:
+        response = super().send(
+            request,
+            stream=stream,
+            timeout=timeout,
+            verify=verify,
+            cert=cert,
+            proxies=proxies,
+        )
+        certificate = _peer_certificate_der(response)
+        certificate_sha256 = (
+            hashlib.sha256(certificate).hexdigest() if certificate else ""
+        )
+        setattr(
+            response,
+            TLS_PEER_CERTIFICATE_SHA256_ATTR,
+            certificate_sha256,
+        )
+        setattr(
+            response,
+            TLS_VERIFIED_ATTR,
+            bool(verify is not False and certificate_sha256),
+        )
+        return response
+
+
+def _exact_body_bytes(value: Any, fieldname: str) -> bytes:
+    if isinstance(value, bytes):
+        body = value
+    elif isinstance(value, str):
+        body = value.encode("utf-8")
+    else:
+        frappe.throw(
+            f"Maybank {fieldname} bytes are unavailable",
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw must raise")
+    if not body:
+        frappe.throw(
+            f"Maybank {fieldname} bytes are empty",
+            frappe.ValidationError,
+        )
+    return body
+
+
+def _status_transport_evidence(
+    response: requests.Response,
+    transaction_refno: str,
+) -> dict[str, Any]:
+    request = getattr(response, "request", None)
+    request_body = _exact_body_bytes(
+        getattr(request, "body", None),
+        "status request body",
+    )
+    try:
+        request_payload = json.loads(request_body)
+    except (TypeError, ValueError, UnicodeDecodeError):
+        frappe.throw(
+            "Maybank status request body is not exact JSON",
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw must raise")
+    if request_payload != {"transaction_refno": transaction_refno}:
+        frappe.throw(
+            "Maybank status request body does not match the durable transaction reference",
+            frappe.ValidationError,
+        )
+
+    response_body = _exact_body_bytes(response.content, "status response body")
+    certificate_sha256 = cstr(
+        getattr(response, TLS_PEER_CERTIFICATE_SHA256_ATTR, None)
+    ).strip()
+    tls_verified = getattr(response, TLS_VERIFIED_ATTR, None) is True
+    if (
+        not re.fullmatch(r"[a-f0-9]{64}", certificate_sha256)
+        or not tls_verified
+    ):
+        frappe.throw(
+            "Maybank TLS peer-certificate evidence is unavailable",
+            frappe.ValidationError,
+        )
+
+    return {
+        "request_body_sha256": hashlib.sha256(request_body).hexdigest(),
+        "response_body_sha256": hashlib.sha256(response_body).hexdigest(),
+        "tls_peer_certificate_sha256": certificate_sha256,
+        "tls_verified": True,
+        "observed_at": datetime.now(timezone.utc).isoformat().replace(
+            "+00:00", "Z"
+        ),
+    }
 
 
 def _site_cache_key(key: str) -> str:
@@ -288,7 +417,11 @@ def _create_session() -> requests.Session:
         # queries that use POST perform their one explicit auth refresh below.
         allowed_methods=Retry.DEFAULT_ALLOWED_METHODS,
     )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=5, pool_maxsize=10)
+    adapter = _TlsEvidenceAdapter(
+        max_retries=retry,
+        pool_connections=5,
+        pool_maxsize=10,
+    )
     session.mount("https://", adapter)
     return session
 
@@ -509,6 +642,59 @@ class MaybankClient:
             )
         resp.raise_for_status()
         return resp.json()
+
+    def check_status_with_transport_evidence(
+        self,
+        transaction_refno: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Read provider status and return hashes of that exact HTTPS exchange.
+
+        This method does not update a Maybank QR Transaction or any accounting
+        document. It exists only for an explicitly invoked production-
+        acceptance capture. Raw bodies, certificates, and credentials are
+        never returned or persisted.
+        """
+
+        if self.base_url == "mock://":
+            frappe.throw(
+                "Maybank UAT transport evidence cannot use mock mode",
+                frappe.ValidationError,
+            )
+
+        token = self._get_outlet_token()
+        endpoint = (
+            "v1/mobile/cashier/transactionById"
+            if self.user_type == "cashier"
+            else "v1/mobile/merchant/transactionById"
+        )
+        payload = {"transaction_refno": transaction_refno}
+        resp = self.session.post(
+            self.base_url + endpoint,
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        if resp.status_code == 401:
+            self._clear_auth_cache()
+            token = self._get_outlet_token(force_refresh=True)
+            resp = self.session.post(
+                self.base_url + endpoint,
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+            )
+        resp.raise_for_status()
+        transport_evidence = _status_transport_evidence(
+            resp,
+            transaction_refno,
+        )
+        result = resp.json()
+        if not isinstance(result, dict):
+            frappe.throw(
+                "Maybank status response must be a JSON object",
+                frappe.ValidationError,
+            )
+        return result, transport_evidence
 
     def _mock_generate_qr(self, amount_rm: str) -> dict:
         refno = f"MOCK-TXN-{secrets.token_hex(8).upper()}"
