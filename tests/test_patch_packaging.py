@@ -24,6 +24,12 @@ EXPECTED_PATCHES = (
     "kopos_connector.patches.backfill_privileged_request_fingerprints",
     "kopos_connector.patches.backfill_shift_request_fingerprints",
 )
+EXPECTED_ACCEPTANCE_MODULES = (
+    "kopos_connector.acceptance.maybank_uat_accounting",
+    "kopos_connector.acceptance.maybank_uat_business_state",
+    "kopos_connector.acceptance.maybank_uat_common",
+    "kopos_connector.acceptance.maybank_uat_transport",
+)
 
 
 def _connector_root() -> Path:
@@ -72,6 +78,29 @@ def test_distribution_configuration_includes_the_canonical_manifest() -> None:
     assert 'package_data={"kopos_connector": ["patches.txt"]}' in setup_source
 
 
+def test_acceptance_evidence_producers_are_importable_source_modules() -> None:
+    connector_root = _connector_root()
+    for module_name in EXPECTED_ACCEPTANCE_MODULES:
+        module = importlib.import_module(module_name)
+        module_path = Path(module.__file__).resolve()
+        assert module_path.is_file()
+        assert connector_root in module_path.parents
+    assert callable(
+        getattr(
+            importlib.import_module(EXPECTED_ACCEPTANCE_MODULES[1]),
+            "export_v1",
+            None,
+        )
+    )
+    assert callable(
+        getattr(
+            importlib.import_module(EXPECTED_ACCEPTANCE_MODULES[3]),
+            "export_v1",
+            None,
+        )
+    )
+
+
 def test_built_wheel_matches_the_exact_connector_source_inventory() -> None:
     wheel_value = os.environ.get("KOPOS_CONNECTOR_WHEEL", "").strip()
     if not wheel_value:
@@ -101,4 +130,7 @@ def test_built_wheel_matches_the_exact_connector_source_inventory() -> None:
     assert wheel_inventory["kopos_connector/patches.txt"] == (
         connector_root / "patches.txt"
     ).read_bytes()
+    for module_name in EXPECTED_ACCEPTANCE_MODULES:
+        member_name = f"{module_name.replace('.', '/')}.py"
+        assert member_name in wheel_inventory
     assert "patches.txt" not in member_names
