@@ -533,7 +533,7 @@ class ShiftSyncTests(unittest.TestCase):
                 "device_id": "DEVICE-1",
                 "staff_id": "john@example.com",
                 "opening_float_sen": 5000,
-                "opened_at": "2026-03-13 10:20:00",
+                "opened_at": "2026-03-13T02:20:00.000Z",
             },
         )
 

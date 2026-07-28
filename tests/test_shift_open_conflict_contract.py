@@ -270,7 +270,7 @@ def test_open_shift_lookup_keeps_existing_shift_shape_when_staff_is_supplied(
         "device_id": "DEVICE-1",
         "staff_id": STAFF_ID,
         "opening_float_sen": 1000,
-        "opened_at": "2026-07-17 10:00:00",
+        "opened_at": "2026-07-17T02:00:00.000Z",
     }
     assert len(calls) == 1
 

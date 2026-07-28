@@ -7,7 +7,7 @@ import importlib
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -260,6 +260,12 @@ def _coerce_to_site_local_naive(value: datetime) -> datetime:
     if not isinstance(value, datetime) or not value.tzinfo:
         return value
 
+    site_timezone = _get_site_timezone()
+    return value.astimezone(site_timezone).replace(tzinfo=None)
+
+
+def _get_site_timezone() -> ZoneInfo:
+    """Return the configured Frappe timezone or fail closed when it is invalid."""
     timezone_getter = getattr(frappe_utils, "get_system_timezone", None)
     timezone_name = cstr(timezone_getter() if callable(timezone_getter) else None).strip()
     if not timezone_name:
@@ -281,7 +287,7 @@ def _coerce_to_site_local_naive(value: datetime) -> datetime:
         )
         raise AssertionError("frappe.throw did not reject an invalid site timezone")
 
-    return value.astimezone(site_timezone).replace(tzinfo=None)
+    return site_timezone
 
 
 def _validate_closed_at_not_before_opened_at(
@@ -1449,11 +1455,21 @@ def get_device_open_shift_payload(
 
 
 def _format_datetime_iso(value: Any) -> str | None:
-    """Convert a datetime value to ISO format string."""
+    """Convert a Frappe site-local DATETIME value to canonical UTC milliseconds."""
     if not value:
         return None
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, str):
-        return value
-    return str(value)
+    try:
+        parsed = value if isinstance(value, datetime) else frappe.utils.get_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        frappe.throw(_("FB Shift opened_at timestamp is invalid"), frappe.ValidationError)
+        raise AssertionError("frappe.throw did not reject an invalid FB Shift timestamp")
+    if not isinstance(parsed, datetime):
+        frappe.throw(_("FB Shift opened_at timestamp is invalid"), frappe.ValidationError)
+        raise AssertionError("frappe.throw did not reject an invalid FB Shift timestamp")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_get_site_timezone())
+    return (
+        parsed.astimezone(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
