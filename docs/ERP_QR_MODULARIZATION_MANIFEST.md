@@ -176,7 +176,7 @@ Before C9 is committed, compare the reconstructed candidate against
 ownership updates, the three C8 integrity changes, or their tests and this
 manifest. Any other difference requires an explicit entry here before review.
 
-The final release record must bind the clean `1.0.10` wheel, its complete runtime
+The final release record must bind the clean `1.0.11` wheel, its complete runtime
 file inventory, SHA-256, SBOM, ERP candidate commit, production APK hash,
 campaign nonce, and physical acceptance evidence. Simulator output is test
 evidence only and cannot substitute for Maybank UAT, the specified Samsung
