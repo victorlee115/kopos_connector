@@ -314,6 +314,7 @@ def test_schema_probe_requires_reviewed_field_metadata(
         unique=1,
         search_index=1,
         options=None,
+        default=None,
     )
     meta = SimpleNamespace(get_field=lambda fieldname: field)
     monkeypatch.setattr(
@@ -322,6 +323,7 @@ def test_schema_probe_requires_reviewed_field_metadata(
         {"Example": {"identity": ("Data", True, True, True)}},
     )
     monkeypatch.setattr(preflight.preflight_contract, "REQUIRED_FIELD_OPTIONS", {})
+    monkeypatch.setattr(preflight.preflight_contract, "REQUIRED_FIELD_DEFAULTS", {})
     monkeypatch.setattr(preflight.frappe.db, "exists", lambda *args: True)
     monkeypatch.setattr(
         preflight.frappe.db,
@@ -340,6 +342,17 @@ def test_schema_probe_requires_reviewed_field_metadata(
     assert proof["requiredMetadata"][0]["unique"] is True
 
     field.fieldtype = "Link"
+    with pytest.raises(frappe.ValidationError, match="reviewed schema"):
+        preflight._schema_check()
+
+    field.options = None
+    field.default = "unsafe"
+    monkeypatch.setattr(preflight.preflight_contract, "REQUIRED_FIELD_OPTIONS", {})
+    monkeypatch.setattr(
+        preflight.preflight_contract,
+        "REQUIRED_FIELD_DEFAULTS",
+        {"Example": {"identity": "safe"}},
+    )
     with pytest.raises(frappe.ValidationError, match="reviewed schema"):
         preflight._schema_check()
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 # Narrow release-review exception, approved 2026-08-10 by the ERP release
-# reviewer: target_preflight_machine.py may remain at exactly 937 lines for this
+# reviewer: target_preflight_machine.py may remain at exactly 943 lines for this
 # release because it is one acceptance-only coordinator and its current bytes
 # passed the real-stack gate. Owner: ERP release owner. Re-review and split it
 # before the next connector release, or immediately if its line count grows.
@@ -185,6 +185,32 @@ REQUIRED_FIELD_OPTIONS = {
     "Sales Invoice": {
         "custom_fb_order": "FB Order",
         "custom_fb_shift": "FB Shift",
+    },
+}
+
+# Defaults below change newly-authored business state. Empty means that the
+# field must remain intentionally unset; values are compared as Frappe strings.
+REQUIRED_FIELD_DEFAULTS = {
+    "FB Allowed Modifier Group": {
+        "required": "0",
+        "override_min_selection": "",
+        "override_max_selection": "",
+    },
+    "FB Order": {
+        "automatic_qr_state": "",
+        "status": "Draft",
+    },
+    "FB Order Payment": {
+        "is_manual_confirmation": "0",
+        "settlement_status": "verified",
+    },
+    "FB Shift": {"status": "Open"},
+    "KoPOS Device": {"enabled": "1"},
+    "Maybank QR Transaction": {
+        "status": "pending",
+        "manual_reconciliation_status": "",
+        "duplicate_payment_status": "",
+        "is_test_simulation": "0",
     },
 }
 

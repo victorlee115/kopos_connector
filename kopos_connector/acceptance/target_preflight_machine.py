@@ -471,9 +471,14 @@ def _schema_check() -> dict[str, Any]:
             expected_options = preflight_contract.REQUIRED_FIELD_OPTIONS.get(
                 doctype, {}
             ).get(fieldname)
+            expected_default = preflight_contract.REQUIRED_FIELD_DEFAULTS.get(
+                doctype, {}
+            ).get(fieldname)
             actual_options = cstr(getattr(field, "options", None)).replace("\r\n", "\n")
             options_match = expected_options is None or actual_options == expected_options
-            if actual != expected or not options_match:
+            actual_default = cstr(getattr(field, "default", None))
+            default_matches = expected_default is None or actual_default == expected_default
+            if actual != expected or not options_match or not default_matches:
                 mismatched.append(f"{doctype}.{fieldname}")
             required_metadata.append(
                 {
@@ -484,6 +489,7 @@ def _schema_check() -> dict[str, Any]:
                     "unique": expected_unique,
                     "searchIndex": expected_index,
                     "options": expected_options,
+                    "default": expected_default,
                 }
             )
     if missing or mismatched:
