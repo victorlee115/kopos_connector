@@ -69,6 +69,40 @@ class TestRecipeModifierAuthoringContract(FrappeTestCase):
         self.assertEqual(legacy.status, "Retired")
         self.assertEqual(legacy.allowed_modifier_groups[0].required, 1)
 
+    def test_legacy_recipe_retirement_rejects_component_remark_change(self) -> None:
+        modifier_group = self._new_modifier_group()
+        recipe = self._new_draft_recipe(
+            modifier_group=modifier_group.name,
+            required=0,
+        )
+        recipe.insert(ignore_permissions=True, ignore_links=True)
+        child_name = recipe.allowed_modifier_groups[0].name
+        frappe.db.set_value(
+            "FB Recipe",
+            recipe.name,
+            "status",
+            "Active",
+            update_modified=False,
+        )
+        frappe.db.set_value(
+            "FB Allowed Modifier Group",
+            child_name,
+            "required",
+            1,
+            update_modified=False,
+        )
+        frappe.clear_document_cache("FB Recipe", recipe.name)
+
+        legacy = frappe.get_doc("FB Recipe", recipe.name)
+        legacy.status = "Retired"
+        legacy.components[0].remarks = "Changed while retiring"
+
+        with self.assertRaisesRegex(
+            frappe.ValidationError,
+            "already been published.*create a new recipe version",
+        ):
+            legacy.save(ignore_permissions=True)
+
     def _new_modifier_group(self):
         suffix = frappe.generate_hash(length=10)
         modifier_group = frappe.get_doc(
@@ -102,6 +136,19 @@ class TestRecipeModifierAuthoringContract(FrappeTestCase):
                 "default_serving_qty": 1,
                 "default_serving_uom": "Nos",
                 "company": f"KOPOS-TEST-COMPANY-{suffix}",
+                "components": [
+                    {
+                        "item": f"KOPOS-NONSTOCK-COMPONENT-{suffix}",
+                        "component_type": "Ingredient",
+                        "qty": 1,
+                        "uom": "Nos",
+                        "stock_qty": 1,
+                        "stock_uom": "Nos",
+                        "affects_stock": 0,
+                        "affects_cogs": 0,
+                        "remarks": "Original note",
+                    }
+                ],
                 "allowed_modifier_groups": [
                     {
                         "modifier_group": modifier_group,

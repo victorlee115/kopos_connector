@@ -368,6 +368,7 @@ _COMPONENT_SNAPSHOT_FIELDS = (
     "affects_cogs",
     "loss_factor_pct",
     "sort_order",
+    "remarks",
 )
 _MODIFIER_GROUP_SNAPSHOT_FIELDS = (
     "modifier_group",

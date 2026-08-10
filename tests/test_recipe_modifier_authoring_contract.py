@@ -181,3 +181,53 @@ def test_only_an_unchanged_active_recipe_can_bypass_rules_while_retiring() -> No
 
     recipe.recipe_name = "Changed while retiring"
     assert recipe.is_status_only_retirement() is False
+
+
+def test_component_remarks_cannot_change_while_retiring_legacy_recipe() -> None:
+    component = SimpleNamespace(
+        item="KOPOS-NONSTOCK-COMPONENT",
+        component_type="Ingredient",
+        qty=1,
+        uom="Nos",
+        stock_qty=1,
+        stock_uom="Nos",
+        is_optional=0,
+        is_substitutable=0,
+        substitution_key=None,
+        affects_stock=0,
+        affects_cogs=0,
+        loss_factor_pct=0,
+        sort_order=1,
+        remarks="Original note",
+    )
+    previous = SimpleNamespace(
+        name="AMERICANO_COFFEE_RECIPE",
+        recipe_code="AMERICANO_COFFEE_RECIPE",
+        recipe_name="Americano",
+        sellable_item="AMERICANO",
+        company="Test Company",
+        version_no=1,
+        recipe_type="Finished Drink",
+        yield_qty=1,
+        yield_uom="Nos",
+        default_serving_qty=1,
+        default_serving_uom="Nos",
+        station="Coffee",
+        effective_from=None,
+        effective_to=None,
+        notes=None,
+        status="Active",
+        components=[component],
+        allowed_modifier_groups=[_recipe_row(required=1)],
+    )
+    recipe = _recipe(_recipe_row(required=1))
+    for fieldname, value in vars(previous).items():
+        setattr(recipe, fieldname, value)
+    recipe.components = [SimpleNamespace(**vars(component))]
+    recipe.status = "Retired"
+    recipe.get_doc_before_save = lambda: previous
+
+    assert recipe.is_status_only_retirement() is True
+
+    recipe.components[0].remarks = "Changed while retiring"
+    assert recipe.is_status_only_retirement() is False
