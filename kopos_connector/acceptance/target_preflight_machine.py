@@ -29,6 +29,7 @@ import kopos_connector.install.install as connector_install
 import kopos_connector.kopos.services.accounting.maybank_payment_service as payment_service
 import kopos_connector.kopos.services.recipe.modifier_bounds as modifier_bounds
 import kopos_connector.services.maybank.client as maybank_client
+import kopos_connector.services.static_qr_commissioning as static_qr_commissioning
 from kopos_connector.acceptance.maybank_uat_common import (
     canonical_json_sha256,
     require_acceptance_operator,
@@ -68,6 +69,7 @@ PRODUCER_CLOSURE_MODULES: tuple[ModuleType, ...] = (
     payment_service,
     modifier_bounds,
     maybank_client,
+    static_qr_commissioning,
 )
 
 
@@ -335,10 +337,6 @@ def _static_qr_check(company: str) -> dict[str, Any]:
         fields=[
             "name",
             "device_id",
-            "static_qr_payload",
-            "static_qr_payload_sha256",
-            "static_qr_company",
-            "static_qr_commissioned_at",
         ],
         order_by="device_id asc, name asc",
         limit_page_length=0,
@@ -352,32 +350,26 @@ def _static_qr_check(company: str) -> dict[str, Any]:
             _value(row, "device_id") or _value(row, "name"),
             "enabled device identity",
         )
-        payload = _value(row, "static_qr_payload")
-        if not isinstance(payload, str) or not payload or payload.strip() != payload:
-            _fail("Every enabled tablet requires a commissioned static QR")
-        try:
-            payload_bytes = payload.encode("ascii")
-        except UnicodeEncodeError:
-            _fail("Commissioned static QR payload must be exact ASCII")
-        stored_sha256 = _require_sha256(
-            _value(row, "static_qr_payload_sha256"),
-            "static_qr_payload_sha256",
+        device_name = _text(_value(row, "name"), "enabled device name")
+        device_doc = frappe.get_doc("KoPOS Device", device_name)
+        commissioned = static_qr_commissioning.commissioned_static_qr_config(
+            device_doc,
+            expected_company=company,
         )
-        actual_sha256 = hashlib.sha256(payload_bytes).hexdigest()
-        configured_company = cstr(_value(row, "static_qr_company")).strip()
-        commissioned_at = cstr(
-            _value(row, "static_qr_commissioned_at")
-        ).strip()
-        if (
-            stored_sha256 != actual_sha256
-            or configured_company != company
-            or not commissioned_at
-        ):
-            _fail("An enabled tablet static QR is not fully commissioned")
+        if commissioned is None:
+            _fail("Every enabled tablet requires a commissioned static QR")
         proofs.append(
             {
                 "deviceIdentitySha256": _sha256(device_identity),
-                "payloadSha256": actual_sha256,
+                "payloadSha256": commissioned["static_qr_payload_sha256"],
+                "merchantIdentitySha256": _canonical_ascii_sha256(
+                    {
+                        "merchantId": commissioned["static_qr_merchant_id"],
+                        "acquirerId": commissioned["static_qr_acquirer_id"],
+                        "merchantName": commissioned["static_qr_merchant_name"],
+                        "version": commissioned["static_qr_version"],
+                    }
+                ),
                 "company": company,
                 "commissionedAtPresent": True,
             }

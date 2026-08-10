@@ -272,36 +272,44 @@ def test_qr_account_probe_requires_an_explicit_bank_asset(
 def test_static_qr_probe_requires_exact_commissioning_for_every_enabled_device(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = "STATIC-QR-PAYLOAD"
+    payload = (
+        "00020201021126410014A000000615000101065016640209123456789"
+        "5204999953034585802MY5909QRCSDNBHD6005BANGI6304184A"
+    )
+    payload_sha256 = preflight.hashlib.sha256(payload.encode("ascii")).hexdigest()
     row = {
         "name": "DEVICE-1",
         "device_id": "tablet-private-1",
-        "static_qr_payload": payload,
-        "static_qr_payload_sha256": preflight.hashlib.sha256(
-            payload.encode("ascii")
-        ).hexdigest(),
-        "static_qr_company": "Test Company",
-        "static_qr_commissioned_at": "2026-08-10 12:00:00",
     }
+    device = SimpleNamespace(
+        static_qr_payload=payload,
+        static_qr_payload_sha256=payload_sha256,
+        static_qr_merchant_id="123456789",
+        static_qr_acquirer_id="501664",
+        static_qr_merchant_name="QRCSDNBHD",
+        static_qr_version="02",
+        static_qr_company="Test Company",
+        static_qr_commissioned_at="2026-08-10 12:00:00",
+    )
     monkeypatch.setattr(
         preflight.frappe,
         "get_all",
         lambda *args, **kwargs: [dict(row)],
+    )
+    monkeypatch.setattr(
+        preflight.frappe,
+        "get_doc",
+        lambda doctype, name: device,
     )
 
     proof = preflight._static_qr_check("Test Company")
 
     assert proof["passed"] is True
     assert proof["enabledDeviceCount"] == 1
-    assert "STATIC-QR-PAYLOAD" not in json.dumps(proof)
+    assert payload not in json.dumps(proof)
 
-    tampered = dict(row, static_qr_payload_sha256="f" * 64)
-    monkeypatch.setattr(
-        preflight.frappe,
-        "get_all",
-        lambda *args, **kwargs: [tampered],
-    )
-    with pytest.raises(frappe.ValidationError, match="not fully commissioned"):
+    device.static_qr_merchant_id = "another-merchant"
+    with pytest.raises(frappe.ValidationError, match="merchant ID does not match"):
         preflight._static_qr_check("Test Company")
 
 
@@ -623,4 +631,5 @@ def test_producer_closure_hash_binds_every_first_party_dependency() -> None:
         "kopos_connector.kopos.services.accounting.maybank_payment_service",
         "kopos_connector.kopos.services.recipe.modifier_bounds",
         "kopos_connector.services.maybank.client",
+        "kopos_connector.services.static_qr_commissioning",
     }
