@@ -313,6 +313,7 @@ def test_schema_probe_requires_reviewed_field_metadata(
         reqd=1,
         unique=1,
         search_index=1,
+        options=None,
     )
     meta = SimpleNamespace(get_field=lambda fieldname: field)
     monkeypatch.setattr(
@@ -320,6 +321,7 @@ def test_schema_probe_requires_reviewed_field_metadata(
         "REQUIRED_FIELD_SPECS",
         {"Example": {"identity": ("Data", True, True, True)}},
     )
+    monkeypatch.setattr(preflight.preflight_contract, "REQUIRED_FIELD_OPTIONS", {})
     monkeypatch.setattr(preflight.frappe.db, "exists", lambda *args: True)
     monkeypatch.setattr(
         preflight.frappe.db,
@@ -341,6 +343,16 @@ def test_schema_probe_requires_reviewed_field_metadata(
     with pytest.raises(frappe.ValidationError, match="reviewed schema"):
         preflight._schema_check()
 
+    field.fieldtype = "Data"
+    field.options = "Wrong DocType"
+    monkeypatch.setattr(
+        preflight.preflight_contract,
+        "REQUIRED_FIELD_OPTIONS",
+        {"Example": {"identity": "Expected DocType"}},
+    )
+    with pytest.raises(frappe.ValidationError, match="reviewed schema"):
+        preflight._schema_check()
+
 
 def test_index_probe_requires_ordered_nonunique_btree_metadata(
     monkeypatch: pytest.MonkeyPatch,
@@ -350,8 +362,14 @@ def test_index_probe_requires_ordered_nonunique_btree_metadata(
             "column_name": "device_id",
             "non_unique": 1,
             "index_type": "BTREE",
+            "sub_part": None,
         },
-        {"column_name": "status", "non_unique": 1, "index_type": "BTREE"},
+        {
+            "column_name": "status",
+            "non_unique": 1,
+            "index_type": "BTREE",
+            "sub_part": None,
+        },
     ]
     monkeypatch.setattr(
         preflight.connector_install,
@@ -363,8 +381,14 @@ def test_index_probe_requires_ordered_nonunique_btree_metadata(
     proof = preflight._index_check()
     assert proof["requiredIndexes"][0]["indexType"] == "BTREE"
     assert proof["requiredIndexes"][0]["nonUnique"] is True
+    assert proof["requiredIndexes"][0]["columnPrefixLengths"] == [None, None]
 
     rows[1]["index_type"] = "HASH"
+    with pytest.raises(frappe.ValidationError, match="ordered connector indexes"):
+        preflight._index_check()
+
+    rows[1]["index_type"] = "BTREE"
+    rows[1]["sub_part"] = 12
     with pytest.raises(frappe.ValidationError, match="ordered connector indexes"):
         preflight._index_check()
 

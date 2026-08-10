@@ -1,5 +1,9 @@
 # FB Modifier Dependency Authoring
 
+For a catalog selection-rule conflict, follow
+[`MODIFIER_CATALOG_REPAIR_RUNBOOK.md`](../../docs/MODIFIER_CATALOG_REPAIR_RUNBOOK.md)
+before changing live menu documents.
+
 Use the FB doctypes as the only admin authoring path for dependent modifier visibility. Managers should not configure new dependencies through legacy KoPOS modifier forms.
 
 ## Desk authoring flow

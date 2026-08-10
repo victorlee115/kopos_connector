@@ -468,7 +468,12 @@ def _schema_check() -> dict[str, Any]:
                 bool(cint(getattr(field, "unique", 0))),
                 bool(cint(getattr(field, "search_index", 0))),
             )
-            if actual != expected:
+            expected_options = preflight_contract.REQUIRED_FIELD_OPTIONS.get(
+                doctype, {}
+            ).get(fieldname)
+            actual_options = cstr(getattr(field, "options", None)).replace("\r\n", "\n")
+            options_match = expected_options is None or actual_options == expected_options
+            if actual != expected or not options_match:
                 mismatched.append(f"{doctype}.{fieldname}")
             required_metadata.append(
                 {
@@ -478,6 +483,7 @@ def _schema_check() -> dict[str, Any]:
                     "required": expected_required,
                     "unique": expected_unique,
                     "searchIndex": expected_index,
+                    "options": expected_options,
                 }
             )
     if missing or mismatched:
@@ -502,7 +508,7 @@ def _index_check() -> dict[str, Any]:
             """
             SELECT INDEX_NAME AS index_name, COLUMN_NAME AS column_name,
                    SEQ_IN_INDEX AS sequence_number,
-                   NON_UNIQUE AS non_unique, INDEX_TYPE AS index_type
+                   NON_UNIQUE AS non_unique, INDEX_TYPE AS index_type, SUB_PART AS sub_part
               FROM information_schema.STATISTICS
              WHERE TABLE_SCHEMA = DATABASE()
                AND TABLE_NAME = %s
@@ -520,6 +526,7 @@ def _index_check() -> dict[str, Any]:
         metadata_matches = bool(rows) and all(
             cint(_value(row, "non_unique")) == 1
             and cstr(_value(row, "index_type")).strip().upper() == "BTREE"
+            and _value(row, "sub_part") is None
             for row in rows
         )
         if observed_columns != expected_columns or not metadata_matches:
@@ -531,6 +538,7 @@ def _index_check() -> dict[str, Any]:
                 "columns": expected_columns,
                 "indexType": "BTREE",
                 "nonUnique": True,
+                "columnPrefixLengths": [None for _column in expected_columns],
             }
         )
     if missing:

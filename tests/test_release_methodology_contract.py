@@ -70,3 +70,19 @@ def test_methodology_evidence_schema_is_identity_bound_and_honest() -> None:
         "requiredNextGate",
     ):
         assert json.dumps(required_key) in workflow
+
+
+def test_modifier_catalog_incident_has_a_non_inventory_repair_runbook() -> None:
+    runbook = (ROOT / "docs/MODIFIER_CATALOG_REPAIR_RUNBOOK.md").read_text(
+        encoding="utf-8"
+    )
+
+    for required in (
+        "AMERICANO_COFFEE_RECIPE",
+        "ADDITIONAL_ESPRESSO_SHOT",
+        "Create a new recipe version",
+        "complete catalog twice for every enabled tablet",
+        "Do not edit recipe ingredients",
+        "does not make an inventory-readiness claim",
+    ):
+        assert required in runbook

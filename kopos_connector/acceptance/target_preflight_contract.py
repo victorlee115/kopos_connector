@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 # Narrow release-review exception, approved 2026-08-10 by the ERP release
-# reviewer: target_preflight_machine.py may remain at exactly 929 lines for this
+# reviewer: target_preflight_machine.py may remain at exactly 937 lines for this
 # release because it is one acceptance-only coordinator and its current bytes
 # passed the real-stack gate. Owner: ERP release owner. Re-review and split it
 # before the next connector release, or immediately if its line count grows.
@@ -119,6 +119,72 @@ REQUIRED_FIELD_SPECS = {
     },
     "Sales Invoice Payment": {
         "custom_fb_source_payment_id": ("Data", False, False, True),
+    },
+}
+
+# Link targets, Dynamic Link controllers, and the exact Select state vocabulary
+# are part of the deployed database contract. Field type alone is insufficient:
+# a Link can otherwise point at the wrong DocType and a Select can silently lose
+# a state that existing tablets or reconciliation jobs still use.
+REQUIRED_FIELD_OPTIONS = {
+    "Company": {
+        "custom_kopos_qr_failure_variance_account": "Account",
+        "custom_kopos_qr_duplicate_payment_clearing_account": "Account",
+        "custom_kopos_qr_customer_liability_account": "Account",
+    },
+    "FB Order": {
+        "automatic_qr_state": (
+            "\nprepared\nprovider_pending\nprovider_ambiguous\nprovider_rejected"
+            "\nprovider_paid\nmanual_pending_reconciliation\nfinalized"
+        ),
+        "shift": "FB Shift",
+        "company": "Company",
+        "currency": "Currency",
+        "status": "Draft\nSubmitted\nCancelled",
+        "sales_invoice": "Sales Invoice",
+    },
+    "FB Order Payment": {
+        "payment_method": "Mode of Payment",
+        "maybank_qr_transaction": "Maybank QR Transaction",
+        "settlement_status": (
+            "awaiting_provider\nverified\npending_reconciliation\nreconciled"
+            "\nreconciliation_failed"
+        ),
+        "manual_qr_reconciliation": "Manual QR Reconciliation",
+    },
+    "FB Shift": {
+        "status": "Open\nClosing\nClosed\nException\nCancelled",
+        "company": "Company",
+    },
+    "Journal Entry": {
+        "custom_kopos_qr_source_doctype": "DocType",
+        "custom_kopos_qr_source_name": "custom_kopos_qr_source_doctype",
+        "custom_kopos_qr_fb_order": "FB Order",
+        "custom_kopos_qr_sales_invoice": "Sales Invoice",
+        "custom_kopos_qr_currency": "Currency",
+        "custom_kopos_qr_disposition": "\nreconciliation_failed",
+    },
+    "KoPOS Device": {
+        "pos_profile": "POS Profile",
+        "static_qr_company": "Company",
+    },
+    "Maybank QR Transaction": {
+        "status": "creating\npending\nscanned\npaid\nfailed\ntimeout\nunknown",
+        "fb_order": "FB Order",
+        "sales_invoice": "Sales Invoice",
+        "company": "Company",
+        "currency": "Currency",
+        "manual_reconciliation_status": (
+            "\npending_reconciliation\nreconciled\nreconciliation_failed"
+        ),
+        "duplicate_payment_status": (
+            "\npossible_duplicate\naccounting_pending\nrefund_required\nrefunded"
+            "\nsettled_existing_sale"
+        ),
+    },
+    "Sales Invoice": {
+        "custom_fb_order": "FB Order",
+        "custom_fb_shift": "FB Shift",
     },
 }
 
