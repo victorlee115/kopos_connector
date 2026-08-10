@@ -5,6 +5,7 @@ on:
     paths:
       - "kopos_connector/**"
       - "tests/**"
+      - "AGENTS.md"
       - "requirements.txt"
       - "MANIFEST.in"
       - "pyproject.toml"
@@ -14,6 +15,7 @@ on:
     paths:
       - "kopos_connector/**"
       - "tests/**"
+      - "AGENTS.md"
       - "requirements.txt"
       - "MANIFEST.in"
       - "pyproject.toml"
@@ -61,7 +63,7 @@ jobs:
       - name: Compile all connector and test sources
         run: python -m compileall -q kopos_connector tests
 
-      - name: Build exact connector wheel for inventory tests
+      - name: Build connector wheel for packaging identity
         run: |
           python -m build \
             --wheel \
@@ -84,15 +86,63 @@ jobs:
               print(f"KOPOS_CONNECTOR_WHEEL={artifacts[0]}", file=output)
           PY
 
-      - name: Run complete connector contract suite
+      - name: Run mocked-unit connector contract suite
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           python -m pytest -q \
             tests \
             kopos_connector/tests \
+            tests/test_modifier_bounds_persistence_contract.py \
+            tests/test_release_methodology_contract.py \
             kopos_connector/kopos/tests/test_sales_invoice_service.py \
             kopos_connector/kopos/tests/test_maybank_qr_sales_invoice_flow.py
+
+      - name: Record identity-bound source-test evidence
+        env:
+          KOPOS_SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import re
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          source_commit = os.environ["KOPOS_SOURCE_COMMIT"]
+          if re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
+              raise SystemExit("source commit is not an immutable lowercase SHA")
+          wheel = Path(os.environ["KOPOS_CONNECTOR_WHEEL"])
+          wheel_sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
+          evidence = {
+              "schemaVersion": 1,
+              "status": "passed",
+              "evidenceLevel": "mocked_unit",
+              "testedInput": "source_checkout",
+              "sourceCommit": source_commit,
+              "wheelFile": wheel.name,
+              "wheelSha256": wheel_sha256,
+              "wheelTested": False,
+              "artifactScope": "packaging_identity_only",
+              "suite": "mocked_connector_contract",
+              "recordedAt": datetime.now(timezone.utc).isoformat().replace(
+                  "+00:00", "Z"
+              ),
+              "productionAcceptance": False,
+              "requiredNextGate": "real_frappe_mariadb_redis",
+          }
+          evidence_path = Path(os.environ["RUNNER_TEMP"]) / "connector-test-evidence.json"
+          evidence_path.write_text(
+              json.dumps(evidence, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          persisted = json.loads(evidence_path.read_text(encoding="utf-8"))
+          if persisted != evidence:
+              raise SystemExit("connector evidence did not round-trip exactly")
+          PY
 
       - name: Reject generated or secret-bearing changes
         run: |
@@ -102,9 +152,12 @@ jobs:
             exit 1
           fi
 
-      - name: Upload connector security evidence
+      - name: Upload source-contract and packaging evidence
         uses: actions/upload-artifact@v4
         with:
-          name: kopos-erp-connector-security-${{ github.sha }}
+          name: kopos-erp-connector-source-contract-${{ github.sha }}
           if-no-files-found: error
-          path: ${{ runner.temp }}/kopos-connector.cdx.json
+          path: |
+            ${{ runner.temp }}/kopos-connector.cdx.json
+            ${{ runner.temp }}/connector-test-evidence.json
+            ${{ runner.temp }}/kopos-connector-wheel/*.whl
