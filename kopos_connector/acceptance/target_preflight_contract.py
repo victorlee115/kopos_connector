@@ -3,13 +3,6 @@
 from __future__ import annotations
 
 
-# Narrow release-review exception, approved 2026-08-10 by the ERP release
-# reviewer: target_preflight_machine.py may remain at exactly 935 lines for this
-# release because it is one acceptance-only coordinator and its current bytes
-# passed the real-stack gate. Owner: ERP release owner. Re-review and split it
-# before the next connector release, or immediately if its line count grows.
-# This does not waive the normal 900-line limit for any other module.
-
 # Each value is: field type, required, unique, search index.
 REQUIRED_FIELD_SPECS = {
     "Company": {

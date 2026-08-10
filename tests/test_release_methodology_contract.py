@@ -80,9 +80,10 @@ def test_modifier_catalog_incident_has_a_non_inventory_repair_runbook() -> None:
     for required in (
         "AMERICANO_COFFEE_RECIPE",
         "ADDITIONAL_ESPRESSO_SHOT",
-        "Create a new recipe version",
+        "status-only change",
+        "component rows is not",
         "complete catalog twice for every enabled tablet",
         "Do not edit recipe ingredients",
-        "does not make an inventory-readiness claim",
+        "inventory-readiness",
     ):
         assert required in runbook

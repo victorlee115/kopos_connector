@@ -26,7 +26,24 @@ class FBRecipe(Document):
         self.validate_effective_dates()
         self.validate_version()
         self.validate_used_version_is_immutable()
-        self.validate_modifier_groups()
+        if not self.is_status_only_retirement():
+            self.validate_modifier_groups()
+
+    def is_status_only_retirement(self) -> bool:
+        """Allow an invalid legacy recipe to leave the active catalog safely."""
+
+        if getattr(self, "status", None) != "Retired":
+            return False
+        get_before_save = getattr(self, "get_doc_before_save", None)
+        if not callable(get_before_save):
+            return False
+        previous = get_before_save()
+        return bool(
+            previous
+            and getattr(previous, "status", None) == "Active"
+            and _recipe_retirement_snapshot(previous)
+            == _recipe_retirement_snapshot(self)
+        )
 
     def validate_used_version_is_immutable(self) -> None:
         """Require a new version once a recipe may have reached a tablet."""
@@ -381,6 +398,21 @@ def _recipe_definition_snapshot(recipe: Any) -> tuple[Any, ...]:
             getattr(recipe, "allowed_modifier_groups", None) or [],
             _MODIFIER_GROUP_SNAPSHOT_FIELDS,
         ),
+    )
+
+
+def _recipe_retirement_snapshot(recipe: Any) -> tuple[Any, ...]:
+    """All authored fields that must stay unchanged during Active -> Retired."""
+
+    return (
+        getattr(recipe, "name", None),
+        getattr(recipe, "recipe_code", None),
+        getattr(recipe, "recipe_name", None),
+        getattr(recipe, "station", None),
+        getattr(recipe, "effective_from", None),
+        getattr(recipe, "effective_to", None),
+        getattr(recipe, "notes", None),
+        _recipe_definition_snapshot(recipe),
     )
 
 

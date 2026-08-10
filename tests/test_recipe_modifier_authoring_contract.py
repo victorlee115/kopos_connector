@@ -148,3 +148,36 @@ def test_invalid_recipe_override_explains_how_to_fix_it(
         match="invalid selection rules.*Use a separate modifier group",
     ):
         recipe.validate_modifier_groups()
+
+
+def test_only_an_unchanged_active_recipe_can_bypass_rules_while_retiring() -> None:
+    previous = SimpleNamespace(
+        name="AMERICANO_COFFEE_RECIPE",
+        recipe_code="AMERICANO_COFFEE_RECIPE",
+        recipe_name="Americano",
+        sellable_item="AMERICANO",
+        company="Test Company",
+        version_no=1,
+        recipe_type="Finished Drink",
+        yield_qty=1,
+        yield_uom="Nos",
+        default_serving_qty=1,
+        default_serving_uom="Nos",
+        station="Coffee",
+        effective_from=None,
+        effective_to=None,
+        notes=None,
+        status="Active",
+        components=[],
+        allowed_modifier_groups=[_recipe_row(required=1)],
+    )
+    recipe = _recipe(_recipe_row(required=1))
+    for fieldname, value in vars(previous).items():
+        setattr(recipe, fieldname, value)
+    recipe.status = "Retired"
+    recipe.get_doc_before_save = lambda: previous
+
+    assert recipe.is_status_only_retirement() is True
+
+    recipe.recipe_name = "Changed while retiring"
+    assert recipe.is_status_only_retirement() is False

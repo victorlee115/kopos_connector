@@ -37,6 +37,38 @@ class TestRecipeModifierAuthoringContract(FrappeTestCase):
         self.assertEqual(row.override_min_selection, 0)
         self.assertEqual(row.override_max_selection, 0)
 
+    def test_invalid_legacy_recipe_can_be_retired_without_definition_change(self) -> None:
+        modifier_group = self._new_modifier_group()
+        recipe = self._new_draft_recipe(
+            modifier_group=modifier_group.name,
+            required=0,
+        )
+        recipe.insert(ignore_permissions=True, ignore_links=True)
+        child_name = recipe.allowed_modifier_groups[0].name
+        frappe.db.set_value(
+            "FB Recipe",
+            recipe.name,
+            "status",
+            "Active",
+            update_modified=False,
+        )
+        frappe.db.set_value(
+            "FB Allowed Modifier Group",
+            child_name,
+            "required",
+            1,
+            update_modified=False,
+        )
+        frappe.clear_document_cache("FB Recipe", recipe.name)
+
+        legacy = frappe.get_doc("FB Recipe", recipe.name)
+        legacy.status = "Retired"
+        legacy.save(ignore_permissions=True)
+        legacy.reload()
+
+        self.assertEqual(legacy.status, "Retired")
+        self.assertEqual(legacy.allowed_modifier_groups[0].required, 1)
+
     def _new_modifier_group(self):
         suffix = frappe.generate_hash(length=10)
         modifier_group = frappe.get_doc(

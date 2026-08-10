@@ -23,6 +23,7 @@ from frappe.utils import cint, cstr
 import kopos_connector.acceptance.maybank_uat_common as maybank_uat_common
 import kopos_connector.acceptance.restored_catalog_preflight as catalog_preflight
 import kopos_connector.acceptance.target_preflight_contract as preflight_contract
+import kopos_connector.acceptance.target_preflight_static_qr as static_qr_preflight
 import kopos_connector.api.catalog as catalog_api
 import kopos_connector.hooks as connector_hooks
 import kopos_connector.install.install as connector_install
@@ -63,6 +64,7 @@ PRODUCER_CLOSURE_MODULES: tuple[ModuleType, ...] = (
     maybank_uat_common,
     catalog_preflight,
     preflight_contract,
+    static_qr_preflight,
     catalog_api,
     connector_hooks,
     connector_install,
@@ -330,57 +332,10 @@ def _database_round_trip(run_nonce: str) -> dict[str, dict[str, Any]]:
     }
 
 
-def _static_qr_check(company: str) -> dict[str, Any]:
-    rows = frappe.get_all(
-        "KoPOS Device",
-        filters={"enabled": 1},
-        fields=[
-            "name",
-            "device_id",
-        ],
-        order_by="device_id asc, name asc",
-        limit_page_length=0,
-    )
-    if not rows:
-        _fail("Target ERP has no enabled KoPOS Device")
-
-    proofs: list[dict[str, Any]] = []
-    for row in rows:
-        device_identity = _text(
-            _value(row, "device_id") or _value(row, "name"),
-            "enabled device identity",
-        )
-        device_name = _text(_value(row, "name"), "enabled device name")
-        device_doc = frappe.get_doc("KoPOS Device", device_name)
-        commissioned = static_qr_commissioning.commissioned_static_qr_config(
-            device_doc,
-            expected_company=company,
-        )
-        if commissioned is None:
-            _fail("Every enabled tablet requires a commissioned static QR")
-        proofs.append(
-            {
-                "deviceIdentitySha256": _sha256(device_identity),
-                "payloadSha256": commissioned["static_qr_payload_sha256"],
-                "merchantIdentitySha256": _canonical_ascii_sha256(
-                    {
-                        "merchantId": commissioned["static_qr_merchant_id"],
-                        "acquirerId": commissioned["static_qr_acquirer_id"],
-                        "merchantName": commissioned["static_qr_merchant_name"],
-                        "version": commissioned["static_qr_version"],
-                    }
-                ),
-                "company": company,
-                "commissionedAtPresent": True,
-            }
-        )
-
-    return {
-        "passed": True,
-        "enabledDeviceCount": len(proofs),
-        "devices": proofs,
-        "deviceSetSha256": canonical_json_sha256(proofs),
-    }
+_static_qr_check = static_qr_preflight.build_static_qr_proof
+_require_stable_enabled_device_configuration = (
+    static_qr_preflight.require_stable_enabled_device_configuration
+)
 
 
 def _redis_client(cache: Any) -> Any:
@@ -879,6 +834,12 @@ def run_v1(
     qr_account_check = _qr_account_check(target_company, target_currency)
     provider_controls = _provider_controls_check(expected_maybank_account_type)
     catalog = catalog_preflight.build_enabled_device_catalog_proof_v1()
+    final_static_qr_check = _static_qr_check(target_company)
+    _require_stable_enabled_device_configuration(
+        static_qr_check,
+        final_static_qr_check,
+        catalog,
+    )
     completed_at = _utc_now()
     report = {
         "schemaVersion": "1",
@@ -914,7 +875,7 @@ def run_v1(
         "checks": {
             **database_checks,
             "redisAtomicLockRoundTrip": redis_check,
-            "staticQrCommissioning": static_qr_check,
+            "staticQrCommissioning": final_static_qr_check,
             "schema": schema_check,
             "indexes": index_check,
             "jobs": job_check,

@@ -91,7 +91,12 @@ def _install_success_helpers(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
         lambda company: {
             "passed": True,
             "enabledDeviceCount": 1,
-            "devices": [],
+            "devices": [
+                {
+                    "deviceIdentitySha256": "2" * 64,
+                    "posProfileIdentitySha256": "3" * 64,
+                }
+            ],
             "deviceSetSha256": "b" * 64,
         },
     )
@@ -176,7 +181,12 @@ def _install_success_helpers(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
             "completeCatalogBuildCount": 2,
             "referencedPosProfileIdentitySha256": ["3" * 64],
             "deviceSetSha256": "4" * 64,
-            "devices": [],
+            "devices": [
+                {
+                    "deviceIdentitySha256": "2" * 64,
+                    "posProfileIdentitySha256": "3" * 64,
+                }
+            ],
             "aggregateSha256": "5" * 64,
         },
     )
@@ -280,6 +290,7 @@ def test_static_qr_probe_requires_exact_commissioning_for_every_enabled_device(
     row = {
         "name": "DEVICE-1",
         "device_id": "tablet-private-1",
+        "pos_profile": "Counter 1",
     }
     device = SimpleNamespace(
         static_qr_payload=payload,
@@ -311,6 +322,56 @@ def test_static_qr_probe_requires_exact_commissioning_for_every_enabled_device(
     device.static_qr_merchant_id = "another-merchant"
     with pytest.raises(frappe.ValidationError, match="merchant ID does not match"):
         preflight._static_qr_check("Test Company")
+
+
+def test_target_preflight_rejects_configuration_changes_between_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_success_helpers(monkeypatch)
+    checks = [
+        {
+            "passed": True,
+            "enabledDeviceCount": 1,
+            "devices": [
+                {
+                    "deviceIdentitySha256": "2" * 64,
+                    "posProfileIdentitySha256": "3" * 64,
+                }
+            ],
+            "deviceSetSha256": "b" * 64,
+        },
+        {
+            "passed": True,
+            "enabledDeviceCount": 1,
+            "devices": [
+                {
+                    "deviceIdentitySha256": "6" * 64,
+                    "posProfileIdentitySha256": "3" * 64,
+                }
+            ],
+            "deviceSetSha256": "7" * 64,
+        },
+    ]
+    monkeypatch.setattr(preflight, "_static_qr_check", lambda company: checks.pop(0))
+
+    with pytest.raises(
+        frappe.ValidationError,
+        match="configuration changed during preflight",
+    ):
+        preflight.run_v1(
+            run_nonce=NONCE,
+            erp_commit=ERP_COMMIT,
+            erp_artifact_sha256=ERP_ARTIFACT_SHA256,
+            expected_runtime_inventory_sha256=RUNTIME_INVENTORY_SHA256,
+            candidate_apk_sha256=MOBILE_APK_SHA256,
+            mobile_manifest_sha256=MOBILE_MANIFEST_SHA256,
+            erp_manifest_sha256=ERP_MANIFEST_SHA256,
+            expected_origin="https://erp.example.test",
+            expected_site_id_sha256=SITE_SHA256,
+            company="Test Company",
+            currency="MYR",
+            expected_maybank_account_type="corporate",
+        )
 
 
 def test_schema_probe_requires_reviewed_field_metadata(
@@ -625,6 +686,7 @@ def test_producer_closure_hash_binds_every_first_party_dependency() -> None:
         "kopos_connector.acceptance.maybank_uat_common",
         "kopos_connector.acceptance.restored_catalog_preflight",
         "kopos_connector.acceptance.target_preflight_contract",
+        "kopos_connector.acceptance.target_preflight_static_qr",
         "kopos_connector.api.catalog",
         "kopos_connector.hooks",
         "kopos_connector.install.install",
