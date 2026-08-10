@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from .fake_frappe import install_fake_frappe_modules
+
+
+install_fake_frappe_modules()
+
+import frappe
+
+from kopos_connector.kopos.doctype.fb_recipe.fb_recipe import FBRecipe
+
+
+def _group(
+    *,
+    selection_type: str = "Multiple",
+    is_required: object = 0,
+    min_selection: object = 0,
+    max_selection: object = 3,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        name="ADDITIONAL_ESPRESSO_SHOT",
+        selection_type=selection_type,
+        is_required=is_required,
+        min_selection=min_selection,
+        max_selection=max_selection,
+    )
+
+
+def _recipe_row(
+    *,
+    required: object = 0,
+    override_min_selection: object = 0,
+    override_max_selection: object = 0,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        modifier_group="ADDITIONAL_ESPRESSO_SHOT",
+        required=required,
+        override_min_selection=override_min_selection,
+        override_max_selection=override_max_selection,
+        default_modifier=None,
+    )
+
+
+def _recipe(row: SimpleNamespace) -> FBRecipe:
+    recipe = FBRecipe()
+    recipe.name = "AMERICANO_COFFEE_RECIPE"
+    recipe.allowed_modifier_groups = [row]
+    recipe.get = lambda fieldname: getattr(recipe, fieldname, None)
+    return recipe
+
+
+def _install_group_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    group: SimpleNamespace,
+) -> None:
+    def get_cached_doc(doctype: str, name: str) -> SimpleNamespace:
+        assert doctype == "FB Modifier Group"
+        assert name == group.name
+        return group
+
+    monkeypatch.setattr(frappe, "get_cached_doc", get_cached_doc)
+
+
+@pytest.mark.parametrize(
+    ("override_min_selection", "override_max_selection"),
+    [(None, None), ("", ""), (0, 0), ("0", "0")],
+)
+def test_blank_or_zero_recipe_overrides_keep_the_shared_rule(
+    monkeypatch: pytest.MonkeyPatch,
+    override_min_selection: object,
+    override_max_selection: object,
+) -> None:
+    group = _group()
+    _install_group_lookup(monkeypatch, group)
+    recipe = _recipe(
+        _recipe_row(
+            override_min_selection=override_min_selection,
+            override_max_selection=override_max_selection,
+        )
+    )
+
+    recipe.validate_modifier_groups()
+
+
+def test_recipe_required_flag_cannot_change_an_optional_shared_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    group = _group()
+    _install_group_lookup(monkeypatch, group)
+    recipe = _recipe(_recipe_row(required=1))
+
+    with pytest.raises(
+        frappe.ValidationError,
+        match=(
+            "Recipe AMERICANO_COFFEE_RECIPE changes the selection rules for "
+            "modifier group ADDITIONAL_ESPRESSO_SHOT.*separate modifier group"
+        ),
+    ):
+        recipe.validate_modifier_groups()
+
+
+def test_nonzero_recipe_override_cannot_change_the_shared_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    group = _group()
+    _install_group_lookup(monkeypatch, group)
+    recipe = _recipe(_recipe_row(override_max_selection=2))
+
+    with pytest.raises(
+        frappe.ValidationError,
+        match=(
+            "Recipe AMERICANO_COFFEE_RECIPE changes the selection rules for "
+            "modifier group ADDITIONAL_ESPRESSO_SHOT.*separate modifier group"
+        ),
+    ):
+        recipe.validate_modifier_groups()
+
+
+def test_nonzero_recipe_override_equal_to_shared_rule_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    group = _group(is_required=1, min_selection=1, max_selection=3)
+    _install_group_lookup(monkeypatch, group)
+    recipe = _recipe(
+        _recipe_row(
+            required=1,
+            override_min_selection=1,
+            override_max_selection=3,
+        )
+    )
+
+    recipe.validate_modifier_groups()
+
+
+def test_invalid_recipe_override_explains_how_to_fix_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    group = _group(selection_type="Single", max_selection=1)
+    _install_group_lookup(monkeypatch, group)
+    recipe = _recipe(_recipe_row(override_max_selection=2))
+
+    with pytest.raises(
+        frappe.ValidationError,
+        match="invalid selection rules.*Use a separate modifier group",
+    ):
+        recipe.validate_modifier_groups()

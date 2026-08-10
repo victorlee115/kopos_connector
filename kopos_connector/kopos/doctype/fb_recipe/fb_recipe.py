@@ -11,6 +11,10 @@ frappe_utils = import_module("frappe.utils")
 cint = frappe_utils.cint
 get_datetime = frappe_utils.get_datetime
 
+from kopos_connector.kopos.services.recipe.modifier_bounds import (
+    ModifierBoundsError,
+    resolve_effective_modifier_bounds,
+)
 from kopos_connector.kopos.services.recipe.resolver import resolve_components
 
 if TYPE_CHECKING:
@@ -192,6 +196,9 @@ class FBRecipe(Document):
                 frappe.throw(f"Modifier Group {modifier_group} can only appear once")
             seen_groups.add(modifier_group)
 
+            group_doc = frappe.get_cached_doc("FB Modifier Group", modifier_group)
+            self.validate_modifier_group_selection_rules(row, group_doc)
+
             if row.default_modifier:
                 modifier_values = frappe.db.get_value(
                     "FB Modifier",
@@ -218,6 +225,60 @@ class FBRecipe(Document):
                 frappe.throw(
                     f"Override Min Selection cannot be greater than Override Max Selection for group {modifier_group}"
                 )
+
+    def validate_modifier_group_selection_rules(
+        self,
+        row: object,
+        group_doc: object,
+    ) -> None:
+        """Keep every recipe on the modifier group's shared tablet rule."""
+
+        modifier_group = getattr(row, "modifier_group", None) or "(missing)"
+        recipe_name = (
+            getattr(self, "name", None)
+            or getattr(self, "recipe_code", None)
+            or "(new recipe)"
+        )
+        group_values = {
+            "selection_type": getattr(group_doc, "selection_type", None),
+            "group_is_required": getattr(group_doc, "is_required", None),
+            "group_min_selection": getattr(group_doc, "min_selection", None),
+            "group_max_selection": getattr(group_doc, "max_selection", None),
+        }
+        try:
+            shared_bounds = resolve_effective_modifier_bounds(**group_values)
+        except ModifierBoundsError as error:
+            frappe.throw(
+                f"Modifier Group {modifier_group} has invalid selection rules: {error}",
+                frappe.ValidationError,
+            )
+            raise AssertionError("frappe.throw must raise") from error
+
+        try:
+            recipe_bounds = resolve_effective_modifier_bounds(
+                **group_values,
+                recipe_required=getattr(row, "required", None),
+                override_min_selection=getattr(row, "override_min_selection", None),
+                override_max_selection=getattr(row, "override_max_selection", None),
+            )
+        except ModifierBoundsError as error:
+            frappe.throw(
+                "Recipe {0} has invalid selection rules for modifier group {1}: "
+                "{2}. Use a separate modifier group if this recipe needs different "
+                "rules.".format(recipe_name, modifier_group, error),
+                frappe.ValidationError,
+            )
+            raise AssertionError("frappe.throw must raise") from error
+
+        if recipe_bounds != shared_bounds:
+            frappe.throw(
+                "Recipe {0} changes the selection rules for modifier group {1}. "
+                "Use a separate modifier group so every tablet uses the same rules.".format(
+                    recipe_name,
+                    modifier_group,
+                ),
+                frappe.ValidationError,
+            )
 
     def is_active_version(self, at_time: datetime | str | None = None) -> bool:
         if self.status != "Active":

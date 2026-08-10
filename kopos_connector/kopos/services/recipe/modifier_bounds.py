@@ -53,21 +53,21 @@ def resolve_effective_modifier_bounds(
 
     group_required = _flag(group_is_required, "group required")
     row_required = _flag(recipe_required, "recipe required")
-    if override_min_selection is not None:
-        minimum = _integer(
-            override_min_selection,
-            "override min selection",
-        )
+    minimum_override = _optional_override(
+        override_min_selection, "override min selection"
+    )
+    maximum_override = _optional_override(
+        override_max_selection, "override max selection"
+    )
+    if minimum_override is not None:
+        minimum = minimum_override
     elif row_required or group_required:
         minimum = 1 if normalized_type == "single" else (raw_minimum or 1)
     else:
         minimum = raw_minimum
 
-    if override_max_selection is not None:
-        maximum = _integer(
-            override_max_selection,
-            "override max selection",
-        )
+    if maximum_override is not None:
+        maximum = maximum_override
     elif normalized_type == "single":
         maximum = 1
     else:
@@ -137,6 +137,20 @@ def _selection_type(value: object) -> Literal["single", "multiple"]:
     if normalized not in {"single", "multiple"}:
         raise ModifierBoundsError("modifier selection type must be single or multiple")
     return cast(Literal["single", "multiple"], normalized)
+
+
+def _optional_override(value: object, label: str) -> int | None:
+    """Read a Frappe Int override whose persisted unset sentinel is zero.
+
+    Frappe child-table Int fields are ``not null default 0``. The authoring
+    contract has always treated zero as no override, so only a non-zero integer
+    can alter the modifier group's canonical rule. A recipe that needs zero as
+    a real selection bound must use a separate modifier group instead.
+    """
+
+    if value is None or value == "":
+        return None
+    return _integer(value, label) or None
 
 
 def _flag(value: object, label: str) -> bool:

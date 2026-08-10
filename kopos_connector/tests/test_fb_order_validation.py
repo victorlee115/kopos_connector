@@ -25,8 +25,8 @@ class TestFBOrderModifierValidation(unittest.TestCase):
             ),
             SimpleNamespace(
                 required=0,
-                override_min_selection=None,
-                override_max_selection=None,
+                override_min_selection=0,
+                override_max_selection=0,
             ),
         )
 
@@ -51,8 +51,8 @@ class TestFBOrderModifierValidation(unittest.TestCase):
                 ),
                 SimpleNamespace(
                     required=0,
-                    override_min_selection=None,
-                    override_max_selection=None,
+                    override_min_selection=0,
+                    override_max_selection=0,
                 ),
             )
 

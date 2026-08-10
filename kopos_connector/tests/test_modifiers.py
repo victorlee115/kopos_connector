@@ -495,8 +495,8 @@ class TestCatalogFBSource(unittest.TestCase):
                         "parent": "RECIPE-ITEM-1",
                         "modifier_group": "grp-temp",
                         "required": 0,
-                        "override_min_selection": None,
-                        "override_max_selection": None,
+                        "override_min_selection": 0,
+                        "override_max_selection": 0,
                         "display_order": 1,
                         "idx": 1,
                     },
@@ -504,8 +504,8 @@ class TestCatalogFBSource(unittest.TestCase):
                         "parent": "RECIPE-ITEM-1",
                         "modifier_group": "grp-ice",
                         "required": 0,
-                        "override_min_selection": None,
-                        "override_max_selection": None,
+                        "override_min_selection": 0,
+                        "override_max_selection": 0,
                         "display_order": 2,
                         "idx": 2,
                     },
@@ -513,8 +513,8 @@ class TestCatalogFBSource(unittest.TestCase):
                         "parent": "RECIPE-ITEM-1",
                         "modifier_group": "grp-inactive",
                         "required": 0,
-                        "override_min_selection": None,
-                        "override_max_selection": None,
+                        "override_min_selection": 0,
+                        "override_max_selection": 0,
                         "display_order": 3,
                         "idx": 3,
                     },
@@ -564,10 +564,10 @@ class TestCatalogFBSource(unittest.TestCase):
                 return [
                     {
                         "parent": "RECIPE-LATTE",
-                        "modifier_group": "ADDITIONAL_ESPRESSO_SHOT",
+                        "modifier_group": "RECIPE_SPECIFIC_SIZE",
                         "required": 0,
                         "override_min_selection": 0,
-                        "override_max_selection": 1,
+                        "override_max_selection": 2,
                         "display_order": 1,
                         "idx": 1,
                     }
@@ -575,11 +575,11 @@ class TestCatalogFBSource(unittest.TestCase):
             if doctype == "FB Modifier Group":
                 return [
                     {
-                        "name": "ADDITIONAL_ESPRESSO_SHOT",
-                        "selection_type": "Single",
-                        "is_required": 1,
+                        "name": "RECIPE_SPECIFIC_SIZE",
+                        "selection_type": "Multiple",
+                        "is_required": 0,
                         "min_selection": 0,
-                        "max_selection": 1,
+                        "max_selection": 3,
                     }
                 ]
             raise AssertionError(f"Unexpected doctype lookup: {doctype}")
