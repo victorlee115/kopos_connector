@@ -611,7 +611,12 @@ def canonical_decimal(value: Any, fieldname: str) -> str:
     return "0" if text in {"", "-0"} else text
 
 
-def write_report_atomically(report: dict[str, Any], output_filename: Any) -> None:
+def write_report_atomically(
+    report: dict[str, Any],
+    output_filename: Any,
+    *,
+    must_not_exist: bool = False,
+) -> None:
     filename = cstr(output_filename)
     if not OUTPUT_FILENAME_PATTERN.fullmatch(filename):
         _fail("output_filename must be a simple .json filename")
@@ -646,7 +651,14 @@ def write_report_atomically(report: dict[str, Any], output_filename: Any) -> Non
             os.fsync(handle.fileno())
         descriptor = -1
         target = resolved_directory / filename
-        os.replace(temporary_name, target)
+        if must_not_exist:
+            try:
+                os.link(temporary_name, target)
+            except FileExistsError:
+                _fail("Acceptance evidence for this campaign already exists")
+            os.unlink(temporary_name)
+        else:
+            os.replace(temporary_name, target)
         os.chmod(target, 0o600)
         directory_descriptor = os.open(
             resolved_directory,

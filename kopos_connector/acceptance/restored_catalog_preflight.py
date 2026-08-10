@@ -179,6 +179,39 @@ def _build_device_proof(
     }
 
 
+def build_enabled_device_catalog_proof_v1(
+    *,
+    builder: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build every enabled device's full catalog twice without heartbeat writes."""
+
+    resolved_builder = builder or build_catalog_payload
+    devices = _enabled_devices()
+    device_proofs = [
+        _build_device_proof(device, builder=resolved_builder)
+        for device in devices
+    ]
+    profile_hashes = sorted(
+        {proof["posProfileIdentitySha256"] for proof in device_proofs}
+    )
+    device_set = [
+        {
+            "deviceIdentitySha256": proof["deviceIdentitySha256"],
+            "posProfileIdentitySha256": proof["posProfileIdentitySha256"],
+        }
+        for proof in device_proofs
+    ]
+    return {
+        "enabledDeviceCount": len(device_proofs),
+        "referencedPosProfileCount": len(profile_hashes),
+        "completeCatalogBuildCount": len(device_proofs) * 2,
+        "referencedPosProfileIdentitySha256": profile_hashes,
+        "deviceSetSha256": _sha256_text(_canonical_json(device_set)),
+        "devices": device_proofs,
+        "aggregateSha256": _sha256_text(_canonical_json(device_proofs)),
+    }
+
+
 def run_v1(
     restored_backup_sha256: str,
     erp_artifact_sha256: str,
@@ -208,15 +241,7 @@ def run_v1(
     if installed_version != expected_version:
         _fail("Installed connector version does not match the candidate binding")
 
-    devices = _enabled_devices()
-    device_proofs = [
-        _build_device_proof(device, builder=build_catalog_payload)
-        for device in devices
-    ]
-    profile_hashes = sorted(
-        {proof["posProfileIdentitySha256"] for proof in device_proofs}
-    )
-    aggregate_sha256 = _sha256_text(_canonical_json(device_proofs))
+    catalog_proof = build_enabled_device_catalog_proof_v1()
 
     return {
         "schemaVersion": 1,
@@ -229,10 +254,5 @@ def run_v1(
         "connectorVersion": installed_version,
         "erpArtifactSha256": artifact_sha256,
         "restoredBackupSha256": backup_sha256,
-        "enabledDeviceCount": len(device_proofs),
-        "referencedPosProfileCount": len(profile_hashes),
-        "completeCatalogBuildCount": len(device_proofs) * 2,
-        "referencedPosProfileIdentitySha256": profile_hashes,
-        "devices": device_proofs,
-        "aggregateSha256": aggregate_sha256,
+        **catalog_proof,
     }

@@ -653,3 +653,30 @@ def test_atomic_report_writer_keeps_only_complete_private_json(
     assert json.loads(output.read_text(encoding="utf-8")) == report
     assert [path.name for path in output_directory.iterdir()] == [output.name]
     assert output.stat().st_mode & 0o777 == 0o600
+
+
+def test_atomic_report_writer_can_preserve_an_existing_campaign_report(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    private_files = tmp_path / "private" / "files"
+    private_files.mkdir(parents=True)
+    monkeypatch.setattr(
+        frappe,
+        "get_site_path",
+        lambda *parts: str(tmp_path.joinpath(*parts)),
+        raising=False,
+    )
+    filename = "target-machine-preflight-1234567890abcdef.json"
+    first = {"schemaVersion": "1", "runNonce": "first"}
+    common.write_report_atomically(first, filename, must_not_exist=True)
+
+    with pytest.raises(frappe.ValidationError, match="already exists"):
+        common.write_report_atomically(
+            {"schemaVersion": "1", "runNonce": "second"},
+            filename,
+            must_not_exist=True,
+        )
+
+    output = private_files / "kopos-acceptance" / filename
+    assert json.loads(output.read_text(encoding="utf-8")) == first

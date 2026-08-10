@@ -2909,13 +2909,14 @@ class DeviceSafeResetTests(unittest.TestCase):
         install_source = inspect.getsource(
             install_module.ensure_operational_composite_indexes
         )
+        self.assertIn("OPERATIONAL_INDEX_SPECS", install_source)
         self.assertIn(
-            '["device_id", "duplicate_payment_status", "status"]',
-            install_source,
-        )
-        self.assertIn(
-            '"idx_kopos_maybank_device_duplicate_status"',
-            install_source,
+            (
+                "Maybank QR Transaction",
+                ["device_id", "duplicate_payment_status", "status"],
+                "idx_kopos_maybank_device_duplicate_status",
+            ),
+            install_module.OPERATIONAL_INDEX_SPECS,
         )
 
     def test_unresolved_maybank_and_manual_qr_state_block_safe_reset(self) -> None:

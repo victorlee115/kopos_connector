@@ -74,96 +74,98 @@ def after_migrate():
     ensure_operational_composite_indexes()
 
 
+OPERATIONAL_INDEX_SPECS = (
+    (
+        "KoPOS Device Safe Reset",
+        ["device_id", "status"],
+        "idx_kopos_safe_reset_device_status",
+    ),
+    (
+        "Maybank QR Transaction",
+        ["device_id", "status"],
+        "idx_kopos_maybank_device_status",
+    ),
+    (
+        "Maybank QR Transaction",
+        ["device_id", "manual_reconciliation_status"],
+        "idx_kopos_maybank_device_reconciliation",
+    ),
+    (
+        "Manual QR Reconciliation",
+        ["device_id", "status"],
+        "idx_kopos_manual_qr_device_status",
+    ),
+    (
+        "Manual QR Reconciliation",
+        [
+            "device_id",
+            "claim_role",
+            "finance_resolution_status",
+            "status",
+        ],
+        "idx_kopos_manual_qr_device_finance_status",
+    ),
+    (
+        "FB Order",
+        ["shift", "status"],
+        "idx_kopos_fb_order_shift_status",
+    ),
+    (
+        "FB Order",
+        ["shift", "docstatus", "automatic_qr_state"],
+        "idx_kopos_fb_order_shift_qr_state",
+    ),
+    (
+        "FB Order",
+        ["device_id", "docstatus", "automatic_qr_state"],
+        "idx_kopos_fb_order_device_qr_state",
+    ),
+    (
+        "FB Projection Log",
+        ["source_doctype", "source_name", "state", "projection_type"],
+        "idx_kopos_projection_source_state",
+    ),
+    (
+        "FB Projection Log",
+        ["state", "next_retry_at", "lease_expires_at"],
+        "idx_kopos_projection_retry_due",
+    ),
+    (
+        "Maybank QR Transaction",
+        ["status", "expires_at", "last_polled_at"],
+        "idx_kopos_maybank_poll_due",
+    ),
+    (
+        "Maybank QR Transaction",
+        ["device_id", "created_at"],
+        "idx_kopos_maybank_device_created",
+    ),
+    (
+        "Maybank QR Transaction",
+        ["fb_order", "fb_order_payment", "status", "maybank_status"],
+        "idx_kopos_maybank_order_payment_status",
+    ),
+    (
+        "Maybank QR Transaction",
+        ["duplicate_payment_status", "paid_at"],
+        "idx_kopos_maybank_duplicate_refund",
+    ),
+    (
+        "Maybank QR Transaction",
+        ["device_id", "duplicate_payment_status", "status"],
+        "idx_kopos_maybank_device_duplicate_status",
+    ),
+    (
+        "FB Resolved Sale",
+        ["fb_order"],
+        "idx_kopos_resolved_sale_order",
+    ),
+)
+
+
 def ensure_operational_composite_indexes() -> None:
     """Keep device-scoped mutation/reset gates constant-footprint at high volume."""
-    index_specs = (
-        (
-            "KoPOS Device Safe Reset",
-            ["device_id", "status"],
-            "idx_kopos_safe_reset_device_status",
-        ),
-        (
-            "Maybank QR Transaction",
-            ["device_id", "status"],
-            "idx_kopos_maybank_device_status",
-        ),
-        (
-            "Maybank QR Transaction",
-            ["device_id", "manual_reconciliation_status"],
-            "idx_kopos_maybank_device_reconciliation",
-        ),
-        (
-            "Manual QR Reconciliation",
-            ["device_id", "status"],
-            "idx_kopos_manual_qr_device_status",
-        ),
-        (
-            "Manual QR Reconciliation",
-            [
-                "device_id",
-                "claim_role",
-                "finance_resolution_status",
-                "status",
-            ],
-            "idx_kopos_manual_qr_device_finance_status",
-        ),
-        (
-            "FB Order",
-            ["shift", "status"],
-            "idx_kopos_fb_order_shift_status",
-        ),
-        (
-            "FB Order",
-            ["shift", "docstatus", "automatic_qr_state"],
-            "idx_kopos_fb_order_shift_qr_state",
-        ),
-        (
-            "FB Order",
-            ["device_id", "docstatus", "automatic_qr_state"],
-            "idx_kopos_fb_order_device_qr_state",
-        ),
-        (
-            "FB Projection Log",
-            ["source_doctype", "source_name", "state", "projection_type"],
-            "idx_kopos_projection_source_state",
-        ),
-        (
-            "FB Projection Log",
-            ["state", "next_retry_at", "lease_expires_at"],
-            "idx_kopos_projection_retry_due",
-        ),
-        (
-            "Maybank QR Transaction",
-            ["status", "expires_at", "last_polled_at"],
-            "idx_kopos_maybank_poll_due",
-        ),
-        (
-            "Maybank QR Transaction",
-            ["device_id", "created_at"],
-            "idx_kopos_maybank_device_created",
-        ),
-        (
-            "Maybank QR Transaction",
-            ["fb_order", "fb_order_payment", "status", "maybank_status"],
-            "idx_kopos_maybank_order_payment_status",
-        ),
-        (
-            "Maybank QR Transaction",
-            ["duplicate_payment_status", "paid_at"],
-            "idx_kopos_maybank_duplicate_refund",
-        ),
-        (
-            "Maybank QR Transaction",
-            ["device_id", "duplicate_payment_status", "status"],
-            "idx_kopos_maybank_device_duplicate_status",
-        ),
-        (
-            "FB Resolved Sale",
-            ["fb_order"],
-            "idx_kopos_resolved_sale_order",
-        ),
-    )
-    for doctype, fields, index_name in index_specs:
+    for doctype, fields, index_name in OPERATIONAL_INDEX_SPECS:
         if frappe.db.exists("DocType", doctype):
             frappe.db.add_index(doctype, fields, index_name=index_name)
 
