@@ -26,6 +26,7 @@ if redis.call('get', KEYS[1]) == ARGV[1] then
 end
 return 0
 """
+COMMERCIAL_ORDER_PROJECTION_TYPES = ("Sales Invoice", "FB Shift")
 
 
 def retry_projection_failures(
@@ -72,6 +73,7 @@ def _retry_projection_batch(
         filters={
             "source_doctype": "FB Order",
             "state": "Failed",
+            "projection_type": ("in", COMMERCIAL_ORDER_PROJECTION_TYPES),
         },
         fields=[
             "name",
@@ -91,6 +93,12 @@ def _retry_projection_batch(
     for row in candidates:
         if len(results) >= batch_size:
             break
+        projection_type = cstr(_row_value(row, "projection_type"))
+        if projection_type not in COMMERCIAL_ORDER_PROJECTION_TYPES:
+            # Inventory failures remain durable for an explicit inventory
+            # workflow. The automatic commercial retry worker must never
+            # claim, mutate, or execute Stock Issue/Stock Entry work.
+            continue
         retry_count = cint(_row_value(row, "retry_count"))
         if retry_count >= max_retries and not force:
             _mark_dead_letter(row, now, max_retries)

@@ -10,6 +10,9 @@ import frappe
 from frappe.utils import cint, cstr, flt
 
 from kopos_connector.api.devices import lock_device_for_operational_mutation
+from kopos_connector.kopos.services.operations.commercial_return_identity import (
+    build_full_commercial_return_lines as _build_full_commercial_return_lines,
+)
 from kopos_connector.kopos.services.operations.return_guard_service import (
     aggregate_return_lines,
     lock_and_validate_return_quantities,
@@ -23,6 +26,7 @@ from kopos_connector.utils.manager_approval import (
 
 
 REFUND_METHODS = {"cash", "qr", "card", "voucher"}
+INVENTORY_EVALUATION_EXCLUDED = "excluded_not_evaluated"
 
 
 @frappe.whitelist(methods=["POST"])
@@ -39,6 +43,12 @@ def process_return_payload(
     scope = _build_refund_approval_scope(validated)
     request_fingerprint = _return_request_fingerprint(validated, scope)
     validated["request_fingerprint"] = request_fingerprint
+    legacy_validated = dict(validated)
+    legacy_validated["return_to_stock"] = 1
+    validated["legacy_request_fingerprint"] = _return_request_fingerprint(
+        legacy_validated,
+        scope,
+    )
     lock_and_validate_return_quantities(
         validated["return_id"],
         validated["lines"],
@@ -132,7 +142,11 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     reason_code = cstr(payload.get("reason_code")) or "Other"
     reason_text = cstr(payload.get("reason_text")) or None
     refund_method = cstr(payload.get("refund_method")).strip().lower()
-    return_to_stock = 1 if cint(payload.get("return_to_stock")) else 0
+    requested_return_to_stock = 1 if cint(payload.get("return_to_stock")) else 0
+    inventory_evaluation = cstr(payload.get("inventory_evaluation")).strip()
+    legacy_return_to_stock_normalized = bool(
+        requested_return_to_stock and not inventory_evaluation
+    )
     lines = payload.get("lines")
     manager_approval_token = cstr(payload.get("manager_approval_token")).strip()
 
@@ -145,43 +159,69 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "refund_method must be one of: cash, qr, card, voucher",
             frappe.ValidationError,
         )
-    if not isinstance(lines, list) or not lines:
-        if not fb_order:
-            frappe.throw("lines must contain at least one row", frappe.ValidationError)
-        resolved_sales = frappe.get_all(
-            "FB Resolved Sale",
-            filters={"fb_order": fb_order},
-            fields=["name", "qty", "sales_invoice"],
-            order_by="creation asc",
+    if inventory_evaluation and inventory_evaluation != INVENTORY_EVALUATION_EXCLUDED:
+        frappe.throw(
+            "inventory_evaluation must be excluded_not_evaluated for this commercial refund",
+            frappe.ValidationError,
         )
-        if not resolved_sales:
-            frappe.throw(
-                f"FB Order {fb_order} has no resolved sales to return",
-                frappe.ValidationError,
+    if requested_return_to_stock and inventory_evaluation:
+        frappe.throw(
+            "This refund does not change stock. Send return_to_stock as false and try again.",
+            frappe.ValidationError,
+        )
+    # Older tablets may already have queued `return_to_stock: true`. Preserve
+    # the commercial refund, but normalize that obsolete intent to false. New
+    # clients declare the exclusion above and are rejected if contradictory.
+    return_to_stock = 0
+    if not original_sales_invoice and fb_order:
+        original_sales_invoice = cstr(
+            frappe.db.get_value("FB Order", fb_order, "sales_invoice")
+        ).strip() or None
+    legacy_recipe_lines = (
+        isinstance(lines, list)
+        and bool(lines)
+        and all(
+            isinstance(row, Mapping)
+            and not cstr(row.get("original_sales_invoice_item")).strip()
+            and bool(
+                cstr(
+                    row.get("original_resolved_sale") or row.get("resolved_sale_id")
+                ).strip()
             )
-        lines = [
-            {
-                "original_resolved_sale": cstr(row.get("name")),
-                "qty_returned": flt(row.get("qty") or 0),
-            }
-            for row in resolved_sales
-        ]
+            for row in lines
+        )
+    )
+    if not isinstance(lines, list) or not lines or legacy_recipe_lines:
         if not original_sales_invoice:
-            original_sales_invoice = (
-                cstr(resolved_sales[0].get("sales_invoice")) or None
+            frappe.throw("lines must contain at least one row", frappe.ValidationError)
+        # Older offline payloads named recipe-era FB Resolved Sale rows. A
+        # cashier refund is always a full-invoice operation, so rebuild its
+        # immutable line set from the submitted Sales Invoice instead of
+        # reading the optional recipe subsystem or rejecting the queued work.
+        lines = _build_full_commercial_return_lines(
+            original_sales_invoice,
+            fb_order,
+        )
+        if not lines:
+            frappe.throw(
+                f"Sales Invoice {original_sales_invoice} has no durable commercial lines to return",
+                frappe.ValidationError,
             )
 
     validated_lines = []
     for index, row in enumerate(lines, start=1):
         if not isinstance(row, Mapping):
             frappe.throw(f"lines[{index}] must be an object", frappe.ValidationError)
-        original_resolved_sale = cstr(
-            row.get("original_resolved_sale") or row.get("resolved_sale_id")
-        )
+        original_sales_invoice_item = cstr(
+            row.get("original_sales_invoice_item")
+        ).strip()
+        original_fb_order_line_ref = cstr(
+            row.get("original_fb_order_line_ref")
+        ).strip()
         qty_returned = flt(row.get("qty_returned") or row.get("qty"))
-        if not original_resolved_sale:
+        if not original_sales_invoice_item:
             frappe.throw(
-                f"lines[{index}].original_resolved_sale is required",
+                f"lines[{index}] requires a Sales Invoice item identity",
                 frappe.ValidationError,
             )
         if qty_returned <= 0:
@@ -189,26 +229,19 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 f"lines[{index}].qty_returned must be greater than 0",
                 frappe.ValidationError,
             )
-        if not frappe.db.exists("FB Resolved Sale", original_resolved_sale):
-            frappe.throw(
-                f"FB Resolved Sale {original_resolved_sale} was not found",
-                frappe.ValidationError,
-            )
         validated_lines.append(
             {
-                "original_resolved_sale": original_resolved_sale,
+                "original_sales_invoice_item": original_sales_invoice_item or None,
+                "original_fb_order_line_ref": original_fb_order_line_ref or None,
+                "original_resolved_sale": None,
                 "qty_returned": qty_returned,
+                "commercial_modifier_snapshot_json": cstr(
+                    row.get("commercial_modifier_snapshot_json")
+                ).strip(),
             }
         )
     validated_lines = aggregate_return_lines(validated_lines)
 
-    if not original_sales_invoice:
-        resolved_sale = frappe.get_doc(
-            "FB Resolved Sale", validated_lines[0]["original_resolved_sale"]
-        )
-        original_sales_invoice = (
-            cstr(getattr(resolved_sale, "sales_invoice", None)) or None
-        )
     original_sales_invoice = cstr(original_sales_invoice).strip()
     if not original_sales_invoice:
         frappe.throw("original_sales_invoice is required", frappe.ValidationError)
@@ -264,7 +297,7 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         original_sales_invoice,
         fb_order,
     )
-    _validate_full_return_lines(
+    validated_lines = _validate_full_return_lines(
         validated_lines,
         original_sales_invoice,
         fb_order,
@@ -278,6 +311,8 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "reason_text": reason_text,
         "refund_method": refund_method,
         "return_to_stock": return_to_stock,
+        "inventory_evaluation": INVENTORY_EVALUATION_EXCLUDED,
+        "legacy_return_to_stock_normalized": legacy_return_to_stock_normalized,
         "lines": validated_lines,
         "manager_approval_token": manager_approval_token,
     }
@@ -342,16 +377,11 @@ def _build_refund_approval_scope(validated: dict[str, Any]) -> dict[str, Any]:
 
 def _return_approval_context(validated: dict[str, Any]) -> dict[str, Any]:
     lines = sorted(
-        (
-            {
-                "original_resolved_sale": cstr(
-                    line["original_resolved_sale"]
-                ).strip(),
-                "qty_returned": _canonical_decimal(line["qty_returned"]),
-            }
-            for line in validated["lines"]
+        (_canonical_return_line(line) for line in validated["lines"]),
+        key=lambda line: cstr(
+            line.get("original_sales_invoice_item")
+            or line.get("original_resolved_sale")
         ),
-        key=lambda line: line["original_resolved_sale"],
     )
     return {
         "reason_code": cstr(validated["reason_code"]).strip(),
@@ -382,6 +412,23 @@ def _return_request_fingerprint(
 def _canonical_decimal(value: Any) -> str:
     amount = Decimal(cstr(value).strip())
     return format(amount.normalize(), "f")
+
+
+def _canonical_return_line(line: Any) -> dict[str, Any]:
+    invoice_item = cstr(_line_value(line, "original_sales_invoice_item")).strip()
+    if invoice_item:
+        return {
+            "original_sales_invoice_item": invoice_item,
+            "qty_returned": _canonical_decimal(
+                _line_value(line, "qty_returned")
+            ),
+        }
+    return {
+        "original_resolved_sale": cstr(
+            _line_value(line, "original_resolved_sale")
+        ).strip(),
+        "qty_returned": _canonical_decimal(_line_value(line, "qty_returned")),
+    }
 
 
 def _validate_original_invoice(
@@ -419,21 +466,14 @@ def _resolve_fb_order(original_invoice: Any, fb_order: str | None) -> str | None
 def _validate_return_lines_belong_to_invoice(
     lines: list[dict[str, Any]], original_sales_invoice: str, fb_order: str | None
 ) -> None:
-    for line in lines:
-        resolved_sale_name = line["original_resolved_sale"]
-        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
-        resolved_sale_invoice = cstr(getattr(resolved_sale, "sales_invoice", None)).strip()
-        if resolved_sale_invoice and resolved_sale_invoice != original_sales_invoice:
-            frappe.throw(
-                f"FB Resolved Sale {resolved_sale_name} does not belong to Sales Invoice {original_sales_invoice}",
-                frappe.ValidationError,
-            )
-        resolved_sale_order = cstr(getattr(resolved_sale, "fb_order", None)).strip()
-        if fb_order and resolved_sale_order and resolved_sale_order != fb_order:
-            frappe.throw(
-                f"FB Resolved Sale {resolved_sale_name} does not belong to FB Order {fb_order}",
-                frappe.ValidationError,
-            )
+    del original_sales_invoice, fb_order
+    if any(
+        not cstr(line.get("original_sales_invoice_item")).strip() for line in lines
+    ):
+        frappe.throw(
+            "Every return line requires a Sales Invoice item identity",
+            frappe.ValidationError,
+        )
 
 
 def _validate_existing_return_matches(validated: dict[str, Any], return_doc: Any) -> None:
@@ -445,7 +485,15 @@ def _validate_existing_return_matches(validated: dict[str, Any], return_doc: Any
             "Existing FB Return Event has no request fingerprint; retry cannot be verified",
             frappe.ValidationError,
         )
-    if existing_fingerprint != validated["request_fingerprint"]:
+    legacy_inventory_retry = bool(
+        cint(getattr(return_doc, "return_to_stock", 0)) == 1
+        and existing_fingerprint
+        == cstr(validated.get("legacy_request_fingerprint")).strip()
+    )
+    if (
+        existing_fingerprint != validated["request_fingerprint"]
+        and not legacy_inventory_retry
+    ):
         frappe.throw(
             "return_id was already used with a different canonical payload",
             frappe.ValidationError,
@@ -462,7 +510,11 @@ def _validate_existing_return_matches(validated: dict[str, Any], return_doc: Any
             "return_id was already used for a different FB Order",
             frappe.ValidationError,
         )
-    if cint(getattr(return_doc, "return_to_stock", 0)) != cint(validated["return_to_stock"]):
+    if (
+        cint(getattr(return_doc, "return_to_stock", 0))
+        != cint(validated["return_to_stock"])
+        and not legacy_inventory_retry
+    ):
         frappe.throw(
             "return_id was already used with different return_to_stock intent",
             frappe.ValidationError,
@@ -481,24 +533,8 @@ def _validate_existing_return_matches(validated: dict[str, Any], return_doc: Any
             db_set("refund_method", validated["refund_method"], update_modified=False)
         else:
             return_doc.refund_method = validated["refund_method"]
-    existing_lines = {
-        cstr(line["original_resolved_sale"]).strip(): flt(line["qty_returned"])
-        for line in aggregate_return_lines(
-            [
-                {
-                    "original_resolved_sale": getattr(
-                        line, "original_resolved_sale", ""
-                    ),
-                    "qty_returned": getattr(line, "qty_returned", 0),
-                }
-                for line in (return_doc.get("lines") or [])
-            ]
-        )
-    }
-    requested_lines = {
-        cstr(line["original_resolved_sale"]).strip(): flt(line["qty_returned"])
-        for line in validated["lines"]
-    }
+    existing_lines = _return_line_comparison_map(return_doc.get("lines") or [])
+    requested_lines = _return_line_comparison_map(validated["lines"])
     if existing_lines != requested_lines:
         frappe.throw(
             "return_id was already used with different return lines",
@@ -510,33 +546,59 @@ def _validate_full_return_lines(
     lines: list[dict[str, Any]],
     original_sales_invoice: str,
     fb_order: str | None,
-) -> None:
-    filters: dict[str, Any] = {"sales_invoice": original_sales_invoice}
-    if fb_order:
-        filters["fb_order"] = fb_order
-    resolved_sales = frappe.get_all(
-        "FB Resolved Sale",
-        filters=filters,
-        fields=["name", "qty"],
-        order_by="name asc",
+) -> list[dict[str, Any]]:
+    expected_lines = _build_full_commercial_return_lines(
+        original_sales_invoice,
+        fb_order,
     )
-    expected = {
-        cstr(_row_value(row, "name")).strip(): flt(_row_value(row, "qty"))
-        for row in resolved_sales or []
-        if cstr(_row_value(row, "name")).strip()
-    }
-    requested = {
-        cstr(line.get("original_resolved_sale")).strip(): flt(
-            line.get("qty_returned")
-        )
-        for line in lines
-        if cstr(line.get("original_resolved_sale")).strip()
-    }
-    if not expected or requested != expected:
+    if (
+        not expected_lines
+        or _return_line_comparison_map(lines)
+        != _return_line_comparison_map(expected_lines)
+    ):
         frappe.throw(
             "Partial ERP returns are not supported; refund lines must exactly match the full Sales Invoice",
             frappe.ValidationError,
         )
+    return expected_lines
+
+
+def _return_line_comparison_map(lines: Any) -> dict[str, str]:
+    comparison: dict[str, str] = {}
+    normalized_lines = aggregate_return_lines(
+        [
+            {
+                "original_sales_invoice_item": _line_value(
+                    line, "original_sales_invoice_item"
+                ),
+                "original_fb_order_line_ref": _line_value(
+                    line, "original_fb_order_line_ref"
+                ),
+                "original_resolved_sale": _line_value(
+                    line, "original_resolved_sale"
+                ),
+                "qty_returned": _line_value(line, "qty_returned"),
+                "commercial_modifier_snapshot_json": _line_value(
+                    line, "commercial_modifier_snapshot_json"
+                ),
+            }
+            for line in (lines or [])
+        ]
+    )
+    for line in normalized_lines:
+        canonical = _canonical_return_line(line)
+        identity = cstr(
+            canonical.get("original_sales_invoice_item")
+            or canonical.get("original_resolved_sale")
+        ).strip()
+        comparison[identity] = canonical["qty_returned"]
+    return comparison
+
+
+def _line_value(line: Any, fieldname: str) -> Any:
+    if isinstance(line, Mapping):
+        return line.get(fieldname)
+    return getattr(line, fieldname, None)
 
 
 def _serialize_return_response(
@@ -580,12 +642,12 @@ def _serialize_return_response(
         "settlement_doctype": settlement_doctype,
         "settlement_document": settlement_document,
         "settlement_status": settlement_status,
-        "return_to_stock": cint(getattr(return_doc, "return_to_stock", 0)),
-        "reversal_stock_entries": [
-            cstr(getattr(line, "reversal_stock_entry", None))
-            for line in (return_doc.get("lines") or [])
-            if cstr(getattr(line, "reversal_stock_entry", None))
-        ],
+        # Inventory is excluded from this release. These response fields state
+        # that truth even when replaying a historical event that retained an
+        # older cashier-intent bit.
+        "return_to_stock": 0,
+        "inventory_evaluation": INVENTORY_EVALUATION_EXCLUDED,
+        "reversal_stock_entries": [],
     }
     if require_approval_proof:
         response.update(

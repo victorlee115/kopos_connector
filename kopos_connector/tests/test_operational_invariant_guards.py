@@ -37,11 +37,16 @@ def test_operational_doctypes_have_one_controller_owned_lifecycle() -> None:
     }
     assert "doc_events" not in assignments
 
+    content = (CONNECTOR_ROOT / "api/fb_returns.py").read_text()
+    assert "def on_submit_" not in content
+
+
+@pytest.mark.inventory_regression
+def test_optional_operational_doctypes_have_controller_owned_lifecycle() -> None:
     for module in (
         "api/fb_waste.py",
         "api/fb_refill.py",
         "api/fb_remakes.py",
-        "api/fb_returns.py",
     ):
         content = (CONNECTOR_ROOT / module).read_text()
         assert "def on_submit_" not in content

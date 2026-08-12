@@ -644,9 +644,29 @@ def test_smoke_business_assertions_fail_on_failed_projection() -> None:
 
     assert result["pass"] is False
     assert any(
-        failure["assertion"] == "no_failed_projections"
+        failure["assertion"] == "no_failed_commercial_projections"
         for failure in result["failures"]
     )
+
+
+def test_smoke_business_assertions_do_not_treat_inventory_as_release_scope() -> None:
+    state = _passing_state()
+    failed_row = {
+        "name": "LOG-STOCK-FAILED",
+        "projection_type": "Stock Issue",
+        "state": "Failed",
+        "last_error": "inventory subsystem unavailable",
+    }
+    state["data"]["projection_statuses"]["rows"].append(failed_row)
+    state["data"]["projection_statuses"]["failed"].append(failed_row)
+
+    result = smoke.build_smoke_business_assertions(
+        state, expected_idempotency_keys=["idem-1"]
+    )
+
+    assert result["pass"] is True
+    assert result["summary"]["inventory_acceptance"] is False
+    assert result["assertions"]["no_failed_commercial_projections"] is True
 
 
 def test_smoke_business_assertions_fail_on_duplicate_sales_invoice_key() -> None:

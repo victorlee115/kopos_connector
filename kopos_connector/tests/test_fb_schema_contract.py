@@ -4,6 +4,8 @@ import json
 import unittest
 from pathlib import Path
 
+import pytest
+
 
 ERP_ROOT = Path(__file__).resolve().parents[1]
 DOCTYPE_ROOT = ERP_ROOT / "kopos" / "doctype"
@@ -66,11 +68,8 @@ class TestFBSchemaContract(unittest.TestCase):
                 "sale_datetime",
                 "shift",
                 "staff_id",
-                "booth_warehouse",
                 "sales_invoice",
-                "ingredient_stock_entry",
                 "invoice_status",
-                "stock_status",
                 "items",
                 "payments",
             }.issubset(names)
@@ -116,6 +115,17 @@ class TestFBSchemaContract(unittest.TestCase):
         self.assertEqual(
             static_reconciliation["options"],
             "Manual QR Reconciliation",
+        )
+
+    @pytest.mark.inventory_regression
+    def test_fb_order_inventory_schema(self):
+        names = fieldnames(load_doctype("fb_order"))
+        self.assertTrue(
+            {
+                "booth_warehouse",
+                "ingredient_stock_entry",
+                "stock_status",
+            }.issubset(names)
         )
 
     def test_maybank_duplicate_winner_schema_supports_static_sales(self):
@@ -195,6 +205,7 @@ class TestFBSchemaContract(unittest.TestCase):
             self.assertNotEqual(field.get("reqd"), 1)
             self.assertNotIn("default", field)
 
+    @pytest.mark.inventory_regression
     def test_prepared_resolved_sale_schema(self):
         doc = load_doctype("fb_resolved_sale")
         status = next(
@@ -202,6 +213,7 @@ class TestFBSchemaContract(unittest.TestCase):
         )
         self.assertIn("Prepared", status["options"])
 
+    @pytest.mark.inventory_regression
     def test_fb_stock_override_log_schema(self):
         doc = load_doctype("fb_stock_override_log")
         names = fieldnames(doc)
@@ -234,6 +246,16 @@ class TestFBSchemaContract(unittest.TestCase):
                 "uom",
                 "unit_price",
                 "line_total",
+                "commercial_modifier_snapshot_json",
+            }.issubset(names)
+        )
+        self.assertEqual(doc.get("istable"), 1)
+
+    @pytest.mark.inventory_regression
+    def test_fb_order_line_inventory_schema(self):
+        names = fieldnames(load_doctype("fb_order_line"))
+        self.assertTrue(
+            {
                 "recipe",
                 "recipe_version",
                 "resolved_sale",
@@ -241,7 +263,6 @@ class TestFBSchemaContract(unittest.TestCase):
                 "resolved_components_snapshot",
             }.issubset(names)
         )
-        self.assertEqual(doc.get("istable"), 1)
 
     def test_fb_order_payment_distinguishes_provider_wait_from_reconciliation(self):
         doc = load_doctype("fb_order_payment")
@@ -253,6 +274,7 @@ class TestFBSchemaContract(unittest.TestCase):
         self.assertIn("awaiting_provider", settlement_status["options"])
         self.assertIn("pending_reconciliation", settlement_status["options"])
 
+    @pytest.mark.inventory_regression
     def test_fb_recipe_schema(self):
         doc = load_doctype("fb_recipe")
         names = fieldnames(doc)
@@ -273,6 +295,7 @@ class TestFBSchemaContract(unittest.TestCase):
             }.issubset(names)
         )
 
+    @pytest.mark.inventory_regression
     def test_fb_modifier_schema(self):
         doc = load_doctype("fb_modifier")
         names = fieldnames(doc)
@@ -301,6 +324,7 @@ class TestFBSchemaContract(unittest.TestCase):
         for option in ["Instruction Only", "Add", "Replace", "Remove", "Scale"]:
             self.assertIn(option, kind_field["options"])
 
+    @pytest.mark.inventory_regression
     def test_fb_modifier_group_schema(self):
         doc = load_doctype("fb_modifier_group")
         names = fieldnames(doc)
@@ -328,6 +352,7 @@ class TestFBSchemaContract(unittest.TestCase):
         self.assertEqual(parent_modifier_field["label"], "Parent Modifier Option")
         self.assertIn("Ice Level", parent_modifier_field["description"])
 
+    @pytest.mark.inventory_regression
     def test_fb_modifier_group_authoring_script_exists(self):
         script_path = DOCTYPE_ROOT / "fb_modifier_group" / "fb_modifier_group.js"
 
@@ -337,6 +362,7 @@ class TestFBSchemaContract(unittest.TestCase):
         self.assertIn("parent_modifier", script)
         self.assertIn("Temperature contains Hot and Iced", script)
 
+    @pytest.mark.inventory_regression
     def test_fb_modifier_dependency_authoring_doc_exists(self):
         doc_path = ERP_ROOT / "docs" / "FB_MODIFIER_AUTHORING.md"
 
@@ -346,6 +372,7 @@ class TestFBSchemaContract(unittest.TestCase):
         self.assertIn("Ice Level", content)
         self.assertIn("Iced", content)
 
+    @pytest.mark.inventory_regression
     def test_fb_resolved_sale_schema(self):
         doc = load_doctype("fb_resolved_sale")
         names = fieldnames(doc)
@@ -398,8 +425,18 @@ class TestFBSchemaContract(unittest.TestCase):
             for field in doc["fields"]
             if field.get("fieldname") == "projection_type"
         )
-        for option in ["Sales Invoice", "Stock Issue", "FB Shift"]:
+        for option in ["Sales Invoice", "FB Shift"]:
             self.assertIn(option, projection_type_field["options"])
+
+    @pytest.mark.inventory_regression
+    def test_fb_projection_log_inventory_schema(self):
+        doc = load_doctype("fb_projection_log")
+        projection_type_field = next(
+            field
+            for field in doc["fields"]
+            if field.get("fieldname") == "projection_type"
+        )
+        self.assertIn("Stock Issue", projection_type_field["options"])
 
     def test_fb_return_event_schema(self):
         doc = load_doctype("fb_return_event")
@@ -411,7 +448,6 @@ class TestFBSchemaContract(unittest.TestCase):
                 "original_sales_invoice",
                 "return_sales_invoice",
                 "reason_code",
-                "return_to_stock",
                 "status",
                 "request_fingerprint",
                 "approval_token_id",
@@ -420,6 +456,43 @@ class TestFBSchemaContract(unittest.TestCase):
             }.issubset(names)
         )
         self.assertEqual(doc.get("is_submittable"), 1)
+
+    @pytest.mark.inventory_regression
+    def test_fb_return_event_inventory_schema(self):
+        names = fieldnames(load_doctype("fb_return_event"))
+        self.assertIn("return_to_stock", names)
+
+    def test_fb_return_event_line_supports_commercial_and_legacy_identity(self):
+        doc = load_doctype("fb_return_event_line")
+        names = fieldnames(doc)
+        self.assertTrue(
+            {
+                "original_sales_invoice_item",
+                "original_fb_order_line_ref",
+                "qty_returned",
+                "commercial_modifier_snapshot_json",
+            }.issubset(names)
+        )
+        invoice_item_field = next(
+            field
+            for field in doc["fields"]
+            if field.get("fieldname") == "original_sales_invoice_item"
+        )
+        self.assertEqual(invoice_item_field.get("search_index"), 1)
+
+    @pytest.mark.inventory_regression
+    def test_fb_return_event_line_inventory_schema(self):
+        doc = load_doctype("fb_return_event_line")
+        names = fieldnames(doc)
+        self.assertTrue(
+            {"original_resolved_sale", "reversal_stock_entry"}.issubset(names)
+        )
+        resolved_sale_field = next(
+            field
+            for field in doc["fields"]
+            if field.get("fieldname") == "original_resolved_sale"
+        )
+        self.assertFalse(resolved_sale_field.get("reqd"))
 
     def test_manager_approval_schema_is_durable_and_non_deletable(self):
         doc = load_doctype("kopos_manager_approval")
@@ -447,6 +520,7 @@ class TestFBSchemaContract(unittest.TestCase):
             all(not permission.get("delete") for permission in doc["permissions"])
         )
 
+    @pytest.mark.inventory_regression
     def test_fb_remake_event_schema(self):
         doc = load_doctype("fb_remake_event")
         names = fieldnames(doc)
@@ -463,6 +537,7 @@ class TestFBSchemaContract(unittest.TestCase):
         )
         self.assertEqual(doc.get("is_submittable"), 1)
 
+    @pytest.mark.inventory_regression
     def test_fb_waste_event_schema(self):
         doc = load_doctype("fb_waste_event")
         names = fieldnames(doc)
@@ -479,6 +554,7 @@ class TestFBSchemaContract(unittest.TestCase):
         )
         self.assertEqual(doc.get("is_submittable"), 1)
 
+    @pytest.mark.inventory_regression
     def test_fb_refill_schema(self):
         doc = load_doctype("fb_booth_refill_request")
         names = fieldnames(doc)
@@ -503,12 +579,19 @@ class TestFBSchemaContract(unittest.TestCase):
 
     def test_child_tables_exist_and_are_tables(self):
         for child in [
+            "fb_order_payment",
+            "fb_return_event_line",
+        ]:
+            doc = load_doctype(child)
+            self.assertEqual(doc.get("istable"), 1, child)
+
+    @pytest.mark.inventory_regression
+    def test_inventory_child_tables_exist_and_are_tables(self):
+        for child in [
             "fb_recipe_component",
             "fb_allowed_modifier_group",
             "fb_selected_modifier",
             "fb_resolved_component",
-            "fb_order_payment",
-            "fb_return_event_line",
             "fb_waste_event_line",
             "fb_booth_refill_line",
         ]:

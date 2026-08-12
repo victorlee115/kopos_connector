@@ -210,7 +210,7 @@ class PosProvisioningTests(unittest.TestCase):
 
         self.assertEqual(rows, {"Drinks", "Coffee", "Tea"})
 
-    def test_get_item_availability_auto_stock_short_returns_advisory_warning(self):
+    def test_get_item_availability_auto_does_not_read_optional_stock(self):
         item = {
             "item_code": "ITEM-001",
             "custom_kopos_availability_mode": "auto",
@@ -227,10 +227,10 @@ class PosProvisioningTests(unittest.TestCase):
 
         self.assertEqual(
             availability,
-            {"is_available": True, "stock_warning": "erp_stock_short"},
+            {"is_available": True, "stock_warning": None},
         )
 
-    def test_get_item_availability_force_unavailable_still_blocks(self):
+    def test_get_item_availability_force_unavailable_cannot_block_sale(self):
         availability = catalog.get_item_availability(
             {
                 "item_code": "ITEM-001",
@@ -243,10 +243,10 @@ class PosProvisioningTests(unittest.TestCase):
 
         self.assertEqual(
             availability,
-            {"is_available": False, "stock_warning": None},
+            {"is_available": True, "stock_warning": None},
         )
 
-    def test_get_items_includes_stock_warning_additively(self):
+    def test_get_items_ignores_optional_recipe_and_inventory_enrichment(self):
         saleable_row = {
             "id": "item-1",
             "item_code": "item-1",
@@ -266,20 +266,23 @@ class PosProvisioningTests(unittest.TestCase):
             patch.object(
                 catalog,
                 "get_saleable_item_rows",
-                side_effect=[[saleable_row], []],
+                return_value=[saleable_row],
             ),
-            patch.object(catalog, "get_recipe_changed_item_codes", return_value=[]),
+            patch.object(
+                catalog,
+                "get_recipe_changed_item_codes",
+                side_effect=AssertionError("recipe changes must not be queried"),
+            ),
             patch.object(
                 catalog,
                 "get_item_recipe_snapshots_map",
-                return_value={
-                    "item-1": {
-                        "recipe_id": "RECIPE-ITEM-1",
-                        "recipe_version": 1,
-                    }
-                },
+                side_effect=AssertionError("recipes must not be queried"),
             ),
-            patch.object(catalog, "get_item_modifier_groups_map", return_value={}),
+            patch.object(
+                catalog,
+                "get_item_modifier_groups_map",
+                side_effect=AssertionError("modifiers must not be queried"),
+            ),
             patch.object(
                 catalog,
                 "get_item_prices_map",
@@ -299,10 +302,7 @@ class PosProvisioningTests(unittest.TestCase):
             patch.object(
                 catalog,
                 "get_item_availability",
-                return_value={
-                    "is_available": True,
-                    "stock_warning": "erp_stock_short",
-                },
+                side_effect=AssertionError("inventory availability must not be queried"),
             ),
         ):
             rows = catalog.get_items(
@@ -323,12 +323,12 @@ class PosProvisioningTests(unittest.TestCase):
                     "price_sen": 1200,
                     "barcode": "1234567890",
                     "is_available": True,
-                    "stock_warning": "erp_stock_short",
+                    "stock_warning": None,
                     "is_active": 1,
                     "is_prep_item": 0,
                     "modifier_group_ids": [],
-                    "recipe_id": "RECIPE-ITEM-1",
-                    "recipe_version": 1,
+                    "recipe_id": None,
+                    "recipe_version": None,
                 }
             ],
         )
@@ -509,6 +509,21 @@ class PosProvisioningTests(unittest.TestCase):
             ),
             patch.object(smoke.frappe, "get_doc", return_value=fake_device),
             patch.object(smoke.frappe, "get_all", return_value=[]),
+            patch.object(
+                smoke,
+                "_collect_device_profile_evidence",
+                return_value={
+                    "pos_profile_resolved": True,
+                    "pos_profile_company": "KoPOS Malaysia Sdn Bhd",
+                    "pos_profile_customer": "Walk In",
+                    "pos_profile_warehouse": "Counter 1 - KMY",
+                    "pos_profile_currency": "MYR",
+                    "pos_profile_sst_enabled": False,
+                    "pos_profile_sst_rate_percent": 0,
+                    "device_config_tax_rate": 0,
+                },
+            ),
+            patch.object(smoke, "_collect_smoke_business_state", return_value={}),
             patch.object(
                 smoke.frappe,
                 "local",

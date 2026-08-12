@@ -55,7 +55,6 @@ def create_sales_invoice(fb_order: Any) -> str | None:
         bind_qr_payment_settlement(order_doc, existing_invoice)
         _set_source_reference(order_doc, "sales_invoice", existing_invoice)
         _set_source_reference(order_doc, "invoice_status", "Posted")
-        _link_resolved_sales(order_doc, existing_invoice)
         return existing_invoice
 
     pos_profile_context = _resolve_pos_profile_context(order_doc)
@@ -168,15 +167,6 @@ def create_sales_invoice(fb_order: Any) -> str | None:
                     "is_free_item": 1 if line_total == Decimal("0.00") else 0,
                     "warehouse": _value(order_doc, "booth_warehouse") or None,
                     "custom_fb_order_line_ref": _value(order_item, "line_id") or None,
-                    "custom_fb_resolved_sale": _value(order_item, "resolved_sale")
-                    or None,
-                    "custom_fb_recipe_snapshot_json": _value(
-                        order_item, "resolved_components_snapshot"
-                    )
-                    or None,
-                    "custom_fb_resolution_hash": _resolve_line_resolution_hash(
-                        order_item
-                    ),
                 }
                 invoice_item = invoice.append("items", row)
                 modifier_snapshot = _build_modifier_snapshot(order_item)
@@ -230,19 +220,17 @@ def create_sales_invoice(fb_order: Any) -> str | None:
 
         _set_source_reference(order_doc, "sales_invoice", invoice.name)
         _set_source_reference(order_doc, "invoice_status", "Posted")
-        _link_resolved_sales(order_doc, invoice.name)
 
         return invoice.name
-    except Exception:
+    except Exception as error:
         _rollback_savepoint(savepoint)
         recovered_invoice = _get_existing_sales_invoice(order_doc)
         if recovered_invoice:
             bind_qr_payment_settlement(order_doc, recovered_invoice)
             _set_source_reference(order_doc, "sales_invoice", recovered_invoice)
             _set_source_reference(order_doc, "invoice_status", "Posted")
-            _link_resolved_sales(order_doc, recovered_invoice)
             return recovered_invoice
-        _log_error("Sales invoice projection failed")
+        _log_error("Sales invoice projection failed", error)
         return None
 
 
@@ -1252,31 +1240,6 @@ def _resolve_write_off_defaults(company: Any) -> dict[str, str]:
     return {"account": "", "cost_center": ""}
 
 
-def _resolve_line_resolution_hash(order_item: Any) -> str | None:
-    resolved_sale_name = _value(order_item, "resolved_sale")
-    if not resolved_sale_name:
-        return None
-    try:
-        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
-    except Exception:
-        return None
-    return _value(resolved_sale, "resolution_hash")
-
-
-def _link_resolved_sales(order_doc: Any, sales_invoice_name: str) -> None:
-    for order_item in list(_value(order_doc, "items") or []):
-        resolved_sale_name = _value(order_item, "resolved_sale")
-        if not resolved_sale_name:
-            continue
-        try:
-            resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
-            resolved_sale.db_set(
-                "sales_invoice", sales_invoice_name, update_modified=False
-            )
-        except Exception:
-            continue
-
-
 def _set_if_present(doc: Any, fieldnames: list[str], value: Any) -> None:
     if value in (None, ""):
         return
@@ -1301,7 +1264,14 @@ def _build_invoice_remarks(order_doc: Any) -> str:
 
 
 def _build_modifier_snapshot(order_item: Any) -> str | None:
-    modifiers = _get_order_item_modifier_rows(order_item)
+    try:
+        modifiers = _get_order_item_modifier_rows(order_item)
+    except Exception as error:
+        log_sanitized_error(
+            "Optional Sales Invoice modifier audit snapshot was skipped",
+            error,
+        )
+        return None
     if not modifiers:
         return None
 
@@ -1310,15 +1280,24 @@ def _build_modifier_snapshot(order_item: Any) -> str | None:
         modifier_id = _value(modifier_row, "modifier")
         if not modifier_id:
             continue
-        price_adjustment_sen = _money_sen(
-            _optional_money_value(_value(modifier_row, "price_adjustment")),
-            f"FB Modifier {modifier_id} price_adjustment",
-        )
+        try:
+            price_adjustment_sen = _money_sen(
+                _optional_money_value(_value(modifier_row, "price_adjustment")),
+                f"modifier {modifier_id} price_adjustment",
+            )
+        except Exception as error:
+            log_sanitized_error(
+                "Optional Sales Invoice modifier audit row was skipped",
+                error,
+            )
+            continue
         rows.append(
             {
                 "id": modifier_id,
-                "name": frappe.db.get_value("FB Modifier", modifier_id, "modifier_name")
-                or modifier_id,
+                # IDs and the authenticated price snapshot are durable. A
+                # display-name lookup must never make invoice posting depend
+                # on the optional modifier table.
+                "name": modifier_id,
                 "group_id": _value(modifier_row, "modifier_group"),
                 "price_adjustment": format(
                     sen_to_decimal(price_adjustment_sen),
@@ -1338,27 +1317,25 @@ def _get_order_item_modifier_rows(order_item: Any) -> list[Any]:
     if persisted_rows:
         return persisted_rows
 
-    # ERPNext v16 cannot persist a nested child table on FB Order Line. The
-    # submit path therefore carries the authenticated modifier selection on
-    # the child row until FB Resolved Sale is written.
-    transient_rows = getattr(order_item, "_selected_modifiers_payload", None)
-    if transient_rows:
-        return list(transient_rows)
-
-    # Projection retries reload the FB Order and lose transient attributes.
-    # FB Resolved Sale is the durable, canonical fallback for that path.
-    resolved_sale_name = _value(order_item, "resolved_sale")
-    if not resolved_sale_name:
-        return []
-    try:
-        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
-    except Exception as error:
-        raise RuntimeError(
-            "Unable to load linked FB Resolved Sale {0} for the Sales Invoice modifier audit snapshot".format(
-                resolved_sale_name
+    snapshot_json = str(
+        _value(order_item, "commercial_modifier_snapshot_json") or ""
+    ).strip()
+    if snapshot_json:
+        try:
+            snapshot = json.loads(snapshot_json)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(
+                "FB Order line commercial modifier snapshot is invalid JSON"
+            ) from error
+        if not isinstance(snapshot, list) or any(
+            not isinstance(row, dict) for row in snapshot
+        ):
+            raise RuntimeError(
+                "FB Order line commercial modifier snapshot must be an array of objects"
             )
-        ) from error
-    return list(_value(resolved_sale, "selected_modifiers") or [])
+        return snapshot
+
+    return []
 
 
 def _get_existing_reference(doc: Any, fieldname: str) -> str | None:
@@ -1384,5 +1361,5 @@ def _rollback_savepoint(savepoint: str) -> None:
     rollback_to_savepoint(savepoint, title="Sales invoice projection rollback failed")
 
 
-def _log_error(title: str) -> None:
-    log_sanitized_error(title)
+def _log_error(title: str, error: BaseException | None = None) -> None:
+    log_sanitized_error(title, error)

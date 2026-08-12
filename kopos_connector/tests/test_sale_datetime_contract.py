@@ -19,9 +19,6 @@ from kopos_connector.kopos.api import fb_orders
 from kopos_connector.kopos.services.accounting.sales_invoice_service import (
     _resolve_posting_datetime as resolve_invoice_posting_datetime,
 )
-from kopos_connector.kopos.services.inventory.stock_issue_service import (
-    _resolve_posting_datetime as resolve_stock_posting_datetime,
-)
 from kopos_connector.kopos.services.orders.sale_datetime import (
     normalize_site_datetime,
     resolve_order_sale_datetime,
@@ -213,7 +210,7 @@ def test_nested_line_modifiers_use_transient_payload_on_frappe_v16_child() -> No
     assert [dict(row) for row in line._selected_modifiers_payload] == [modifier]
 
 
-def test_invoice_and_ingredient_stock_post_on_offline_sale_datetime() -> None:
+def test_invoice_posts_on_offline_sale_datetime() -> None:
     order = SimpleNamespace(
         name="FB-ORDER-1",
         sale_datetime=datetime(2026, 7, 12, 0, 30, 45),
@@ -222,6 +219,23 @@ def test_invoice_and_ingredient_stock_post_on_offline_sale_datetime() -> None:
     )
 
     assert resolve_invoice_posting_datetime(order) == order.sale_datetime
+
+
+@pytest.mark.inventory_regression
+def test_ingredient_stock_posts_on_offline_sale_datetime() -> None:
+    # Keep the optional inventory import inside the opt-in test. Pytest must be
+    # able to collect the non-inventory campaign even when inventory is absent.
+    from kopos_connector.kopos.services.inventory.stock_issue_service import (
+        _resolve_posting_datetime as resolve_stock_posting_datetime,
+    )
+
+    order = SimpleNamespace(
+        name="FB-ORDER-1",
+        sale_datetime=datetime(2026, 7, 12, 0, 30, 45),
+        creation=datetime(2026, 7, 12, 9, 0, 0),
+        modified=datetime(2026, 7, 12, 9, 1, 0),
+    )
+
     assert resolve_stock_posting_datetime(order) == order.sale_datetime
 
 

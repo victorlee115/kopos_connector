@@ -9,6 +9,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from .fake_frappe import install_fake_frappe_modules
 
 
@@ -238,9 +240,6 @@ class TestDeviceOperationalMutationLock(unittest.TestCase):
                 "retry_failed_projections": "retry_failed_projections",
             },
             "api/fb_returns.py": {"process_return": "process_return_payload"},
-            "api/fb_refill.py": {"process_refill": "_build_refill_request"},
-            "api/fb_waste.py": {"process_waste": "_build_waste_event"},
-            "api/fb_remakes.py": {"process_remake": "_build_remake_event"},
         }
 
         for relative_path, routes in guarded_routes.items():
@@ -296,6 +295,27 @@ class TestDeviceOperationalMutationLock(unittest.TestCase):
             max(telemetry_calls["lock_device_for_operational_mutation"]),
             min(telemetry_calls["set_value"]),
         )
+
+    @pytest.mark.inventory_regression
+    def test_optional_device_mutation_routes_lock_before_business_mutation(self) -> None:
+        guarded_routes = {
+            "api/fb_refill.py": {"process_refill": "_build_refill_request"},
+            "api/fb_waste.py": {"process_waste": "_build_waste_event"},
+            "api/fb_remakes.py": {"process_remake": "_build_remake_event"},
+        }
+
+        for relative_path, routes in guarded_routes.items():
+            path = CONNECTOR_ROOT / relative_path
+            for function_name, business_call in routes.items():
+                with self.subTest(path=relative_path, function=function_name):
+                    calls = _function_call_lines(path, function_name)
+                    guard_lines = calls.get(
+                        "lock_device_for_operational_mutation", []
+                    )
+                    business_lines = calls.get(business_call, [])
+                    self.assertTrue(guard_lines)
+                    self.assertTrue(business_lines)
+                    self.assertLess(max(guard_lines), min(business_lines))
 
     def test_maybank_routes_call_provider_outside_broad_device_lock(self) -> None:
         api_path = CONNECTOR_ROOT / "api/__init__.py"

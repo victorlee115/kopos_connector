@@ -5,9 +5,13 @@ from types import SimpleNamespace
 from typing import cast, TypedDict
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
 
 install_fake_frappe_modules()
+
+pytestmark = pytest.mark.inventory_regression
 
 
 class LegacyOption(TypedDict):

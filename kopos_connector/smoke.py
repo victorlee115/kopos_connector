@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import timedelta
+import re
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import frappe
 from frappe.utils import cint, cstr, flt, now_datetime, nowdate
@@ -61,6 +63,8 @@ SMOKE_COMPANY_NAME = "KoPOS Malaysia Sdn Bhd"
 SMOKE_COMPANY_ABBR = "KMY"
 SMOKE_COMPANY_COUNTRY = "Malaysia"
 SMOKE_COMPANY_CURRENCY = "MYR"
+SMOKE_SELLING_PRICE_LIST = "KoPOS MYR Selling"
+SMOKE_SITE_TIME_ZONE = "Asia/Kuala_Lumpur"
 SMOKE_SIZE_GROUP_CODE = "SMOKE-FB-SIZE"
 SMOKE_SIZE_REGULAR_CODE = "SMOKE-FB-SIZE-REGULAR"
 SMOKE_SIZE_LARGE_CODE = "SMOKE-FB-SIZE-LARGE"
@@ -101,15 +105,48 @@ SMOKE_VALUE_PREFIXES = (
 SMOKE_VALUE_EXACT = {"task-15-forced-failed-projection"}
 
 
-def setup_refund_smoke_data() -> dict[str, Any]:
-    from erpnext.setup.utils import before_tests
+def setup_refund_smoke_data(
+    include_inventory_regression: int | str | bool = False,
+) -> dict[str, Any]:
+    _prepare_smoke_test_site()
+
+    return _ensure_smoke_base_data(
+        include_inventory_regression=bool(cint(include_inventory_regression))
+    )
+
+
+def _prepare_smoke_test_site() -> None:
+    """Apply the ERPNext test defaults supported by the installed major line."""
+
+    frappe.clear_cache()
+    try:
+        from erpnext.setup.utils import before_tests
+    except ImportError:
+        # ERPNext v16 removed before_tests but kept its two public setup
+        # operations. The smoke fixture creates its own dedicated company, so
+        # it must not run the generic setup wizard or depend on inventory data.
+        from erpnext.setup.utils import (
+            enable_all_roles_and_domains,
+            set_defaults_for_tests,
+        )
+        from erpnext.setup.setup_wizard.operations.install_fixtures import (
+            install as install_erpnext_fixtures,
+        )
+
+        if not frappe.db.exists("Warehouse Type", "Transit"):
+            install_erpnext_fixtures(country=SMOKE_COMPANY_COUNTRY)
+        frappe.db.sql("delete from `tabItem Price`")
+        enable_all_roles_and_domains()
+        set_defaults_for_tests()
+        frappe.db.commit()
+        return
 
     before_tests()
 
-    return _ensure_smoke_base_data()
 
-
-def _ensure_smoke_base_data() -> dict[str, Any]:
+def _ensure_smoke_base_data(
+    *, include_inventory_regression: bool = False
+) -> dict[str, Any]:
     company = _ensure_smoke_company()
 
     customer = _ensure_customer(company)
@@ -129,17 +166,21 @@ def _ensure_smoke_base_data() -> dict[str, Any]:
         write_off_account=expense_account,
         write_off_cost_center=cost_center,
     )
-    modifier_fixture = _ensure_fb_modifier_group()
-    item = _ensure_item(
-        company,
-        modifier_fixture["group"],
-        modifier_fixture["default_modifier"],
-    )
+    if include_inventory_regression:
+        modifier_fixture = _ensure_fb_modifier_group()
+        item = _ensure_item(
+            company,
+            modifier_fixture["group"],
+            modifier_fixture["default_modifier"],
+        )
+        demo_recipe = frappe.db.get_value(
+            "Item", DEMO_DRINK_ITEM, "custom_fb_default_recipe"
+        ) or DEMO_RECIPE_CODE
+    else:
+        item = _ensure_commercial_smoke_item()
+        demo_recipe = None
 
     frappe.db.commit()
-    demo_recipe = frappe.db.get_value(
-        "Item", DEMO_DRINK_ITEM, "custom_fb_default_recipe"
-    ) or DEMO_RECIPE_CODE
     return {
         "company": company,
         "customer": customer,
@@ -150,6 +191,9 @@ def _ensure_smoke_base_data() -> dict[str, Any]:
         "pos_profile": pos_profile,
         "item_code": item,
         "recipe": demo_recipe,
+        "inventory_evaluation": (
+            "inventory_regression" if include_inventory_regression else "excluded_not_evaluated"
+        ),
     }
 
 
@@ -179,7 +223,9 @@ def _ensure_smoke_company() -> str:
                 "Existing KoPOS smoke company does not match the immutable MYR fixture",
                 frappe.ValidationError,
             )
-        return str(existing)
+        company_name = str(existing)
+        _ensure_smoke_fiscal_year(company_name)
+        return company_name
 
     company = frappe.new_doc("Company")
     company.company_name = SMOKE_COMPANY_NAME
@@ -189,7 +235,41 @@ def _ensure_smoke_company() -> str:
     company.create_chart_of_accounts_based_on = "Standard Template"
     company.chart_of_accounts = "Standard"
     company.insert(ignore_permissions=True)
-    return str(company.name)
+    company_name = str(company.name)
+    _ensure_smoke_fiscal_year(company_name)
+    return company_name
+
+
+def _ensure_smoke_fiscal_year(company: str) -> str:
+    """Ensure the dedicated smoke company can post commercial documents today."""
+
+    from erpnext.accounts.utils import get_fiscal_year
+
+    posting_date = now_datetime().date()
+    existing = get_fiscal_year(
+        posting_date,
+        company=company,
+        verbose=0,
+        raise_on_missing=False,
+    )
+    if existing:
+        return str(existing[0])
+
+    fiscal_year_name = f"{posting_date.year}-{SMOKE_COMPANY_ABBR}"
+    if frappe.db.exists("Fiscal Year", fiscal_year_name):
+        frappe.throw(
+            f"Fiscal Year {fiscal_year_name} exists but is not active for {company}",
+            frappe.ValidationError,
+        )
+
+    fiscal_year = frappe.new_doc("Fiscal Year")
+    fiscal_year.year = fiscal_year_name
+    fiscal_year.year_start_date = date(posting_date.year, 1, 1)
+    fiscal_year.year_end_date = date(posting_date.year, 12, 31)
+    fiscal_year.disabled = 0
+    fiscal_year.append("companies", {"company": company})
+    fiscal_year.insert(ignore_permissions=True)
+    return str(fiscal_year.name)
 
 
 def setup_stock_item_smoke_data(target_qty: float = 5) -> dict[str, Any]:
@@ -373,7 +453,7 @@ def run_demo_fb_sale_audit(return_to_stock: bool = False) -> dict[str, Any]:
     from kopos_connector.kopos.api.fb_orders import submit_order
 
     shift = ensure_demo_fb_shift()
-    before = set_demo_ingredient_quantities()
+    before = get_demo_ingredient_state()
     recipe = _get_demo_recipe_reference(shift["company"])
     order_id = f"SMOKE-DEMO-{frappe.generate_hash(length=8)}"
     idempotency_key = f"SMOKE-DEMO-{frappe.generate_hash(length=16)}"
@@ -1128,10 +1208,12 @@ def _ensure_pos_profile(
     name = "KoPOS Main"
     existing = frappe.db.exists("POS Profile", name)
     currency = _get_demo_currency(company)
+    selling_price_list = _ensure_selling_price_list(currency)
     if existing:
         doc = frappe.get_doc("POS Profile", existing)
         doc.company = company
         doc.currency = currency
+        doc.selling_price_list = selling_price_list
         doc.warehouse = warehouse
         doc.customer = customer
         doc.write_off_account = write_off_account
@@ -1151,6 +1233,7 @@ def _ensure_pos_profile(
             "name": name,
             "company": company,
             "currency": currency,
+            "selling_price_list": selling_price_list,
             "warehouse": warehouse,
             "customer": customer,
             "write_off_account": write_off_account,
@@ -1166,6 +1249,31 @@ def _ensure_pos_profile(
     )
     doc.insert(ignore_permissions=True)
     return doc.name
+
+
+def _ensure_selling_price_list(currency: str) -> str:
+    existing = frappe.db.exists("Price List", SMOKE_SELLING_PRICE_LIST)
+    if existing:
+        doc = frappe.get_doc("Price List", existing)
+        doc.enabled = 1
+        doc.selling = 1
+        doc.buying = 0
+        doc.currency = currency
+        doc.save(ignore_permissions=True)
+        return str(doc.name)
+
+    doc = frappe.get_doc(
+        {
+            "doctype": "Price List",
+            "price_list_name": SMOKE_SELLING_PRICE_LIST,
+            "enabled": 1,
+            "selling": 1,
+            "buying": 0,
+            "currency": currency,
+        }
+    )
+    doc.insert(ignore_permissions=True)
+    return str(doc.name)
 
 
 def _apply_smoke_pos_profile_tax_config(profile_doc: Any) -> bool:
@@ -1268,6 +1376,49 @@ def _ensure_fb_modifier(
     modifier_doc = frappe.get_doc({"doctype": "FB Modifier", **modifier_payload})
     modifier_doc.insert(ignore_permissions=True)
     return modifier_doc.name
+
+
+def _ensure_commercial_smoke_item() -> str:
+    """Create the default smoke item without consulting optional recipe/stock data."""
+
+    item_code = DEMO_DRINK_ITEM
+    if frappe.db.exists("Item", item_code):
+        doc = frappe.get_doc("Item", item_code)
+    else:
+        doc = frappe.get_doc(
+            {
+                "doctype": "Item",
+                "item_code": item_code,
+                "item_name": DEMO_DRINK_NAME,
+                "item_group": _ensure_item_group(),
+                "stock_uom": "Nos",
+                "is_sales_item": 1,
+                "is_stock_item": 0,
+                "standard_rate": 12,
+            }
+        )
+        doc.insert(ignore_permissions=True)
+
+    changed = False
+    expected_values = {
+        "item_name": DEMO_DRINK_NAME,
+        "disabled": 0,
+        "is_sales_item": 1,
+        "is_stock_item": 0,
+        "standard_rate": 12,
+        "custom_kopos_availability_mode": "auto",
+        "custom_kopos_track_stock": 0,
+        "custom_fb_recipe_required": 0,
+        "custom_fb_default_recipe": None,
+        "custom_fb_track_theoretical_stock": 0,
+    }
+    for fieldname, value in expected_values.items():
+        if hasattr(doc, fieldname) and getattr(doc, fieldname, None) != value:
+            setattr(doc, fieldname, value)
+            changed = True
+    if changed:
+        doc.save(ignore_permissions=True)
+    return item_code
 
 
 def _ensure_item(company: str, modifier_group: str, default_modifier: str) -> str:
@@ -1687,8 +1838,14 @@ def _ensure_item_group() -> str:
     return doc.name
 
 
-def setup_full_smoke_json(erpnext_url: str | None = None) -> dict[str, Any]:
-    return setup_full_smoke_data(erpnext_url=erpnext_url)
+def setup_full_smoke_json(
+    erpnext_url: str | None = None,
+    include_inventory_regression: int | str | bool = False,
+) -> dict[str, Any]:
+    return setup_full_smoke_data(
+        erpnext_url=erpnext_url,
+        include_inventory_regression=include_inventory_regression,
+    )
 
 
 def upgrade_smoke_currency_to_myr_json() -> dict[str, Any]:
@@ -1725,7 +1882,7 @@ def upgrade_smoke_currency_to_myr_json() -> dict[str, Any]:
         api_user and frappe.db.exists("__Auth", auth_filters)
     )
 
-    base = _ensure_smoke_base_data()
+    base = _ensure_smoke_base_data(include_inventory_regression=True)
     set_demo_ingredient_quantities()
     _ensure_demo_promotion(base["pos_profile"])
     _ensure_promotion_snapshot(base["pos_profile"])
@@ -1869,12 +2026,24 @@ def _require_empty_smoke_terminal(operation: str) -> dict[str, Any]:
     return current_state
 
 
-def reset_smoke_json(erpnext_url: str | None = None) -> dict[str, Any]:
-    return reset_smoke_data(erpnext_url=erpnext_url)
+def reset_smoke_json(
+    erpnext_url: str | None = None,
+    include_inventory_regression: int | str | bool = False,
+) -> dict[str, Any]:
+    return reset_smoke_data(
+        erpnext_url=erpnext_url,
+        include_inventory_regression=include_inventory_regression,
+    )
 
 
-def dump_smoke_json() -> dict[str, Any]:
-    return dump_smoke_state()
+def dump_smoke_json(
+    inventory_window_start_utc: str | None = None,
+    include_inventory_regression: int | str | bool = False,
+) -> dict[str, Any]:
+    return dump_smoke_state(
+        inventory_window_start_utc=inventory_window_start_utc,
+        include_inventory_regression=bool(cint(include_inventory_regression)),
+    )
 
 
 def assert_smoke_business_state_json(
@@ -2307,8 +2476,19 @@ def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
     return doc
 
 
-def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
-    base = setup_refund_smoke_data()
+def setup_full_smoke_data(
+    erpnext_url: str | None = None,
+    include_inventory_regression: int | str | bool = False,
+) -> dict[str, Any]:
+    inventory_regression = bool(cint(include_inventory_regression))
+    base = setup_refund_smoke_data(
+        include_inventory_regression=inventory_regression
+    )
+    frappe.db.set_single_value(
+        "System Settings",
+        "time_zone",
+        SMOKE_SITE_TIME_ZONE,
+    )
     company = base["company"]
 
     device_id = SMOKE_DEVICE_ID
@@ -2334,13 +2514,14 @@ def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
         expires_in_seconds=86400,
     )
 
-    set_demo_ingredient_quantities()
+    if inventory_regression:
+        set_demo_ingredient_quantities()
     promotion_name = _ensure_demo_promotion(base["pos_profile"])
     promotion_snapshot = _ensure_promotion_snapshot(base["pos_profile"])
 
     frappe.db.commit()
 
-    return {
+    result = {
         "erpnext_url": resolved_url,
         "site": frappe.local.site,
         "device_id": device_id,
@@ -2362,8 +2543,10 @@ def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
         "company": company,
         "warehouse": base["warehouse"],
         "currency": _get_demo_currency(company),
+        "time_zone": SMOKE_SITE_TIME_ZONE,
         "item_code": base["item_code"],
-        "stock_item_code": DEMO_MATCHA_ITEM,
+        "recipe": base.get("recipe"),
+        "inventory_evaluation": base["inventory_evaluation"],
         "users": [
             {
                 "id": "staff@smoke.kopos.local",
@@ -2377,15 +2560,28 @@ def setup_full_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
             },
         ],
     }
+    if inventory_regression:
+        result["stock_item_code"] = DEMO_MATCHA_ITEM
+    return result
 
 
-def reset_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
+def reset_smoke_data(
+    erpnext_url: str | None = None,
+    include_inventory_regression: int | str | bool = False,
+) -> dict[str, Any]:
+    inventory_regression = bool(cint(include_inventory_regression))
     device_id = SMOKE_DEVICE_ID
     device_name = frappe.db.get_value("KoPOS Device", {"device_id": device_id}, "name")
     if not device_name:
-        return setup_full_smoke_data(erpnext_url=erpnext_url)
+        return setup_full_smoke_data(
+            erpnext_url=erpnext_url,
+            include_inventory_regression=inventory_regression,
+        )
 
-    _delete_smoke_business_rows(device_id)
+    _delete_smoke_business_rows(
+        device_id,
+        include_inventory_regression=inventory_regression,
+    )
 
     for doctype in ("POS Invoice", "POS Closing Entry", "POS Opening Entry"):
         if not _doctype_has_field(doctype, "custom_kopos_device_id"):
@@ -2406,7 +2602,10 @@ def reset_smoke_data(erpnext_url: str | None = None) -> dict[str, Any]:
     _reset_smoke_device_api_credentials(device_name)
     frappe.db.commit()
 
-    return setup_full_smoke_data(erpnext_url=erpnext_url)
+    return setup_full_smoke_data(
+        erpnext_url=erpnext_url,
+        include_inventory_regression=inventory_regression,
+    )
 
 
 def _reset_smoke_device_api_credentials(device_name: str) -> None:
@@ -2458,44 +2657,61 @@ def _reset_smoke_device_api_credentials(device_name: str) -> None:
         raise RuntimeError("Failed to revoke disposable smoke device credentials")
 
 
-def _delete_smoke_business_rows(device_id: str) -> None:
-    """Delete only smoke-owned business rows so reset isolates later smoke runs."""
+def _delete_smoke_business_rows(
+    device_id: str,
+    *,
+    include_inventory_regression: bool = False,
+) -> None:
+    """Delete smoke-owned rows without consulting excluded inventory by default."""
 
-    _delete_orphan_smoke_ledger_artifacts(device_id)
+    _delete_orphan_smoke_ledger_artifacts(
+        device_id,
+        include_inventory_regression=include_inventory_regression,
+    )
     fb_orders = _get_smoke_fb_order_names(device_id)
     fb_shifts = _get_smoke_fb_shift_names(device_id)
     return_events = _get_smoke_return_event_names(fb_orders)
     sales_invoices = _get_smoke_sales_invoice_names(device_id, fb_orders, return_events)
-    resolved_sales = _get_smoke_resolved_sale_names(fb_orders)
     settlement_journal_entries = _get_smoke_settlement_journal_entry_names(
         return_events
     )
-    stock_entries = _get_smoke_stock_entry_names(
-        fb_orders,
-        return_events=return_events,
-        resolved_sales=resolved_sales,
-    )
     maybank_qr_transactions = _get_smoke_maybank_qr_transaction_names(device_id)
-    serial_batch_bundles = _get_smoke_serial_batch_bundle_names(stock_entries)
+    resolved_sales: list[str] = []
+    stock_entries: list[str] = []
+    serial_batch_bundles: list[str] = []
+    if include_inventory_regression:
+        resolved_sales = _get_smoke_resolved_sale_names(fb_orders)
+        stock_entries = _get_smoke_stock_entry_names(
+            fb_orders,
+            return_events=return_events,
+            resolved_sales=resolved_sales,
+        )
+        serial_batch_bundles = _get_smoke_serial_batch_bundle_names(stock_entries)
 
     _delete_task15_injected_projection_logs()
     _delete_projection_logs_for_sources("FB Order", fb_orders)
     _delete_projection_logs_for_sources("FB Shift", fb_shifts)
     _delete_projection_logs_for_sources("FB Return Event", return_events)
     _delete_smoke_projection_logs_by_fixture_fields()
-    _cancel_submitted_smoke_stock_entries(stock_entries)
+    if include_inventory_regression:
+        _cancel_submitted_smoke_stock_entries(stock_entries)
 
-    for doctype, names in (
-        ("Serial and Batch Bundle", serial_batch_bundles),
+    owned_documents: list[tuple[str, list[str]]] = [
         ("Maybank QR Transaction", maybank_qr_transactions),
-        ("FB Resolved Sale", resolved_sales),
         ("Journal Entry", settlement_journal_entries),
         ("FB Return Event", return_events),
         ("FB Order", fb_orders),
         ("Sales Invoice", sales_invoices),
-        ("Stock Entry", stock_entries),
         ("FB Shift", fb_shifts),
-    ):
+    ]
+    if include_inventory_regression:
+        owned_documents = [
+            ("Serial and Batch Bundle", serial_batch_bundles),
+            ("FB Resolved Sale", resolved_sales),
+            *owned_documents,
+            ("Stock Entry", stock_entries),
+        ]
+    for doctype, names in owned_documents:
         for name in names:
             _delete_smoke_doc(doctype, name)
 
@@ -2761,7 +2977,11 @@ def _delete_smoke_ledger_artifacts(
     )
 
 
-def _delete_orphan_smoke_ledger_artifacts(device_id: str) -> None:
+def _delete_orphan_smoke_ledger_artifacts(
+    device_id: str,
+    *,
+    include_inventory_regression: bool = False,
+) -> None:
     """Purge ledger-only smoke vouchers without trusting a reusable voucher name.
 
     GL remarks carry the device identifier written by the projection service.  They
@@ -2776,11 +2996,14 @@ def _delete_orphan_smoke_ledger_artifacts(device_id: str) -> None:
         filters={"remarks": ["like", f"%Device ID: {device_id}%"]},
         fields=["name", "voucher_type", "voucher_no", "remarks"],
     )
+    accepted_voucher_types = {"Sales Invoice", "Journal Entry"}
+    if include_inventory_regression:
+        accepted_voucher_types.add("Stock Entry")
     candidates_by_voucher: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in candidate_rows or []:
         voucher_type = str(row.get("voucher_type") or "").strip()
         voucher_no = str(row.get("voucher_no") or "").strip()
-        if voucher_type not in {"Sales Invoice", "Journal Entry", "Stock Entry"}:
+        if voucher_type not in accepted_voucher_types:
             continue
         if not voucher_no or not _remarks_prove_smoke_device(
             row.get("remarks"), device_id
@@ -3023,7 +3246,10 @@ def _unique_names(values: Any) -> list[str]:
     return names
 
 
-def dump_smoke_state() -> dict[str, Any]:
+def dump_smoke_state(
+    inventory_window_start_utc: str | None = None,
+    include_inventory_regression: bool = False,
+) -> dict[str, Any]:
     device_id = SMOKE_DEVICE_ID
     device_name = frappe.db.get_value("KoPOS Device", {"device_id": device_id}, "name")
     if not device_name:
@@ -3051,15 +3277,20 @@ def dump_smoke_state() -> dict[str, Any]:
             api_secret_error = "decrypt_failed: empty_secret"
 
     device_profile = _collect_device_profile_evidence(device)
+    site_timezone = frappe.utils.get_system_timezone()
     business_state = _collect_smoke_business_state(
         device_id,
         ingredient_warehouse=device_profile.get("pos_profile_warehouse"),
+        company=device_profile.get("pos_profile_company"),
+        site_timezone=site_timezone,
+        inventory_window_start_utc=inventory_window_start_utc,
+        include_inventory_regression=include_inventory_regression,
     )
 
     return {
         "status": "ready",
         "site": frappe.local.site,
-        "site_timezone": frappe.utils.get_system_timezone(),
+        "site_timezone": site_timezone,
         "device": {
             "device_id": device_id,
             "enabled": bool(device.enabled),
@@ -3126,29 +3357,392 @@ def _collect_device_profile_evidence(device: Any) -> dict[str, Any]:
     }
 
 
+def _collect_inventory_mutation_audit(
+    *,
+    device_id: str,
+    company: str,
+    warehouse: str,
+    site_timezone: str,
+    window_start_utc: str | None,
+) -> dict[str, Any]:
+    """Read a complete, zero-write inventory mutation window for acceptance.
+
+    This does not test or accept inventory behavior. It proves that the current
+    non-inventory campaign did not mutate inventory while registering sales.
+    All four inventory reads share one MariaDB repeatable-read, read-only
+    snapshot established at or after the database capture boundary.
+    """
+
+    if not device_id or not company or not warehouse or not site_timezone:
+        frappe.throw(
+            "Inventory mutation audit requires device, company, warehouse, and site timezone",
+            frappe.ValidationError,
+        )
+    try:
+        site_zone = ZoneInfo(site_timezone)
+    except Exception as error:
+        frappe.throw(
+            f"Inventory mutation audit site timezone is invalid: {site_timezone}",
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw must raise") from error
+
+    requested_start_utc = _parse_explicit_utc_timestamp(
+        window_start_utc,
+        "inventory_window_start_utc",
+        optional=True,
+    )
+
+    # Earlier dump reads are also read-only. End their implicit transaction so
+    # the audit can begin one explicit consistent snapshot with known semantics.
+    # Do not use frappe.db.rollback(): the real Frappe adapter immediately
+    # opens another transaction, which makes the following SET TRANSACTION fail.
+    frappe.db.sql("ROLLBACK")
+    try:
+        captured_rows = frappe.db.sql(
+            "SELECT NOW(6) AS captured_site_datetime",
+            as_dict=True,
+        )
+        captured_site_value = (
+            _value(captured_rows[0], "captured_site_datetime")
+            if captured_rows
+            else None
+        )
+        captured_site = _coerce_site_datetime(
+            captured_site_value,
+            "inventory mutation audit capture time",
+        )
+        captured_utc = captured_site.replace(tzinfo=site_zone).astimezone(
+            timezone.utc
+        )
+        start_utc = requested_start_utc or captured_utc
+        if start_utc > captured_utc:
+            frappe.throw(
+                "inventory_window_start_utc cannot be after the database capture time",
+                frappe.ValidationError,
+            )
+        start_site = start_utc.astimezone(site_zone).replace(tzinfo=None)
+        end_site = captured_site
+        query_values = (company, start_site, end_site)
+    finally:
+        # SELECT NOW may open an implicit transaction on Frappe's connection.
+        # Close it without Frappe reopening one before SET TRANSACTION, and do
+        # the same on every boundary-read failure.
+        frappe.db.sql("ROLLBACK")
+
+    # Capture the inclusive upper boundary before opening the MVCC snapshot.
+    # The snapshot therefore cannot predate the time it claims to cover.
+    try:
+        frappe.db.sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        frappe.db.sql("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY")
+        stock_entries = _inventory_audit_rows(
+            """
+            SELECT
+                name,
+                docstatus,
+                purpose,
+                stock_entry_type,
+                company,
+                creation,
+                modified
+            FROM `tabStock Entry`
+            WHERE company = %s AND modified > %s AND modified <= %s
+            ORDER BY modified ASC, name ASC
+            """,
+            query_values,
+        )
+        stock_entry_details = _inventory_audit_rows(
+            """
+            SELECT
+                detail.name,
+                detail.parent,
+                detail.item_code,
+                detail.s_warehouse,
+                detail.t_warehouse,
+                detail.qty,
+                detail.transfer_qty,
+                detail.stock_uom,
+                detail.creation,
+                detail.modified
+            FROM `tabStock Entry Detail` detail
+            INNER JOIN `tabStock Entry` parent ON parent.name = detail.parent
+            WHERE parent.company = %s
+              AND detail.modified > %s
+              AND detail.modified <= %s
+            ORDER BY detail.modified ASC, detail.name ASC
+            """,
+            query_values,
+        )
+        stock_ledger_entries = _inventory_audit_rows(
+            """
+            SELECT
+                name,
+                voucher_type,
+                voucher_no,
+                voucher_detail_no,
+                item_code,
+                warehouse,
+                actual_qty,
+                qty_after_transaction,
+                is_cancelled,
+                company,
+                creation,
+                modified
+            FROM `tabStock Ledger Entry`
+            WHERE company = %s AND modified > %s AND modified <= %s
+            ORDER BY modified ASC, name ASC
+            """,
+            query_values,
+        )
+        bin_rows = _inventory_audit_rows(
+            """
+            SELECT name, item_code, warehouse, actual_qty
+            FROM `tabBin`
+            WHERE warehouse = %s
+            ORDER BY item_code ASC, warehouse ASC, name ASC
+            """,
+            (warehouse,),
+        )
+    finally:
+        # Close the explicit read-only snapshot without Frappe reopening an
+        # implicit transaction, even if any audit query fails.
+        frappe.db.sql("ROLLBACK")
+
+    query_identity = {
+        "time_contract": {
+            "boundary_source": "explicit_utc_z",
+            "database_storage": "frappe_site_timezone_naive_datetime",
+            "conversion": "utc_to_site_timezone_before_sql_v1",
+        },
+        "stock_entries": {
+            "doctype": "Stock Entry",
+            "company_field": "company",
+            "mutation_time_field": "modified",
+            "predicate": "company = :company AND modified > :window_start_site_datetime AND modified <= :window_end_site_datetime",
+            "fields": [
+                "name",
+                "docstatus",
+                "purpose",
+                "stock_entry_type",
+                "company",
+                "creation",
+                "modified",
+            ],
+            "order_by": "modified asc, name asc",
+        },
+        "stock_entry_details": {
+            "doctype": "Stock Entry Detail",
+            "company_join": "Stock Entry.name = Stock Entry Detail.parent",
+            "company_field": "Stock Entry.company",
+            "mutation_time_field": "Stock Entry Detail.modified",
+            "predicate": "Stock Entry.company = :company AND Stock Entry Detail.modified > :window_start_site_datetime AND Stock Entry Detail.modified <= :window_end_site_datetime",
+            "fields": [
+                "name",
+                "parent",
+                "item_code",
+                "s_warehouse",
+                "t_warehouse",
+                "qty",
+                "transfer_qty",
+                "stock_uom",
+                "creation",
+                "modified",
+            ],
+            "order_by": "modified asc, name asc",
+        },
+        "stock_ledger_entries": {
+            "doctype": "Stock Ledger Entry",
+            "company_field": "company",
+            "mutation_time_field": "modified",
+            "predicate": "company = :company AND modified > :window_start_site_datetime AND modified <= :window_end_site_datetime",
+            "fields": [
+                "name",
+                "voucher_type",
+                "voucher_no",
+                "voucher_detail_no",
+                "item_code",
+                "warehouse",
+                "actual_qty",
+                "qty_after_transaction",
+                "is_cancelled",
+                "company",
+                "creation",
+                "modified",
+            ],
+            "order_by": "modified asc, name asc",
+        },
+        "bins": {
+            "doctype": "Bin",
+            "warehouse_field": "warehouse",
+            "predicate": "warehouse = :warehouse",
+            "fields": ["name", "item_code", "warehouse", "actual_qty"],
+            "order_by": "item_code asc, warehouse asc, name asc",
+        },
+    }
+    result_rows = {
+        "stock_entries": stock_entries,
+        "stock_entry_details": stock_entry_details,
+        "stock_ledger_entries": stock_ledger_entries,
+    }
+    return {
+        "schema_version": "1",
+        "source": "kopos_connector.smoke.inventory_mutation_audit",
+        "read_only": True,
+        "complete": True,
+        "snapshot_consistency": "mariadb_repeatable_read_read_only_v1",
+        "device_id": device_id,
+        "company": company,
+        "warehouse": warehouse,
+        "site_timezone": site_timezone,
+        "captured_at_utc": _format_explicit_utc(captured_utc),
+        "window_start_utc": _format_explicit_utc(start_utc),
+        "window_end_utc": _format_explicit_utc(captured_utc),
+        "window_start_site_datetime": _format_site_datetime(start_site),
+        "window_end_site_datetime": _format_site_datetime(end_site),
+        "query_identity": query_identity,
+        **result_rows,
+        "result_counts": {
+            fieldname: len(rows) for fieldname, rows in result_rows.items()
+        },
+        "result_sha256": {
+            fieldname: _canonical_json_sha256(rows)
+            for fieldname, rows in result_rows.items()
+        },
+        "bin_snapshot": {
+            "row_count": len(bin_rows),
+            "rows_sha256": _canonical_json_sha256(bin_rows),
+        },
+    }
+
+
+def _parse_explicit_utc_timestamp(
+    value: Any,
+    fieldname: str,
+    *,
+    optional: bool = False,
+) -> datetime | None:
+    text = cstr(value).strip()
+    if not text and optional:
+        return None
+    if not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z",
+        text,
+    ):
+        frappe.throw(f"{fieldname} must be an explicit UTC timestamp", frappe.ValidationError)
+    try:
+        parsed = datetime.fromisoformat(text[:-1] + "+00:00")
+    except (TypeError, ValueError) as error:
+        frappe.throw(f"{fieldname} must be an explicit UTC timestamp", frappe.ValidationError)
+        raise AssertionError("frappe.throw must raise") from error
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        frappe.throw(f"{fieldname} must be an explicit UTC timestamp", frappe.ValidationError)
+    return parsed.astimezone(timezone.utc)
+
+
+def _coerce_site_datetime(value: Any, fieldname: str) -> datetime:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    try:
+        parsed = datetime.fromisoformat(cstr(value).strip())
+    except (TypeError, ValueError) as error:
+        frappe.throw(f"{fieldname} is invalid", frappe.ValidationError)
+        raise AssertionError("frappe.throw must raise") from error
+    return parsed.replace(tzinfo=None)
+
+
+def _format_explicit_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
+
+
+def _format_site_datetime(value: datetime) -> str:
+    return value.replace(tzinfo=None).isoformat(sep=" ", timespec="microseconds")
+
+
+def _inventory_audit_rows(query: str, values: tuple[Any, ...]) -> list[dict[str, Any]]:
+    return [
+        {
+            cstr(key): _inventory_json_value(value)
+            for key, value in dict(row).items()
+        }
+        for row in (frappe.db.sql(query, values, as_dict=True) or [])
+    ]
+
+
+def _inventory_json_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return _format_site_datetime(value)
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="strict")
+    if isinstance(value, list):
+        return [_inventory_json_value(row) for row in value]
+    if isinstance(value, dict):
+        return {
+            cstr(key): _inventory_json_value(row) for key, row in value.items()
+        }
+    return value
+
+
+def _canonical_json_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _collect_smoke_business_state(
     device_id: str,
     *,
     ingredient_warehouse: Any = None,
+    company: Any = None,
+    site_timezone: Any = None,
+    inventory_window_start_utc: str | None = None,
+    include_inventory_regression: bool = False,
 ) -> dict[str, Any]:
+    inventory_evidence: dict[str, Any] = {
+        "inventory_evaluation": "excluded_not_evaluated",
+    }
+    if include_inventory_regression:
+        inventory_evidence = {
+            "ingredient_stock_entries": None,
+            "ingredient_bin_balances": None,
+            "inventory_mutation_audit": _collect_inventory_mutation_audit(
+                device_id=device_id,
+                company=cstr(company).strip(),
+                warehouse=cstr(ingredient_warehouse).strip(),
+                site_timezone=cstr(site_timezone).strip(),
+                window_start_utc=inventory_window_start_utc,
+            ),
+            "inventory_evaluation": "inventory_regression",
+        }
+    shift_fields = [
+        "name",
+        "shift_code",
+        "device_id",
+        "staff_id",
+        "status",
+        "opened_at",
+        "closed_at",
+        "opening_float",
+        "expected_cash",
+        "counted_cash",
+        "cash_variance",
+        "company",
+    ]
+    if include_inventory_regression:
+        shift_fields.append("warehouse")
     fb_shifts = _get_rows(
         "FB Shift",
         filters={"device_id": device_id},
-        fields=[
-            "name",
-            "shift_code",
-            "device_id",
-            "staff_id",
-            "status",
-            "opened_at",
-            "closed_at",
-            "opening_float",
-            "expected_cash",
-            "counted_cash",
-            "cash_variance",
-            "warehouse",
-            "company",
-        ],
+        fields=shift_fields,
         order_by="creation asc, name asc",
     )
     for shift in fb_shifts:
@@ -3159,41 +3753,43 @@ def _collect_smoke_business_state(
             "cash_variance",
         ):
             shift[fieldname] = _exact_money(shift.get(fieldname))
+    order_fields = [
+        "name",
+        "order_id",
+        "display_number",
+        "order_type",
+        "catalog_version",
+        "external_idempotency_key",
+        "device_id",
+        "shift",
+        "staff_id",
+        "company",
+        "status",
+        "invoice_status",
+        "sales_invoice",
+        "grand_total",
+        "net_total",
+        "tax_total",
+        "tax_rate",
+        "rounding_adjustment",
+        "currency",
+        "docstatus",
+        "sale_datetime",
+        "pricing_mode",
+        "promotion_snapshot_version",
+        "promotion_snapshot_hash",
+        "promotion_reconciliation_status",
+        "promotion_payload_json",
+        "creation",
+    ]
+    if include_inventory_regression:
+        order_fields.extend(
+            ["booth_warehouse", "stock_status", "ingredient_stock_entry"]
+        )
     fb_orders = _get_rows(
         "FB Order",
         filters={"device_id": device_id},
-        fields=[
-            "name",
-            "order_id",
-            "display_number",
-            "order_type",
-            "catalog_version",
-            "external_idempotency_key",
-            "device_id",
-            "shift",
-            "staff_id",
-            "booth_warehouse",
-            "company",
-            "status",
-            "invoice_status",
-            "stock_status",
-            "sales_invoice",
-            "ingredient_stock_entry",
-            "grand_total",
-            "net_total",
-            "tax_total",
-            "tax_rate",
-            "rounding_adjustment",
-            "currency",
-            "docstatus",
-            "sale_datetime",
-            "pricing_mode",
-            "promotion_snapshot_version",
-            "promotion_snapshot_hash",
-            "promotion_reconciliation_status",
-            "promotion_payload_json",
-            "creation",
-        ],
+        fields=order_fields,
         order_by="creation asc, name asc",
     )
     for order in fb_orders:
@@ -3214,31 +3810,43 @@ def _collect_smoke_business_state(
         )
     sales_invoices = _collect_sales_invoices(device_id)
     promotion_snapshots = _collect_promotion_snapshots(fb_orders)
-    ingredient_stock_entries = _collect_ingredient_stock_entries(fb_orders)
-    ingredient_bin_balances = _collect_ingredient_bin_balances(
-        ingredient_warehouse
-    )
+    if include_inventory_regression:
+        inventory_evidence["ingredient_stock_entries"] = (
+            _collect_ingredient_stock_entries(fb_orders)
+        )
+        inventory_evidence["ingredient_bin_balances"] = (
+            _collect_ingredient_bin_balances(ingredient_warehouse)
+        )
     manual_qr_reconciliations = _collect_manual_qr_reconciliations(device_id)
     maybank_qr_transactions = _collect_maybank_qr_transactions(device_id)
-    return_records = _collect_return_records(fb_orders)
+    return_records = _collect_return_records(
+        fb_orders,
+        include_inventory_regression=include_inventory_regression,
+    )
     projections = _collect_projection_state(fb_orders, fb_shifts, return_records)
     legacy_active_paths = _collect_legacy_active_paths(device_id)
     idempotency = _build_idempotency_summary(fb_orders, sales_invoices)
-    demo_recipe = frappe.db.get_value(
-        "Item", DEMO_DRINK_ITEM, "custom_fb_default_recipe"
-    ) or DEMO_RECIPE_CODE
+    demo_recipe = None
+    if include_inventory_regression:
+        demo_recipe = frappe.db.get_value(
+            "Item", DEMO_DRINK_ITEM, "custom_fb_default_recipe"
+        ) or DEMO_RECIPE_CODE
+    optional_inventory_summary: dict[str, Any] = {}
+    if include_inventory_regression:
+        optional_inventory_summary["modifier_groups"] = len(
+            frappe.get_all("FB Modifier Group")
+        )
 
     return {
         "items": len(frappe.get_all("Item", filters={"is_sales_item": 1})),
-        "modifier_groups": len(frappe.get_all("FB Modifier Group")),
+        **optional_inventory_summary,
         "demo_drink": DEMO_DRINK_ITEM,
         "demo_recipe": demo_recipe,
         "fb_shifts": fb_shifts,
         "fb_orders": fb_orders,
         "sales_invoices": sales_invoices,
         "promotion_snapshots": promotion_snapshots,
-        "ingredient_stock_entries": ingredient_stock_entries,
-        "ingredient_bin_balances": ingredient_bin_balances,
+        **inventory_evidence,
         "manual_qr_reconciliations": manual_qr_reconciliations,
         "maybank_qr_transactions": maybank_qr_transactions,
         "maybank_qr_policy": _maybank_qr_policy(),
@@ -3303,7 +3911,6 @@ def build_smoke_business_assertions(
     fb_shifts = _list(data.get("fb_shifts"))
     fb_orders = _list(data.get("fb_orders"))
     invoices = _list(data.get("sales_invoices"))
-    ingredient_stock_entries = _list(data.get("ingredient_stock_entries"))
     returns = _list(data.get("return_records"))
     voids = _list(data.get("void_records"))
     maybank_qr_transactions = _list(data.get("maybank_qr_transactions"))
@@ -3325,6 +3932,12 @@ def build_smoke_business_assertions(
     device_state = state.get("device") if isinstance(state, dict) else None
 
     failed_projections = _list(projection_statuses.get("failed"))
+    failed_commercial_projections = [
+        row
+        for row in failed_projections
+        if str(row.get("projection_type") or "").strip()
+        not in {"Stock Issue", "Stock Entry"}
+    ]
     active_legacy_total = sum(
         int(value.get("count") or 0)
         for value in legacy_active_paths.values()
@@ -3349,11 +3962,6 @@ def build_smoke_business_assertions(
     duplicate_keys = _list(idempotency.get("duplicate_sales_invoice_keys"))
     sales_invoice_counts = idempotency.get("sales_invoice_counts_by_idempotency_key") or {}
     invoices_by_name = {row.get("name"): row for row in invoices if row.get("name")}
-    stock_entries_by_name = {
-        row.get("name"): row
-        for row in ingredient_stock_entries
-        if row.get("name")
-    }
     dated_orders = [row for row in fb_orders if row.get("sale_datetime")]
     modifier_proof_required = any(
         str(key).startswith("history-") for key in expected_keys
@@ -3439,11 +4047,10 @@ def build_smoke_business_assertions(
 
     if modifier_proof_required:
         expect(
-            "modifier_resolved_sale_audit_proven",
+            "modifier_commercial_snapshot_audit_proven",
             bool(modifier_cases)
             and all(
-                bool(case["item"].get("resolved_sale"))
-                and any(
+                any(
                     modifier.get("modifier") == SMOKE_SIZE_LARGE_CODE
                     and _money(modifier.get("price_adjustment")) == 2
                     for modifier in _list(case["item"].get("selected_modifiers"))
@@ -3512,22 +4119,15 @@ def build_smoke_business_assertions(
         posted_sale_invoices,
     )
     expect(
-        "stock_projection_state_proven",
-        all(row.get("stock_status") in {"Posted", "Reversed", "Pending"} for row in fb_orders),
-        fb_orders,
-    )
-    expect(
-        "ingredient_stock_entry_sale_datetime_preserved",
-        bool(ingredient_stock_entries)
-        and all(
-            not order.get("ingredient_stock_entry")
-            or _projection_posts_at_sale_datetime(
-                order,
-                stock_entries_by_name.get(order.get("ingredient_stock_entry")),
-            )
-            for order in dated_orders
-        ),
-        {"orders": dated_orders, "stock_entries": ingredient_stock_entries},
+        "sale_registration_does_not_require_inventory",
+        bool(submitted_orders)
+        and all(order.get("sales_invoice") for order in submitted_orders),
+        {
+            "orders": submitted_orders,
+            "inventory_acceptance": False,
+            "inventory_evaluation": data.get("inventory_evaluation")
+            or "excluded_not_evaluated",
+        },
     )
     expect("refund_return_record_proven", bool(returns), returns)
     expect("refund_return_sales_invoice_proven", bool(submitted_return_invoices), invoices)
@@ -3564,7 +4164,11 @@ def build_smoke_business_assertions(
         bool(order_history_data.get("invoice_count")),
         order_history_data,
     )
-    expect("no_failed_projections", not failed_projections, failed_projections)
+    expect(
+        "no_failed_commercial_projections",
+        not failed_commercial_projections,
+        failed_commercial_projections,
+    )
     expect(
         "duplicate_qr_accounting_integrity_proven",
         all(
@@ -3615,11 +4219,14 @@ def build_smoke_business_assertions(
             "fb_shifts": len(fb_shifts),
             "fb_orders": len(fb_orders),
             "sales_invoices": len(invoices),
-            "ingredient_stock_entries": len(ingredient_stock_entries),
+            "inventory_acceptance": False,
+            "inventory_evaluation": data.get("inventory_evaluation")
+            or "excluded_not_evaluated",
             "return_records": len(returns),
             "void_records": len(voids),
             "duplicate_qr_incidents": len(duplicate_qr_incidents),
             "failed_projections": len(failed_projections),
+            "failed_commercial_projections": len(failed_commercial_projections),
             "active_legacy_paths": active_legacy_total,
             "expected_idempotency_keys": expected_keys,
         },
@@ -4806,10 +5413,9 @@ def _collect_fb_order_items(order_doc: Any) -> list[dict[str, Any]]:
     for line in getattr(order_doc, "items", None) or []:
         resolved_sale_name = _value(line, "resolved_sale")
         modifier_rows = list(getattr(line, "selected_modifiers", None) or [])
-        if not modifier_rows and resolved_sale_name:
-            resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
-            modifier_rows = list(
-                getattr(resolved_sale, "selected_modifiers", None) or []
+        if not modifier_rows:
+            modifier_rows = _parse_json_list(
+                _value(line, "commercial_modifier_snapshot_json")
             )
         rows.append(
             {
@@ -4969,6 +5575,8 @@ def _collect_invoice_items(invoice_doc: Any) -> list[dict[str, Any]]:
     for item in getattr(invoice_doc, "items", []) or []:
         rows.append(
             {
+                "name": _value(item, "name"),
+                "sales_invoice_item": _value(item, "sales_invoice_item"),
                 "item_code": _value(item, "item_code"),
                 "qty": _decimal_text(_value(item, "qty")),
                 "rate": _decimal_text(_value(item, "rate")),
@@ -5000,16 +5608,38 @@ def _collect_invoice_payments(invoice_doc: Any) -> list[dict[str, Any]]:
     rows = []
     for payment in getattr(invoice_doc, "payments", []) or []:
         account = _value(payment, "account")
+        mode_of_payment = _value(payment, "mode_of_payment")
+        account_evidence = (
+            frappe.db.get_value(
+                "Account",
+                account,
+                ["account_currency", "account_type", "company"],
+                as_dict=True,
+            )
+            if account
+            else None
+        )
+        configured_account = (
+            frappe.db.get_value(
+                "Mode of Payment Account",
+                {
+                    "parent": mode_of_payment,
+                    "company": _value(invoice_doc, "company"),
+                },
+                "default_account",
+            )
+            if mode_of_payment and _value(invoice_doc, "company")
+            else None
+        )
         rows.append(
             {
-                "mode_of_payment": _value(payment, "mode_of_payment"),
+                "mode_of_payment": mode_of_payment,
                 "amount": _exact_money(_value(payment, "amount")),
                 "account": account,
-                "account_currency": (
-                    frappe.db.get_value("Account", account, "account_currency")
-                    if account
-                    else None
-                ),
+                "account_currency": _value(account_evidence, "account_currency"),
+                "account_type": _value(account_evidence, "account_type"),
+                "account_company": _value(account_evidence, "company"),
+                "configured_mode_of_payment_account": configured_account,
                 "payment_id": _value(payment, "custom_fb_source_payment_id"),
             }
         )
@@ -5082,48 +5712,58 @@ def _collect_invoice_gl_entries(invoice_name: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _collect_return_records(fb_orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _collect_return_records(
+    fb_orders: list[dict[str, Any]],
+    *,
+    include_inventory_regression: bool = False,
+) -> list[dict[str, Any]]:
     order_names = [row.get("name") for row in fb_orders if row.get("name")]
     filters: dict[str, Any] = {}
     if order_names:
         filters = {"fb_order": ["in", order_names]}
+    return_fields = [
+        "name",
+        "return_id",
+        "fb_order",
+        "original_sales_invoice",
+        "return_sales_invoice",
+        "refund_method",
+        "request_fingerprint",
+        "approval_token_id",
+        "approved_by_manager",
+        "settlement_doctype",
+        "settlement_document",
+        "settlement_status",
+        "settlement_amount",
+        "settlement_tenders_json",
+        "status",
+        "docstatus",
+    ]
+    if include_inventory_regression:
+        return_fields.append("return_to_stock")
     rows = _get_rows(
         "FB Return Event",
         filters=filters,
-        fields=[
-            "name",
-            "return_id",
-            "fb_order",
-            "original_sales_invoice",
-            "return_sales_invoice",
-            "refund_method",
-            "request_fingerprint",
-            "approval_token_id",
-            "approved_by_manager",
-            "settlement_doctype",
-            "settlement_document",
-            "settlement_status",
-            "settlement_amount",
-            "settlement_tenders_json",
-            "return_to_stock",
-            "status",
-            "docstatus",
-        ],
+        fields=return_fields,
         order_by="creation asc, name asc",
     )
     return_names = _unique_names(row.get("name") for row in rows)
+    line_fields = [
+        "name",
+        "parent",
+        "idx",
+        "original_sales_invoice_item",
+        "original_fb_order_line_ref",
+        "qty_returned",
+        "commercial_modifier_snapshot_json",
+    ]
+    if include_inventory_regression:
+        line_fields.extend(["original_resolved_sale", "reversal_stock_entry"])
     line_rows = (
         _get_rows(
             "FB Return Event Line",
             filters={"parent": ["in", return_names]},
-            fields=[
-                "name",
-                "parent",
-                "idx",
-                "original_resolved_sale",
-                "qty_returned",
-                "reversal_stock_entry",
-            ],
+            fields=line_fields,
             order_by="parent asc, idx asc, name asc",
         )
         if return_names
@@ -5137,18 +5777,41 @@ def _collect_return_records(fb_orders: list[dict[str, Any]]) -> list[dict[str, A
         lines_by_parent.setdefault(parent, []).append(
             {
                 "name": line.get("name"),
-                "original_resolved_sale": line.get("original_resolved_sale"),
+                "original_sales_invoice_item": line.get(
+                    "original_sales_invoice_item"
+                ),
+                "original_fb_order_line_ref": line.get(
+                    "original_fb_order_line_ref"
+                ),
                 "qty_returned": _decimal_text(line.get("qty_returned")),
-                "reversal_stock_entry": line.get("reversal_stock_entry"),
+                "commercial_modifier_snapshot_json": line.get(
+                    "commercial_modifier_snapshot_json"
+                ),
+                **(
+                    {
+                        "original_resolved_sale": line.get(
+                            "original_resolved_sale"
+                        ),
+                        "reversal_stock_entry": line.get(
+                            "reversal_stock_entry"
+                        ),
+                    }
+                    if include_inventory_regression
+                    else {}
+                ),
             }
         )
 
-    reversal_entries = _collect_stock_entries(
-        _unique_names(
-            line.get("reversal_stock_entry")
-            for line in line_rows
-            if line.get("reversal_stock_entry")
+    reversal_entries = (
+        _collect_stock_entries(
+            _unique_names(
+                line.get("reversal_stock_entry")
+                for line in line_rows
+                if line.get("reversal_stock_entry")
+            )
         )
+        if include_inventory_regression
+        else []
     )
     reversal_by_name = {
         str(entry.get("name") or ""): entry
@@ -5156,17 +5819,19 @@ def _collect_return_records(fb_orders: list[dict[str, Any]]) -> list[dict[str, A
         if entry.get("name")
     }
     for row in rows:
-        row["return_to_stock"] = bool(row.get("return_to_stock"))
+        if include_inventory_regression:
+            row["return_to_stock"] = bool(row.get("return_to_stock"))
         row["settlement_amount"] = _money(row.get("settlement_amount"))
         lines = lines_by_parent.get(str(row.get("name") or ""), [])
         row["lines"] = lines
-        row["reversal_stock_entries"] = [
-            reversal_by_name[name]
-            for name in _unique_names(
-                line.get("reversal_stock_entry") for line in lines
-            )
-            if name in reversal_by_name
-        ]
+        if include_inventory_regression:
+            row["reversal_stock_entries"] = [
+                reversal_by_name[name]
+                for name in _unique_names(
+                    line.get("reversal_stock_entry") for line in lines
+                )
+                if name in reversal_by_name
+            ]
         return_invoice = str(row.get("return_sales_invoice") or "")
         row["return_outstanding_amount"] = (
             _money(

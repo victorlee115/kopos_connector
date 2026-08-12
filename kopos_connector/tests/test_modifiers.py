@@ -5,6 +5,8 @@ import unittest
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
 
 install_fake_frappe_modules()
@@ -249,6 +251,7 @@ class TestModifierTotalValidation(unittest.TestCase):
         self.assertEqual(result["total"], 0)
 
 
+@pytest.mark.inventory_regression
 class TestBatchResolveLinks(unittest.TestCase):
     """Unit tests for batch link resolution."""
 
@@ -287,6 +290,7 @@ class TestBatchResolveLinks(unittest.TestCase):
         self.assertEqual(result["options"], set())
 
 
+@pytest.mark.inventory_regression
 class TestCatalogModifierGroups(unittest.TestCase):
     @patch("kopos_connector.api.catalog.frappe.get_all")
     def test_get_modifier_groups_includes_parent_option_id(self, mock_get_all):
@@ -435,6 +439,7 @@ class TestCatalogModifierGroups(unittest.TestCase):
 
 
 class TestCatalogFBSource(unittest.TestCase):
+    @pytest.mark.inventory_regression
     @patch("kopos_connector.api.catalog.frappe.db.sql")
     def test_get_modifier_options_reads_fb_modifiers_only(self, mock_sql):
         from kopos_connector.api.catalog import get_modifier_options
@@ -473,6 +478,7 @@ class TestCatalogFBSource(unittest.TestCase):
         self.assertIn("tabFB Modifier Group", query)
         self.assertNotIn("tabKoPOS Modifier", query)
 
+    @pytest.mark.inventory_regression
     @patch("kopos_connector.api.catalog.frappe.get_all")
     def test_get_item_modifier_groups_maps_active_fb_recipe_links(self, mock_get_all):
         from kopos_connector.api.catalog import get_item_modifier_groups_map
@@ -553,8 +559,9 @@ class TestCatalogFBSource(unittest.TestCase):
 
         self.assertEqual(result, {"ITEM-1": ["grp-temp", "grp-ice"]})
 
+    @pytest.mark.inventory_regression
     @patch("kopos_connector.api.catalog.frappe.get_all")
-    def test_get_item_modifier_groups_rejects_recipe_bounds_not_on_catalog_wire(
+    def test_get_item_modifier_groups_uses_published_group_rules_for_legacy_recipe_override(
         self, mock_get_all
     ):
         from kopos_connector.api.catalog import get_item_modifier_groups_map
@@ -586,10 +593,7 @@ class TestCatalogFBSource(unittest.TestCase):
 
         mock_get_all.side_effect = fake_get_all
 
-        with self.assertRaisesRegex(
-            Exception,
-            "changes the selection rules.*use a separate modifier group",
-        ):
+        self.assertEqual(
             get_item_modifier_groups_map(
                 [{"id": "LATTE"}],
                 company="JiJi",
@@ -599,8 +603,11 @@ class TestCatalogFBSource(unittest.TestCase):
                         "recipe_version": 1,
                     }
                 },
-            )
+            ),
+            {"LATTE": ["RECIPE_SPECIFIC_SIZE"]},
+        )
 
+    @pytest.mark.inventory_regression
     @patch("kopos_connector.api.catalog.frappe.get_all")
     def test_catalog_recipe_snapshot_exposes_exact_active_version(self, mock_get_all):
         from kopos_connector.api.catalog import get_item_recipe_snapshots_map
@@ -626,8 +633,9 @@ class TestCatalogFBSource(unittest.TestCase):
             {"ITEM-1": {"recipe_id": "RECIPE-ITEM-1-V3", "recipe_version": 3}},
         )
 
+    @pytest.mark.inventory_regression
     @patch("kopos_connector.api.catalog.frappe.get_all")
-    def test_get_item_modifier_groups_requires_active_recipe_for_recipe_managed_item(
+    def test_get_item_modifier_groups_does_not_block_item_without_active_recipe(
         self, mock_get_all
     ):
         from kopos_connector.api.catalog import get_item_modifier_groups_map
@@ -639,7 +647,7 @@ class TestCatalogFBSource(unittest.TestCase):
 
         mock_get_all.side_effect = fake_get_all
 
-        with self.assertRaises(Exception) as context:
+        self.assertEqual(
             get_item_modifier_groups_map(
                 [
                     {
@@ -649,14 +657,46 @@ class TestCatalogFBSource(unittest.TestCase):
                     }
                 ],
                 company="JiJi",
-            )
+            ),
+            {},
+        )
 
-        self.assertIn(
-            "No active FB Recipe was found for item(s): ITEM-1",
-            str(context.exception),
+    @pytest.mark.inventory_regression
+    @patch("kopos_connector.api.catalog.frappe.get_all")
+    def test_recipe_snapshot_uses_newest_row_without_blocking_on_stale_duplicate(
+        self, mock_get_all
+    ):
+        from kopos_connector.api.catalog import get_item_recipe_snapshots_map
+
+        mock_get_all.return_value = [
+            {
+                "name": "RECIPE-V3",
+                "sellable_item": "ITEM-1",
+                "effective_from": None,
+                "effective_to": None,
+                "version_no": 3,
+                "modified": "2026-08-01 00:00:00",
+            },
+            {
+                "name": "RECIPE-V2-STALE",
+                "sellable_item": "ITEM-1",
+                "effective_from": None,
+                "effective_to": None,
+                "version_no": 2,
+                "modified": "2026-07-01 00:00:00",
+            },
+        ]
+
+        self.assertEqual(
+            get_item_recipe_snapshots_map(
+                [{"id": "ITEM-1", "custom_fb_recipe_required": 1}],
+                company="JiJi",
+            ),
+            {"ITEM-1": {"recipe_id": "RECIPE-V3", "recipe_version": 3}},
         )
 
 
+@pytest.mark.inventory_regression
 class TestFBModifierGroupDependencies(unittest.TestCase):
     @patch(
         "kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group.frappe.get_cached_doc"

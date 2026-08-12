@@ -16,7 +16,7 @@ class TestEndToEndSaleFlow(FrappeTestCase):
     def setUp(self) -> None:
         frappe.set_user("Administrator")
         self.shift = create_open_test_shift(
-            prefix="KOPOS-E2E-SALE", replenish_stock=True
+            prefix="KOPOS-E2E-SALE", replenish_stock=False
         )
 
     def tearDown(self) -> None:
@@ -70,15 +70,23 @@ class TestEndToEndSaleFlow(FrappeTestCase):
         )
         self.assertEqual(sales_invoice.grand_total, 24)
 
-    def test_sale_creates_submitted_ingredient_stock_issue(self) -> None:
+    def test_sale_does_not_create_or_wait_for_inventory_documents(self) -> None:
         _, _, fb_order = self.submit_sale()
 
-        self.assertTrue(fb_order.ingredient_stock_entry)
-        stock_entry = frappe.get_doc("Stock Entry", fb_order.ingredient_stock_entry)
-        self.assertEqual(stock_entry.docstatus, 1)
-        self.assertEqual(stock_entry.stock_entry_type, "Material Issue")
-        self.assertGreater(len(stock_entry.items), 0)
-        self.assertTrue(all(row.s_warehouse == self.shift.warehouse for row in stock_entry.items))
+        self.assertFalse(fb_order.ingredient_stock_entry)
+        self.assertEqual(fb_order.stock_status, "Pending")
+        self.assertEqual(
+            frappe.get_all(
+                "FB Projection Log",
+                filters={
+                    "source_doctype": "FB Order",
+                    "source_name": fb_order.name,
+                    "projection_type": ["in", ["Stock Issue", "Stock Entry"]],
+                },
+                pluck="name",
+            ),
+            [],
+        )
 
     def test_sale_projection_bundle_is_terminal_success(self) -> None:
         _, _, fb_order = self.submit_sale()
@@ -91,28 +99,57 @@ class TestEndToEndSaleFlow(FrappeTestCase):
 
         self.assertEqual(
             {row.projection_type for row in logs},
-            {"FB Shift", "Sales Invoice", "Stock Issue"},
+            {"FB Shift", "Sales Invoice"},
         )
         self.assertTrue(all(row.state == "Succeeded" for row in logs))
         self.assertTrue(all(row.target_name for row in logs))
 
-    def test_sale_persists_resolved_recipe_components(self) -> None:
+    def test_sale_registration_does_not_require_resolved_recipe_components(self) -> None:
         _, _, fb_order = self.submit_sale()
         resolved_sales = frappe.get_all(
             "FB Resolved Sale",
             filters={"fb_order": fb_order.name},
             pluck="name",
         )
-        self.assertEqual(len(resolved_sales), 1)
-
-        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sales[0])
-        self.assertEqual(resolved_sale.fb_order, fb_order.name)
-        self.assertEqual(resolved_sale.booth_warehouse, self.shift.warehouse)
-        self.assertGreater(len(resolved_sale.resolved_components), 0)
+        self.assertEqual(resolved_sales, [])
+        self.assertTrue(fb_order.items)
         self.assertTrue(
-            all(
-                row.item and row.stock_uom and row.stock_qty > 0
-                for row in resolved_sale.resolved_components
-                if row.affects_stock
-            )
+            all(row.resolved_components_snapshot == "[]" for row in fb_order.items)
+        )
+
+    def test_corrupt_optional_recipe_and_modifier_metadata_cannot_block_sale(self) -> None:
+        payload = build_sen_v1_sale_payload(
+            self.shift,
+            prefix="KOPOS-E2E-CORRUPT-OPTIONAL",
+        )
+        item = payload["order"]["items"][0]
+        item["recipe"] = "MISSING-OPTIONAL-RECIPE"
+        item["recipe_version"] = {"invalid": "shape"}
+        item["modifiers"] = [
+            None,
+            {
+                "modifier_group": "",
+                "modifier": "ORPHAN",
+                "price_adjustment_sen": 0,
+            },
+            {
+                "modifier_group": "MISSING-GROUP",
+                "modifier": "",
+                "price_adjustment_sen": "invalid",
+            },
+        ]
+
+        result = submit_order_payload(payload)
+        fb_order = frappe.get_doc("FB Order", result["fb_order"])
+        sales_invoice = frappe.get_doc("Sales Invoice", result["sales_invoice"])
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(sales_invoice.docstatus, 1)
+        self.assertEqual(sales_invoice.update_stock, 0)
+        self.assertEqual(sales_invoice.outstanding_amount, 0)
+        self.assertFalse(fb_order.items[0].recipe)
+        self.assertFalse(fb_order.items[0].resolved_sale)
+        self.assertEqual(
+            fb_order.items[0].commercial_modifier_snapshot_json,
+            "[]",
         )

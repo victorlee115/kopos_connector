@@ -31,6 +31,7 @@
         "modifiers_section",
         "selected_modifiers",
         "snapshot_section",
+        "commercial_modifier_snapshot_json",
         "promotion_allocations_json",
         "resolved_components_snapshot",
         "remarks"
@@ -166,6 +167,14 @@
             "fieldname": "snapshot_section",
             "fieldtype": "Section Break",
             "label": "Resolved Snapshot"
+        },
+        {
+            "fieldname": "commercial_modifier_snapshot_json",
+            "fieldtype": "Code",
+            "hidden": 1,
+            "label": "Commercial Modifier Snapshot",
+            "options": "JSON",
+            "read_only": 1
         },
         {
             "fieldname": "promotion_allocations_json",

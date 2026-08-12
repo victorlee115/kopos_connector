@@ -1564,60 +1564,21 @@ def _apply_fb_void_side_effects(invoice: Any) -> None:
     if fb_order_name:
         order_doc = frappe.get_doc("FB Order", fb_order_name)
         shift_name = frappe.utils.cstr(getattr(order_doc, "shift", shift_name)).strip() or shift_name
-        _cancel_fb_order_stock_entry(order_doc)
         _set_doc_field(order_doc, "status", "Cancelled")
         _set_doc_field(order_doc, "invoice_status", "Reversed")
-        _set_doc_field(order_doc, "stock_status", "Reversed")
-        _mark_fb_resolved_sales_cancelled(fb_order_name)
         _mark_fb_order_projections_reversed(order_doc)
     if shift_name:
         refresh_fb_shift_cash(shift_name)
 
 
-def _cancel_fb_order_stock_entry(order_doc: Any) -> None:
-    stock_entry_name = frappe.utils.cstr(
-        getattr(order_doc, "ingredient_stock_entry", "")
-    ).strip()
-    if not stock_entry_name:
-        if frappe.utils.cstr(getattr(order_doc, "stock_status", "")) == "Posted":
-            frappe.throw(
-                _("FB Order {0} has posted stock status but no Stock Entry").format(
-                    order_doc.name
-                ),
-                frappe.ValidationError,
-            )
-        return
-    stock_entry = frappe.get_doc("Stock Entry", stock_entry_name)
-    if getattr(stock_entry, "docstatus", 0) == 1:
-        flags = getattr(stock_entry, "flags", None)
-        if flags is not None:
-            flags.ignore_links = True
-        stock_entry.cancel()
-    elif getattr(stock_entry, "docstatus", 0) != 2:
-        frappe.throw(
-            _("Stock Entry {0} is not submitted or cancelled").format(stock_entry_name),
-            frappe.ValidationError,
-        )
-
-
-def _mark_fb_resolved_sales_cancelled(fb_order_name: str) -> None:
-    rows = frappe.get_all(
-        "FB Resolved Sale",
-        filters={"fb_order": fb_order_name},
-        fields=["name"],
-    )
-    for row in rows or []:
-        resolved_sale_name = frappe.utils.cstr(_row_value(row, "name")).strip()
-        if not resolved_sale_name:
-            continue
-        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
-        _set_doc_field(resolved_sale, "status", "Cancelled")
-
-
 def _mark_fb_order_projections_reversed(order_doc: Any) -> None:
     rows = frappe.get_all(
         "FB Projection Log",
-        filters={"source_doctype": "FB Order", "source_name": order_doc.name},
+        filters={
+            "source_doctype": "FB Order",
+            "source_name": order_doc.name,
+            "projection_type": ("in", ("Sales Invoice", "FB Shift")),
+        },
         fields=["name", "projection_type"],
     )
     for row in rows or []:
@@ -1625,14 +1586,15 @@ def _mark_fb_order_projections_reversed(order_doc: Any) -> None:
         if not log_name:
             continue
         projection_type = frappe.utils.cstr(_row_value(row, "projection_type")).strip()
+        # Keep the void path commercial-only even if an unusual database
+        # adapter ignores the query filter. Inventory records remain untouched.
+        if projection_type not in {"Sales Invoice", "FB Shift"}:
+            continue
         log_doc = frappe.get_doc("FB Projection Log", log_name)
         _set_doc_field(log_doc, "state", "Reversed")
         if projection_type == "Sales Invoice":
             _set_doc_field(log_doc, "target_doctype", "Sales Invoice")
             _set_doc_field(log_doc, "target_name", getattr(order_doc, "sales_invoice", None))
-        elif projection_type == "Stock Issue":
-            _set_doc_field(log_doc, "target_doctype", "Stock Entry")
-            _set_doc_field(log_doc, "target_name", getattr(order_doc, "ingredient_stock_entry", None))
         elif projection_type == "FB Shift":
             _set_doc_field(log_doc, "target_doctype", "FB Shift")
             _set_doc_field(log_doc, "target_name", getattr(order_doc, "shift", None))
@@ -1703,6 +1665,7 @@ def _to_public_fb_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "reason_text": payload.get("reason_text") or payload.get("refund_reason"),
         "refund_method": payload.get("refund_method"),
         "return_to_stock": payload.get("return_to_stock"),
+        "inventory_evaluation": payload.get("inventory_evaluation"),
         "lines": payload.get("lines"),
         "manager_approval_token": payload.get("manager_approval_token"),
     }

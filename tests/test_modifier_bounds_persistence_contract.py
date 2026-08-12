@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import pytest
 
-from kopos_connector.kopos.services.recipe.modifier_bounds import (
-    EffectiveModifierBounds,
-    resolve_effective_modifier_bounds,
-)
+pytestmark = pytest.mark.inventory_regression
 
 
 @pytest.mark.parametrize("persisted_unset", [None, "", 0, "0"])
 def test_frappe_int_zero_and_blank_are_the_same_unset_override(
     persisted_unset: object,
 ) -> None:
+    from kopos_connector.kopos.services.recipe.modifier_bounds import (
+        EffectiveModifierBounds,
+        resolve_effective_modifier_bounds,
+    )
+
     bounds = resolve_effective_modifier_bounds(
         selection_type="Single",
         group_is_required=1,
@@ -31,6 +33,11 @@ def test_frappe_int_zero_and_blank_are_the_same_unset_override(
 
 
 def test_nonzero_recipe_override_remains_explicit() -> None:
+    from kopos_connector.kopos.services.recipe.modifier_bounds import (
+        EffectiveModifierBounds,
+        resolve_effective_modifier_bounds,
+    )
+
     bounds = resolve_effective_modifier_bounds(
         selection_type="Multiple",
         group_is_required=0,

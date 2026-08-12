@@ -62,6 +62,7 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
 
         _copy_invoice_dimensions(original_invoice, return_invoice)
         _copy_promotion_provenance(original_invoice, return_invoice)
+        _copy_commercial_line_provenance(original_invoice, return_invoice)
         if hasattr(return_invoice, "custom_fb_idempotency_key"):
             return_invoice.custom_fb_idempotency_key = None
         return_invoice.is_pos = 0
@@ -70,6 +71,7 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
         else:
             return_invoice.payments = []
         _validate_full_standard_return_items(return_doc, return_invoice)
+        _clear_optional_return_links(return_doc, return_invoice)
         if hasattr(return_invoice, "set_missing_values"):
             return_invoice.set_missing_values()
         if hasattr(return_invoice, "calculate_taxes_and_totals"):
@@ -99,6 +101,35 @@ def _make_standard_return_invoice(original_invoice_name: str):
 
 
 def _validate_full_standard_return_items(return_doc: Any, return_invoice: Any) -> None:
+    commercial_lines = [
+        line
+        for line in (_value(return_doc, "lines") or [])
+        if cstr(_value(line, "original_sales_invoice_item")).strip()
+    ]
+    if commercial_lines:
+        requested = {
+            cstr(_value(line, "original_sales_invoice_item")).strip():
+                _quantity_decimal(
+                    _value(line, "qty_returned"), "requested return quantity"
+                )
+            for line in commercial_lines
+        }
+        returned = {
+            cstr(_value(item, "sales_invoice_item")).strip(): abs(
+                _quantity_decimal(
+                    _value(item, "qty"), "standard return quantity"
+                )
+            )
+            for item in (_value(return_invoice, "items") or [])
+            if cstr(_value(item, "sales_invoice_item")).strip()
+        }
+        if not returned or returned != requested:
+            frappe.throw(
+                "Standard Sales Invoice return does not exactly match the requested full commercial line identities",
+                frappe.ValidationError,
+            )
+        return
+
     requested: dict[str, Decimal] = {}
     for line in _value(return_doc, "lines") or []:
         resolved_sale = cstr(_value(line, "original_resolved_sale")).strip()
@@ -259,6 +290,53 @@ def _copy_promotion_provenance(
         unmatched_original_items.remove(original_item)
 
 
+def _copy_commercial_line_provenance(
+    original_invoice: Any,
+    return_invoice: Any,
+) -> None:
+    """Keep cashier-sale identity and modifier evidence on the credit note."""
+    original_items = list(_value(original_invoice, "items") or [])
+    unmatched_original_items = list(original_items)
+    for return_item in list(_value(return_invoice, "items") or []):
+        original_item = _match_original_promotion_item(
+            return_item,
+            unmatched_original_items,
+        )
+        if original_item is None:
+            frappe.throw(
+                "Cannot preserve commercial provenance: return item has no unique original Sales Invoice item",
+                frappe.ValidationError,
+            )
+        for fieldname in (
+            "custom_fb_order_line_ref",
+            "custom_kopos_modifiers",
+            "custom_kopos_modifier_total",
+            "custom_kopos_has_modifiers",
+        ):
+            if hasattr(original_item, fieldname):
+                setattr(return_item, fieldname, _value(original_item, fieldname))
+        unmatched_original_items.remove(original_item)
+
+
+def _clear_optional_return_links(return_doc: Any, return_invoice: Any) -> None:
+    """Remove recipe-era Links from a commercially identified credit note."""
+
+    commercial_lines = [
+        line
+        for line in (_value(return_doc, "lines") or [])
+        if cstr(_value(line, "original_sales_invoice_item")).strip()
+    ]
+    if not commercial_lines:
+        return
+    for return_item in list(_value(return_invoice, "items") or []):
+        # Standard ERPNext return mapping can copy this legacy Link before our
+        # commercial validation runs. It is optional recipe-era metadata and a
+        # deleted target must not make an exact full credit note fail Link
+        # validation.
+        if hasattr(return_item, "custom_fb_resolved_sale"):
+            return_item.custom_fb_resolved_sale = None
+
+
 def _match_original_promotion_item(
     return_item: Any,
     original_items: list[Any],
@@ -281,6 +359,8 @@ def _match_original_promotion_item(
 
     for fieldname, label in (
         ("custom_fb_order_line_ref", "FB Order line reference"),
+        # In-memory matching only for old standard return documents. The Link
+        # is cleared before insert and is never dereferenced or authoritative.
         ("custom_fb_resolved_sale", "FB Resolved Sale reference"),
     ):
         reference = cstr(_value(return_item, fieldname)).strip()

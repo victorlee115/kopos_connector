@@ -8,18 +8,35 @@
     "document_type": "Document",
     "engine": "InnoDB",
     "field_order": [
+        "original_sales_invoice_item",
+        "original_fb_order_line_ref",
         "original_resolved_sale",
         "qty_returned",
+        "commercial_modifier_snapshot_json",
         "reversal_stock_entry"
     ],
     "fields": [
+        {
+            "fieldname": "original_sales_invoice_item",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Original Sales Invoice Item",
+            "read_only": 1,
+            "search_index": 1
+        },
+        {
+            "fieldname": "original_fb_order_line_ref",
+            "fieldtype": "Data",
+            "in_list_view": 1,
+            "label": "Original FB Order Line Reference",
+            "read_only": 1
+        },
         {
             "fieldname": "original_resolved_sale",
             "fieldtype": "Link",
             "in_list_view": 1,
             "label": "Original Resolved Sale",
-            "options": "FB Resolved Sale",
-            "reqd": 1
+            "options": "FB Resolved Sale"
         },
         {
             "fieldname": "qty_returned",
@@ -27,6 +44,14 @@
             "in_list_view": 1,
             "label": "Qty Returned",
             "reqd": 1
+        },
+        {
+            "fieldname": "commercial_modifier_snapshot_json",
+            "fieldtype": "Code",
+            "hidden": 1,
+            "label": "Commercial Modifier Snapshot",
+            "options": "JSON",
+            "read_only": 1
         },
         {
             "fieldname": "reversal_stock_entry",

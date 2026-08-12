@@ -152,7 +152,14 @@ def test_public_process_refund_rejects_cross_device_before_return_event(monkeypa
             "idempotency_key": "refund-idem-1",
             "device_id": "DEVICE-B",
             "original_sales_invoice": "SINV-1",
-            "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 1}],
+            "lines": [
+                {
+                    "original_sales_invoice_item": "SINV-ITEM-1",
+                    "original_fb_order_line_ref": None,
+                    "commercial_modifier_snapshot_json": "[]",
+                    "qty_returned": 1,
+                }
+            ],
             "refund_reason": "Customer return",
             "refund_method": "cash",
             "return_to_stock": False,
@@ -374,13 +381,6 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
         staff_id="cashier@example.com",
         shift="SHIFT-1",
     )
-    resolved_sale = MutableDoc(
-        doctype="FB Resolved Sale",
-        name="RS-1",
-        fb_order="FB-ORDER-1",
-        sales_invoice="SINV-1",
-        qty=1,
-    )
     existing_return = MutableDoc(
         doctype="FB Return Event",
         name="FB-RETURN-EXISTING",
@@ -390,7 +390,14 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
         return_to_stock=0,
         refund_method="cash",
         status="Submitted",
-        lines=[MutableDoc(original_resolved_sale="RS-1", qty_returned=1)],
+        lines=[
+            MutableDoc(
+                original_sales_invoice_item="SINV-ITEM-1",
+                original_fb_order_line_ref="",
+                commercial_modifier_snapshot_json="[]",
+                qty_returned=1,
+            )
+        ],
     )
     same_return = MutableDoc(
         doctype="FB Return Event",
@@ -402,13 +409,20 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
         return_to_stock=0,
         refund_method="cash",
         status="Submitted",
-        lines=[MutableDoc(original_resolved_sale="RS-1", qty_returned=1)],
+        lines=[
+            MutableDoc(
+                original_sales_invoice_item="SINV-ITEM-1",
+                original_fb_order_line_ref="",
+                commercial_modifier_snapshot_json="[]",
+                qty_returned=1,
+            )
+        ],
     )
 
     class FakeDB:
         submitted_rows = [
             {
-                "original_resolved_sale": "RS-1",
+                "original_sales_invoice_item": "SINV-ITEM-1",
                 "qty_returned": 1,
                 "return_id": "other-return-id",
             }
@@ -434,11 +448,17 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
             if "FROM `tabSales Invoice`" in query:
                 assert values == ("SINV-1",)
                 return [{"name": "SINV-1"}]
-            if "FROM `tabFB Resolved Sale`" in query:
+            if "FROM `tabSales Invoice Item`" in query:
                 assert values == ("SINV-1",)
-                return [{"name": "RS-1", "qty": 1}]
+                return [
+                    {
+                        "name": "SINV-ITEM-1",
+                        "qty": 1,
+                        "custom_fb_order_line_ref": "",
+                    }
+                ]
             assert "return_event.docstatus = 1" in query
-            assert values == ("RS-1",)
+            assert values == ("SINV-ITEM-1",)
             return list(self.submitted_rows)
 
         def get_value(self, doctype: str, filters: Any, fieldname: str) -> Any:
@@ -455,7 +475,6 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
         docs = {
             ("Sales Invoice", "SINV-1"): invoice,
             ("FB Order", "FB-ORDER-1"): order,
-            ("FB Resolved Sale", "RS-1"): resolved_sale,
             ("FB Return Event", "FB-RETURN-EXISTING"): existing_return,
             ("FB Return Event", "FB-RETURN-SAME"): same_return,
         }
@@ -466,9 +485,18 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
     monkeypatch.setattr(
         fb_returns.frappe,
         "get_all",
-        lambda doctype, **kwargs: [MutableDoc(name="RS-1", qty=1)]
-        if doctype == "FB Resolved Sale"
-        else [],
+        lambda doctype, **kwargs: [
+            MutableDoc(
+                name="SINV-ITEM-1",
+                item_code="ITEM-1",
+                qty=1,
+                custom_fb_order_line_ref=None,
+                custom_fb_resolved_sale=None,
+                custom_kopos_modifiers="",
+            )
+        ]
+        if doctype == "Sales Invoice Item"
+        else pytest.fail(f"unexpected optional refund read: {doctype}"),
     )
 
     with pytest.raises(fb_returns.frappe.ValidationError, match="exceeds purchased"):
@@ -478,7 +506,14 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
                 "device_id": "DEVICE-A",
                 "original_sales_invoice": "SINV-1",
                 "refund_method": "cash",
-                "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 1}],
+                "lines": [
+                    {
+                        "original_sales_invoice_item": "SINV-ITEM-1",
+                        "original_fb_order_line_ref": None,
+                        "commercial_modifier_snapshot_json": "[]",
+                        "qty_returned": 1,
+                    }
+                ],
             }
         )
 
@@ -493,7 +528,14 @@ def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):
                 "device_id": "DEVICE-A",
                 "original_sales_invoice": "SINV-1",
                 "refund_method": "cash",
-                "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 0.5}],
+                "lines": [
+                    {
+                        "original_sales_invoice_item": "SINV-ITEM-1",
+                        "original_fb_order_line_ref": None,
+                        "commercial_modifier_snapshot_json": "[]",
+                        "qty_returned": 0.5,
+                    }
+                ],
             }
         )
 
@@ -531,7 +573,7 @@ def test_void_rejects_cross_device_before_cancel(monkeypatch):
     assert invoice.cancel_count == 0
 
 
-def test_void_updates_fb_order_stock_projection_and_shift_once(monkeypatch):
+def test_void_updates_only_commercial_order_projection_and_shift(monkeypatch):
     api = importlib.import_module("kopos_connector.api")
 
     invoice = MutableDoc(
@@ -766,12 +808,14 @@ def test_void_updates_fb_order_stock_projection_and_shift_once(monkeypatch):
         )
     ]
     assert invoice.cancel_count == 1
-    assert stock_entry.cancel_count == 1
+    assert stock_entry.cancel_count == 0
     assert order.status == "Cancelled"
     assert order.invoice_status == "Reversed"
-    assert order.stock_status == "Reversed"
-    assert resolved_sale.status == "Cancelled"
-    assert {log.state for log in logs.values()} == {"Reversed"}
+    assert order.stock_status == "Posted"
+    assert resolved_sale.status == "Submitted"
+    assert logs["LOG-SI"].state == "Reversed"
+    assert logs["LOG-SH"].state == "Reversed"
+    assert logs["LOG-ST"].state == "Succeeded"
     assert shift.expected_cash == Decimal("112")
     assert shift.cash_variance == Decimal("-12")
     assert cash_sql_calls

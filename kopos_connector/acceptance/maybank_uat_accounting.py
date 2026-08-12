@@ -1,6 +1,6 @@
 # pyright: reportMissingImports=false
 
-"""Exact GL, Account, and stock queries for Maybank UAT evidence."""
+"""Exact commercial accounting and optional stock evidence helpers."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from kopos_connector.acceptance.maybank_uat_common import (
 
 
 BUSINESS_STATE_SOURCE = "kopos_connector.acceptance.business_state"
-ACCEPTANCE_FIXTURE = "maybank_qr_zero_tax_single_income_v1"
+ACCEPTANCE_FIXTURE = "maybank_qr_zero_tax_single_income_commercial_v1"
 GL_QUERY_FIELDS = (
     "name",
     "posting_date",

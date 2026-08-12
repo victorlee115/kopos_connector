@@ -10,6 +10,8 @@ import pytest
 
 from .fake_frappe import install_fake_frappe_modules
 
+pytestmark = pytest.mark.inventory_regression
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -18,9 +20,11 @@ install_fake_frappe_modules()
 import frappe
 
 
-stock_issue_service = importlib.import_module(
-    "kopos_connector.kopos.services.inventory.stock_issue_service"
-)
+@pytest.fixture
+def stock_issue_service():
+    return importlib.import_module(
+        "kopos_connector.kopos.services.inventory.stock_issue_service"
+    )
 
 
 def _resolved_sale() -> SimpleNamespace:
@@ -53,7 +57,9 @@ def _resolved_sale() -> SimpleNamespace:
     )
 
 
-def test_grouped_stock_issue_quantities_use_exact_decimal_arithmetic() -> None:
+def test_grouped_stock_issue_quantities_use_exact_decimal_arithmetic(
+    stock_issue_service,
+) -> None:
     rows = stock_issue_service._build_grouped_issue_items([_resolved_sale()])
 
     assert len(rows) == 1
@@ -63,7 +69,9 @@ def test_grouped_stock_issue_quantities_use_exact_decimal_arithmetic() -> None:
     assert rows[0]["t_warehouse"] is None
 
 
-def test_submitted_material_issue_must_exactly_match_resolved_components() -> None:
+def test_submitted_material_issue_must_exactly_match_resolved_components(
+    stock_issue_service,
+) -> None:
     order = SimpleNamespace(
         name="FB-ORDER-1",
         company="JiJi Cafe",
@@ -109,7 +117,7 @@ def test_submitted_material_issue_must_exactly_match_resolved_components() -> No
         )
 
 
-def test_stock_issue_rejects_non_finite_component_quantity() -> None:
+def test_stock_issue_rejects_non_finite_component_quantity(stock_issue_service) -> None:
     resolved_sale = _resolved_sale()
     resolved_sale.resolved_components[0].stock_qty = "NaN"
 
@@ -117,7 +125,9 @@ def test_stock_issue_rejects_non_finite_component_quantity() -> None:
         stock_issue_service._build_grouped_issue_items([resolved_sale])
 
 
-def test_stock_issue_projection_identity_is_stable_and_bounded() -> None:
+def test_stock_issue_projection_identity_is_stable_and_bounded(
+    stock_issue_service,
+) -> None:
     order = SimpleNamespace(name="FB-ORDER-1")
     assert (
         stock_issue_service._stock_issue_projection_id(order)
@@ -131,7 +141,9 @@ def test_stock_issue_projection_identity_is_stable_and_bounded() -> None:
     assert len(long_id) <= 140
 
 
-def test_recovered_stock_issue_rejects_another_projection_identity() -> None:
+def test_recovered_stock_issue_rejects_another_projection_identity(
+    stock_issue_service,
+) -> None:
     order = SimpleNamespace(
         name="FB-ORDER-1",
         company="JiJi Cafe",

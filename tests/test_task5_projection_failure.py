@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -157,6 +158,38 @@ def failed_invoice_projection() -> list[dict[str, Any]]:
     ]
 
 
+def failed_stock_projection(projection_type: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "projection_log": "LOG-STOCK-1",
+            "projection_type": projection_type,
+            "state": "Failed",
+            "target_doctype": "Stock Entry",
+            "target_name": None,
+            "idempotency_key": f"FB-ORDER-1:{projection_type}",
+            "retry_count": 7,
+            "last_error": "inventory subsystem unavailable",
+            "last_attempt_at": "2026-08-10T10:00:00+08:00",
+        }
+    ]
+
+
+def failed_shift_projection() -> list[dict[str, Any]]:
+    return [
+        {
+            "projection_log": "LOG-SHIFT-1",
+            "projection_type": "FB Shift",
+            "state": "Failed",
+            "target_doctype": "FB Shift",
+            "target_name": "FB-SHIFT-1",
+            "idempotency_key": "FB-ORDER-1:FB Shift",
+            "retry_count": 1,
+            "last_error": "shift totals refresh failed",
+            "last_attempt_at": "2026-08-10T10:00:00+08:00",
+        }
+    ]
+
+
 def succeeded_projections() -> list[dict[str, Any]]:
     return [
         {
@@ -239,6 +272,204 @@ def test_submit_order_payload_returns_partial_failure_for_invoice_projection_fai
     )
     assert order.insert_count == 1
     assert order.submit_count == 1
+
+
+@pytest.mark.parametrize("projection_type", ["Stock Issue", "Stock Entry"])
+def test_submit_response_preserves_but_ignores_inventory_projection_failure(
+    monkeypatch,
+    projection_type: str,
+) -> None:
+    order = FakeOrder(
+        invoice_status="Posted",
+        stock_status="Failed",
+        sales_invoice="SINV-1",
+    )
+    order.status = "Submitted"
+    projections = failed_stock_projection(projection_type)
+    monkeypatch.setattr(
+        fb_orders,
+        "_get_projection_statuses",
+        lambda source_doctype, source_name: projections,
+    )
+
+    result = fb_orders._build_submit_response("ok", order)
+
+    assert result["status"] == "ok"
+    assert result["partial_failure"] is False
+    assert result["projection_status"] == "posted"
+    assert result["failed_subsystem"] is None
+    assert result["diagnostics"] == []
+    assert result["stock_status"] == "Failed"
+    assert result["projections"] == projections
+
+
+def test_submit_response_remains_fail_closed_for_shift_projection_failure(
+    monkeypatch,
+) -> None:
+    order = FakeOrder(
+        invoice_status="Posted",
+        stock_status="Pending",
+        sales_invoice="SINV-1",
+    )
+    order.status = "Submitted"
+    monkeypatch.setattr(
+        fb_orders,
+        "_get_projection_statuses",
+        lambda source_doctype, source_name: failed_shift_projection(),
+    )
+
+    result = fb_orders._build_submit_response("ok", order)
+
+    assert result["status"] == "partial_failure"
+    assert result["partial_failure"] is True
+    assert result["projection_status"] == "failed"
+    assert result["failed_subsystem"] == "shift"
+    assert result["message"] == "shift totals refresh failed"
+
+
+def test_submit_response_rejects_posted_invoice_without_document_identity(
+    monkeypatch,
+) -> None:
+    order = FakeOrder(
+        invoice_status="Posted",
+        stock_status="Pending",
+        sales_invoice=None,
+    )
+    order.status = "Submitted"
+    monkeypatch.setattr(
+        fb_orders,
+        "_get_projection_statuses",
+        lambda source_doctype, source_name: [],
+    )
+
+    result = fb_orders._build_submit_response("ok", order)
+
+    assert result["status"] == "partial_failure"
+    assert result["failed_subsystem"] == "sales_invoice"
+    assert result["message"] == (
+        "Sales Invoice projection is Posted but its document identity is missing"
+    )
+
+
+def test_cashier_retry_filters_inventory_even_if_adapter_ignores_query_filter(
+    monkeypatch,
+) -> None:
+    order = SimpleNamespace(
+        name="FB-ORDER-1",
+        order_id="order-1",
+        external_idempotency_key="idem-1",
+        sale_datetime="2026-08-10T10:00:00+08:00",
+        shift="FB-SHIFT-1",
+        staff_id="cashier@example.com",
+        device_id="DEVICE-1",
+        event_project=None,
+        status="Submitted",
+        sales_invoice="SINV-1",
+        ingredient_stock_entry=None,
+        invoice_status="Posted",
+        stock_status="Failed",
+        reload=lambda: None,
+    )
+    queried: list[dict[str, Any]] = []
+    retried: list[str] = []
+
+    monkeypatch.setattr(
+        fb_orders.frappe,
+        "get_doc",
+        lambda doctype, name: order,
+    )
+
+    def get_all(doctype: str, **kwargs: Any) -> list[Any]:
+        queried.append(kwargs)
+        return [
+            SimpleNamespace(name="LOG-STOCK", projection_type="Stock Issue"),
+            SimpleNamespace(name="LOG-INVOICE", projection_type="Sales Invoice"),
+            SimpleNamespace(name="LOG-STOCK-ENTRY", projection_type="Stock Entry"),
+            SimpleNamespace(name="LOG-SHIFT", projection_type="FB Shift"),
+        ]
+
+    monkeypatch.setattr(fb_orders.frappe, "get_all", get_all)
+    monkeypatch.setattr(
+        fb_orders,
+        "_retry_projection_log",
+        lambda log_name: retried.append(log_name)
+        or {
+            "projection_log": log_name,
+            "projection_type": "Sales Invoice",
+            "state": "Succeeded",
+            "target_name": "SINV-1",
+        },
+    )
+    monkeypatch.setattr(fb_orders, "_get_projection_statuses", lambda *_args: [])
+
+    result = fb_orders.retry_failed_projections(order.name)
+
+    assert queried[0]["filters"]["projection_type"] == (
+        "in",
+        fb_orders.COMMERCIAL_ORDER_PROJECTION_TYPES,
+    )
+    assert retried == ["LOG-INVOICE", "LOG-SHIFT"]
+    assert len(result["retried"]) == 2
+    assert result["partial_failure"] is False
+    assert result["diagnostics"] == []
+
+
+def test_retry_response_reports_still_failed_shift_as_partial_failure(
+    monkeypatch,
+) -> None:
+    order = SimpleNamespace(
+        name="FB-ORDER-1",
+        order_id="order-1",
+        external_idempotency_key="idem-1",
+        sale_datetime="2026-08-10T10:00:00+08:00",
+        shift="FB-SHIFT-1",
+        staff_id="cashier@example.com",
+        device_id="DEVICE-1",
+        event_project=None,
+        status="Submitted",
+        sales_invoice="SINV-1",
+        ingredient_stock_entry=None,
+        invoice_status="Posted",
+        stock_status="Pending",
+        reload=lambda: None,
+    )
+    projections = failed_shift_projection()
+
+    monkeypatch.setattr(fb_orders.frappe, "get_doc", lambda *_args: order)
+    monkeypatch.setattr(
+        fb_orders.frappe,
+        "get_all",
+        lambda *_args, **_kwargs: [
+            SimpleNamespace(name="LOG-SHIFT-1", projection_type="FB Shift")
+        ],
+    )
+    monkeypatch.setattr(
+        fb_orders,
+        "_retry_projection_log",
+        lambda log_name: {
+            "projection_log": log_name,
+            "projection_type": "FB Shift",
+            "state": "Failed",
+            "target_name": "FB-SHIFT-1",
+        },
+    )
+    monkeypatch.setattr(
+        fb_orders,
+        "_get_projection_statuses",
+        lambda *_args: projections,
+    )
+
+    result = fb_orders.retry_failed_projections(order.name)
+
+    assert result["status"] == "partial_failure"
+    assert result["partial_failure"] is True
+    assert result["projection_status"] == "failed"
+    assert result["failed_subsystem"] == "shift"
+    assert result["diagnostics"][0]["error_message"] == (
+        "shift totals refresh failed"
+    )
+    assert result["projections"] == projections
+    assert result["retried"][0]["state"] == "Failed"
 
 
 def test_submit_order_payload_duplicate_idempotency_key_reuses_posted_projection_once(
@@ -408,7 +639,7 @@ def test_retry_failed_sales_invoice_projection_runs_handler_and_updates_order(
     assert log.saved is True
     assert projection_updates == [(log.name, "Succeeded", "SINV-RETRY-1", None)]
     assert ("invoice_status", "Posted", False) in order.db_set_calls
-    assert ("stock_status", "Pending", False) in order.db_set_calls
+    assert not any(call[0] == "stock_status" for call in order.db_set_calls)
     assert order.reload_count == 1
 
 

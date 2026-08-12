@@ -537,15 +537,31 @@ def test_return_guard_uses_two_current_locks_and_aggregates_duplicate_lines(
         ) -> list[dict[str, Any]]:
             assert as_dict is True
             calls.append((query, values))
-            if "FROM `tabFB Resolved Sale`" in query:
-                return [{"name": "RS-1", "qty": "2"}]
+            if "FROM `tabSales Invoice Item`" in query:
+                return [
+                    {
+                        "name": "SINV-ITEM-1",
+                        "qty": "2",
+                        "custom_fb_order_line_ref": "LINE-1",
+                    }
+                ]
             return list(self.submitted_rows)
 
     db = FakeDB()
     monkeypatch.setattr(guard.frappe, "db", db)
     duplicate_lines = [
-        {"original_resolved_sale": "RS-1", "qty_returned": "0.75"},
-        {"original_resolved_sale": "RS-1", "qty_returned": "1.25"},
+        {
+            "original_sales_invoice_item": "SINV-ITEM-1",
+            "original_fb_order_line_ref": "LINE-1",
+            "commercial_modifier_snapshot_json": "",
+            "qty_returned": "0.75",
+        },
+        {
+            "original_sales_invoice_item": "SINV-ITEM-1",
+            "original_fb_order_line_ref": "LINE-1",
+            "commercial_modifier_snapshot_json": "",
+            "qty_returned": "1.25",
+        },
     ]
 
     guard.lock_and_validate_return_quantities(
@@ -553,17 +569,23 @@ def test_return_guard_uses_two_current_locks_and_aggregates_duplicate_lines(
     )
 
     assert len(calls) == 2
-    assert "sales_invoice = %s" in calls[0][0]
+    assert "parent = %s" in calls[0][0]
     assert calls[0][1] == ("SINV-1",)
     assert "return_event.docstatus = 1" in calls[1][0]
     assert "FOR UPDATE" in calls[1][0]
     assert guard.aggregate_return_lines(duplicate_lines) == [
-        {"original_resolved_sale": "RS-1", "qty_returned": 2.0}
+        {
+            "original_sales_invoice_item": "SINV-ITEM-1",
+            "original_fb_order_line_ref": "LINE-1",
+            "original_resolved_sale": None,
+            "qty_returned": 2.0,
+            "commercial_modifier_snapshot_json": "",
+        }
     ]
 
     db.submitted_rows = [
         {
-            "original_resolved_sale": "RS-1",
+            "original_sales_invoice_item": "SINV-ITEM-1",
             "qty_returned": "0.01",
             "return_id": "another-return",
         }
@@ -574,6 +596,7 @@ def test_return_guard_uses_two_current_locks_and_aggregates_duplicate_lines(
         )
 
 
+@pytest.mark.inventory_regression
 def test_duplicate_return_children_mark_the_resolved_sale_fully_returned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -898,8 +921,8 @@ def test_success_and_duplicate_api_responses_expose_same_settlement_proof(
         settlement_doctype="Journal Entry",
         settlement_document="JV-REFUND-1",
         settlement_status="Posted",
-        return_to_stock=0,
-        lines=[],
+        return_to_stock=1,
+        lines=[FakeDoc(reversal_stock_entry="STOCK-ENTRY-LEGACY-1")],
         approval_token_id="approval-token-id-refund",
         approved_by_manager="original-manager@example.com",
     )
@@ -918,6 +941,9 @@ def test_success_and_duplicate_api_responses_expose_same_settlement_proof(
         assert response["settlement_doctype"] == "Journal Entry"
         assert response["settlement_document"] == "JV-REFUND-1"
         assert response["settlement_status"] == "Posted"
+        assert response["return_to_stock"] == 0
+        assert response["inventory_evaluation"] == "excluded_not_evaluated"
+        assert response["reversal_stock_entries"] == []
     assert verified == ["FB-RETURN-1", "FB-RETURN-1"]
 
     persisted_proof = {

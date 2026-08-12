@@ -277,14 +277,8 @@ class TestFBOrder(FrappeTestCase):
 
         self.assertIn("amount", str(context.exception).lower())
 
-    def test_submit_logs_advisory_stock_shortfall(self):
+    def test_submit_does_not_run_optional_inventory(self):
         order = self.create_submittable_test_order()
-        get_single_value = frappe.db.get_single_value
-
-        def get_test_single_value(doctype, fieldname, *args, **kwargs):
-            if (doctype, fieldname) == ("Stock Settings", "allow_negative_stock"):
-                return 1
-            return get_single_value(doctype, fieldname, *args, **kwargs)
 
         line_resolutions = [
             {
@@ -310,11 +304,15 @@ class TestFBOrder(FrappeTestCase):
                 FBOrder, "build_line_resolutions", return_value=line_resolutions
             ),
             patch.object(FBOrder, "create_resolved_sales", return_value=None),
-            patch.object(FBOrder, "get_resolved_sales", return_value=[]),
+            patch.object(
+                FBOrder,
+                "get_resolved_sales",
+                side_effect=AssertionError("inventory snapshots must not be loaded"),
+            ),
             patch.object(
                 FBOrder,
                 "create_projection_entry",
-                side_effect=["INV-LOG", "STOCK-LOG", "SHIFT-LOG"],
+                side_effect=["INV-LOG", "SHIFT-LOG"],
             ),
             patch.object(FBOrder, "update_shift_expected_cash", return_value=None),
             patch(
@@ -323,20 +321,11 @@ class TestFBOrder(FrappeTestCase):
             ),
             patch(
                 "kopos_connector.kopos.doctype.fb_order.fb_order.create_ingredient_stock_entry",
-                return_value=None,
+                side_effect=AssertionError("inventory adapter must not run"),
             ),
             patch(
                 "kopos_connector.kopos.doctype.fb_order.fb_order.update_projection_state",
                 return_value=None,
-            ),
-            patch(
-                "kopos_connector.kopos.services.inventory.warning_service.get_available_stock",
-                return_value=1.0,
-            ),
-            patch.object(
-                frappe.db,
-                "get_single_value",
-                side_effect=get_test_single_value,
             ),
         ):
             order.submit()
@@ -344,6 +333,7 @@ class TestFBOrder(FrappeTestCase):
         order.reload()
         self.assertEqual(order.docstatus, 1)
         self.assertEqual(order.status, "Submitted")
+        self.assertEqual(order.stock_status, "Pending")
 
         logs = frappe.get_all(
             "FB Stock Override Log",
@@ -359,16 +349,9 @@ class TestFBOrder(FrappeTestCase):
             ],
         )
 
-        self.assertEqual(len(logs), 1)
-        self.assertEqual(logs[0].item, self.item)
-        self.assertEqual(logs[0].warehouse, self.warehouse)
-        self.assertEqual(logs[0].requested_qty, 2.0)
-        self.assertEqual(logs[0].available_qty_before, 1.0)
-        self.assertEqual(logs[0].shortfall_qty, 1.0)
-        self.assertEqual(logs[0].order_reference, order.order_id)
-        self.assertIsNotNone(logs[0].logged_at)
+        self.assertEqual(logs, [])
 
-    def test_submit_still_raises_non_stock_failures(self):
+    def test_submit_does_not_invoke_failing_resolved_sale_subsystem(self):
         order = self.create_submittable_test_order()
 
         with (
@@ -378,8 +361,26 @@ class TestFBOrder(FrappeTestCase):
                 "create_resolved_sales",
                 side_effect=RuntimeError("resolved sale projection failed"),
             ),
+            patch.object(
+                FBOrder,
+                "create_projection_entry",
+                side_effect=["INV-LOG", "SHIFT-LOG"],
+            ),
+            patch.object(FBOrder, "update_shift_expected_cash", return_value=None),
+            patch(
+                "kopos_connector.kopos.doctype.fb_order.fb_order.create_sales_invoice",
+                return_value="SINV-TEST-0002",
+            ),
+            patch(
+                "kopos_connector.kopos.doctype.fb_order.fb_order.update_projection_state",
+                return_value=None,
+            ),
         ):
-            with self.assertRaisesRegex(
-                RuntimeError, "resolved sale projection failed"
-            ):
-                order.submit()
+            order.submit()
+
+        order.reload()
+        self.assertEqual(order.docstatus, 1)
+        self.assertEqual(order.status, "Submitted")
+        self.assertEqual(order.invoice_status, "Posted")
+        self.assertEqual(order.sales_invoice, "SINV-TEST-0002")
+        self.assertEqual(order.stock_status, "Pending")

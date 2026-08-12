@@ -2835,13 +2835,13 @@ class DeviceSafeResetTests(unittest.TestCase):
         with patch.object(safe_reset.frappe.db, "sql", sql):
             safe_reset._assert_no_open_shift_or_unresolved_projection("tab-a-001")
 
-        self.assertEqual(sql.call_count, 11)
+        self.assertEqual(sql.call_count, 10)
         normalized_queries = [
             " ".join(call.args[0].split()) for call in sql.call_args_list
         ]
         self.assertEqual(
             sum("LIMIT 1" in query for query in normalized_queries),
-            8,
+            7,
         )
         self.assertEqual(
             sum("LIMIT 65" in query for query in normalized_queries),
@@ -2873,13 +2873,15 @@ class DeviceSafeResetTests(unittest.TestCase):
         ]
         self.assertEqual(len(maybank_queries), 2)
         self.assertTrue(all(len(query) < 2200 for query in maybank_queries))
+        self.assertTrue(
+            all("tabFB Waste Event" not in query for query in normalized_queries)
+        )
 
         indexed_fields = {
             "fb_shift": {"device_id", "status"},
             "fb_order": {"device_id"},
             "fb_projection_log": {"source_doctype", "source_name", "state"},
             "fb_return_event": {"fb_order"},
-            "fb_waste_event": {"shift"},
             "maybank_qr_transaction": {
                 "device_id",
                 "status",
@@ -2919,16 +2921,116 @@ class DeviceSafeResetTests(unittest.TestCase):
             install_module.OPERATIONAL_INDEX_SPECS,
         )
 
+    def test_optional_stock_and_waste_projection_rows_do_not_block_safe_reset(
+        self,
+    ) -> None:
+        optional_rows = (
+            {
+                "source_doctype": "FB Order",
+                "projection_type": "Stock Issue",
+                "state": "Failed",
+            },
+            {
+                "source_doctype": "FB Return Event",
+                "projection_type": "Stock Reversal",
+                "state": "Pending",
+            },
+            {
+                "source_doctype": "FB Waste Event",
+                "projection_type": "Waste",
+                "state": "Failed",
+            },
+        )
+        queries: list[str] = []
+
+        def optional_schema_absent_sql(
+            query: str,
+            _params: tuple[str],
+            *,
+            as_dict: bool,
+        ) -> list[dict[str, str]]:
+            self.assertTrue(as_dict)
+            normalized = " ".join(query.split())
+            queries.append(normalized)
+            if "tabFB Waste Event" in normalized:
+                raise AssertionError("optional waste schema must not be queried")
+            if "tabFB Projection Log" not in normalized:
+                return []
+
+            for row in optional_rows:
+                source_filter = (
+                    "projection.source_doctype = "
+                    f"'{row['source_doctype']}'"
+                )
+                if (
+                    source_filter in normalized
+                    and f"'{row['projection_type']}'" in normalized
+                ):
+                    return [{"name": "OPTIONAL-PROJECTION"}]
+            return []
+
+        with patch.object(
+            safe_reset.frappe.db,
+            "sql",
+            side_effect=optional_schema_absent_sql,
+        ):
+            safe_reset._assert_no_open_shift_or_unresolved_projection(
+                "tab-a-001"
+            )
+
+        projection_queries = [
+            query for query in queries if "tabFB Projection Log" in query
+        ]
+        self.assertEqual(len(projection_queries), 3)
+        optional_types = ("'Stock Issue'", "'Stock Reversal'", "'Waste'")
+        self.assertTrue(
+            all(
+                optional_type not in query
+                for query in projection_queries
+                for optional_type in optional_types
+            )
+        )
+
+    def test_unresolved_commercial_projection_types_still_block_safe_reset(
+        self,
+    ) -> None:
+        cases = (
+            (3, "Sales Invoice"),
+            (4, "FB Shift"),
+            (5, "Sales Return"),
+        )
+        for result_index, projection_type in cases:
+            results: list[list[dict[str, str]]] = [
+                [] for _ in range(result_index)
+            ]
+            results.append([{"name": f"FAILED-{projection_type}"}])
+            sql = MagicMock(side_effect=results)
+            with (
+                self.subTest(projection_type=projection_type),
+                patch.object(safe_reset.frappe.db, "sql", sql),
+                self.assertRaisesRegex(
+                    safe_reset.frappe.ValidationError,
+                    "commercial device projections",
+                ),
+            ):
+                safe_reset._assert_no_open_shift_or_unresolved_projection(
+                    "tab-a-001"
+                )
+
+            projection_query = " ".join(
+                sql.call_args_list[result_index].args[0].split()
+            )
+            self.assertIn(f"'{projection_type}'", projection_query)
+
     def test_unresolved_maybank_and_manual_qr_state_block_safe_reset(self) -> None:
         cases = (
             (
                 "Maybank QR",
-                [[], [], [], [], [], [], [], [{"name": "MBQR-1"}]],
+                [[], [], [], [], [], [], [{"name": "MBQR-1"}]],
             ),
             (
                 "manual QR reconciliation",
                 [
-                    [],
                     [],
                     [],
                     [],
@@ -3148,7 +3250,6 @@ class DeviceSafeResetTests(unittest.TestCase):
             [],
             [],
             [],
-            [],
             [refunded_row],
             [],
             [],
@@ -3196,7 +3297,7 @@ class DeviceSafeResetTests(unittest.TestCase):
             patch.object(
                 safe_reset.frappe.db,
                 "sql",
-                side_effect=[[], [], [], [], [], [], [], [], [refunded_row]],
+                side_effect=[[], [], [], [], [], [], [], [refunded_row]],
             ),
             patch(
                 proof_path,
@@ -3232,7 +3333,6 @@ class DeviceSafeResetTests(unittest.TestCase):
                 safe_reset.frappe.db,
                 "sql",
                 side_effect=[
-                    [],
                     [],
                     [],
                     [],
@@ -3279,7 +3379,6 @@ class DeviceSafeResetTests(unittest.TestCase):
                 safe_reset.frappe.db,
                 "sql",
                 side_effect=[
-                    [],
                     [],
                     [],
                     [],
@@ -3346,7 +3445,6 @@ class DeviceSafeResetTests(unittest.TestCase):
                     safe_reset.frappe.db,
                     "sql",
                     side_effect=[
-                        [],
                         [],
                         [],
                         [],

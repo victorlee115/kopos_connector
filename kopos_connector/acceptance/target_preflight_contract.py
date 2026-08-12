@@ -20,11 +20,6 @@ REQUIRED_FIELD_SPECS = {
             False,
         ),
     },
-    "FB Allowed Modifier Group": {
-        "required": ("Check", False, False, False),
-        "override_min_selection": ("Int", False, False, False),
-        "override_max_selection": ("Int", False, False, False),
-    },
     "FB Order": {
         "order_id": ("Data", True, True, False),
         "external_idempotency_key": ("Data", False, True, False),
@@ -38,6 +33,9 @@ REQUIRED_FIELD_SPECS = {
         "status": ("Select", True, False, True),
         "sales_invoice": ("Link", False, False, False),
     },
+    "FB Order Line": {
+        "commercial_modifier_snapshot_json": ("Code", False, False, False),
+    },
     "FB Order Payment": {
         "source_payment_id": ("Data", False, False, True),
         "payment_method": ("Link", True, False, False),
@@ -49,6 +47,11 @@ REQUIRED_FIELD_SPECS = {
         "settlement_status": ("Select", False, False, False),
         "manual_qr_reconciliation": ("Link", False, False, False),
         "reconciliation_idempotency_key": ("Data", False, False, False),
+    },
+    "FB Return Event Line": {
+        "original_sales_invoice_item": ("Data", False, False, True),
+        "original_fb_order_line_ref": ("Data", False, False, False),
+        "commercial_modifier_snapshot_json": ("Code", False, False, False),
     },
     "FB Shift": {
         "shift_code": ("Data", True, True, False),
@@ -140,6 +143,9 @@ REQUIRED_FIELD_OPTIONS = {
         "status": "Draft\nSubmitted\nCancelled",
         "sales_invoice": "Sales Invoice",
     },
+    "FB Order Line": {
+        "commercial_modifier_snapshot_json": "JSON",
+    },
     "FB Order Payment": {
         "payment_method": "Mode of Payment",
         "maybank_qr_transaction": "Maybank QR Transaction",
@@ -148,6 +154,9 @@ REQUIRED_FIELD_OPTIONS = {
             "\nreconciliation_failed"
         ),
         "manual_qr_reconciliation": "Manual QR Reconciliation",
+    },
+    "FB Return Event Line": {
+        "commercial_modifier_snapshot_json": "JSON",
     },
     "FB Shift": {
         "status": "Open\nClosing\nClosed\nException\nCancelled",
@@ -188,18 +197,21 @@ REQUIRED_FIELD_OPTIONS = {
 # Defaults below change newly-authored business state. Empty means that the
 # field must remain intentionally unset; values are compared as Frappe strings.
 REQUIRED_FIELD_DEFAULTS = {
-    "FB Allowed Modifier Group": {
-        "required": "0",
-        "override_min_selection": "",
-        "override_max_selection": "",
-    },
     "FB Order": {
         "automatic_qr_state": "",
         "status": "Draft",
     },
+    "FB Order Line": {
+        "commercial_modifier_snapshot_json": "",
+    },
     "FB Order Payment": {
         "is_manual_confirmation": "0",
         "settlement_status": "verified",
+    },
+    "FB Return Event Line": {
+        "original_sales_invoice_item": "",
+        "original_fb_order_line_ref": "",
+        "commercial_modifier_snapshot_json": "",
     },
     "FB Shift": {"status": "Open"},
     "KoPOS Device": {"enabled": "1"},

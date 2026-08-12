@@ -28,7 +28,6 @@ import kopos_connector.api.catalog as catalog_api
 import kopos_connector.hooks as connector_hooks
 import kopos_connector.install.install as connector_install
 import kopos_connector.kopos.services.accounting.maybank_payment_service as payment_service
-import kopos_connector.kopos.services.recipe.modifier_bounds as modifier_bounds
 import kopos_connector.services.maybank.client as maybank_client
 import kopos_connector.services.static_qr_commissioning as static_qr_commissioning
 from kopos_connector.acceptance.maybank_uat_common import (
@@ -43,6 +42,7 @@ SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 COMMIT_PATTERN = re.compile(r"^[a-f0-9]{40}$")
 NONCE_PATTERN = re.compile(r"^[a-f0-9]{32,128}$")
 MAYBANK_ACCOUNT_TYPES = frozenset({"merchant", "cashier", "corporate"})
+REQUIRED_TARGET_TIME_ZONE = "Asia/Kuala_Lumpur"
 IGNORED_RUNTIME_PARTS = frozenset({"__pycache__", ".pytest_cache"})
 IGNORED_RUNTIME_SUFFIXES = frozenset({".pyc", ".pyo"})
 MAX_RUNTIME_FILE_BYTES = 32 * 1024 * 1024
@@ -69,7 +69,6 @@ PRODUCER_CLOSURE_MODULES: tuple[ModuleType, ...] = (
     connector_hooks,
     connector_install,
     payment_service,
-    modifier_bounds,
     maybank_client,
     static_qr_commissioning,
 )
@@ -269,11 +268,38 @@ def _target_identity(
         _fail("Target ERP has no enabled KoPOS Device")
     for row in device_profiles:
         profile = _text(_value(row, "pos_profile"), "enabled device POS Profile")
-        profile_company = cstr(
-            frappe.db.get_value("POS Profile", profile, "company")
-        ).strip()
+        profile_row = frappe.db.get_value(
+            "POS Profile",
+            profile,
+            ["company", "currency", "selling_price_list"],
+            as_dict=True,
+        )
+        if not profile_row:
+            _fail("An enabled tablet POS Profile does not exist")
+        profile_company = cstr(_value(profile_row, "company")).strip()
         if profile_company != company:
             _fail("An enabled tablet POS Profile uses another company")
+        if cstr(_value(profile_row, "currency")).strip().upper() != currency:
+            _fail("An enabled tablet POS Profile uses another currency")
+
+        price_list = _text(
+            _value(profile_row, "selling_price_list"),
+            "enabled device POS Profile selling Price List",
+        )
+        price_list_row = frappe.db.get_value(
+            "Price List",
+            price_list,
+            ["enabled", "selling", "currency"],
+            as_dict=True,
+        )
+        if not price_list_row:
+            _fail("An enabled tablet POS Profile selling Price List does not exist")
+        if not cint(_value(price_list_row, "enabled")) or not cint(
+            _value(price_list_row, "selling")
+        ):
+            _fail("An enabled tablet POS Profile requires an enabled selling Price List")
+        if cstr(_value(price_list_row, "currency")).strip().upper() != currency:
+            _fail("An enabled tablet POS Profile selling Price List uses another currency")
 
     return {
         "origin": actual_origin,
@@ -281,6 +307,22 @@ def _target_identity(
         "company": company,
         "currency": currency,
     }
+
+
+def _target_time_zone(expected_time_zone: str) -> str:
+    protected_time_zone = _text(expected_time_zone, "expected_time_zone")
+    if protected_time_zone != REQUIRED_TARGET_TIME_ZONE:
+        _fail(
+            "expected_time_zone must be the protected Asia/Kuala_Lumpur value"
+        )
+
+    actual_time_zone = _text(
+        frappe.db.get_single_value("System Settings", "time_zone"),
+        "System Settings time_zone",
+    )
+    if actual_time_zone != protected_time_zone:
+        _fail("Target ERP timezone does not match the protected timezone")
+    return actual_time_zone
 
 
 def _database_round_trip(run_nonce: str) -> dict[str, dict[str, Any]]:
@@ -774,6 +816,7 @@ def run_v1(
     expected_site_id_sha256: str,
     company: str,
     currency: str,
+    expected_time_zone: str,
     expected_maybank_account_type: str,
     output_filename: str | None = None,
 ) -> dict[str, Any]:
@@ -818,6 +861,7 @@ def run_v1(
     target_currency = _text(currency, "currency").upper()
     if not re.fullmatch(r"[A-Z]{3}", target_currency):
         _fail("currency must be an uppercase three-letter code")
+    target_time_zone = _target_time_zone(expected_time_zone)
 
     target = _target_identity(
         expected_origin=target_origin,
@@ -825,6 +869,7 @@ def run_v1(
         company=target_company,
         currency=target_currency,
     )
+    target["timeZone"] = target_time_zone
     database_checks = _database_round_trip(nonce)
     redis_check = _redis_round_trip(nonce, site_id_sha256)
     static_qr_check = _static_qr_check(target_company)

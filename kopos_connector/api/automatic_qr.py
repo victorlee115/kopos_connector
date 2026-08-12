@@ -12,7 +12,7 @@ from frappe.utils import cstr, now_datetime
 from kopos_connector.api._maybank_qr_contract import _request_fingerprint
 from kopos_connector.api._maybank_qr_persistence import (
     _build_persisted_preflight_rejection_response,
-    _load_linked_generation_attempts_for_update,
+    _load_generation_attempt_candidates_for_release_for_update,
 )
 from kopos_connector.kopos.api.money_contract import (
     MoneyContractValidationError,
@@ -54,11 +54,10 @@ def has_durable_no_provider_release_fence(fb_order: str) -> bool:
         return bool(attempts)
     if order_status != "Cancelled":
         return False
-    resolved_sales = _lock_resolved_sales(order_doc.name)
-    return bool(resolved_sales) and all(
-        cstr(_value(row, "status")).strip() == "Cancelled"
-        for row in resolved_sales
-    )
+    # The immutable FB Order identity plus exact provider-attempt evidence is
+    # the release fence. Recipe-era resolved-sale rows are optional display /
+    # inventory metadata and must never block shift close.
+    return True
 
 
 def cancel_prepared_automatic_qr_sale_payload(
@@ -88,17 +87,8 @@ def cancel_prepared_automatic_qr_sale_payload(
             "Prepared Automatic QR sale is not in Draft status",
             frappe.ValidationError,
         )
-    resolved_sales = _lock_resolved_sales(order_doc.name)
-    if not resolved_sales:
-        frappe.throw(
-            "Prepared Automatic QR sale has no frozen resolved-sale snapshot",
-            frappe.ValidationError,
-        )
     if order_status == "Cancelled":
-        if state != "provider_rejected" or any(
-            cstr(_value(row, "status")).strip() != "Cancelled"
-            for row in resolved_sales
-        ):
+        if state != "provider_rejected":
             frappe.throw(
                 "Prepared Automatic QR cancellation fence is incomplete",
                 frappe.ValidationError,
@@ -121,17 +111,6 @@ def cancel_prepared_automatic_qr_sale_payload(
             frappe.ValidationError,
         )
 
-    invalid_resolved = [
-        cstr(_value(row, "name")).strip()
-        for row in resolved_sales
-        if cstr(_value(row, "status")).strip() not in {"Prepared", "Cancelled"}
-    ]
-    if invalid_resolved:
-        frappe.throw(
-            "Prepared Automatic QR resolved-sale state is not cancellable",
-            frappe.ValidationError,
-        )
-
     frappe.db.set_value(
         "FB Order",
         order_doc.name,
@@ -141,18 +120,13 @@ def cancel_prepared_automatic_qr_sale_payload(
         },
         update_modified=False,
     )
-    for resolved_sale in resolved_sales:
-        frappe.db.set_value(
-            "FB Resolved Sale",
-            cstr(_value(resolved_sale, "name")).strip(),
-            "status",
-            "Cancelled",
-            update_modified=False,
-        )
     _write_cancellation_audit(identity, amount_sen, len(attempts))
 
     # Never authorize the tablet to discard local state until ERP has durably
-    # fenced the prepared order and all frozen sale rows together.
+    # fenced the immutable commercial sale and exact provider-attempt truth.
+    # Optional legacy recipe/inventory rows are neither read nor written in
+    # this cashier transaction; a missing, invalid, or slow subsystem cannot
+    # delay local release.
     frappe.db.commit()
     return _cancellation_response(identity, amount_sen, len(attempts))
 
@@ -250,7 +224,7 @@ def _lock_and_validate_provider_attempts(
     accepted_fingerprint = cstr(
         getattr(order_doc, "accepted_sale_fingerprint", None)
     ).strip()
-    attempts = _load_linked_generation_attempts_for_update(
+    attempts = _load_generation_attempt_candidates_for_release_for_update(
         order_name,
         payment_name,
     )
@@ -291,20 +265,63 @@ def _lock_and_validate_provider_attempts(
     return list(attempts)
 
 
-def _lock_resolved_sales(fb_order: str) -> list[Any]:
+def _referenced_resolved_sale_names(order_doc: Any) -> list[str]:
+    return sorted(
+        {
+            cstr(_value(line, "resolved_sale")).strip()
+            for line in list(_value(order_doc, "items") or [])
+            if cstr(_value(line, "resolved_sale")).strip()
+        }
+    )
+
+
+def _lock_resolved_sales(order_doc: Any) -> list[Any]:
+    referenced_names = _referenced_resolved_sale_names(order_doc)
+    if not referenced_names:
+        return []
+    placeholders = ", ".join(["%s"] * len(referenced_names))
     return list(
         frappe.db.sql(
-            """
+            f"""
             SELECT name, status
             FROM `tabFB Resolved Sale`
-            WHERE fb_order = %s
+            WHERE fb_order = %s AND name IN ({placeholders})
             ORDER BY name
             FOR UPDATE
             """,
-            (fb_order,),
+            (cstr(_value(order_doc, "name")).strip(), *referenced_names),
             as_dict=True,
         )
         or []
+    )
+
+
+def _resolution_fence_is_complete(
+    order_doc: Any,
+    resolved_sales: list[Any],
+    *,
+    allowed_statuses: set[str],
+) -> bool:
+    """Validate optional legacy resolved-sale rows without requiring them.
+
+    The accepted sale fingerprint and FB Order lines are the commercial sale
+    authority. Older prepared orders can also reference FB Resolved Sale rows;
+    when those references exist they must still be present and fenced. New
+    non-inventory sales contain only the immutable line snapshot, so an empty
+    resolved-sale set is valid and must not block cancellation or safe reset.
+    """
+
+    referenced_names = set(_referenced_resolved_sale_names(order_doc))
+    rows_by_name = {
+        cstr(_value(row, "name")).strip(): row
+        for row in resolved_sales
+        if cstr(_value(row, "name")).strip()
+    }
+    if referenced_names != set(rows_by_name):
+        return False
+    return all(
+        cstr(_value(row, "status")).strip() in allowed_statuses
+        for row in resolved_sales
     )
 
 

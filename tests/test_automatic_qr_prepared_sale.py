@@ -14,6 +14,9 @@ from tests.fake_frappe import install_fake_frappe_modules
 install_fake_frappe_modules()
 
 from kopos_connector.kopos.api import fb_orders
+from kopos_connector.kopos.doctype.fb_order.fb_order import (
+    _prepared_immutable_value,
+)
 
 
 class PreparedOrder(SimpleNamespace):
@@ -199,9 +202,18 @@ def test_prepare_persists_sale_snapshot_and_payment_before_provider_call(
     assert result["accepted_sale_fingerprint"] == "a" * 64
     assert order.inserted is True
     assert order.saved is True
-    assert order.created_resolutions == order.build_line_resolutions()
+    assert order.created_resolutions is None
     assert order.payments[0].settlement_status == "awaiting_provider"
     assert order.automatic_qr_state == "prepared"
+
+
+def test_prepared_snapshot_treats_unset_recipe_version_as_stable_after_insert() -> None:
+    before_insert = SimpleNamespace(recipe_version=None)
+    after_insert = SimpleNamespace(recipe_version=0)
+
+    assert _prepared_immutable_value(before_insert, "recipe_version") == (
+        _prepared_immutable_value(after_insert, "recipe_version")
+    )
 
 
 def test_prepare_rejects_any_provider_or_manual_evidence() -> None:

@@ -9,8 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from .fake_frappe import install_fake_frappe_modules
+import pytest
 
+from .fake_frappe import install_fake_frappe_modules
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -51,6 +52,7 @@ def test_receipt_file_evidence_recomputes_private_attachment_bytes(
     }
 
 
+@pytest.mark.inventory_regression
 def test_cancelled_stock_entry_dump_keeps_cancelled_sle_history(
     monkeypatch: Any,
 ) -> None:
@@ -94,6 +96,7 @@ def test_cancelled_stock_entry_dump_keeps_cancelled_sle_history(
     assert rows[0]["actual_qty"] == "-1.000000"
 
 
+@pytest.mark.inventory_regression
 def test_default_seed_has_two_times_headroom_for_mandatory_soak_capacity() -> None:
     signature = inspect.signature(smoke.set_demo_ingredient_quantities)
     ingredient_targets = [
@@ -141,6 +144,7 @@ def _matches(row: dict[str, Any], filters: dict[str, Any]) -> bool:
     return True
 
 
+@pytest.mark.inventory_regression
 def test_stock_entry_dump_carries_detail_and_exact_active_ledger_rows(
     monkeypatch: Any,
 ) -> None:
@@ -231,6 +235,7 @@ def test_stock_entry_dump_carries_detail_and_exact_active_ledger_rows(
     ]
 
 
+@pytest.mark.inventory_regression
 def test_return_dump_carries_exact_lines_and_unique_reversal_ledger_evidence(
     monkeypatch: Any,
 ) -> None:
@@ -275,16 +280,22 @@ def test_return_dump_carries_exact_lines_and_unique_reversal_ledger_evidence(
                     "name": "RETURN-LINE-1",
                     "parent": "FB-RETURN-1",
                     "idx": 1,
+                    "original_sales_invoice_item": "SINV-ITEM-1",
+                    "original_fb_order_line_ref": "ORDER-LINE-1",
                     "original_resolved_sale": "RESOLVED-SALE-1",
                     "qty_returned": "1.250000",
+                    "commercial_modifier_snapshot_json": "[]",
                     "reversal_stock_entry": "STE-RETURN-1",
                 },
                 {
                     "name": "RETURN-LINE-2",
                     "parent": "FB-RETURN-1",
                     "idx": 2,
+                    "original_sales_invoice_item": "SINV-ITEM-2",
+                    "original_fb_order_line_ref": "ORDER-LINE-2",
                     "original_resolved_sale": "RESOLVED-SALE-2",
                     "qty_returned": "2.000000",
+                    "commercial_modifier_snapshot_json": "[]",
                     "reversal_stock_entry": "STE-RETURN-1",
                 },
             ]
@@ -354,7 +365,10 @@ def test_return_dump_carries_exact_lines_and_unique_reversal_ledger_evidence(
     )
     monkeypatch.setattr(frappe.db, "get_value", fake_get_value)
 
-    records = smoke._collect_return_records([{"name": "FB-ORDER-1"}])
+    records = smoke._collect_return_records(
+        [{"name": "FB-ORDER-1"}],
+        include_inventory_regression=True,
+    )
 
     assert records[0]["request_fingerprint"] == "a" * 64
     assert records[0]["approval_token_id"] == "APPROVAL-RETURN-1"
@@ -362,14 +376,20 @@ def test_return_dump_carries_exact_lines_and_unique_reversal_ledger_evidence(
     assert records[0]["lines"] == [
         {
             "name": "RETURN-LINE-1",
+            "original_sales_invoice_item": "SINV-ITEM-1",
+            "original_fb_order_line_ref": "ORDER-LINE-1",
             "original_resolved_sale": "RESOLVED-SALE-1",
             "qty_returned": "1.250000",
+            "commercial_modifier_snapshot_json": "[]",
             "reversal_stock_entry": "STE-RETURN-1",
         },
         {
             "name": "RETURN-LINE-2",
+            "original_sales_invoice_item": "SINV-ITEM-2",
+            "original_fb_order_line_ref": "ORDER-LINE-2",
             "original_resolved_sale": "RESOLVED-SALE-2",
             "qty_returned": "2.000000",
+            "commercial_modifier_snapshot_json": "[]",
             "reversal_stock_entry": "STE-RETURN-1",
         },
     ]
@@ -416,6 +436,7 @@ def test_return_dump_carries_exact_lines_and_unique_reversal_ledger_evidence(
     ]
 
 
+@pytest.mark.inventory_regression
 def test_bin_dump_includes_exact_zero_baseline_for_each_tracked_ingredient(
     monkeypatch: Any,
 ) -> None:

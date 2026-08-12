@@ -14,7 +14,6 @@ from frappe.utils import cint, cstr
 from kopos_connector.acceptance.maybank_uat_accounting import (
     BUSINESS_STATE_SOURCE,
     settlement_gl_state,
-    stock_state,
 )
 from kopos_connector.acceptance.maybank_uat_common import (
     AcceptanceContext,
@@ -167,7 +166,6 @@ def _load_sale_and_payment(
         "status",
         "docstatus",
         "sales_invoice",
-        "ingredient_stock_entry",
         "device_id",
         "company",
         "currency",
@@ -176,7 +174,6 @@ def _load_sale_and_payment(
         "automatic_qr_payment",
         "automatic_qr_winner_channel",
         "invoice_status",
-        "stock_status",
     )
     order = _get_value("FB Order", order_name, order_fields)
     if (
@@ -190,7 +187,6 @@ def _load_sale_and_payment(
         or cstr(order.get("automatic_qr_payment")) != payment_name
         or cstr(order.get("automatic_qr_winner_channel")) != "maybank_qr"
         or cstr(order.get("invoice_status")) != "Posted"
-        or cstr(order.get("stock_status")) != "Posted"
     ):
         _fail("The paid Maybank FB Order is not fully and exactly submitted")
     order_idempotency_key = _exact_text(
@@ -388,7 +384,6 @@ def _collect_business_state(context: AcceptanceContext) -> dict[str, Any]:
         income_account,
         payment_account,
     )
-    stock_entries, stock_ledger_entries = stock_state(context, order)
 
     winner_reference = cstr(winner.get("transaction_refno"))
     winner_digest = hashlib.sha256(
@@ -412,9 +407,6 @@ def _collect_business_state(context: AcceptanceContext) -> dict[str, Any]:
             "status": "Submitted",
             "docstatus": 1,
             "salesInvoice": invoice_name,
-            "ingredientStockEntry": cstr(
-                order.get("ingredient_stock_entry")
-            ),
             "providerReferenceDigest": winner_digest,
             "deviceUdid": context.bindings.device_udid,
             "company": context.company,
@@ -515,8 +507,6 @@ def _collect_business_state(context: AcceptanceContext) -> dict[str, Any]:
         "settlementGlQuery": gl_query,
         "settlementGlRows": gl_rows,
         "accounts": accounts,
-        "stockEntries": stock_entries,
-        "stockLedgerEntries": stock_ledger_entries,
         "reconciliation": reconciliation,
     }
 
@@ -570,8 +560,6 @@ def export_v1(
             "payments",
             "settlementGlRows",
             "accounts",
-            "stockEntries",
-            "stockLedgerEntries",
         )
     }
     counts.update(
@@ -582,7 +570,7 @@ def export_v1(
         }
     )
     report = {
-        "schemaVersion": "2",
+        "schemaVersion": "3",
         "status": "passed",
         "source": BUSINESS_STATE_SOURCE,
         "candidateApkSha256": bindings.candidate_apk_sha256,
@@ -594,11 +582,13 @@ def export_v1(
         "outletIdSha256": context.outlet_id_sha256,
         "company": context.company,
         "currency": context.currency,
+        "inventoryAcceptance": False,
+        "inventoryEvaluation": "excluded_not_evaluated",
         "collectedAt": collected_at,
         "provenance": {
             "producer": PRODUCER,
             "producerSourceSha256": producer_source_sha256(__file__),
-            "collectorMode": "read_only_business_dump_v1",
+            "collectorMode": "read_only_commercial_business_dump_v1",
             "readOnly": True,
             "queryExecutionId": query_execution_id,
             "erpArtifactSha256": bindings.erp_artifact_sha256,

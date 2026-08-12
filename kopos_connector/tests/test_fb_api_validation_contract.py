@@ -3,29 +3,37 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import pytest
+
 
 ERP_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestFBAPIValidationContract(unittest.TestCase):
-    def test_return_api_validates_resolved_sale_identity(self):
+    def test_return_api_prefers_commercial_identity_and_keeps_legacy_identity(self):
         content = (ERP_ROOT / "api" / "fb_returns.py").read_text()
+        self.assertIn("original_sales_invoice_item", content)
+        self.assertIn("original_fb_order_line_ref", content)
+        self.assertIn("commercial_modifier_snapshot_json", content)
         self.assertIn("original_resolved_sale", content)
         self.assertIn("resolved_sale_id", content)
         self.assertIn("qty_returned", content)
         self.assertIn("original_sales_invoice", content)
 
+    @pytest.mark.inventory_regression
     def test_remake_api_validates_original_resolved_sale(self):
         content = (ERP_ROOT / "api" / "fb_remakes.py").read_text()
         self.assertIn("original_resolved_sale", content)
         self.assertIn("original_order", content)
         self.assertIn("reason_code", content)
 
+    @pytest.mark.inventory_regression
     def test_waste_api_requires_company_warehouse_and_lines(self):
         content = (ERP_ROOT / "api" / "fb_waste.py").read_text()
         for token in ["waste_id", "company", "warehouse", "lines", "reason_code"]:
             self.assertIn(token, content)
 
+    @pytest.mark.inventory_regression
     def test_refill_api_requires_company_and_warehouse_pair(self):
         content = (ERP_ROOT / "api" / "fb_refill.py").read_text()
         for token in [

@@ -12,6 +12,25 @@ install_fake_frappe_modules()
 
 
 class TestFBOrderModifierValidation(unittest.TestCase):
+    def test_commercial_modifier_replay_never_reads_resolved_sale(self):
+        from kopos_connector.kopos.doctype.fb_order import fb_order
+
+        order = fb_order.FBOrder()
+        line = SimpleNamespace(
+            get=lambda _fieldname: [],
+            _selected_modifiers_payload=None,
+            commercial_modifier_snapshot_json=None,
+            resolved_sale="LEGACY-RESOLVED-SALE",
+        )
+
+        with patch.object(
+            fb_order.frappe,
+            "get_doc",
+            side_effect=AssertionError("resolved-sale table must not be read"),
+            create=True,
+        ):
+            self.assertEqual(order.get_selected_modifier_rows(line), [])
+
     def test_legacy_required_single_bounds_match_catalog_semantics(self):
         from kopos_connector.kopos.doctype.fb_order.fb_order import FBOrder
 
@@ -56,14 +75,14 @@ class TestFBOrderModifierValidation(unittest.TestCase):
                 ),
             )
 
-    def test_prepare_resolves_default_recipe_before_freezing_sale(self):
+    def test_prepare_freezes_commercial_snapshot_without_resolved_sale_projection(self):
         from kopos_connector.kopos.api import fb_orders
 
         events = []
         line = SimpleNamespace(
-            recipe=None,
-            recipe_version=None,
-            is_recipe_managed=0,
+            recipe="MISSING-RECIPE",
+            recipe_version="invalid",
+            is_recipe_managed=1,
         )
         payment = SimpleNamespace(name="PAY-1", settlement_status=None)
 
@@ -76,9 +95,9 @@ class TestFBOrderModifierValidation(unittest.TestCase):
 
             def build_line_resolutions(self):
                 events.append("resolve")
-                line.recipe = "RECIPE-1"
-                line.recipe_version = 3
-                line.is_recipe_managed = 1
+                line.recipe = None
+                line.recipe_version = None
+                line.is_recipe_managed = 0
                 return [{"line": line, "resolved_components": []}]
 
             def insert(self, ignore_permissions=False):
@@ -157,11 +176,11 @@ class TestFBOrderModifierValidation(unittest.TestCase):
         self.assertEqual(response, {"status": "ok"})
         self.assertEqual(
             events,
-            ["resolve", "insert", "stock", "snapshot", "save"],
+            ["resolve", "insert", "save"],
         )
         self.assertEqual(
             order._inserted_recipe_identity,
-            ("RECIPE-1", 3, 1),
+            (None, None, 0),
         )
 
     def test_fully_discounted_line_normalizes_to_zero_sen(self):
@@ -213,6 +232,32 @@ class TestFBOrderModifierValidation(unittest.TestCase):
                 1,
                 "sen_v1",
             )
+
+    def test_optional_recipe_metadata_never_rejects_commercial_line(self):
+        from kopos_connector.kopos.api.fb_orders import _normalize_order_item
+
+        for recipe, recipe_version in (
+            ("MISSING-RECIPE", None),
+            (None, "not-a-version"),
+            ("MISSING-RECIPE", {"bad": "shape"}),
+        ):
+            normalized = _normalize_order_item(
+                {
+                    "line_id": "LINE-OPTIONAL-RECIPE",
+                    "item_code": "ITEM-1",
+                    "qty": 1,
+                    "unit_price_sen": 1000,
+                    "modifier_total_sen": 0,
+                    "discount_amount_sen": 0,
+                    "line_total_sen": 1000,
+                    "recipe": recipe,
+                    "recipe_version": recipe_version,
+                },
+                1,
+                "sen_v1",
+            )
+
+            self.assertEqual(normalized["recipe"], recipe or None)
 
     def test_percentage_discount_rounds_half_up_and_caps_at_free(self):
         from kopos_connector.kopos.api.fb_orders import _snapshot_unit_discount_sen
@@ -850,7 +895,7 @@ class TestFBOrderModifierValidation(unittest.TestCase):
     @patch("kopos_connector.kopos.api.fb_orders.frappe.get_doc")
     @patch("kopos_connector.kopos.api.fb_orders.frappe.get_cached_doc")
     @patch("kopos_connector.kopos.api.fb_orders.frappe.db.exists")
-    def test_validate_order_item_requires_modifier_total_to_match_fb_prices(
+    def test_validate_order_item_uses_item_money_when_modifier_decoration_differs(
         self, mock_exists, mock_get_cached_doc, mock_get_doc
     ):
         from kopos_connector.kopos.api.fb_orders import _validate_order_item
@@ -880,8 +925,7 @@ class TestFBOrderModifierValidation(unittest.TestCase):
             ),
         }[(doctype, name)]
 
-        with self.assertRaises(Exception) as context:
-            _validate_order_item(
+        result = _validate_order_item(
                 {
                     "line_id": "LINE-1",
                     "item_code": "ITEM-COFFEE",
@@ -902,10 +946,39 @@ class TestFBOrderModifierValidation(unittest.TestCase):
                 1,
             )
 
-        self.assertIn(
-            "modifier_total_sen must equal summed modifier price adjustments",
-            str(context.exception),
+        self.assertEqual(result["modifier_total"], 0)
+        self.assertEqual(result["line_total"], 10)
+        self.assertEqual(
+            result["selected_modifiers"][0]["modifier"],
+            "FB-MOD-ICED",
         )
+
+    def test_malformed_modifier_decoration_never_rejects_exact_line_money(self):
+        from kopos_connector.kopos.api.fb_orders import _normalize_order_item
+
+        normalized = _normalize_order_item(
+            {
+                "line_id": "LINE-OLD-CACHE",
+                "item_code": "ITEM-COFFEE",
+                "qty": 1,
+                "unit_price_sen": 1000,
+                "modifier_total_sen": 200,
+                "discount_amount_sen": 0,
+                "line_total_sen": 1200,
+                "modifiers": [
+                    None,
+                    {"modifier_group": "", "modifier": "ORPHAN", "price_adjustment_sen": 200},
+                    {"modifier_group": "MILK", "modifier": "", "price_adjustment_sen": 200},
+                    {"modifier_group": "MILK", "modifier": "OAT", "price_adjustment_sen": "bad"},
+                ],
+            },
+            1,
+            "sen_v1",
+        )
+
+        self.assertEqual(normalized["modifier_total_sen"], 200)
+        self.assertEqual(normalized["line_total_sen"], 1200)
+        self.assertEqual(normalized["selected_modifiers"], [])
 
     @patch("kopos_connector.kopos.api.fb_orders.frappe.get_cached_doc")
     @patch("kopos_connector.kopos.api.fb_orders.frappe.db.exists")
@@ -944,6 +1017,79 @@ class TestFBOrderModifierValidation(unittest.TestCase):
             )
 
         self.assertIn("does not belong to FB Modifier Group", str(context.exception))
+
+    def test_order_item_uses_authenticated_modifier_snapshot_without_recipe_reads(self):
+        from kopos_connector.kopos.api import fb_orders
+
+        def get_doc(doctype, name):
+            self.assertEqual((doctype, name), ("Item", "ITEM-COFFEE"))
+            return SimpleNamespace(
+                name="ITEM-COFFEE", item_name="Coffee", stock_uom="Nos"
+            )
+
+        def exists(doctype, name):
+            self.assertEqual((doctype, name), ("UOM", "Nos"))
+            return True
+
+        with patch.object(fb_orders.frappe, "get_doc", side_effect=get_doc), patch.object(
+            fb_orders.frappe.db, "exists", side_effect=exists
+        ):
+            result = fb_orders._resolve_order_item(
+                {
+                    "line_id": "LINE-1",
+                    "backend_line_uuid": "LINE-UUID-1",
+                    "item_code": "ITEM-COFFEE",
+                    "submitted_item_name": "Coffee",
+                    "qty": 1,
+                    "uom": "Nos",
+                    "unit_price_sen": 1000,
+                    "modifier_total_sen": 200,
+                    "discount_amount_sen": 0,
+                    "line_total_sen": 1200,
+                    "recipe": "MISSING-RECIPE",
+                    "recipe_version": 7,
+                    "remarks": None,
+                    "selected_modifiers": [
+                        {
+                            "modifier_group": "MISSING-GROUP",
+                            "modifier": "MISSING-MODIFIER",
+                            "price_adjustment_sen": 200,
+                            "instruction_text": "Extra hot",
+                            "sort_order": 2,
+                        }
+                    ],
+                    "promotion_allocations": [],
+                },
+                1,
+            )
+
+        self.assertIsNone(result["recipe"])
+        self.assertIsNone(result["recipe_version"])
+        self.assertEqual(result["is_recipe_managed"], 0)
+        self.assertEqual(result["selected_modifiers"][0]["modifier"], "MISSING-MODIFIER")
+        self.assertEqual(result["selected_modifiers"][0]["price_adjustment"], 2)
+        self.assertEqual(result["selected_modifiers"][0]["affects_stock"], 0)
+
+    def test_nested_modifier_snapshot_is_persisted_as_exact_json(self):
+        from kopos_connector.kopos.api.fb_orders import _set_selected_modifiers_payload
+
+        line = SimpleNamespace(_table_fieldnames={})
+        modifiers = [
+            {
+                "modifier_group": "EXTRAS",
+                "modifier": "EXTRA-SHOT",
+                "price_adjustment": 2,
+                "instruction_text": None,
+                "sort_order": 1,
+                "affects_stock": 0,
+                "affects_recipe": 0,
+            }
+        ]
+
+        _set_selected_modifiers_payload(line, modifiers)
+
+        self.assertEqual(json.loads(line.commercial_modifier_snapshot_json), modifiers)
+        self.assertEqual(line._selected_modifiers_payload[0].modifier, "EXTRA-SHOT")
 
 
 if __name__ == "__main__":

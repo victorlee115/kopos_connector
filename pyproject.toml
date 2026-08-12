@@ -38,3 +38,8 @@ version = { attr = "kopos_connector.__version__" }
 
 [tool.bench.frappe-dependencies]
 frappe = ">=16.0.0,<17.0.0"
+
+[tool.pytest.ini_options]
+markers = [
+    "inventory_regression: optional recipe, modifier-authoring, stock, COGS, or inventory regression outside commercial release acceptance",
+]

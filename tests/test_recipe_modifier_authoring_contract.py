@@ -6,12 +6,12 @@ import pytest
 
 from .fake_frappe import install_fake_frappe_modules
 
+pytestmark = pytest.mark.inventory_regression
+
 
 install_fake_frappe_modules()
 
 import frappe
-
-from kopos_connector.kopos.doctype.fb_recipe.fb_recipe import FBRecipe
 
 
 def _group(
@@ -45,7 +45,9 @@ def _recipe_row(
     )
 
 
-def _recipe(row: SimpleNamespace) -> FBRecipe:
+def _recipe(row: SimpleNamespace) -> object:
+    from kopos_connector.kopos.doctype.fb_recipe.fb_recipe import FBRecipe
+
     recipe = FBRecipe()
     recipe.name = "AMERICANO_COFFEE_RECIPE"
     recipe.allowed_modifier_groups = [row]

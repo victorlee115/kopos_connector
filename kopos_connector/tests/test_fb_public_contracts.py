@@ -5,6 +5,8 @@ import os
 import unittest
 from pathlib import Path
 
+import pytest
+
 
 ERP_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = ERP_ROOT.parents[1]
@@ -17,10 +19,16 @@ class TestFBPublicContracts(unittest.TestCase):
         for relative in [
             "api/fb_orders.py",
             "api/fb_returns.py",
+            "api/fb_shifts.py",
+        ]:
+            self.assertTrue((ERP_ROOT / relative).exists(), relative)
+
+    @pytest.mark.inventory_regression
+    def test_optional_operational_api_modules_exist(self):
+        for relative in [
             "api/fb_remakes.py",
             "api/fb_waste.py",
             "api/fb_refill.py",
-            "api/fb_shifts.py",
         ]:
             self.assertTrue((ERP_ROOT / relative).exists(), relative)
 
@@ -32,9 +40,6 @@ class TestFBPublicContracts(unittest.TestCase):
                 ("retry_failed_projections", "POST"),
             ],
             "api/fb_returns.py": [("process_return", "POST")],
-            "api/fb_remakes.py": [("process_remake", "POST")],
-            "api/fb_waste.py": [("process_waste", "POST")],
-            "api/fb_refill.py": [("process_refill", "POST")],
         }
         for relative, methods in expected.items():
             content = (ERP_ROOT / relative).read_text()
@@ -49,17 +54,36 @@ class TestFBPublicContracts(unittest.TestCase):
                     self.assertIn("@frappe.whitelist()", content, f"{relative}:{method}")
                 self.assertIn(f"def {method}", content, f"{relative}:{method}")
 
+    @pytest.mark.inventory_regression
+    def test_optional_operational_api_methods_are_whitelisted(self):
+        expected = {
+            "api/fb_remakes.py": "process_remake",
+            "api/fb_waste.py": "process_waste",
+            "api/fb_refill.py": "process_refill",
+        }
+        for relative, method in expected.items():
+            content = (ERP_ROOT / relative).read_text()
+            self.assertIn('@frappe.whitelist(methods=["POST"])', content)
+            self.assertIn(f"def {method}", content, f"{relative}:{method}")
+
     def test_operational_events_use_doctype_controllers_only(self):
         content = (ERP_ROOT / "hooks.py").read_text()
+        self.assertNotIn("FB Return Event", content)
+        controller = (
+            ERP_ROOT / "kopos/doctype/fb_return_event/fb_return_event.py"
+        ).read_text()
+        self.assertIn("def on_submit", controller)
+
+    @pytest.mark.inventory_regression
+    def test_optional_operational_events_use_doctype_controllers_only(self):
+        content = (ERP_ROOT / "hooks.py").read_text()
         for doctype in [
-            "FB Return Event",
             "FB Remake Event",
             "FB Waste Event",
             "FB Booth Refill Request",
         ]:
             self.assertNotIn(doctype, content)
         for relative in [
-            "kopos/doctype/fb_return_event/fb_return_event.py",
             "kopos/doctype/fb_remake_event/fb_remake_event.py",
             "kopos/doctype/fb_waste_event/fb_waste_event.py",
             "kopos/doctype/fb_booth_refill_request/fb_booth_refill_request.py",
@@ -73,17 +97,22 @@ class TestFBPublicContracts(unittest.TestCase):
 
     def test_custom_field_installer_covers_standard_docs(self):
         content = (ERP_ROOT / "kopos" / "install" / "fb_custom_fields.py").read_text()
-        for doctype in ["Item", "Sales Invoice", "Sales Invoice Item", "Stock Entry"]:
+        for doctype in ["Item", "Sales Invoice", "Sales Invoice Item"]:
             self.assertIn(f'"{doctype}"', content)
         for field in [
             "custom_fb_item_role",
-            "custom_fb_recipe_required",
             "custom_fb_order",
             "custom_fb_shift",
-            "custom_fb_resolved_sale",
             "custom_fb_reason_code",
         ]:
             self.assertIn(field, content)
+
+    @pytest.mark.inventory_regression
+    def test_custom_field_installer_covers_optional_inventory_docs(self):
+        content = (ERP_ROOT / "kopos" / "install" / "fb_custom_fields.py").read_text()
+        self.assertIn('"Stock Entry"', content)
+        self.assertIn("custom_fb_recipe_required", content)
+        self.assertIn("custom_fb_resolved_sale", content)
 
     def test_typescript_contracts_include_required_fields(self):
         if not TS_ROOT.exists():

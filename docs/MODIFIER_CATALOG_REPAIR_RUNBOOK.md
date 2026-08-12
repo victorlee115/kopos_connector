@@ -1,8 +1,13 @@
 # Modifier catalog repair runbook
 
-Use this when a catalog refresh says that a recipe changes the selection rules
-of a shared modifier group. This is a menu setup problem, not a tablet problem
-and not a database migration to guess automatically.
+Use this when the menu owner is ready to restore optional recipe-driven
+modifiers after the inventory redesign. A broken recipe is a menu setup issue,
+not a tablet problem and not a database migration to guess automatically.
+
+The cashier catalog and commercial sale path do not load this optional recipe
+configuration. The base item remains saleable without recipe modifiers, and
+this repair is not a prerequisite for taking orders, QR payments, refunds,
+printing, synchronization, or shift close.
 
 ## Important safety rules
 
@@ -10,8 +15,8 @@ and not a database migration to guess automatically.
   or costs. Inventory is outside this repair.
 - Do not change a recipe definition that has already been published or used.
   This non-inventory campaign may only retire the unchanged invalid version.
-- Do not weaken the catalog check. Every tablet must receive one clear rule for
-  each modifier group.
+- Do not re-enable optional modifiers until every tablet can receive one clear
+  rule for each modifier group.
 - Make the repair on a restored copy first. Keep the before and after export,
   the full-catalog result, the approving manager, and the exact ERP artifact
   identity.
@@ -43,22 +48,24 @@ menu rule on the manager's behalf.
 3. Retire the invalid recipe without changing any other authored field. The
    save is allowed only for an exact Active-to-Retired, status-only change.
 4. Save and reload it. If another field changed, stop; the retirement must fail.
-5. Generate the complete catalog twice for every enabled tablet. This proves
-   the invalid recipe no longer breaks menu refresh, but it does not prove a
-   replacement recipe or inventory behavior.
-6. Keep the sellable item unavailable until the inventory revamp owner approves
-   creation of a new recipe version. Creating or copying component rows is not
-   authorized by this campaign, even when their values would be identical.
+5. Generate the commercial catalog twice for every enabled tablet. The base
+   item must remain present and usable with no recipe or modifier dependency.
+6. Do not expose the optional modifier group until the inventory revamp owner
+   approves and tests a replacement recipe version. Do not disable the base
+   sellable item merely because optional recipe enrichment is unavailable.
+   Creating or copying component rows is not authorized by this campaign, even
+   when their values would be identical.
 
 ## Apply to the target ERP
 
 Only an authorized menu manager should repeat the rehearsed status-only
 retirement. Take a fresh backup first. After the save, run the target read-only
-preflight and the two-pass full catalog again. Stop if any enabled tablet fails;
-do not hide the error or delete the old evidence. A replacement recipe remains
-outside this campaign until the inventory revamp owner explicitly approves it.
+preflight and the two-pass commercial catalog again. Stop if any enabled tablet
+loses the base item; do not hide the error or delete the old evidence. A
+replacement recipe remains outside this campaign until the inventory revamp
+owner explicitly approves it.
 
-Containment is complete only when every enabled tablet catalog succeeds with the
-invalid recipe retired. Full menu repair remains blocked until an approved
-replacement recipe exists. This runbook does not make an inventory-readiness
-claim.
+Commercial containment is already complete when every enabled tablet can sell
+the base item without consulting recipe or inventory code. Restoring recipe
+modifiers remains separate, owner-approved follow-up work. This runbook does
+not make an inventory-readiness claim.

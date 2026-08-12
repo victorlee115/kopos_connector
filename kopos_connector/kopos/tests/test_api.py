@@ -18,7 +18,7 @@ class TestFBOrdersAPI(FrappeTestCase):
     def setUp(self):
         frappe.set_user("Administrator")
         self.shift = create_open_test_shift(
-            prefix="KOPOS-API-TEST", replenish_stock=True
+            prefix="KOPOS-API-TEST", replenish_stock=False
         )
 
     def tearDown(self):

@@ -34,6 +34,7 @@ MOBILE_APK_SHA256 = "5" * 64
 MOBILE_MANIFEST_SHA256 = "6" * 64
 ERP_MANIFEST_SHA256 = "7" * 64
 SITE_SHA256 = "8" * 64
+TARGET_TIME_ZONE = "Asia/Kuala_Lumpur"
 
 
 def _round_trip() -> dict[str, object]:
@@ -220,6 +221,7 @@ def test_machine_report_is_target_bound_real_and_non_inventory(
         expected_site_id_sha256=SITE_SHA256,
         company="Test Company",
         currency="MYR",
+        expected_time_zone=TARGET_TIME_ZONE,
         expected_maybank_account_type="corporate",
     )
 
@@ -247,6 +249,7 @@ def test_machine_report_is_target_bound_real_and_non_inventory(
     assert report["checks"]["staticQrCommissioning"]["passed"] is True
     assert report["checks"]["qrAccount"]["cashAccountUsed"] is False
     assert report["checks"]["providerControls"]["mockDisabled"] is True
+    assert report["target"]["timeZone"] == TARGET_TIME_ZONE
     assert report["status"] == "passed"
     serialized = json.dumps(report, sort_keys=True)
     assert "private-user" not in serialized
@@ -277,6 +280,84 @@ def test_qr_account_probe_requires_an_explicit_bank_asset(
 
     with pytest.raises(frappe.ValidationError, match="enabled non-group Bank Asset"):
         preflight._qr_account_check("Test Company", "MYR")
+
+
+def test_target_timezone_requires_protected_value_and_real_system_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        preflight.frappe.db,
+        "get_single_value",
+        lambda doctype, fieldname: TARGET_TIME_ZONE,
+    )
+
+    assert preflight._target_time_zone(TARGET_TIME_ZONE) == TARGET_TIME_ZONE
+
+    with pytest.raises(frappe.ValidationError, match="protected Asia/Kuala_Lumpur"):
+        preflight._target_time_zone("UTC")
+
+    monkeypatch.setattr(
+        preflight.frappe.db,
+        "get_single_value",
+        lambda doctype, fieldname: "America/New_York",
+    )
+    with pytest.raises(frappe.ValidationError, match="protected timezone"):
+        preflight._target_time_zone(TARGET_TIME_ZONE)
+
+
+def test_target_identity_requires_enabled_myr_selling_price_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    site = "test.localhost"
+    company = "Test Company"
+    profile = "Counter 1"
+    price_list = "KoPOS MYR Selling"
+    records = {
+        "Company": {"name": company, "default_currency": "MYR"},
+        "POS Profile": {
+            "company": company,
+            "currency": "MYR",
+            "selling_price_list": price_list,
+        },
+        "Price List": {"enabled": 1, "selling": 1, "currency": "MYR"},
+    }
+
+    monkeypatch.setattr(preflight.frappe.local, "site", site, raising=False)
+    monkeypatch.setattr(
+        preflight,
+        "_config_value",
+        lambda fieldname, default=None: "https://erp.example.com",
+    )
+    monkeypatch.setattr(
+        preflight.frappe,
+        "get_all",
+        lambda *args, **kwargs: [{"pos_profile": profile}],
+    )
+    monkeypatch.setattr(
+        preflight.frappe.db,
+        "get_value",
+        lambda doctype, *args, **kwargs: records.get(doctype),
+    )
+
+    proof = preflight._target_identity(
+        expected_origin="https://erp.example.com",
+        expected_site_id_sha256=preflight._sha256(site),
+        company=company,
+        currency="MYR",
+    )
+    assert proof["company"] == company
+
+    records["Price List"] = {"enabled": 1, "selling": 0, "currency": "MYR"}
+    with pytest.raises(
+        frappe.ValidationError,
+        match="requires an enabled selling Price List",
+    ):
+        preflight._target_identity(
+            expected_origin="https://erp.example.com",
+            expected_site_id_sha256=preflight._sha256(site),
+            company=company,
+            currency="MYR",
+        )
 
 
 def test_static_qr_probe_requires_exact_commissioning_for_every_enabled_device(
@@ -370,6 +451,7 @@ def test_target_preflight_rejects_configuration_changes_between_checks(
             expected_site_id_sha256=SITE_SHA256,
             company="Test Company",
             currency="MYR",
+            expected_time_zone=TARGET_TIME_ZONE,
             expected_maybank_account_type="corporate",
         )
 
@@ -611,6 +693,7 @@ def test_machine_report_rejects_another_installed_runtime_inventory(
             expected_site_id_sha256=SITE_SHA256,
             company="Test Company",
             currency="MYR",
+            expected_time_zone=TARGET_TIME_ZONE,
             expected_maybank_account_type="corporate",
         )
 
@@ -635,6 +718,7 @@ def test_machine_report_filename_is_bound_to_the_campaign_nonce(
             expected_site_id_sha256=SITE_SHA256,
             company="Test Company",
             currency="MYR",
+            expected_time_zone=TARGET_TIME_ZONE,
             expected_maybank_account_type="corporate",
             output_filename="another-report.json",
         )
@@ -691,7 +775,22 @@ def test_producer_closure_hash_binds_every_first_party_dependency() -> None:
         "kopos_connector.hooks",
         "kopos_connector.install.install",
         "kopos_connector.kopos.services.accounting.maybank_payment_service",
-        "kopos_connector.kopos.services.recipe.modifier_bounds",
         "kopos_connector.services.maybank.client",
         "kopos_connector.services.static_qr_commissioning",
     }
+
+
+def test_commercial_target_schema_does_not_require_recipe_doctypes() -> None:
+    required_doctypes = set(preflight.preflight_contract.REQUIRED_FIELD_SPECS)
+
+    assert "FB Recipe" not in required_doctypes
+    assert "FB Allowed Modifier Group" not in required_doctypes
+    assert "FB Resolved Sale" not in required_doctypes
+    assert "original_resolved_sale" not in (
+        preflight.preflight_contract.REQUIRED_FIELD_SPECS["FB Return Event Line"]
+    )
+    assert (
+        preflight.preflight_contract.REQUIRED_FIELD_OPTIONS["FB Order Line"]
+        ["commercial_modifier_snapshot_json"]
+        == "JSON"
+    )

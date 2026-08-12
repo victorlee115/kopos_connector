@@ -19,11 +19,17 @@ from kopos_connector.smoke import (
 TEST_PREFIX = "KOPOS-BROAD-TEST"
 
 
-def ensure_canonical_test_base(*, replenish_stock: bool = False) -> dict[str, Any]:
+def ensure_canonical_test_base(
+    *,
+    replenish_stock: bool = False,
+    include_inventory_regression: bool = False,
+) -> dict[str, Any]:
     """Return an idempotent, production-shaped ERP fixture for real-Frappe tests."""
 
     frappe.set_user("Administrator")
-    base = _ensure_smoke_base_data()
+    base = _ensure_smoke_base_data(
+        include_inventory_regression=include_inventory_regression
+    )
     _ensure_kopos_device(
         device_id=SMOKE_DEVICE_ID,
         pos_profile=base["pos_profile"],
@@ -31,16 +37,22 @@ def ensure_canonical_test_base(*, replenish_stock: bool = False) -> dict[str, An
     )
     if replenish_stock:
         set_demo_ingredient_quantities()
-    recipe = _get_demo_recipe_reference(base["company"])
-    return {
+    result = {
         **base,
         "currency": _get_demo_currency(base["company"]),
         "device_id": SMOKE_DEVICE_ID,
         "item_code": DEMO_DRINK_ITEM,
         "item_name": DEMO_DRINK_NAME,
-        "recipe": recipe["name"],
-        "recipe_version": recipe["version_no"],
     }
+    if include_inventory_regression:
+        recipe = _get_demo_recipe_reference(base["company"])
+        result.update(
+            {
+                "recipe": recipe["name"],
+                "recipe_version": recipe["version_no"],
+            }
+        )
+    return result
 
 
 def create_open_test_shift(
@@ -50,7 +62,10 @@ def create_open_test_shift(
     opening_float: float = 3.0,
     replenish_stock: bool = False,
 ) -> Any:
-    base = ensure_canonical_test_base(replenish_stock=replenish_stock)
+    base = ensure_canonical_test_base(
+        replenish_stock=replenish_stock,
+        include_inventory_regression=replenish_stock,
+    )
     shift = frappe.new_doc("FB Shift")
     shift.shift_code = f"{prefix}-SHIFT-{frappe.generate_hash(length=10)}"
     shift.device_id = device_id
@@ -73,8 +88,15 @@ def build_sen_v1_sale_payload(
     quantity: int = 1,
     unit_price_sen: int = 1200,
     tendered_amount_sen: int | None = None,
+    include_optional_recipe: bool = False,
 ) -> dict[str, Any]:
-    recipe = _get_demo_recipe_reference(shift.company)
+    optional_recipe_fields: dict[str, Any] = {}
+    if include_optional_recipe:
+        recipe = _get_demo_recipe_reference(shift.company)
+        optional_recipe_fields = {
+            "recipe": recipe["name"],
+            "recipe_version": recipe["version_no"],
+        }
     total_sen = quantity * unit_price_sen
     tendered_sen = (
         total_sen if tendered_amount_sen is None else tendered_amount_sen
@@ -104,8 +126,7 @@ def build_sen_v1_sale_payload(
                     "line_id": f"{prefix}-LINE-{frappe.generate_hash(length=10)}",
                     "item_code": DEMO_DRINK_ITEM,
                     "item_name": DEMO_DRINK_NAME,
-                    "recipe": recipe["name"],
-                    "recipe_version": recipe["version_no"],
+                    **optional_recipe_fields,
                     "qty": quantity,
                     "unit_price_sen": unit_price_sen,
                     "modifier_total_sen": 0,
@@ -158,7 +179,7 @@ def ensure_persisted_test_modifier(
 ) -> str:
     """Create an immutable persisted modifier used by integration-level tests."""
 
-    base = ensure_canonical_test_base()
+    base = ensure_canonical_test_base(include_inventory_regression=True)
     recipe = frappe.get_doc("FB Recipe", base["recipe"])
     modifier_group = recipe.allowed_modifier_groups[0].modifier_group
     expected = {

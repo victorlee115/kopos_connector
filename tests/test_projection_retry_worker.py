@@ -163,6 +163,118 @@ def test_worker_runs_real_handler_under_atomic_worker_lease(monkeypatch) -> None
     assert retry_service.RETRY_LOCK_KEY not in redis.values
 
 
+def test_worker_never_claims_or_retries_recorded_inventory_failures(
+    monkeypatch,
+) -> None:
+    redis = FakeRedis()
+    candidates = [
+        {
+            "name": "LOG-STOCK-ISSUE",
+            "source_name": "FB-ORDER-1",
+            "projection_type": "Stock Issue",
+            "retry_count": 3,
+            "last_attempt_at": None,
+            "next_retry_at": None,
+            "lease_expires_at": None,
+            "dead_lettered_at": None,
+            "state": "Failed",
+        },
+        {
+            "name": "LOG-INVOICE",
+            "source_name": "FB-ORDER-1",
+            "projection_type": "Sales Invoice",
+            "retry_count": 1,
+            "last_attempt_at": None,
+            "next_retry_at": None,
+            "lease_expires_at": None,
+            "dead_lettered_at": None,
+            "state": "Failed",
+        },
+        {
+            "name": "LOG-STOCK-ENTRY",
+            "source_name": "FB-ORDER-1",
+            "projection_type": "Stock Entry",
+            "retry_count": 2,
+            "last_attempt_at": None,
+            "next_retry_at": None,
+            "lease_expires_at": None,
+            "dead_lettered_at": None,
+            "state": "Failed",
+        },
+        {
+            "name": "LOG-SHIFT",
+            "source_name": "FB-ORDER-1",
+            "projection_type": "FB Shift",
+            "retry_count": 1,
+            "last_attempt_at": None,
+            "next_retry_at": None,
+            "lease_expires_at": None,
+            "dead_lettered_at": None,
+            "state": "Failed",
+        },
+    ]
+    queried: list[dict[str, Any]] = []
+    claimed: list[str] = []
+    retried: list[str] = []
+
+    monkeypatch.setattr(
+        retry_service.frappe,
+        "cache",
+        lambda: SimpleNamespace(redis_client=redis),
+    )
+
+    def get_all(*_args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        queried.append(kwargs)
+        # Deliberately return inventory rows too. This proves the Python guard
+        # is effective even if a substitute adapter ignores the SQL filter.
+        return candidates
+
+    monkeypatch.setattr(retry_service.frappe, "get_all", get_all)
+    monkeypatch.setattr(
+        retry_service,
+        "_claim_projection",
+        lambda log_name, *_args: claimed.append(log_name) or True,
+    )
+    monkeypatch.setattr(
+        retry_service,
+        "_finalize_projection_attempt",
+        lambda **_kwargs: None,
+    )
+
+    def retry_projection(log_name: str) -> dict[str, Any]:
+        retried.append(log_name)
+        projection_type = next(
+            row["projection_type"] for row in candidates if row["name"] == log_name
+        )
+        return {
+            "projection_log": log_name,
+            "projection_type": projection_type,
+            "state": "Succeeded",
+            "target_name": (
+                "SINV-1"
+                if projection_type == "Sales Invoice"
+                else "FB-SHIFT-1"
+            ),
+        }
+
+    monkeypatch.setattr(fb_orders, "_retry_projection_log", retry_projection)
+
+    result = retry_service.retry_projection_failures(force=True, batch_size=10)
+
+    assert queried[0]["filters"]["projection_type"] == (
+        "in",
+        retry_service.COMMERCIAL_ORDER_PROJECTION_TYPES,
+    )
+    assert claimed == ["LOG-INVOICE", "LOG-SHIFT"]
+    assert retried == ["LOG-INVOICE", "LOG-SHIFT"]
+    assert [row["projection_type"] for row in result] == [
+        "Sales Invoice",
+        "FB Shift",
+    ]
+    assert candidates[0]["state"] == "Failed"
+    assert candidates[2]["state"] == "Failed"
+
+
 def test_worker_lock_supports_frappe_v16_direct_redis_cache() -> None:
     redis = FakeRedis()
 

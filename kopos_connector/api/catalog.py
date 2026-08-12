@@ -16,13 +16,6 @@ from kopos_connector.api.devices import (
     get_device_doc,
     get_session_roles,
 )
-from kopos_connector.kopos.services.recipe.modifier_bounds import (
-    ModifierBoundsError,
-    resolve_effective_modifier_bounds,
-    validate_published_modifier_bounds,
-)
-
-
 CatalogPayload = dict[str, Any]
 ERPRecord = dict[str, Any]
 
@@ -48,34 +41,27 @@ def build_catalog_payload(
     currency = (pos_profile or {}).get("currency") or (
         frappe.db.get_value("Company", company, "default_currency") if company else None
     )
-    items = get_items(
-        warehouse=warehouse,
-        selling_price_list=selling_price_list,
-        pos_profile=pos_profile,
+    # The cashier catalog is deliberately limited to commercial Item data.
+    # Recipe, modifier, and inventory configuration is optional during the
+    # redesign and must never sit on the request path that lets a tablet sell.
+    items = _without_optional_recipe_fields(
+        get_items(
+            warehouse=warehouse,
+            selling_price_list=selling_price_list,
+            pos_profile=pos_profile,
+        )
     )
     category_ids = {
         cstr(item.get("category_id"))
         for item in items
         if cstr(item.get("category_id")).strip()
     }
-    referenced_modifier_group_ids = sorted(
-        {
-            cstr(group_id).strip()
-            for item in items
-            for group_id in (item.get("modifier_group_ids") or [])
-            if cstr(group_id).strip()
-        }
-    )
 
     snapshot = {
         "categories": get_categories(category_ids=category_ids),
         "items": items,
-        "modifier_groups": get_modifier_groups(
-            group_ids=referenced_modifier_group_ids
-        ),
-        "modifier_options": get_modifier_options(
-            group_ids=referenced_modifier_group_ids
-        ),
+        "modifier_groups": [],
+        "modifier_options": [],
         "metadata": {
             "company": company,
             "pos_profile": (pos_profile or {}).get("name"),
@@ -113,6 +99,22 @@ def build_catalog_payload(
     )
 
     return payload
+
+
+def _without_optional_recipe_fields(items: list[ERPRecord]) -> list[ERPRecord]:
+    """Return the same commercial items without optional recipe enrichment."""
+
+    return [
+        {
+            **item,
+            "is_available": bool(cint(item.get("is_active", 1))),
+            "stock_warning": None,
+            "modifier_group_ids": [],
+            "recipe_id": None,
+            "recipe_version": None,
+        }
+        for item in items
+    ]
 
 
 def build_catalog_version(snapshot: Mapping[str, Any]) -> str:
@@ -219,6 +221,11 @@ def validate_catalog_snapshot(snapshot: Mapping[str, Any]) -> None:
     for option in modifier_options:
         options_by_group.setdefault(cstr(option.get("group_id")).strip(), []).append(
             option
+        )
+    if modifier_groups:
+        from kopos_connector.kopos.services.recipe.modifier_bounds import (
+            ModifierBoundsError,
+            validate_published_modifier_bounds,
         )
     for group in modifier_groups:
         group_id = cstr(group.get("id")).strip()
@@ -362,18 +369,8 @@ def get_items(
     allowed_item_groups = get_allowed_item_groups(pos_profile)
     if allowed_item_groups:
         filters["item_group"] = ["in", sorted(allowed_item_groups)]
-    company = cstr((pos_profile or {}).get("company")).strip() or None
-
     row_by_item_id: dict[str, ERPRecord] = {}
     for row in get_saleable_item_rows(filters=filters, since=since):
-        item_id = cstr(row.get("id") or row.get("item_code")).strip()
-        if item_id:
-            row_by_item_id[item_id] = row
-
-    for row in get_saleable_item_rows(
-        filters=filters,
-        item_codes=get_recipe_changed_item_codes(company=company, since=since),
-    ):
         item_id = cstr(row.get("id") or row.get("item_code")).strip()
         if item_id:
             row_by_item_id[item_id] = row
@@ -384,18 +381,6 @@ def get_items(
             cstr(row.get("name") or row.get("item_code")).lower(),
             cstr(row.get("id") or row.get("item_code")),
         ),
-    )
-    recipe_snapshots_by_item = get_item_recipe_snapshots_map(rows, company=company)
-    rows = [
-        row
-        for row in rows
-        if cstr(row.get("id") or row.get("item_code")).strip()
-        in recipe_snapshots_by_item
-    ]
-    modifier_groups_by_item = get_item_modifier_groups_map(
-        rows,
-        company=company,
-        recipe_snapshots_by_item=recipe_snapshots_by_item,
     )
     item_ids = [
         cstr(row.get("id") or row.get("item_code")).strip()
@@ -414,29 +399,10 @@ def get_items(
         },
     )
     barcodes_by_item = get_item_barcodes_map(item_ids)
-    stock_tracked_item_ids = [
-        cstr(row.get("id") or row.get("item_code")).strip()
-        for row in rows
-        if cint(row.get("custom_kopos_track_stock"))
-        and cstr(row.get("id") or row.get("item_code")).strip()
-    ]
-    bin_qty_by_item = get_bin_qty_map(stock_tracked_item_ids, warehouse)
-    reserved_qty_by_item = get_fb_pending_reserved_qty_map(
-        stock_tracked_item_ids,
-        warehouse,
-    )
-
     items: list[ERPRecord] = []
     for row in rows:
         item_id = cstr(row.get("id") or row.get("item_code"))
-        recipe_snapshot = recipe_snapshots_by_item.get(item_id)
         price = prices_by_item.get(item_id, flt(row.get("price")))
-        availability = get_item_availability(
-            row,
-            warehouse,
-            bin_qty_by_item=bin_qty_by_item,
-            reserved_qty_by_item=reserved_qty_by_item,
-        )
         items.append(
             {
                 "id": item_id,
@@ -446,17 +412,13 @@ def get_items(
                 "price": price,
                 "price_sen": money_to_sen(price),
                 "barcode": barcodes_by_item.get(item_id),
-                "is_available": availability["is_available"],
-                "stock_warning": availability["stock_warning"],
+                "is_available": not bool(cint(row.get("disabled"))),
+                "stock_warning": None,
                 "is_active": 0 if cint(row.get("disabled")) else 1,
                 "is_prep_item": cint(row.get("custom_kopos_is_prep_item") or 0),
-                "modifier_group_ids": modifier_groups_by_item.get(item_id, []),
-                "recipe_id": recipe_snapshot.get("recipe_id")
-                if recipe_snapshot
-                else None,
-                "recipe_version": recipe_snapshot.get("recipe_version")
-                if recipe_snapshot
-                else None,
+                "modifier_group_ids": [],
+                "recipe_id": None,
+                "recipe_version": None,
             }
         )
 
@@ -483,26 +445,47 @@ def get_saleable_item_rows(
     if item_codes is not None and not normalized_item_codes:
         return []
 
-    return frappe.get_all(
-        "Item",
-        filters=query_filters,
-        fields=[
-            "name as id",
-            "item_code",
-            "item_name as name",
-            "item_group as category_id",
-            "standard_rate as price",
-            "disabled",
-            "custom_kopos_availability_mode",
-            "custom_kopos_track_stock",
-            "custom_kopos_min_qty",
-            "custom_kopos_is_prep_item",
-            "custom_fb_recipe_required",
-            "custom_fb_default_recipe",
-            "stock_uom",
-        ],
-        order_by="item_name asc",
-    )
+    fields = [
+        "name as id",
+        "item_code",
+        "item_name as name",
+        "item_group as category_id",
+        "standard_rate as price",
+        "disabled",
+        "stock_uom",
+    ]
+    try:
+        item_meta = frappe.get_meta("Item")
+        if item_meta.has_field("custom_kopos_is_prep_item"):
+            fields.append("custom_kopos_is_prep_item")
+    except Exception:
+        # A missing custom prep flag defaults to a normal sale item. It must
+        # not make the catalog query invalid during staged deployments.
+        pass
+
+    try:
+        return frappe.get_all(
+            "Item",
+            filters=query_filters,
+            fields=fields,
+            order_by="item_name asc",
+        )
+    except Exception:
+        if "custom_kopos_is_prep_item" not in fields:
+            raise
+        # During a rolling migration, cached metadata can briefly advertise a
+        # custom column before this database has it. Retry once using only
+        # standard Item columns so the menu remains saleable.
+        return frappe.get_all(
+            "Item",
+            filters=query_filters,
+            fields=[
+                field
+                for field in fields
+                if field != "custom_kopos_is_prep_item"
+            ],
+            order_by="item_name asc",
+        )
 
 
 def get_recipe_changed_item_codes(
@@ -515,11 +498,15 @@ def get_recipe_changed_item_codes(
     if company:
         filters["company"] = company
 
-    return {
-        cstr(item_code).strip()
-        for item_code in frappe.get_all(
+    try:
+        changed_items = frappe.get_all(
             "FB Recipe", filters=filters, pluck="sellable_item"
         )
+    except Exception:
+        return set()
+    return {
+        cstr(item_code).strip()
+        for item_code in changed_items
         if cstr(item_code).strip()
     }
 
@@ -681,13 +668,6 @@ def get_item_modifier_groups_map(
         ):
             continue
 
-        _validate_recipe_modifier_bounds_parity(
-            recipe_name=recipe_name,
-            modifier_group=modifier_group,
-            group=active_groups_by_id[modifier_group],
-            recipe_group=row,
-        )
-
         item_group_ids = group_ids_by_item.setdefault(item_code, [])
         if modifier_group not in item_group_ids:
             item_group_ids.append(modifier_group)
@@ -703,6 +683,11 @@ def _validate_recipe_modifier_bounds_parity(
     recipe_group: Mapping[str, Any],
 ) -> None:
     """Reject item-specific bounds that the current catalog wire cannot express."""
+    from kopos_connector.kopos.services.recipe.modifier_bounds import (
+        ModifierBoundsError,
+        resolve_effective_modifier_bounds,
+    )
+
     try:
         published_bounds = resolve_effective_modifier_bounds(
             selection_type=group.get("selection_type"),
@@ -778,47 +763,18 @@ def get_item_recipe_snapshots_map(
         ):
             continue
         existing = snapshots.get(item_code)
-        if existing and cstr(existing.get("recipe_id")) != recipe_name:
-            frappe.throw(
-                "Multiple active FB Recipes were found for item {0}: {1}, {2}".format(
-                    item_code,
-                    existing.get("recipe_id"),
-                    recipe_name,
-                ),
-                frappe.ValidationError,
-            )
+        if existing:
+            # Rows are sorted newest-first. A stale duplicate must not take
+            # down the whole menu; keep the deterministic first snapshot.
+            continue
         version_no = cint(row.get("version_no"))
         if version_no <= 0:
-            frappe.throw(
-                f"FB Recipe {recipe_name} must have a positive version_no",
-                frappe.ValidationError,
-            )
+            continue
         snapshots[item_code] = {
             "recipe_id": recipe_name,
             "recipe_version": version_no,
         }
 
-    required_recipe_items = sorted(
-        {
-            cstr(row.get("id") or row.get("item_code")).strip()
-            for row in item_rows
-            if cstr(row.get("id") or row.get("item_code")).strip()
-            and (
-                cint(row.get("custom_fb_recipe_required"))
-                or cstr(row.get("custom_fb_default_recipe")).strip()
-            )
-        }
-    )
-    missing_recipe_items = [
-        item_code for item_code in required_recipe_items if item_code not in snapshots
-    ]
-    if missing_recipe_items:
-        frappe.throw(
-            "No active FB Recipe was found for item(s): {0}".format(
-                ", ".join(missing_recipe_items)
-            ),
-            frappe.ValidationError,
-        )
     return snapshots
 
 
@@ -874,36 +830,12 @@ def get_item_availability(
     bin_qty_by_item: Mapping[str, float] | None = None,
     reserved_qty_by_item: Mapping[str, float] | None = None,
 ) -> ERPRecord:
-    """Resolve final item availability from override mode and stock."""
+    """Resolve cashier availability without reading optional inventory state."""
+    del warehouse, bin_qty_by_item, reserved_qty_by_item
     if cint(item.get("disabled")):
         return {"is_available": False, "stock_warning": None}
 
-    mode = cstr(item.get("custom_kopos_availability_mode") or "auto")
-    if mode == "force_unavailable":
-        return {"is_available": False, "stock_warning": None}
-    if mode == "force_available":
-        return {"is_available": True, "stock_warning": None}
-
-    if not cint(item.get("custom_kopos_track_stock")) or not warehouse:
-        return {"is_available": True, "stock_warning": None}
-
-    item_code = cstr(item.get("item_code") or item.get("id")).strip()
-    bins = (
-        bin_qty_by_item
-        if bin_qty_by_item is not None
-        else get_bin_qty_map([item_code], warehouse)
-    )
-    reservations = (
-        reserved_qty_by_item
-        if reserved_qty_by_item is not None
-        else get_fb_pending_reserved_qty_map([item_code], warehouse)
-    )
-    bin_qty = flt(bins.get(item_code, 0))
-    reserved_qty = flt(reservations.get(item_code, 0))
-    min_qty = flt(item.get("custom_kopos_min_qty") or 1)
-    if (bin_qty - reserved_qty) >= min_qty:
-        return {"is_available": True, "stock_warning": None}
-    return {"is_available": True, "stock_warning": "erp_stock_short"}
+    return {"is_available": True, "stock_warning": None}
 
 
 def get_bin_qty_map(
@@ -1084,6 +1016,11 @@ def get_modifier_groups(
             return []
         filters["name"] = ["in", normalized_group_ids]
 
+    from kopos_connector.kopos.services.recipe.modifier_bounds import (
+        ModifierBoundsError,
+        resolve_effective_modifier_bounds,
+    )
+
     rows = frappe.get_all(
         "FB Modifier Group",
         filters=filters,
@@ -1235,23 +1172,9 @@ def get_tax_rate_value(
 def get_item_modifiers_payload(
     item_code: str, company: str | None = None
 ) -> list[ERPRecord]:
-    """Return modifier groups with active options for a single item."""
-    group_ids = get_item_modifier_groups(item_code, company=company)
-    if not group_ids:
-        return []
-
-    options_by_group: dict[str, list[ERPRecord]] = {}
-    for option in get_modifier_options(group_ids=group_ids):
-        options_by_group.setdefault(cstr(option.get("group_id")), []).append(option)
-
-    groups = []
-    for group in get_modifier_groups(group_ids=group_ids):
-        group_id = cstr(group.get("id"))
-        if group_id not in group_ids:
-            continue
-        groups.append({**group, "options": options_by_group.get(group_id, [])})
-
-    return groups
+    """Return no optional configuration on the cashier-critical API path."""
+    del item_code, company
+    return []
 
 
 def cint(value: Any) -> int:

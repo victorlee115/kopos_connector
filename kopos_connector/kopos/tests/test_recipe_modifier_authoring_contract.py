@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import frappe
+import pytest
 from frappe.tests.utils import FrappeTestCase
+
+pytestmark = pytest.mark.inventory_regression
 
 
 class TestRecipeModifierAuthoringContract(FrappeTestCase):
@@ -63,6 +66,7 @@ class TestRecipeModifierAuthoringContract(FrappeTestCase):
 
         legacy = frappe.get_doc("FB Recipe", recipe.name)
         legacy.status = "Retired"
+        legacy.flags.ignore_links = True
         legacy.save(ignore_permissions=True)
         legacy.reload()
 
@@ -96,6 +100,7 @@ class TestRecipeModifierAuthoringContract(FrappeTestCase):
         legacy = frappe.get_doc("FB Recipe", recipe.name)
         legacy.status = "Retired"
         legacy.components[0].remarks = "Changed while retiring"
+        legacy.flags.ignore_links = True
 
         with self.assertRaisesRegex(
             frappe.ValidationError,

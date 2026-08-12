@@ -23,32 +23,49 @@ from kopos_connector.kopos.api.money_contract import (
     persisted_money_to_sen,
     sen_to_decimal,
 )
-from kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group import (
-    filter_visible_allowed_modifier_groups,
-)
 from kopos_connector.kopos.services.accounting.sales_invoice_service import (
     create_sales_invoice,
 )
 from kopos_connector.kopos.services.accounting.maybank_payment_service import (
     register_qr_payment_settlement,
 )
-from kopos_connector.kopos.services.inventory.stock_issue_service import (
-    create_ingredient_stock_entry,
-)
-from kopos_connector.kopos.services.inventory.warning_service import (
-    detect_stock_shortfall,
-    log_stock_shortfall,
-    require_advisory_shortfall_policy,
-)
 from kopos_connector.kopos.services.projection.log_service import (
     create_projection_log,
     update_projection_state,
 )
-from kopos_connector.kopos.services.recipe.modifier_bounds import (
-    EffectiveModifierBounds,
-    ModifierBoundsError,
-    resolve_effective_modifier_bounds,
-)
+
+
+def create_ingredient_stock_entry(*args: Any, **kwargs: Any) -> Any:
+    """Load the optional inventory adapter only when its projection runs."""
+
+    service = import_module(
+        "kopos_connector.kopos.services.inventory.stock_issue_service"
+    )
+    return service.create_ingredient_stock_entry(*args, **kwargs)
+
+
+def detect_stock_shortfall(*args: Any, **kwargs: Any) -> Any:
+    service = import_module("kopos_connector.kopos.services.inventory.warning_service")
+    return service.detect_stock_shortfall(*args, **kwargs)
+
+
+def log_stock_shortfall(*args: Any, **kwargs: Any) -> Any:
+    service = import_module("kopos_connector.kopos.services.inventory.warning_service")
+    return service.log_stock_shortfall(*args, **kwargs)
+
+
+def require_advisory_shortfall_policy(*args: Any, **kwargs: Any) -> Any:
+    service = import_module("kopos_connector.kopos.services.inventory.warning_service")
+    return service.require_advisory_shortfall_policy(*args, **kwargs)
+
+
+def filter_visible_allowed_modifier_groups(*args: Any, **kwargs: Any) -> Any:
+    """Load optional recipe/modifier rules only for legacy recipe tooling."""
+
+    service = import_module(
+        "kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group"
+    )
+    return service.filter_visible_allowed_modifier_groups(*args, **kwargs)
 
 
 def cstr(value: Any) -> str:
@@ -189,6 +206,7 @@ PREPARED_LINE_IMMUTABLE_FIELDS = (
     "is_recipe_managed",
     "promotion_allocations_json",
     "remarks",
+    "commercial_modifier_snapshot_json",
 )
 
 PREPARED_PAYMENT_IMMUTABLE_FIELDS = (
@@ -218,6 +236,11 @@ PREPARED_SALE_MONEY_FIELDS = {
 
 def _prepared_immutable_value(record: Any, fieldname: str) -> Any:
     value = _record_value(record, fieldname)
+    if fieldname == "recipe_version" and value in (None, "", 0, "0"):
+        # Frappe persists an unset Int child field as zero. Prepared commercial
+        # lines deliberately exclude optional recipe/inventory resolution, so
+        # the pre-insert None and post-insert 0 are the same absent value.
+        return ""
     if fieldname in PREPARED_SALE_MONEY_FIELDS:
         return _money_sen(_optional_money_value(value), fieldname)
     if fieldname == "qty":
@@ -392,21 +415,34 @@ class FBOrder(BaseDocument):
             return persisted_rows
 
         transient_rows = getattr(line, "_selected_modifiers_payload", None)
-        if not transient_rows:
-            resolved_sale_name = cstr(getattr(line, "resolved_sale", None)).strip()
-            if not resolved_sale_name:
-                return []
-            resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
-            if cstr(getattr(resolved_sale, "fb_order", None)).strip() != cstr(
-                self.name
-            ).strip():
+        if transient_rows:
+            return list(transient_rows)
+
+        snapshot_json = cstr(
+            getattr(line, "commercial_modifier_snapshot_json", None)
+        ).strip()
+        if snapshot_json:
+            try:
+                snapshot = json.loads(snapshot_json)
+            except (TypeError, ValueError) as error:
                 frappe.throw(
-                    "Prepared resolved sale belongs to another FB Order",
+                    "FB Order line commercial modifier snapshot is invalid JSON",
                     frappe.ValidationError,
                 )
-            return list(getattr(resolved_sale, "selected_modifiers", None) or [])
+                raise AssertionError("frappe.throw must raise") from error
+            if not isinstance(snapshot, list) or any(
+                not isinstance(row, dict) for row in snapshot
+            ):
+                frappe.throw(
+                    "FB Order line commercial modifier snapshot must be an array of objects",
+                    frappe.ValidationError,
+                )
+            return [frappe._dict(row) for row in snapshot]
 
-        return list(transient_rows)
+        # Commercial replay is self-contained in the order line. Never make
+        # validation or invoice posting depend on the optional resolved-sale
+        # projection being installed, healthy, or reachable.
+        return []
 
     def validate(self):
         self.validate_required_fields()
@@ -448,21 +484,14 @@ class FBOrder(BaseDocument):
             )
 
     def before_submit(self):
-        if cstr(getattr(self, "accepted_sale_fingerprint", None)).strip():
-            line_resolutions = self.validate_prepared_resolved_sales()
-        else:
-            line_resolutions = self.build_line_resolutions()
-            self.validate_stock_availability(line_resolutions)
-        if cstr(getattr(self, "accepted_sale_fingerprint", None)).strip():
-            self.mark_prepared_resolved_sales_submitted(line_resolutions)
-        else:
-            self.create_resolved_sales(line_resolutions)
+        # Build only the immutable commercial snapshot. Recipe resolution,
+        # resolved-sale documents, and stock projections are optional and are
+        # never part of the transaction that registers money and the invoice.
+        self.build_line_resolutions()
         register_qr_payment_settlement(self)
 
     def on_submit(self):
-        resolved_sales = self.get_resolved_sales()
         invoice_log = self.create_projection_entry("Sales Invoice")
-        stock_log = self.create_projection_entry("Stock Issue")
         shift_log = self.create_projection_entry("FB Shift")
 
         invoice_error = None
@@ -490,46 +519,11 @@ class FBOrder(BaseDocument):
                 str(invoice_error) if invoice_error else "Sales Invoice projection failed",
             )
 
-        stock_error = None
-        stock_projection_required = self.requires_stock_projection(resolved_sales)
-        if stock_projection_required:
-            try:
-                self.ingredient_stock_entry = create_ingredient_stock_entry(
-                    self, resolved_sales
-                )
-            except Exception as error:
-                self.ingredient_stock_entry = None
-                stock_error = error
-        else:
-            self.ingredient_stock_entry = None
-        if self.ingredient_stock_entry:
-            self.stock_status = "Posted"
-            update_projection_state(
-                stock_log,
-                "Succeeded",
-                "Stock Entry",
-                self.ingredient_stock_entry,
-                None,
-            )
-        elif not stock_projection_required:
-            # A no-op stock projection is terminal success, not retryable work.
-            self.stock_status = "Posted"
-            update_projection_state(
-                stock_log,
-                "Succeeded",
-                "Stock Entry",
-                None,
-                None,
-            )
-        else:
-            self.stock_status = "Failed"
-            update_projection_state(
-                stock_log,
-                "Failed",
-                "Stock Entry",
-                None,
-                str(stock_error) if stock_error else "Stock issue projection failed",
-            )
+        # Inventory is intentionally outside the cashier-critical transaction.
+        # The current inventory implementation is not invoked here; a future
+        # owner-approved projection worker may consume the immutable sale later.
+        self.ingredient_stock_entry = None
+        self.stock_status = "Pending"
 
         self.status = "Submitted"
         self.db_set("status", self.status, update_modified=False)
@@ -537,12 +531,6 @@ class FBOrder(BaseDocument):
         self.db_set("stock_status", self.stock_status, update_modified=False)
         if self.sales_invoice:
             self.db_set("sales_invoice", self.sales_invoice, update_modified=False)
-        if self.ingredient_stock_entry:
-            self.db_set(
-                "ingredient_stock_entry",
-                self.ingredient_stock_entry,
-                update_modified=False,
-            )
         try:
             self.update_shift_expected_cash()
             update_projection_state(
@@ -628,12 +616,29 @@ class FBOrder(BaseDocument):
         for line_index, line in enumerate(self.items, start=1):
             resolved_sale_name = cstr(getattr(line, "resolved_sale", None)).strip()
             if not resolved_sale_name:
-                frappe.throw(
-                    "Prepared Automatic QR line {0} has no resolved sale snapshot".format(
-                        line_index
-                    ),
-                    frappe.ValidationError,
+                try:
+                    snapshot = json.loads(
+                        cstr(getattr(line, "resolved_components_snapshot", None))
+                        or "[]"
+                    )
+                except (TypeError, ValueError):
+                    snapshot = None
+                if snapshot != []:
+                    frappe.throw(
+                        "Prepared non-recipe line {0} component snapshot must be empty".format(
+                            line_index
+                        ),
+                        frappe.ValidationError,
+                    )
+                line_resolutions.append(
+                    {
+                        "line": line,
+                        "resolved_sale": None,
+                        "selected_modifiers": self.get_selected_modifier_rows(line),
+                        "resolved_components": [],
+                    }
                 )
+                continue
             resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
             expected_identity = {
                 "fb_order": cstr(self.name),
@@ -683,13 +688,6 @@ class FBOrder(BaseDocument):
             resolved_components = _canonical_resolved_components(
                 list(getattr(resolved_sale, "resolved_components", None) or [])
             )
-            if not resolved_components:
-                frappe.throw(
-                    "Prepared resolved sale {0} has no resolved components".format(
-                        resolved_sale_name
-                    ),
-                    frappe.ValidationError,
-                )
             try:
                 line_snapshot_value = json.loads(
                     cstr(getattr(line, "resolved_components_snapshot", None))
@@ -754,6 +752,8 @@ class FBOrder(BaseDocument):
     ) -> None:
         for line_resolution in line_resolutions:
             resolved_sale = line_resolution["resolved_sale"]
+            if resolved_sale is None:
+                continue
             if cstr(getattr(resolved_sale, "status", None)).strip() == "Submitted":
                 continue
             frappe.db.set_value(
@@ -998,25 +998,23 @@ class FBOrder(BaseDocument):
     def build_line_resolutions(self) -> list[dict[str, Any]]:
         line_resolutions = []
         for line_index, line in enumerate(self.items, start=1):
-            recipe_doc = self.resolve_recipe_for_line(line_index, line)
-            selected_modifiers = self.validate_modifier_selections(
-                line_index=line_index,
-                line=line,
-                recipe_doc=recipe_doc,
-            )
-            resolved_components = self.resolve_components_for_line(
-                line_index=line_index,
-                line=line,
-                recipe_doc=recipe_doc,
-                selected_modifiers=selected_modifiers,
-            )
+            # The authenticated tablet request is the immutable commercial
+            # snapshot. Recipe lookup, ingredient expansion, and stock checks
+            # are deliberately outside the cashier-critical transaction.
+            # This keeps checkout available when that optional subsystem is
+            # absent, disabled, slow, stale, or failing.
+            selected_modifiers = [
+                {"row": row} for row in self.get_selected_modifier_rows(line)
+            ]
+            line.resolved_sale = None
+            line.resolved_components_snapshot = "[]"
             line_resolutions.append(
                 {
                     "line": line,
                     "line_index": line_index,
-                    "recipe_doc": recipe_doc,
+                    "recipe_doc": None,
                     "selected_modifiers": selected_modifiers,
-                    "resolved_components": resolved_components,
+                    "resolved_components": [],
                 }
             )
         return line_resolutions
@@ -1074,14 +1072,6 @@ class FBOrder(BaseDocument):
         ):
             frappe.throw(
                 "Order line {0} recipe {1} is not effective at the original sale time".format(
-                    self.describe_line(line_index, line), recipe_doc.name
-                ),
-                frappe.ValidationError,
-            )
-
-        if not recipe_doc.components:
-            frappe.throw(
-                "Order line {0} recipe {1} has no components to resolve".format(
                     self.describe_line(line_index, line), recipe_doc.name
                 ),
                 frappe.ValidationError,
@@ -1298,23 +1288,19 @@ class FBOrder(BaseDocument):
 
     def resolve_modifier_bounds(
         self, group_doc: DocumentLike, group_row: DocumentLike
-    ) -> EffectiveModifierBounds:
+    ) -> Any:
+        bounds_module = import_module(
+            "kopos_connector.kopos.services.recipe.modifier_bounds"
+        )
         group_name = cstr(getattr(group_doc, "name", None)).strip() or "(unnamed)"
         try:
-            return resolve_effective_modifier_bounds(
+            return bounds_module.resolve_effective_modifier_bounds(
                 selection_type=getattr(group_doc, "selection_type", None),
                 group_is_required=getattr(group_doc, "is_required", None),
                 group_min_selection=getattr(group_doc, "min_selection", None),
                 group_max_selection=getattr(group_doc, "max_selection", None),
-                recipe_required=getattr(group_row, "required", None),
-                override_min_selection=getattr(
-                    group_row, "override_min_selection", None
-                ),
-                override_max_selection=getattr(
-                    group_row, "override_max_selection", None
-                ),
             )
-        except ModifierBoundsError as error:
+        except bounds_module.ModifierBoundsError as error:
             frappe.throw(
                 f"Modifier group {group_name} has invalid selection rules: {error}",
                 frappe.ValidationError,
@@ -1464,7 +1450,6 @@ class FBOrder(BaseDocument):
         line: DocumentLike,
         resolved_components: list[dict[str, Any]],
     ) -> None:
-        item_stock_metadata: dict[str, tuple[str, int]] = {}
         for component_index, component in enumerate(resolved_components, start=1):
             label = "Order line {0} resolved component {1}".format(
                 self.describe_line(line_index, line),
@@ -1478,51 +1463,8 @@ class FBOrder(BaseDocument):
                     f"{label} requires item, UOM, and positive quantity",
                     frappe.ValidationError,
                 )
-            if not int(component.get("affects_stock") or 0):
-                continue
-
-            stock_qty = flt(component.get("stock_qty"))
-            stock_uom = cstr(component.get("stock_uom")).strip()
-            warehouse = cstr(component.get("warehouse") or self.booth_warehouse).strip()
-            if not stock_uom or not warehouse or not isfinite(stock_qty) or stock_qty <= 0:
-                frappe.throw(
-                    f"{label} affects stock and requires warehouse, Stock UOM, and positive Stock Qty",
-                    frappe.ValidationError,
-                )
-
-            if item_code not in item_stock_metadata:
-                item_values = frappe.db.get_value(
-                    "Item",
-                    item_code,
-                    ["stock_uom", "is_stock_item"],
-                    as_dict=True,
-                )
-                if not item_values:
-                    frappe.throw(
-                        f"{label} Item {item_code} was not found",
-                        frappe.ValidationError,
-                    )
-                if isinstance(item_values, dict):
-                    item_stock_metadata[item_code] = (
-                        cstr(item_values.get("stock_uom")).strip(),
-                        int(item_values.get("is_stock_item") or 0),
-                    )
-                else:
-                    item_stock_metadata[item_code] = (
-                        cstr(getattr(item_values, "stock_uom", None)).strip(),
-                        int(getattr(item_values, "is_stock_item", 0) or 0),
-                    )
-            item_stock_uom, is_stock_item = item_stock_metadata[item_code]
-            if not is_stock_item:
-                frappe.throw(
-                    f"{label} Item {item_code} must be a stock Item",
-                    frappe.ValidationError,
-                )
-            if stock_uom != item_stock_uom:
-                frappe.throw(
-                    f"{label} Stock UOM {stock_uom} does not match Item stock UOM {item_stock_uom or '(missing)'}",
-                    frappe.ValidationError,
-                )
+            # Stock-specific metadata is validated only by the optional stock
+            # projection after the FB Order and Sales Invoice are durable.
 
     def build_modifier_component(
         self, modifier_doc: DocumentLike, line_index: int, line
@@ -1604,6 +1546,10 @@ class FBOrder(BaseDocument):
             recipe_doc = line_resolution["recipe_doc"]
             selected_modifiers = line_resolution["selected_modifiers"]
             resolved_components = line_resolution["resolved_components"]
+            if recipe_doc is None:
+                line.resolved_sale = None
+                line.resolved_components_snapshot = "[]"
+                continue
             resolved_sale_id = line.backend_line_uuid or "{0}-{1}".format(
                 self.order_id, line.line_id
             )

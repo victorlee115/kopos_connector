@@ -6,15 +6,17 @@ import pytest
 
 from .fake_frappe import install_fake_frappe_modules
 
+pytestmark = pytest.mark.inventory_regression
+
 
 install_fake_frappe_modules()
 
 import frappe
 
-from kopos_connector.kopos.doctype.fb_recipe.fb_recipe import FBRecipe
 
+def _recipe(component_qty: str) -> object:
+    from kopos_connector.kopos.doctype.fb_recipe.fb_recipe import FBRecipe
 
-def _recipe(component_qty: str) -> FBRecipe:
     recipe = FBRecipe()
     recipe.name = "RECIPE-LATTE-V1"
     recipe.sellable_item = "LATTE"

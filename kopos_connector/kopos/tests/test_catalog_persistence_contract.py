@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import frappe
+import pytest
 from frappe.tests.utils import FrappeTestCase
 
-from kopos_connector.kopos.services.recipe.modifier_bounds import (
-    EffectiveModifierBounds,
-    resolve_effective_modifier_bounds,
-)
+pytestmark = pytest.mark.inventory_regression
 
 
 class TestCatalogPersistenceContract(FrappeTestCase):
@@ -16,6 +14,11 @@ class TestCatalogPersistenceContract(FrappeTestCase):
         frappe.db.rollback()
 
     def test_blank_child_int_fields_round_trip_as_zero_and_mean_unset(self) -> None:
+        from kopos_connector.kopos.services.recipe.modifier_bounds import (
+            EffectiveModifierBounds,
+            resolve_effective_modifier_bounds,
+        )
+
         row = frappe.get_doc(
             {
                 "doctype": "FB Allowed Modifier Group",

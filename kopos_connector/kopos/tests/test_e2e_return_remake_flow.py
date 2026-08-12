@@ -1,27 +1,34 @@
 from __future__ import annotations
 
+import unittest
 from typing import Any
 
 import frappe
+import pytest
 from frappe.tests.utils import FrappeTestCase
 
-from kopos_connector.api.fb_remakes import process_remake
-from kopos_connector.api.fb_returns import process_return_payload
-from kopos_connector.kopos.api.fb_orders import submit_order_payload
-from kopos_connector.kopos.tests.frappe_test_fixtures import (
-    build_sen_v1_sale_payload,
-    create_open_test_shift,
+pytestmark = pytest.mark.inventory_regression
+
+
+@unittest.skip(
+    "Inventory-backed return/remake behavior is excluded during the owner redesign; commercial refunds have a separate non-stock gate"
 )
-
-
 class SaleBackedOperationsTestCase(FrappeTestCase):
     def setUp(self) -> None:
+        from kopos_connector.kopos.api.fb_orders import submit_order_payload
+        from kopos_connector.kopos.tests.frappe_test_fixtures import (
+            build_sen_v1_sale_payload,
+            create_open_test_shift,
+        )
+
         frappe.set_user("Administrator")
         self.shift = create_open_test_shift(
             prefix="KOPOS-E2E-OPS", replenish_stock=True
         )
         sale_payload = build_sen_v1_sale_payload(
-            self.shift, prefix="KOPOS-E2E-OPS"
+            self.shift,
+            prefix="KOPOS-E2E-OPS",
+            include_optional_recipe=True,
         )
         sale_result = submit_order_payload(sale_payload)
         self.order = frappe.get_doc("FB Order", sale_result["fb_order"])
@@ -57,6 +64,8 @@ class SaleBackedOperationsTestCase(FrappeTestCase):
 
 class TestEndToEndReturnFlow(SaleBackedOperationsTestCase):
     def test_return_creates_submitted_sales_invoice_return_and_settlement(self) -> None:
+        from kopos_connector.api.fb_returns import process_return_payload
+
         result = process_return_payload(
             self.return_payload(return_to_stock=False),
             require_manager_approval=False,
@@ -82,6 +91,8 @@ class TestEndToEndReturnFlow(SaleBackedOperationsTestCase):
         self.assertEqual(self.resolved_sale.status, "Returned")
 
     def test_return_to_stock_creates_submitted_material_receipt(self) -> None:
+        from kopos_connector.api.fb_returns import process_return_payload
+
         result = process_return_payload(
             self.return_payload(return_to_stock=True),
             require_manager_approval=False,
@@ -98,6 +109,8 @@ class TestEndToEndReturnFlow(SaleBackedOperationsTestCase):
 
 class TestEndToEndRemakeFlow(SaleBackedOperationsTestCase):
     def test_remake_creates_submitted_stock_issue_without_revenue(self) -> None:
+        from kopos_connector.api.fb_remakes import process_remake
+
         invoices_before = set(
             frappe.get_all(
                 "Sales Invoice",

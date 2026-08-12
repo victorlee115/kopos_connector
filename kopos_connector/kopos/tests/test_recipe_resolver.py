@@ -1,29 +1,61 @@
 from __future__ import annotations
 
 import frappe
+import pytest
 from frappe.tests.utils import FrappeTestCase
 
-from kopos_connector.kopos.services.recipe.resolver import (
-    apply_defaults,
-    calculate_stock_qty,
-    resolve_components,
-    resolve_sale_line,
-)
-from kopos_connector.kopos.tests.frappe_test_fixtures import (
-    ensure_persisted_test_modifier,
-    ensure_canonical_test_base,
-    modifier_doc,
-)
-from kopos_connector.smoke import (
-    DEMO_MATCHA_ITEM,
-    DEMO_MILK_ITEM,
-    DEMO_STRAWBERRY_ITEM,
-)
+pytestmark = pytest.mark.inventory_regression
+
+
+def _resolver():
+    from kopos_connector.kopos.services.recipe import resolver
+
+    return resolver
+
+
+def _fixtures():
+    from kopos_connector.kopos.tests import frappe_test_fixtures
+
+    return frappe_test_fixtures
+
+
+def _smoke():
+    from kopos_connector import smoke
+
+    return smoke
+
+
+def apply_defaults(*args, **kwargs):
+    return _resolver().apply_defaults(*args, **kwargs)
+
+
+def calculate_stock_qty(*args, **kwargs):
+    return _resolver().calculate_stock_qty(*args, **kwargs)
+
+
+def resolve_components(*args, **kwargs):
+    return _resolver().resolve_components(*args, **kwargs)
+
+
+def resolve_sale_line(*args, **kwargs):
+    return _resolver().resolve_sale_line(*args, **kwargs)
+
+
+def ensure_canonical_test_base(*args, **kwargs):
+    return _fixtures().ensure_canonical_test_base(*args, **kwargs)
+
+
+def ensure_persisted_test_modifier(*args, **kwargs):
+    return _fixtures().ensure_persisted_test_modifier(*args, **kwargs)
+
+
+def modifier_doc(*args, **kwargs):
+    return _fixtures().modifier_doc(*args, **kwargs)
 
 
 class TestRecipeResolver(FrappeTestCase):
     def setUp(self):
-        self.base = ensure_canonical_test_base()
+        self.base = ensure_canonical_test_base(include_inventory_regression=True)
         self.company = self.base["company"]
         self.warehouse = self.base["warehouse"]
 
@@ -47,7 +79,7 @@ class TestRecipeResolver(FrappeTestCase):
         modifier = ensure_persisted_test_modifier(
             "KOPOS-TEST-EXTRA-MATCHA",
             kind="Add",
-            new_item=DEMO_MATCHA_ITEM,
+            new_item=_smoke().DEMO_MATCHA_ITEM,
             qty_delta=9,
             qty_uom="Gram",
         )
@@ -59,14 +91,14 @@ class TestRecipeResolver(FrappeTestCase):
         )
 
         component_items = [c["item"] for c in resolved["resolved_components"]]
-        self.assertIn(DEMO_MATCHA_ITEM, component_items)
+        self.assertIn(_smoke().DEMO_MATCHA_ITEM, component_items)
 
     def test_resolve_with_replace_modifier(self):
         modifier = ensure_persisted_test_modifier(
             "KOPOS-TEST-REPLACE-MILK",
             kind="Replace",
-            target_item=DEMO_MILK_ITEM,
-            new_item=DEMO_STRAWBERRY_ITEM,
+            target_item=_smoke().DEMO_MILK_ITEM,
+            new_item=_smoke().DEMO_STRAWBERRY_ITEM,
         )
         resolved = resolve_sale_line(
             item_code=self.base["item_code"],
@@ -76,14 +108,14 @@ class TestRecipeResolver(FrappeTestCase):
         )
 
         component_items = [c["item"] for c in resolved["resolved_components"]]
-        self.assertNotIn(DEMO_MILK_ITEM, component_items)
-        self.assertIn(DEMO_STRAWBERRY_ITEM, component_items)
+        self.assertNotIn(_smoke().DEMO_MILK_ITEM, component_items)
+        self.assertIn(_smoke().DEMO_STRAWBERRY_ITEM, component_items)
 
     def test_resolve_with_scale_modifier(self):
         modifier = ensure_persisted_test_modifier(
             "KOPOS-TEST-DOUBLE-MATCHA",
             kind="Scale",
-            target_item=DEMO_MATCHA_ITEM,
+            target_item=_smoke().DEMO_MATCHA_ITEM,
             scale_percent=200,
         )
         resolved = resolve_sale_line(
@@ -97,7 +129,7 @@ class TestRecipeResolver(FrappeTestCase):
             (
                 c
                 for c in resolved["resolved_components"]
-                if c["item"] == DEMO_MATCHA_ITEM
+                if c["item"] == _smoke().DEMO_MATCHA_ITEM
             ),
             None,
         )
@@ -159,11 +191,19 @@ class TestRecipeResolver(FrappeTestCase):
         )
 
     def test_calculate_stock_qty_with_conversion(self):
-        qty = calculate_stock_qty(qty=100.0, uom="Millilitre", item=DEMO_MILK_ITEM)
+        qty = calculate_stock_qty(
+            qty=100.0,
+            uom="Millilitre",
+            item=_smoke().DEMO_MILK_ITEM,
+        )
         self.assertEqual(qty, 100.0)
 
     def test_calculate_stock_qty_no_conversion_needed(self):
-        qty = calculate_stock_qty(qty=50.0, uom="Gram", item=DEMO_MATCHA_ITEM)
+        qty = calculate_stock_qty(
+            qty=50.0,
+            uom="Gram",
+            item=_smoke().DEMO_MATCHA_ITEM,
+        )
         self.assertEqual(qty, 50.0)
 
     def test_apply_defaults_required_group(self):

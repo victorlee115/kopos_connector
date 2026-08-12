@@ -52,6 +52,9 @@ ORDER_PROJECTION_CONFIG = (
         "target_field": "sales_invoice",
         "target_doctype": "Sales Invoice",
     },
+)
+
+ORDER_OPTIONAL_INVENTORY_PROJECTION_CONFIG = (
     {
         "projection_type": "Stock Issue",
         "target_field": "ingredient_stock_entry",
@@ -66,6 +69,9 @@ ORDER_RETRY_PROJECTION_CONFIG = ORDER_PROJECTION_CONFIG + (
         "target_doctype": "FB Shift",
     },
 )
+
+COMMERCIAL_ORDER_PROJECTION_TYPES = ("Sales Invoice", "FB Shift")
+INVENTORY_ORDER_PROJECTION_TYPES = ("Stock Issue", "Stock Entry")
 
 RETURN_PROJECTION_CONFIG = (
     {
@@ -88,8 +94,6 @@ REMAKE_PROJECTION_CONFIG = (
         "target_doctype": "Stock Entry",
     },
 )
-
-ACCEPTABLE_STOCK_STATUSES = {"Pending", "Posted"}
 
 PROJECTION_SUBSYSTEMS = {
     "Sales Invoice": "sales_invoice",
@@ -507,10 +511,9 @@ def prepare_automatic_qr_sale_payload(payload: dict[str, Any]) -> dict[str, Any]
             lock=True,
         )
         order_doc = _build_fb_order(validated)
-        # Resolve server-default recipe identity before the first insert. Once
-        # accepted_sale_fingerprint is persisted, recipe fields are part of the
-        # immutable prepared-sale snapshot and must never be enriched afterward.
-        line_resolutions = order_doc.build_line_resolutions()
+        # Freeze the authenticated commercial line snapshot before the first
+        # insert without consulting recipe or inventory state.
+        order_doc.build_line_resolutions()
         order_doc.accepted_sale_fingerprint = validated[
             "accepted_sale_fingerprint"
         ]
@@ -518,8 +521,6 @@ def prepare_automatic_qr_sale_payload(payload: dict[str, Any]) -> dict[str, Any]
         order_doc.automatic_qr_accepted_at = now_datetime()
         order_doc.insert(ignore_permissions=True)
 
-        order_doc.validate_stock_availability(line_resolutions)
-        order_doc.create_resolved_sales(line_resolutions)
         payment_rows = list(order_doc.get("payments") or [])
         if len(payment_rows) != 1 or not cstr(
             getattr(payment_rows[0], "name", None)
@@ -643,33 +644,35 @@ def retry_failed_projections(fb_order_name: str) -> dict[str, Any]:
             "source_doctype": "FB Order",
             "source_name": order_doc.name,
             "state": "Failed",
+            "projection_type": ("in", COMMERCIAL_ORDER_PROJECTION_TYPES),
         },
-        fields=["name"],
+        fields=["name", "projection_type"],
         order_by="creation asc",
     )
 
     retried = []
     for row in failed_logs:
+        # Keep the cashier retry endpoint commercial-only even if a test
+        # adapter or unusual database implementation ignores the query filter.
+        # Legacy inventory failures remain recorded for an explicit future
+        # inventory workflow; this endpoint must never execute them.
+        projection_type = cstr(_row_value(row, "projection_type"))
+        if projection_type not in COMMERCIAL_ORDER_PROJECTION_TYPES:
+            continue
         retried.append(_retry_projection_log(row.name))
 
     order_doc.reload()
-    return {
-        "status": "ok",
-        "fb_order": order_doc.name,
-        "order_id": cstr(order_doc.order_id),
-        "sale_datetime": cstr(getattr(order_doc, "sale_datetime", None)) or None,
-        "shift_id": cstr(order_doc.shift),
-        "staff_id": cstr(order_doc.staff_id),
-        "device_id": cstr(order_doc.device_id),
-        "event_project": cstr(order_doc.event_project) or None,
-        "order_status": cstr(order_doc.status),
-        "sales_invoice": cstr(order_doc.sales_invoice) or None,
-        "ingredient_stock_entry": cstr(order_doc.ingredient_stock_entry) or None,
-        "invoice_status": cstr(order_doc.invoice_status),
-        "stock_status": cstr(order_doc.stock_status),
-        "retried": retried,
-        "projections": _get_projection_statuses("FB Order", order_doc.name),
-    }
+    response = _build_submit_response("ok", order_doc)
+    response.update(
+        {
+            "shift_id": cstr(order_doc.shift),
+            "staff_id": cstr(order_doc.staff_id),
+            "device_id": cstr(order_doc.device_id),
+            "event_project": cstr(order_doc.event_project) or None,
+            "retried": retried,
+        }
+    )
+    return response
 
 
 def validate_fb_order(doc, method: str | None = None) -> None:
@@ -2261,14 +2264,25 @@ def _normalize_order_item(
     remarks = cstr(value.get("remarks")) or None
     recipe = cstr(value.get("recipe")) or None
     raw_recipe_version = value.get("recipe_version")
-    recipe_version = (
-        _parse_positive_integer_quantity(
-            raw_recipe_version,
-            f"items[{index}].recipe_version",
-        )
-        if raw_recipe_version not in (None, "")
-        else None
-    )
+    recipe_version = None
+    if raw_recipe_version not in (None, ""):
+        try:
+            # Preserve the previous canonical fingerprint for well-formed
+            # requests, but treat malformed optional recipe metadata as opaque
+            # evidence rather than rejecting an otherwise valid sale.
+            candidate_recipe_version = Decimal(str(raw_recipe_version))
+            if (
+                not isinstance(raw_recipe_version, bool)
+                and candidate_recipe_version.is_finite()
+                and candidate_recipe_version > 0
+                and candidate_recipe_version
+                == candidate_recipe_version.to_integral_value()
+            ):
+                recipe_version = int(candidate_recipe_version)
+            else:
+                recipe_version = raw_recipe_version
+        except (InvalidOperation, TypeError, ValueError):
+            recipe_version = raw_recipe_version
     backend_line_uuid = cstr(value.get("backend_line_uuid")) or None
     modifiers = value.get("modifiers", value.get("selected_modifiers", []))
     promotion_allocations = _normalize_promotion_allocations(
@@ -2281,11 +2295,6 @@ def _normalize_order_item(
         frappe.throw(f"items[{index}].line_id is required", frappe.ValidationError)
     if not item_code:
         frappe.throw(f"items[{index}].item_code is required", frappe.ValidationError)
-    if bool(recipe) != (recipe_version is not None):
-        frappe.throw(
-            f"items[{index}].recipe and recipe_version must be provided together",
-            frappe.ValidationError,
-        )
     if unit_price_sen < 0:
         frappe.throw(
             f"items[{index}].unit_price_sen must be 0 or greater",
@@ -2301,27 +2310,11 @@ def _normalize_order_item(
             f"items[{index}].line_total_sen must be 0 or greater",
             frappe.ValidationError,
         )
-    if not isinstance(modifiers, list):
-        frappe.throw(f"items[{index}].modifiers must be an array", frappe.ValidationError)
-
-    validated_modifiers = [
-        _normalize_selected_modifier(
-            row,
-            index,
-            modifier_index,
-            money_contract_version,
-        )
-        for modifier_index, row in enumerate(modifiers, start=1)
-    ]
-    resolved_modifier_total_sen = _checked_sen_sum(
-        (row["price_adjustment_sen"] for row in validated_modifiers),
-        f"items[{index}] modifier total",
+    validated_modifiers = _normalize_optional_selected_modifiers(
+        modifiers,
+        item_index=index,
+        money_contract_version=money_contract_version,
     )
-    if modifier_total_sen != resolved_modifier_total_sen:
-        frappe.throw(
-            f"items[{index}].modifier_total_sen must equal summed modifier price adjustments",
-            frappe.ValidationError,
-        )
 
     expected_total_sen = (unit_price_sen + modifier_total_sen) * qty
     expected_total_sen -= discount_amount_sen
@@ -2340,7 +2333,10 @@ def _normalize_order_item(
         "qty": qty,
         "uom": uom or None,
         "unit_price_sen": unit_price_sen,
-        "modifier_total_sen": resolved_modifier_total_sen,
+        # The durable item-level amount is commercial truth. Modifier rows are
+        # optional decoration from older local catalogs and cannot veto an
+        # otherwise exact line total.
+        "modifier_total_sen": modifier_total_sen,
         "discount_amount_sen": discount_amount_sen,
         "line_total_sen": line_total_sen,
         "recipe": recipe,
@@ -2363,8 +2359,14 @@ def _normalize_selected_modifier(
             frappe.ValidationError,
         )
 
-    modifier_group = cstr(value.get("modifier_group"))
-    modifier = cstr(value.get("modifier"))
+    raw_modifier_group = value.get("modifier_group")
+    raw_modifier = value.get("modifier")
+    modifier_group = (
+        raw_modifier_group.strip()
+        if isinstance(raw_modifier_group, str)
+        else ""
+    )
+    modifier = raw_modifier.strip() if isinstance(raw_modifier, str) else ""
     price_adjustment_sen = _parse_wire_money_sen(
         value,
         version=money_contract_version,
@@ -2392,6 +2394,35 @@ def _normalize_selected_modifier(
         "instruction_text": instruction_text,
         "sort_order": sort_order,
     }
+
+
+def _normalize_optional_selected_modifiers(
+    value: Any,
+    *,
+    item_index: int,
+    money_contract_version: str,
+) -> list[dict[str, Any]]:
+    """Keep valid display rows without making decoration sale authority."""
+
+    if not isinstance(value, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for modifier_index, row in enumerate(value, start=1):
+        try:
+            normalized.append(
+                _normalize_selected_modifier(
+                    row,
+                    item_index,
+                    modifier_index,
+                    money_contract_version,
+                )
+            )
+        except (frappe.ValidationError, TypeError, ValueError, ArithmeticError):
+            # Historical/outbox decoration may be incomplete or corrupt. The
+            # exact modifier_total_sen and line_total_sen above remain fully
+            # validated, so dropping only this display row is fail-safe.
+            continue
+    return normalized
 
 
 def _normalize_order_payment(
@@ -2526,13 +2557,8 @@ def _resolve_order_item(value: dict[str, Any], index: int) -> dict[str, Any]:
         frappe.throw(f"items[{index}].uom is required", frappe.ValidationError)
     if not frappe.db.exists("UOM", resolved_uom):
         frappe.throw(f"UOM {resolved_uom} was not found", frappe.ValidationError)
-    if value["recipe"] and not frappe.db.exists("FB Recipe", value["recipe"]):
-        frappe.throw(
-            f"FB Recipe {value['recipe']} was not found", frappe.ValidationError
-        )
-
     resolved_modifiers = [
-        _resolve_selected_modifier(row, index, modifier_index)
+        _resolve_submitted_modifier_snapshot(row)
         for modifier_index, row in enumerate(value["selected_modifiers"], start=1)
     ]
     return {
@@ -2548,9 +2574,12 @@ def _resolve_order_item(value: dict[str, Any], index: int) -> dict[str, Any]:
         "modifier_total": sen_to_decimal(value["modifier_total_sen"]),
         "discount_amount": sen_to_decimal(value["discount_amount_sen"]),
         "line_total": sen_to_decimal(value["line_total_sen"]),
-        "recipe": value["recipe"],
-        "recipe_version": value["recipe_version"],
-        "is_recipe_managed": 1 if value["recipe"] else 0,
+        # Recipe identity is optional metadata, not a live Link dependency.
+        # The authenticated raw values remain in the accepted fingerprint, but
+        # new commercial orders never persist them into recipe fields.
+        "recipe": None,
+        "recipe_version": None,
+        "is_recipe_managed": 0,
         "remarks": value["remarks"],
         "selected_modifiers": resolved_modifiers,
         "promotion_allocations": value["promotion_allocations"],
@@ -2594,6 +2623,20 @@ def _resolve_selected_modifier(
         "affects_recipe": 1
         if cint(getattr(modifier_doc, "affects_recipe", 0))
         else 0,
+    }
+
+
+def _resolve_submitted_modifier_snapshot(value: dict[str, Any]) -> dict[str, Any]:
+    """Persist the authenticated commercial snapshot without side-system reads."""
+
+    return {
+        "modifier_group": value["modifier_group"],
+        "modifier": value["modifier"],
+        "price_adjustment": sen_to_decimal(value["price_adjustment_sen"]),
+        "instruction_text": value["instruction_text"] or None,
+        "sort_order": value["sort_order"],
+        "affects_stock": 0,
+        "affects_recipe": 0,
     }
 
 
@@ -2980,9 +3023,9 @@ def _build_fb_order(validated: dict[str, Any]):
                 "modifier_total": item["modifier_total"],
                 "discount_amount": item["discount_amount"],
                 "line_total": item["line_total"],
-                "recipe": item["recipe"],
-                "recipe_version": item["recipe_version"],
-                "is_recipe_managed": item["is_recipe_managed"],
+                "recipe": None,
+                "recipe_version": None,
+                "is_recipe_managed": 0,
                 "promotion_allocations_json": json.dumps(
                     item.get("promotion_allocations", []),
                     sort_keys=True,
@@ -3160,6 +3203,11 @@ def _static_qr_settlement_fingerprint(
 def _set_selected_modifiers_payload(
     line: Any, modifiers: list[dict[str, Any]]
 ) -> None:
+    setattr(
+        line,
+        "commercial_modifier_snapshot_json",
+        json.dumps(modifiers, sort_keys=True, separators=(",", ":"), default=str),
+    )
     table_fieldnames = getattr(line, "_table_fieldnames", {})
     append = getattr(line, "append", None)
     if (
@@ -3174,8 +3222,9 @@ def _set_selected_modifiers_payload(
     # Frappe v16 intentionally assigns an empty child-table map to rows inside
     # another child table. FB Order Line therefore exposes Document.append(),
     # but cannot use it for its nested selected_modifiers field. Keep the
-    # authenticated sale snapshot transient until FBOrder.before_submit writes
-    # the durable rows to FB Resolved Sale.
+    # authenticated sale snapshot transient for the immediate submit. The same
+    # bytes are also persisted above so accounting retry never depends on a
+    # recipe or inventory document.
     setattr(
         line,
         "_selected_modifiers_payload",
@@ -3236,7 +3285,7 @@ def _get_submit_projection_status(
     idempotency_key = cstr(getattr(order_doc, "external_idempotency_key", None))
     order_status = cstr(getattr(order_doc, "status", None))
     invoice_status = cstr(getattr(order_doc, "invoice_status", None))
-    stock_status = cstr(getattr(order_doc, "stock_status", None))
+    sales_invoice = cstr(getattr(order_doc, "sales_invoice", None)).strip()
 
     if order_status != "Submitted":
         diagnostics.append(
@@ -3259,15 +3308,14 @@ def _get_submit_projection_status(
                 error_message=f"Sales Invoice projection status is {invoice_status or 'missing'}; expected Posted",
             )
         )
-
-    if stock_status not in ACCEPTABLE_STOCK_STATUSES:
+    elif not sales_invoice:
         diagnostics.append(
             _build_projection_diagnostic(
                 fb_order=fb_order,
                 idempotency_key=idempotency_key,
                 projection_status="failed",
-                failed_subsystem="stock",
-                error_message=f"Stock projection status is {stock_status or 'missing'}; expected Pending or Posted",
+                failed_subsystem="sales_invoice",
+                error_message="Sales Invoice projection is Posted but its document identity is missing",
             )
         )
 
@@ -3275,6 +3323,11 @@ def _get_submit_projection_status(
         if cstr(projection.get("state")) != "Failed":
             continue
         projection_type = cstr(projection.get("projection_type"))
+        if projection_type in INVENTORY_ORDER_PROJECTION_TYPES:
+            # Inventory is deliberately outside the commercial transaction.
+            # Preserve its log in the response for later operations work, but
+            # never turn it into a cashier-visible sale failure.
+            continue
         failed_subsystem = PROJECTION_SUBSYSTEMS.get(
             projection_type,
             projection_type.lower().replace(" ", "_") or "projection",
@@ -3828,18 +3881,22 @@ def _retry_projection_log(log_name: str) -> dict[str, Any]:
     if callable(reload_doc):
         reload_doc()
     if cstr(log.source_doctype) == "FB Order":
-        source_doc.invoice_status = _derive_projection_field_status(
-            source_doc, "Sales Invoice"
-        )
-        source_doc.stock_status = _derive_projection_field_status(
-            source_doc, "Stock Issue"
-        )
-        source_doc.db_set(
-            "invoice_status", source_doc.invoice_status, update_modified=False
-        )
-        source_doc.db_set(
-            "stock_status", source_doc.stock_status, update_modified=False
-        )
+        if result["projection_type"] == "Sales Invoice":
+            source_doc.invoice_status = _derive_projection_field_status(
+                source_doc, "Sales Invoice"
+            )
+            source_doc.db_set(
+                "invoice_status", source_doc.invoice_status, update_modified=False
+            )
+        elif result["projection_type"] == "Stock Issue":
+            # This branch is reachable only through an explicit internal
+            # inventory retry. Cashier and scheduled retries filter it out.
+            source_doc.stock_status = _derive_projection_field_status(
+                source_doc, "Stock Issue"
+            )
+            source_doc.db_set(
+                "stock_status", source_doc.stock_status, update_modified=False
+            )
 
     return {
         "projection_log": log.name,
@@ -4014,7 +4071,10 @@ def _get_projection_config(
     source_doctype: str, projection_type: str
 ) -> dict[str, str] | None:
     config_map = {
-        "FB Order": ORDER_RETRY_PROJECTION_CONFIG,
+        "FB Order": (
+            ORDER_RETRY_PROJECTION_CONFIG
+            + ORDER_OPTIONAL_INVENTORY_PROJECTION_CONFIG
+        ),
         "FB Return Event": RETURN_PROJECTION_CONFIG,
         "FB Remake Event": REMAKE_PROJECTION_CONFIG,
     }

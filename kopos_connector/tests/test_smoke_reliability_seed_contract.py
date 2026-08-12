@@ -3,13 +3,83 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timedelta
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
+
+
+def test_smoke_seed_uses_supported_erpnext_v16_setup_helpers(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    events: list[str] = []
+    erpnext_module = ModuleType("erpnext")
+    setattr(erpnext_module, "__path__", [])
+    setup_module = ModuleType("erpnext.setup")
+    setattr(setup_module, "__path__", [])
+    utils_module = ModuleType("erpnext.setup.utils")
+    setup_wizard_module = ModuleType("erpnext.setup.setup_wizard")
+    setattr(setup_wizard_module, "__path__", [])
+    operations_module = ModuleType("erpnext.setup.setup_wizard.operations")
+    setattr(operations_module, "__path__", [])
+    fixtures_module = ModuleType(
+        "erpnext.setup.setup_wizard.operations.install_fixtures"
+    )
+    setattr(utils_module, "enable_all_roles_and_domains", lambda: events.append("roles"))
+    setattr(utils_module, "set_defaults_for_tests", lambda: events.append("defaults"))
+    setattr(
+        fixtures_module,
+        "install",
+        lambda *, country: events.append(f"fixtures:{country}"),
+    )
+    monkeypatch.setitem(sys.modules, "erpnext", erpnext_module)
+    monkeypatch.setitem(sys.modules, "erpnext.setup", setup_module)
+    monkeypatch.setitem(sys.modules, "erpnext.setup.utils", utils_module)
+    monkeypatch.setitem(sys.modules, "erpnext.setup.setup_wizard", setup_wizard_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "erpnext.setup.setup_wizard.operations",
+        operations_module,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "erpnext.setup.setup_wizard.operations.install_fixtures",
+        fixtures_module,
+    )
+    monkeypatch.setattr(
+        frappe,
+        "clear_cache",
+        lambda: events.append("clear_cache"),
+        raising=False,
+    )
+    monkeypatch.setattr(frappe.db, "exists", lambda *args: False)
+    monkeypatch.setattr(
+        frappe.db,
+        "sql",
+        lambda query: events.append("clear_prices")
+        if query == "delete from `tabItem Price`"
+        else None,
+    )
+    monkeypatch.setattr(frappe.db, "commit", lambda: events.append("commit"))
+
+    smoke._prepare_smoke_test_site()
+
+    assert events == [
+        "clear_cache",
+        "fixtures:Malaysia",
+        "clear_prices",
+        "roles",
+        "defaults",
+        "commit",
+    ]
 
 
 def test_smoke_asserts_sale_datetime_on_invoice_and_stock_projection() -> None:
@@ -60,10 +130,8 @@ def test_smoke_asserts_sale_datetime_on_invoice_and_stock_projection() -> None:
 
     assert result["assertions"]["fb_order_sale_datetime_persisted"] is True
     assert result["assertions"]["sales_invoice_sale_datetime_preserved"] is True
-    assert (
-        result["assertions"]["ingredient_stock_entry_sale_datetime_preserved"]
-        is True
-    )
+    assert result["assertions"]["sale_registration_does_not_require_inventory"] is True
+    assert result["summary"]["inventory_acceptance"] is False
 
 
 def test_smoke_business_gate_requires_myr_device_invoice_payment_and_gl() -> None:
@@ -139,6 +207,108 @@ def test_smoke_company_contract_is_dedicated_malaysia_myr() -> None:
     assert smoke.SMOKE_COMPANY_ABBR == "KMY"
     assert smoke.SMOKE_COMPANY_COUNTRY == "Malaysia"
     assert smoke.SMOKE_COMPANY_CURRENCY == "MYR"
+
+
+def test_smoke_fiscal_year_is_company_bound_and_covers_posting_date(
+    monkeypatch,
+) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    erpnext_module = ModuleType("erpnext")
+    setattr(erpnext_module, "__path__", [])
+    accounts_module = ModuleType("erpnext.accounts")
+    setattr(accounts_module, "__path__", [])
+    accounts_utils_module = ModuleType("erpnext.accounts.utils")
+    fiscal_year_calls: list[tuple[Any, ...]] = []
+    setattr(
+        accounts_utils_module,
+        "get_fiscal_year",
+        lambda *args, **kwargs: fiscal_year_calls.append((args, kwargs)) or False,
+    )
+    monkeypatch.setitem(sys.modules, "erpnext", erpnext_module)
+    monkeypatch.setitem(sys.modules, "erpnext.accounts", accounts_module)
+    monkeypatch.setitem(sys.modules, "erpnext.accounts.utils", accounts_utils_module)
+    monkeypatch.setattr(frappe.db, "exists", lambda *args: False)
+
+    class FiscalYear:
+        def __init__(self) -> None:
+            self.name = ""
+            self.appended: list[tuple[str, dict[str, str]]] = []
+            self.inserted = False
+
+        def append(self, fieldname: str, value: dict[str, str]) -> None:
+            self.appended.append((fieldname, value))
+
+        def insert(self, *, ignore_permissions: bool) -> None:
+            assert ignore_permissions is True
+            self.name = self.year
+            self.inserted = True
+
+    fiscal_year = FiscalYear()
+    monkeypatch.setattr(frappe, "new_doc", lambda doctype: fiscal_year)
+
+    result = smoke._ensure_smoke_fiscal_year(smoke.SMOKE_COMPANY_NAME)
+
+    assert result == "2026-KMY"
+    assert fiscal_year.year == "2026-KMY"
+    assert fiscal_year.year_start_date.isoformat() == "2026-01-01"
+    assert fiscal_year.year_end_date.isoformat() == "2026-12-31"
+    assert fiscal_year.disabled == 0
+    assert fiscal_year.appended == [
+        ("companies", {"company": smoke.SMOKE_COMPANY_NAME})
+    ]
+    assert fiscal_year.inserted is True
+    assert fiscal_year_calls == [
+        (
+            (datetime(2026, 3, 13, 18, 5, 0).date(),),
+            {
+                "company": smoke.SMOKE_COMPANY_NAME,
+                "verbose": 0,
+                "raise_on_missing": False,
+            },
+        )
+    ]
+
+
+def test_smoke_selling_price_list_is_enabled_and_myr(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    captured: dict[str, Any] = {}
+
+    class PriceList:
+        name = smoke.SMOKE_SELLING_PRICE_LIST
+
+        def insert(self, *, ignore_permissions: bool) -> None:
+            assert ignore_permissions is True
+
+    price_list = PriceList()
+
+    def get_doc(payload: dict[str, Any]) -> PriceList:
+        captured.update(payload)
+        return price_list
+
+    monkeypatch.setattr(frappe.db, "exists", lambda *args: False)
+    monkeypatch.setattr(frappe, "get_doc", get_doc)
+
+    result = smoke._ensure_selling_price_list("MYR")
+
+    assert result == smoke.SMOKE_SELLING_PRICE_LIST
+    assert captured == {
+        "doctype": "Price List",
+        "price_list_name": smoke.SMOKE_SELLING_PRICE_LIST,
+        "enabled": 1,
+        "selling": 1,
+        "buying": 0,
+        "currency": "MYR",
+    }
 
 
 def test_smoke_seed_repairs_duitnow_qr_to_bank_account(monkeypatch) -> None:
@@ -538,7 +708,7 @@ def test_smoke_business_gate_proves_modifier_audit_and_totals() -> None:
         expected_idempotency_keys=[history_key],
     )
 
-    assert result["assertions"]["modifier_resolved_sale_audit_proven"] is True
+    assert result["assertions"]["modifier_commercial_snapshot_audit_proven"] is True
     assert result["assertions"]["modifier_sales_invoice_audit_proven"] is True
     assert result["assertions"]["modifier_order_and_invoice_totals_proven"] is True
 
@@ -554,6 +724,7 @@ def test_reliability_drink_item_code_matches_t16_submit_payload() -> None:
     assert smoke.LEGACY_DEMO_DRINK_ITEM == "STRAWBERRY-MATCHA-LATTE"
 
 
+@pytest.mark.inventory_regression
 def test_existing_recipe_is_repointed_to_reliability_item_code() -> None:
     install_fake_frappe_modules()
 
@@ -580,6 +751,7 @@ def test_existing_recipe_is_repointed_to_reliability_item_code() -> None:
     assert recipe.sellable_item == "SMOKE-STRAWBERRY-001"
 
 
+@pytest.mark.inventory_regression
 def test_smoke_recipe_uses_company_specific_code_instead_of_mutating_published_recipe(
     monkeypatch,
 ) -> None:
@@ -619,6 +791,7 @@ def test_smoke_recipe_uses_company_specific_code_instead_of_mutating_published_r
     )
 
 
+@pytest.mark.inventory_regression
 def test_smoke_recipe_keeps_base_code_for_same_company(monkeypatch) -> None:
     install_fake_frappe_modules()
 
@@ -648,6 +821,7 @@ def test_smoke_recipe_keeps_base_code_for_same_company(monkeypatch) -> None:
     )
 
 
+@pytest.mark.inventory_regression
 def test_smoke_recipe_components_pin_stock_units_before_frappe_defaults() -> None:
     install_fake_frappe_modules()
 
@@ -662,6 +836,7 @@ def test_smoke_recipe_components_pin_stock_units_before_frappe_defaults() -> Non
     assert components[1]["stock_uom"] == "Millilitre"
 
 
+@pytest.mark.inventory_regression
 def test_existing_smoke_recipe_repairs_component_stock_quantities_and_units() -> None:
     install_fake_frappe_modules()
 
@@ -705,6 +880,7 @@ def test_existing_smoke_recipe_repairs_component_stock_quantities_and_units() ->
     assert recipe.components[1].stock_uom == "Millilitre"
 
 
+@pytest.mark.inventory_regression
 def test_existing_smoke_recipe_components_are_idempotent_when_correct() -> None:
     install_fake_frappe_modules()
 
@@ -896,7 +1072,7 @@ def test_smoke_reset_skips_removed_legacy_device_fields(monkeypatch) -> None:
 
     from kopos_connector import smoke
 
-    cleanup_calls: list[str] = []
+    cleanup_calls: list[tuple[str, bool]] = []
     credential_reset_calls: list[str] = []
 
     monkeypatch.setattr(
@@ -920,7 +1096,9 @@ def test_smoke_reset_skips_removed_legacy_device_fields(monkeypatch) -> None:
     monkeypatch.setattr(
         smoke,
         "_delete_smoke_business_rows",
-        lambda device_id: cleanup_calls.append(device_id),
+        lambda device_id, include_inventory_regression=False: cleanup_calls.append(
+            (device_id, include_inventory_regression)
+        ),
     )
     monkeypatch.setattr(
         smoke,
@@ -930,13 +1108,16 @@ def test_smoke_reset_skips_removed_legacy_device_fields(monkeypatch) -> None:
     monkeypatch.setattr(
         smoke,
         "setup_full_smoke_data",
-        lambda erpnext_url=None: {"erpnext_url": erpnext_url, "status": "reseeded"},
+        lambda erpnext_url=None, include_inventory_regression=False: {
+            "erpnext_url": erpnext_url,
+            "status": "reseeded",
+        },
     )
     monkeypatch.setattr(frappe.db, "commit", lambda: None)
 
     result = smoke.reset_smoke_data(erpnext_url="https://erp.example.com")
 
-    assert cleanup_calls == [smoke.SMOKE_DEVICE_ID]
+    assert cleanup_calls == [(smoke.SMOKE_DEVICE_ID, False)]
     assert credential_reset_calls == ["KOPOS-DEVICE-001"]
     assert result == {
         "erpnext_url": "https://erp.example.com",
@@ -1128,7 +1309,10 @@ def test_legacy_reliability_item_is_retired_from_catalog(monkeypatch) -> None:
     assert legacy_item.saved is True
 
 
-def test_smoke_reset_cleanup_deletes_stale_smoke_device_business_state(monkeypatch) -> None:
+@pytest.mark.inventory_regression
+def test_inventory_regression_reset_cleanup_deletes_stale_smoke_device_business_state(
+    monkeypatch,
+) -> None:
     install_fake_frappe_modules()
 
     import frappe
@@ -1429,7 +1613,10 @@ def test_smoke_reset_cleanup_deletes_stale_smoke_device_business_state(monkeypat
     monkeypatch.setattr(frappe.db, "set_value", lambda *args, **kwargs: None)
     monkeypatch.setattr(frappe.db, "delete", fake_db_delete)
 
-    smoke._delete_smoke_business_rows(smoke.SMOKE_DEVICE_ID)
+    smoke._delete_smoke_business_rows(
+        smoke.SMOKE_DEVICE_ID,
+        include_inventory_regression=True,
+    )
 
     assert ("FB Shift", "FB-SHIFT-2026-05-18-00201") in deleted
     assert ("FB Order", "FB-ORDER-STALE") in deleted
@@ -1488,7 +1675,8 @@ def test_smoke_reset_fails_loud_if_voucher_gl_rows_survive(monkeypatch) -> None:
         )
 
 
-def test_smoke_reset_purges_proven_orphan_ledgers_before_names_are_reused(
+@pytest.mark.inventory_regression
+def test_inventory_regression_reset_purges_proven_orphan_ledgers_before_names_are_reused(
     monkeypatch,
 ) -> None:
     install_fake_frappe_modules()
@@ -1649,7 +1837,10 @@ def test_smoke_reset_purges_proven_orphan_ledgers_before_names_are_reused(
     )
     monkeypatch.setattr(frappe.db, "delete", fake_db_delete)
 
-    smoke._delete_orphan_smoke_ledger_artifacts(smoke.SMOKE_DEVICE_ID)
+    smoke._delete_orphan_smoke_ledger_artifacts(
+        smoke.SMOKE_DEVICE_ID,
+        include_inventory_regression=True,
+    )
 
     assert [row["name"] for row in tables["GL Entry"]] == [
         "GL-CURRENT-MERCHANT-REUSED",
@@ -1662,6 +1853,7 @@ def test_smoke_reset_purges_proven_orphan_ledgers_before_names_are_reused(
     assert [row["name"] for row in tables["Stock Ledger Entry"]] == ["SLE-LIVE"]
 
 
+@pytest.mark.inventory_regression
 def test_smoke_stock_cancel_ignores_links_for_proven_smoke_voucher(
     monkeypatch,
 ) -> None:
@@ -1693,6 +1885,7 @@ def test_smoke_stock_cancel_ignores_links_for_proven_smoke_voucher(
     assert stock_entry.docstatus == 2
 
 
+@pytest.mark.inventory_regression
 def test_smoke_stock_cancel_still_fails_loudly_on_real_cancel_error(
     monkeypatch,
 ) -> None:

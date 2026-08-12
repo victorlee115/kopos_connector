@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, time, timedelta, timezone
 from types import SimpleNamespace
@@ -429,6 +430,127 @@ def test_serialize_invoice_row_returns_kopos_display_number_and_modifiers(
             "price_adjustment": "2.00",
         }
     ]
+
+
+def test_fb_order_history_uses_the_commercial_modifier_snapshot(
+    order_history_module,
+    monkeypatch,
+) -> None:
+    requested_line_fields: list[str] = []
+
+    def fake_get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        if doctype == "FB Order Line":
+            requested_line_fields.extend(kwargs["fields"])
+            return [
+                {
+                    "name": "FB-ORDER-LINE-1",
+                    "parent": "FB-ORDER-1",
+                    "idx": 1,
+                    "item": "AMERICANO",
+                    "item_name_snapshot": "Americano",
+                    "qty": 1,
+                    "unit_price": "8.00",
+                    "modifier_total": "2.00",
+                    "discount_amount": "0.00",
+                    "line_total": "10.00",
+                    "commercial_modifier_snapshot_json": json.dumps(
+                        [
+                            {
+                                "modifier_group": "SIZE",
+                                "modifier": "MOD-LARGE",
+                                "price_adjustment": "2.00",
+                                "sort_order": 1,
+                                "affects_stock": 0,
+                                "affects_recipe": 0,
+                            }
+                        ]
+                    ),
+                    "resolved_sale": "FB-RESOLVED-SALE-1",
+                }
+            ]
+        if doctype == "FB Selected Modifier":
+            raise AssertionError(
+                "durable commercial snapshots must not depend on nested child rows"
+            )
+        raise AssertionError(f"unexpected history query: {doctype}")
+
+    monkeypatch.setattr(order_history_module.frappe, "get_all", fake_get_all)
+    monkeypatch.setattr(
+        order_history_module.frappe.db,
+        "get_value",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("history queried optional modifier metadata")
+        ),
+    )
+
+    grouped = order_history_module.query_fb_order_items_by_order(
+        [{"custom_fb_order": "FB-ORDER-1"}]
+    )
+    item = order_history_module.serialize_item_row(grouped["FB-ORDER-1"][0])
+
+    assert "commercial_modifier_snapshot_json" in requested_line_fields
+    assert item["modifier_total"] == "2.00"
+    assert item["modifiers"] == [
+        {
+            "id": "MOD-LARGE",
+            "name": "MOD-LARGE",
+            "group_id": "SIZE",
+            "price_adjustment": "2.00",
+        }
+    ]
+
+
+def test_fb_order_history_omits_a_corrupt_commercial_modifier_snapshot(
+    order_history_module,
+    monkeypatch,
+) -> None:
+    def fake_get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        if doctype != "FB Order Line":
+            raise AssertionError(f"unexpected history query: {doctype}")
+        return [
+            {
+                "name": "FB-ORDER-LINE-1",
+                "parent": "FB-ORDER-1",
+                "commercial_modifier_snapshot_json": '{"modifier":"MOD-LARGE"}',
+            }
+        ]
+
+    monkeypatch.setattr(order_history_module.frappe, "get_all", fake_get_all)
+
+    grouped = order_history_module.query_fb_order_items_by_order(
+        [{"custom_fb_order": "FB-ORDER-1"}]
+    )
+
+    assert order_history_module.serialize_item_row(grouped["FB-ORDER-1"][0])["modifiers"] == []
+
+
+def test_legacy_history_without_snapshot_never_queries_optional_modifier_rows(
+    order_history_module,
+    monkeypatch,
+) -> None:
+    def fake_get_all(doctype: str, **_kwargs: Any) -> list[dict[str, Any]]:
+        if doctype == "FB Order Line":
+            return [
+                {
+                    "name": "FB-ORDER-LINE-LEGACY",
+                    "parent": "FB-ORDER-LEGACY",
+                    "item": "AMERICANO",
+                    "qty": 1,
+                    "unit_price": "8.00",
+                    "line_total": "8.00",
+                    "commercial_modifier_snapshot_json": None,
+                    "resolved_sale": "MISSING-OPTIONAL-ROW",
+                }
+            ]
+        raise AssertionError(f"history queried optional DocType {doctype}")
+
+    monkeypatch.setattr(order_history_module.frappe, "get_all", fake_get_all)
+
+    grouped = order_history_module.query_fb_order_items_by_order(
+        [{"custom_fb_order": "FB-ORDER-LEGACY"}]
+    )
+
+    assert order_history_module.serialize_item_row(grouped["FB-ORDER-LEGACY"][0])["modifiers"] == []
 
 
 def test_format_datetime_uses_the_configured_site_timezone_and_emits_utc_z(

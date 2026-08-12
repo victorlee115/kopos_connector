@@ -55,6 +55,13 @@ stock projections, warehouses, COGS configuration, or inventory balances.
 Regression fixtures for non-inventory work must use non-stock items and must not
 post stock movements.
 
+Recipe and inventory code is optional to the commercial lane. Missing, disabled,
+invalid, slow, or failing recipe/stock services must not block the base catalog,
+FB Order, Sales Invoice, payment, refund, FB Shift, or tablet acknowledgement.
+Cashier and scheduler retries are commercial-only. Preserve optional stock truth
+as diagnostics for its future owner; never execute it inside the cashier-critical
+transaction or treat it as sale-registration authority.
+
 ## Minimum verification for affected code
 
 1. Run focused mocked tests while iterating.

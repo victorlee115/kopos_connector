@@ -106,22 +106,26 @@ class TestSalesInvoiceService(unittest.TestCase):
 
         self.assertEqual(result, {"account": "Cash - TC", "type": "Cash"})
 
-    def test_modifier_snapshot_uses_v16_transient_child_payload(self):
-        order_item = frappe._dict({"selected_modifiers": []})
-        order_item._selected_modifiers_payload = [
-            frappe._dict(
-                {
-                    "modifier_group": "SMOKE-FB-SIZE",
-                    "modifier": "SMOKE-FB-SIZE-LARGE",
-                    "price_adjustment": Decimal("2.00"),
-                }
-            )
-        ]
+    def test_modifier_snapshot_uses_durable_line_json_without_table_reads(self):
+        order_item = frappe._dict(
+            {
+                "selected_modifiers": [],
+                "commercial_modifier_snapshot_json": json.dumps(
+                    [
+                        {
+                            "modifier_group": "SMOKE-FB-SIZE",
+                            "modifier": "SMOKE-FB-SIZE-LARGE",
+                            "price_adjustment": "2.00",
+                        }
+                    ]
+                ),
+            }
+        )
 
         with patch.object(
             frappe.db,
             "get_value",
-            return_value="Large",
+            side_effect=AssertionError("modifier table must not be read"),
         ):
             snapshot = _build_modifier_snapshot(order_item)
 
@@ -131,7 +135,7 @@ class TestSalesInvoiceService(unittest.TestCase):
                 "modifiers": [
                     {
                         "id": "SMOKE-FB-SIZE-LARGE",
-                        "name": "Large",
+                        "name": "SMOKE-FB-SIZE-LARGE",
                         "group_id": "SMOKE-FB-SIZE",
                         "price_adjustment": "2.00",
                         "price_adjustment_sen": 200,
@@ -140,39 +144,66 @@ class TestSalesInvoiceService(unittest.TestCase):
             },
         )
 
-    def test_modifier_snapshot_uses_resolved_sale_after_projection_reload(self):
+    def test_modifier_snapshot_never_uses_legacy_resolved_sale_link(self):
         order_item = frappe._dict(
             {
                 "selected_modifiers": [],
                 "resolved_sale": "FB-RESOLVED-SALE-1",
             }
         )
-        resolved_sale = frappe._dict(
+        with patch.object(
+            frappe,
+            "get_doc",
+            side_effect=AssertionError("resolved-sale table must not be read"),
+        ):
+            snapshot = _build_modifier_snapshot(order_item)
+
+        self.assertIsNone(snapshot)
+
+    def test_modifier_snapshot_reloads_without_recipe_or_modifier_documents(self):
+        order_item = frappe._dict(
             {
-                "selected_modifiers": [
-                    frappe._dict(
+                "selected_modifiers": [],
+                "resolved_sale": None,
+                "commercial_modifier_snapshot_json": json.dumps(
+                    [
                         {
-                            "modifier_group": "SMOKE-FB-SIZE",
-                            "modifier": "SMOKE-FB-SIZE-LARGE",
-                            "price_adjustment": Decimal("2.00"),
+                            "modifier_group": "MISSING-GROUP",
+                            "modifier": "MISSING-MODIFIER",
+                            "price_adjustment": "2.00",
+                            "instruction_text": "Extra hot",
+                            "sort_order": 1,
+                            "affects_stock": 0,
+                            "affects_recipe": 0,
                         }
-                    )
-                ]
+                    ]
+                ),
             }
         )
 
-        with (
-            patch.object(frappe, "get_doc", return_value=resolved_sale),
-            patch.object(frappe.db, "get_value", return_value="Large"),
+        with patch.object(
+            frappe.db,
+            "get_value",
+            side_effect=RuntimeError("optional modifier table is unavailable"),
         ):
             snapshot = _build_modifier_snapshot(order_item)
 
         self.assertEqual(
-            json.loads(snapshot or "{}")["modifiers"][0]["id"],
-            "SMOKE-FB-SIZE-LARGE",
+            json.loads(snapshot or "{}"),
+            {
+                "modifiers": [
+                    {
+                        "id": "MISSING-MODIFIER",
+                        "name": "MISSING-MODIFIER",
+                        "group_id": "MISSING-GROUP",
+                        "price_adjustment": "2.00",
+                        "price_adjustment_sen": 200,
+                    }
+                ]
+            },
         )
 
-    def test_modifier_snapshot_fails_if_linked_resolved_sale_cannot_be_loaded(self):
+    def test_missing_linked_resolved_sale_does_not_block_invoice_audit(self):
         order_item = frappe._dict(
             {
                 "selected_modifiers": [],
@@ -183,13 +214,24 @@ class TestSalesInvoiceService(unittest.TestCase):
         with patch.object(
             frappe,
             "get_doc",
-            side_effect=RuntimeError("resolved sale storage unavailable"),
+            side_effect=AssertionError("resolved-sale storage must not be read"),
         ):
-            with self.assertRaisesRegex(
-                RuntimeError,
-                "Unable to load linked FB Resolved Sale FB-RESOLVED-SALE-MISSING",
-            ):
-                _build_modifier_snapshot(order_item)
+            self.assertIsNone(_build_modifier_snapshot(order_item))
+
+    def test_invalid_optional_modifier_json_does_not_block_invoice(self):
+        order_item = frappe._dict(
+            {
+                "selected_modifiers": [],
+                "commercial_modifier_snapshot_json": "not-json",
+            }
+        )
+
+        with patch(
+            "kopos_connector.kopos.services.accounting.sales_invoice_service.log_sanitized_error"
+        ) as log_error:
+            self.assertIsNone(_build_modifier_snapshot(order_item))
+
+        log_error.assert_called_once()
 
     def test_create_sales_invoice_carries_tax_and_rounding(self):
         order = self.make_fb_order_stub()
@@ -322,6 +364,47 @@ class TestSalesInvoiceService(unittest.TestCase):
         self.assertEqual(invoice["items"][1].amount, Decimal("0.00"))
         self.assertEqual(invoice["items"][1].is_free_item, 1)
         bind_qr.assert_called_once_with(order, "SINV-CASH-001")
+
+    def test_projection_failure_logs_the_root_exception(self):
+        order = self.make_fb_order_stub()
+        root_error = RuntimeError("Fiscal year fixture is missing")
+
+        with (
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._get_existing_sales_invoice",
+                return_value=None,
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._resolve_pos_profile_context",
+                return_value={
+                    "pos_profile": "KoPOS Test Profile",
+                    "company": self.company,
+                },
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._make_savepoint",
+                return_value="savepoint",
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._rollback_savepoint"
+            ) as rollback,
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.privileged_device_api_operation",
+                return_value=nullcontext(),
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.frappe.new_doc",
+                side_effect=root_error,
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._log_error"
+            ) as log_error,
+        ):
+            result = create_sales_invoice(order)
+
+        self.assertIsNone(result)
+        rollback.assert_called_once_with("savepoint")
+        log_error.assert_called_once_with("Sales invoice projection failed", root_error)
 
     def test_resolve_customer_falls_back_to_pos_profile_customer(self):
         order = self.make_fb_order_stub()

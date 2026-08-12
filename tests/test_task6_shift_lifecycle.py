@@ -417,7 +417,6 @@ def _resolved_sale(
     [
         ([{"name": "FB-ORDER-1", "invoice_status": "Pending", "stock_status": "Posted"}], []),
         ([{"name": "FB-ORDER-1", "invoice_status": "Failed", "stock_status": "Posted"}], []),
-        ([{"name": "FB-ORDER-1", "invoice_status": "Posted", "stock_status": "Failed"}], []),
         (
             [{"name": "FB-ORDER-1", "invoice_status": "Posted", "stock_status": "Posted"}],
             [{"source_name": "FB-ORDER-1", "projection_type": "FB Shift", "state": "Pending"}],
@@ -575,7 +574,7 @@ def test_close_shift_payload_allows_no_stock_required_pending_stock_state(
     assert shift_doc.save_calls == [("Closing", True), ("Closed", True)]
 
 
-def test_close_shift_payload_blocks_actual_pending_stock_projection_work(
+def test_close_shift_payload_ignores_optional_pending_stock_projection_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shift_doc = _patch_close_dependencies(
@@ -589,17 +588,14 @@ def test_close_shift_payload_blocks_actual_pending_stock_projection_work(
         resolved_sales_by_order={"FB-ORDER-1": [_resolved_sale(affects_stock=1)]},
     )
 
-    with pytest.raises(
-        shifts.frappe.ValidationError,
-        match="cannot close while",
-    ):
-        shifts.close_shift_payload(_close_payload())
+    result = shifts.close_shift_payload(_close_payload())
 
-    assert shift_doc.status == "Open"
-    assert shift_doc.save_calls == []
+    assert result["status"] == "ok"
+    assert shift_doc.status == "Closed"
+    assert shift_doc.save_calls == [("Closing", True), ("Closed", True)]
 
 
-def test_close_shift_payload_blocks_actual_failed_stock_projection_log(
+def test_close_shift_payload_ignores_optional_failed_stock_projection_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     shift_doc = _patch_close_dependencies(
@@ -613,14 +609,11 @@ def test_close_shift_payload_blocks_actual_failed_stock_projection_log(
         resolved_sales_by_order={"FB-ORDER-1": [_resolved_sale(affects_stock=1)]},
     )
 
-    with pytest.raises(
-        shifts.frappe.ValidationError,
-        match="cannot close while",
-    ):
-        shifts.close_shift_payload(_close_payload())
+    result = shifts.close_shift_payload(_close_payload())
 
-    assert shift_doc.status == "Open"
-    assert shift_doc.save_calls == []
+    assert result["status"] == "ok"
+    assert shift_doc.status == "Closed"
+    assert shift_doc.save_calls == [("Closing", True), ("Closed", True)]
 
 
 def test_close_shift_payload_all_posted_transitions_open_to_closing_to_closed(
@@ -875,6 +868,7 @@ def test_close_shift_reconciles_cash_from_accounting_evidence_before_variance(
     assert shift_doc.cash_variance == Decimal("0.50")
 
 
+@pytest.mark.inventory_regression
 def test_shift_stock_requirement_is_bulk_bounded_for_two_thousand_orders(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

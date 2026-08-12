@@ -818,6 +818,7 @@ def query_fb_order_items_by_order(
                     "modifier_total",
                     "discount_amount",
                     "line_total",
+                    "commercial_modifier_snapshot_json",
                     "resolved_sale",
                     "remarks",
                 ],
@@ -825,22 +826,20 @@ def query_fb_order_items_by_order(
             order_by="parent asc, idx asc",
         )
     ]
-    modifier_parent_names = []
     for row in line_rows:
-        line_name = cstr(row.get("name")).strip()
-        resolved_sale = cstr(row.get("resolved_sale")).strip()
-        if line_name:
-            modifier_parent_names.append(line_name)
-        if resolved_sale:
-            modifier_parent_names.append(resolved_sale)
-    modifiers_by_parent = query_fb_selected_modifiers_by_parent(modifier_parent_names)
+        commercial_modifier_rows = parse_commercial_modifier_snapshot(
+            row.get("commercial_modifier_snapshot_json")
+        )
+        row["_commercial_modifier_rows"] = commercial_modifier_rows
 
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in line_rows:
         parent = cstr(row.get("parent")).strip()
-        line_name = cstr(row.get("name")).strip()
-        modifier_parent = cstr(row.get("resolved_sale")).strip() or line_name
-        modifiers = modifiers_by_parent.get(modifier_parent, [])
+        commercial_modifier_rows = row.get("_commercial_modifier_rows")
+        # Historical rows may predate the durable commercial snapshot. Item,
+        # quantity, price, and totals remain authoritative, but history must
+        # not query optional recipe/resolved-sale tables just to decorate them.
+        modifiers = commercial_modifier_rows or []
         grouped.setdefault(parent, []).append(
             {
                 "idx": row.get("idx"),
@@ -860,6 +859,22 @@ def query_fb_order_items_by_order(
             }
         )
     return grouped
+
+
+def parse_commercial_modifier_snapshot(value: Any) -> list[dict[str, Any]] | None:
+    snapshot_json = cstr(value).strip()
+    if not snapshot_json:
+        return None
+    try:
+        snapshot = json.loads(snapshot_json)
+    except (TypeError, ValueError):
+        # Corrupt optional display metadata must not hide the order itself.
+        return []
+    if not isinstance(snapshot, list) or any(
+        not isinstance(modifier, dict) for modifier in snapshot
+    ):
+        return []
+    return [dict(modifier) for modifier in snapshot]
 
 
 def query_fb_selected_modifiers_by_parent(
@@ -893,11 +908,15 @@ def serialize_fb_modifiers_snapshot(modifiers: list[dict[str, Any]]) -> str | No
         modifier_id = empty_to_none(modifier.get("modifier"))
         if not modifier_id:
             continue
+        modifier_name = empty_to_none(modifier.get("modifier_name")) or empty_to_none(
+            modifier.get("name")
+        )
+        if not modifier_name:
+            modifier_name = modifier_id
         rows.append(
             {
                 "id": modifier_id,
-                "name": frappe.db.get_value("FB Modifier", modifier_id, "modifier_name")
-                or modifier_id,
+                "name": modifier_name,
                 "group_id": empty_to_none(modifier.get("modifier_group")),
                 "price_adjustment": modifier.get("price_adjustment"),
             }

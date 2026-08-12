@@ -88,8 +88,8 @@ def catalog_module(monkeypatch):
                 "custom_kopos_track_stock": 1,
                 "custom_kopos_min_qty": 1,
             },
-            {"is_available": False, "stock_warning": None},
-            id="force-unavailable-hard-blocks-without-warning",
+            {"is_available": True, "stock_warning": None},
+            id="optional-force-unavailable-cannot-block-sale",
         ),
         pytest.param(
             {
@@ -104,7 +104,7 @@ def catalog_module(monkeypatch):
         ),
     ],
 )
-def test_get_item_availability_respects_override_modes(
+def test_get_item_availability_ignores_optional_inventory_override_modes(
     catalog_module, monkeypatch, item, expected
 ):
     def fail_stock_lookup(*args, **kwargs):
@@ -118,7 +118,7 @@ def test_get_item_availability_respects_override_modes(
     assert catalog_module.get_item_availability(item, warehouse="WH-1") == expected
 
 
-def test_get_item_availability_auto_stock_short_sets_advisory_warning(
+def test_get_item_availability_never_reads_or_blocks_on_stock_shortfall(
     catalog_module, monkeypatch
 ):
     availability = catalog_module.get_item_availability(
@@ -134,7 +134,7 @@ def test_get_item_availability_auto_stock_short_sets_advisory_warning(
         reserved_qty_by_item={"AUTO-SHORT": 0.5},
     )
 
-    assert availability == {"is_available": True, "stock_warning": "erp_stock_short"}
+    assert availability == {"is_available": True, "stock_warning": None}
 
 
 def test_get_item_availability_auto_stock_sufficient_clears_warning(
@@ -245,10 +245,12 @@ def test_build_catalog_payload_includes_stock_warning_in_items(
             "price_sen": 1200,
             "barcode": None,
             "is_available": True,
-            "stock_warning": "erp_stock_short",
+            "stock_warning": None,
             "is_active": 1,
             "is_prep_item": 0,
             "modifier_group_ids": [],
+            "recipe_id": None,
+            "recipe_version": None,
         }
     ]
     assert payload["metadata"] == {
@@ -335,12 +337,9 @@ def test_build_catalog_payload_returns_small_unchanged_response(
     }
 
 
-def test_build_catalog_payload_publishes_only_referenced_modifier_rows(
+def test_build_catalog_payload_never_queries_optional_modifier_rows(
     catalog_module, monkeypatch
 ):
-    requested_group_ids: list[tuple[str, ...]] = []
-    requested_option_group_ids: list[tuple[str, ...]] = []
-
     monkeypatch.setattr(
         catalog_module,
         "resolve_catalog_pos_profile",
@@ -373,55 +372,153 @@ def test_build_catalog_payload_publishes_only_referenced_modifier_rows(
         ],
     )
 
-    def get_groups(since=None, group_ids=None):
-        del since
-        requested_group_ids.append(tuple(group_ids or []))
-        return [
-            {
-                "id": "ADDITIONAL_ESPRESSO_SHOT",
-                "name": "Additional espresso shot",
-                "selection_type": "single",
-                "is_required": 1,
-                "min_selections": 1,
-                "max_selections": 1,
-                "parent_option_id": None,
-            }
-        ]
+    def optional_call(*_args, **_kwargs):
+        raise AssertionError("cashier catalog must not query optional modifier data")
 
-    def get_options(since=None, group_ids=None):
-        del since
-        requested_option_group_ids.append(tuple(group_ids or []))
-        return [
-            {
-                "id": "NO_ADD_ESPRESSO",
-                "group_id": "ADDITIONAL_ESPRESSO_SHOT",
-                "name": "No additional shot",
-                "price_adjustment_sen": 0,
-                "is_active": 1,
-            },
-            {
-                "id": "ADD_ESPRESSO",
-                "group_id": "ADDITIONAL_ESPRESSO_SHOT",
-                "name": "Add espresso shot",
-                "price_adjustment_sen": 300,
-                "is_active": 1,
-            },
-        ]
-
-    monkeypatch.setattr(catalog_module, "get_modifier_groups", get_groups)
-    monkeypatch.setattr(catalog_module, "get_modifier_options", get_options)
+    monkeypatch.setattr(catalog_module, "get_modifier_groups", optional_call)
+    monkeypatch.setattr(catalog_module, "get_modifier_options", optional_call)
     monkeypatch.setattr(catalog_module, "get_tax_rate_value", lambda **kwargs: 0)
 
     payload = catalog_module.build_catalog_payload(device_id="DEVICE-1")
 
-    assert requested_group_ids == [("ADDITIONAL_ESPRESSO_SHOT",)]
-    assert requested_option_group_ids == [("ADDITIONAL_ESPRESSO_SHOT",)]
-    assert [group["id"] for group in payload["modifier_groups"]] == [
-        "ADDITIONAL_ESPRESSO_SHOT"
-    ]
-    assert {option["group_id"] for option in payload["modifier_options"]} == {
-        "ADDITIONAL_ESPRESSO_SHOT"
+    assert payload["items"][0]["modifier_group_ids"] == []
+    assert payload["modifier_groups"] == []
+    assert payload["modifier_options"] == []
+
+
+def test_build_catalog_payload_keeps_plain_items_when_modifier_module_fails(
+    catalog_module, monkeypatch
+):
+    monkeypatch.setattr(
+        catalog_module,
+        "resolve_catalog_pos_profile",
+        lambda device_id=None: {
+            "name": "POS-1",
+            "company": "KoPOS Cafe",
+            "warehouse": "WH-1",
+            "selling_price_list": "Standard Selling",
+            "currency": "MYR",
+        },
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_items",
+        lambda **_kwargs: [
+            {
+                "id": "LATTE",
+                "name": "Latte",
+                "category_id": "DRINKS",
+                "price_sen": 1200,
+                "modifier_group_ids": ["MILK"],
+                "recipe_id": "LATTE-RECIPE",
+                "recipe_version": 3,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_categories",
+        lambda **_kwargs: [
+            {"id": "DRINKS", "name": "Drinks", "display_order": 1}
+        ],
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_modifier_groups",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            ImportError("optional recipe module is unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_modifier_options",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("options must not be queried after group failure")
+        ),
+    )
+    monkeypatch.setattr(catalog_module, "get_tax_rate_value", lambda **_kwargs: 0)
+
+    payload = catalog_module.build_catalog_payload(device_id="DEVICE-1")
+
+    assert payload["items"][0]["id"] == "LATTE"
+    assert payload["items"][0]["modifier_group_ids"] == []
+    assert payload["items"][0]["recipe_id"] is None
+    assert payload["items"][0]["recipe_version"] is None
+    assert payload["modifier_groups"] == []
+    assert payload["modifier_options"] == []
+
+
+def test_build_catalog_payload_drops_invalid_optional_rules_but_not_bad_items(
+    catalog_module, monkeypatch
+):
+    monkeypatch.setattr(
+        catalog_module,
+        "resolve_catalog_pos_profile",
+        lambda device_id=None: {
+            "name": "POS-1",
+            "company": "KoPOS Cafe",
+            "warehouse": "WH-1",
+            "selling_price_list": "Standard Selling",
+            "currency": "MYR",
+        },
+    )
+    item = {
+        "id": "LATTE",
+        "name": "Latte",
+        "category_id": "DRINKS",
+        "price_sen": 1200,
+        "modifier_group_ids": ["MILK"],
+        "recipe_id": "LATTE-RECIPE",
+        "recipe_version": 3,
     }
+    monkeypatch.setattr(catalog_module, "get_items", lambda **_kwargs: [item])
+    monkeypatch.setattr(
+        catalog_module,
+        "get_categories",
+        lambda **_kwargs: [
+            {"id": "DRINKS", "name": "Drinks", "display_order": 1}
+        ],
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_modifier_groups",
+        lambda **_kwargs: [
+            {
+                "id": "MILK",
+                "name": "Milk",
+                "selection_type": "multiple",
+                "is_required": 1,
+                "min_selections": 2,
+                "max_selections": 2,
+                "parent_option_id": None,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_modifier_options",
+        lambda **_kwargs: [
+            {
+                "id": "OAT",
+                "group_id": "MILK",
+                "name": "Oat",
+                "price_adjustment_sen": 200,
+                "is_active": 1,
+            }
+        ],
+    )
+    monkeypatch.setattr(catalog_module, "get_tax_rate_value", lambda **_kwargs: 0)
+
+    payload = catalog_module.build_catalog_payload(device_id="DEVICE-1")
+    assert payload["items"][0]["modifier_group_ids"] == []
+    assert payload["modifier_groups"] == []
+
+    item["price_sen"] = "not-an-integer"
+    with pytest.raises(
+        catalog_module.frappe.ValidationError,
+        match="price_sen must be an integer",
+    ):
+        catalog_module.build_catalog_payload(device_id="DEVICE-1")
 
 
 def test_validate_catalog_snapshot_rejects_empty_or_partial_publication(
@@ -592,7 +689,7 @@ def test_validate_catalog_snapshot_rejects_too_few_active_modifier_options(
         )
 
 
-def test_get_items_bulk_loads_prices_barcodes_bins_and_fb_reservations(
+def test_get_items_bulk_loads_commercial_data_without_inventory_queries(
     catalog_module, monkeypatch
 ):
     query_counts: dict[str, int] = {}
@@ -652,18 +749,17 @@ def test_get_items_bulk_loads_prices_barcodes_bins_and_fb_reservations(
 
     monkeypatch.setattr(catalog_module.frappe, "get_all", get_all)
     monkeypatch.setattr(catalog_module.frappe.db, "sql", sql, raising=False)
+    def optional_call(*_args, **_kwargs):
+        raise AssertionError("base item catalog must not query recipe/modifier data")
+
     monkeypatch.setattr(
-        catalog_module,
-        "get_item_modifier_groups_map",
-        lambda rows, company=None, recipe_snapshots_by_item=None: {},
+        catalog_module, "get_item_modifier_groups_map", optional_call
     )
     monkeypatch.setattr(
-        catalog_module,
-        "get_item_recipe_snapshots_map",
-        lambda rows, company=None: {
-            "ITEM-1": {"recipe_id": "RECIPE-ITEM-1", "recipe_version": 1},
-            "ITEM-2": {"recipe_id": "RECIPE-ITEM-2", "recipe_version": 1},
-        },
+        catalog_module, "get_item_recipe_snapshots_map", optional_call
+    )
+    monkeypatch.setattr(
+        catalog_module, "get_recipe_changed_item_codes", optional_call
     )
 
     items = catalog_module.get_items(
@@ -676,19 +772,183 @@ def test_get_items_bulk_loads_prices_barcodes_bins_and_fb_reservations(
         "Item": 1,
         "Item Price": 1,
         "Item Barcode": 1,
-        "Bin": 1,
     }
-    assert len(reservation_queries) == 1
-    assert "tabFB Order" in reservation_queries[0][0]
-    assert "POS Invoice" not in reservation_queries[0][0]
-    assert reservation_queries[0][1] == ("WH-1", "ITEM-1", "ITEM-2")
+    assert reservation_queries == []
     assert items[0]["price_sen"] == 1200
-    assert items[0]["recipe_id"] == "RECIPE-ITEM-1"
-    assert items[0]["recipe_version"] == 1
+    assert items[0]["recipe_id"] is None
+    assert items[0]["recipe_version"] is None
     assert items[0]["barcode"] == "111"
     assert items[0]["stock_warning"] is None
     assert items[1]["price_sen"] == 950
-    assert items[1]["stock_warning"] == "erp_stock_short"
+    assert items[1]["stock_warning"] is None
+
+
+def test_saleable_item_query_tolerates_all_optional_custom_columns_absent(
+    catalog_module, monkeypatch
+):
+    captured_fields: list[str] = []
+
+    monkeypatch.setattr(
+        catalog_module.frappe,
+        "get_meta",
+        lambda doctype: SimpleNamespace(has_field=lambda _fieldname: False),
+    )
+
+    def get_all(doctype, **kwargs):
+        assert doctype == "Item"
+        captured_fields.extend(kwargs["fields"])
+        return []
+
+    monkeypatch.setattr(catalog_module.frappe, "get_all", get_all)
+
+    assert catalog_module.get_saleable_item_rows({"is_sales_item": 1}) == []
+    assert "stock_uom" in captured_fields
+    assert not any(field.startswith("custom_") for field in captured_fields)
+
+
+def test_saleable_item_query_retries_when_cached_optional_column_is_stale(
+    catalog_module, monkeypatch
+):
+    field_attempts: list[list[str]] = []
+
+    monkeypatch.setattr(
+        catalog_module.frappe,
+        "get_meta",
+        lambda doctype: SimpleNamespace(has_field=lambda _fieldname: True),
+    )
+
+    def get_all(doctype, **kwargs):
+        assert doctype == "Item"
+        fields = list(kwargs["fields"])
+        field_attempts.append(fields)
+        if "custom_kopos_is_prep_item" in fields:
+            raise RuntimeError("unknown column custom_kopos_is_prep_item")
+        return []
+
+    monkeypatch.setattr(catalog_module.frappe, "get_all", get_all)
+
+    assert catalog_module.get_saleable_item_rows({"is_sales_item": 1}) == []
+    assert len(field_attempts) == 2
+    assert "custom_kopos_is_prep_item" in field_attempts[0]
+    assert not any(field.startswith("custom_") for field in field_attempts[1])
+
+
+def test_get_items_keeps_plain_menu_when_recipe_subsystem_fails(
+    catalog_module, monkeypatch
+):
+    item_row = {
+        "id": "ITEM-1",
+        "item_code": "ITEM-1",
+        "name": "Americano",
+        "category_id": "DRINKS",
+        "price": 8,
+        "disabled": 0,
+        "custom_kopos_availability_mode": "auto",
+        "custom_kopos_track_stock": 1,
+        "custom_fb_recipe_required": 1,
+        "custom_fb_default_recipe": "BROKEN-RECIPE",
+        "stock_uom": "Nos",
+    }
+    monkeypatch.setattr(
+        catalog_module,
+        "get_saleable_item_rows",
+        lambda **_kwargs: [item_row],
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_recipe_changed_item_codes",
+        lambda **_kwargs: set(),
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_item_recipe_snapshots_map",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("recipe table is unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_item_prices_map",
+        lambda **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_item_barcodes_map",
+        lambda _items: {},
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_bin_qty_map",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("inventory must not be read")
+        ),
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_fb_pending_reserved_qty_map",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("inventory reservations must not be read")
+        ),
+    )
+
+    items = catalog_module.get_items(
+        warehouse="WH-1",
+        selling_price_list=None,
+        pos_profile={"company": "KoPOS Cafe"},
+    )
+
+    assert items == [
+        {
+            "id": "ITEM-1",
+            "item_code": "ITEM-1",
+            "name": "Americano",
+            "category_id": "DRINKS",
+            "price": 8.0,
+            "price_sen": 800,
+            "barcode": None,
+            "is_available": True,
+            "stock_warning": None,
+            "is_active": 1,
+            "is_prep_item": 0,
+            "modifier_group_ids": [],
+            "recipe_id": None,
+            "recipe_version": None,
+        }
+    ]
+
+
+def test_item_modifier_endpoint_returns_plain_choice_when_recipe_fails(
+    catalog_module, monkeypatch
+):
+    monkeypatch.setattr(
+        catalog_module,
+        "get_item_modifier_groups",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ModuleNotFoundError("optional recipe app is unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_modifier_groups",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("optional modifier groups must not be queried")
+        ),
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_modifier_options",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("optional modifier options must not be queried")
+        ),
+    )
+
+    assert (
+        catalog_module.get_item_modifiers_payload(
+            "ITEM-1",
+            company="KoPOS Cafe",
+        )
+        == []
+    )
 
 
 def test_item_price_selection_rejects_future_expired_and_wrong_uom_rows(

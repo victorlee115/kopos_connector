@@ -16,9 +16,6 @@ from kopos_connector.kopos.services.accounting.return_invoice_service import (
 from kopos_connector.kopos.services.accounting.return_settlement_service import (
     ensure_return_settlement,
 )
-from kopos_connector.kopos.services.inventory.stock_reversal_service import (
-    create_reversal_stock_entry,
-)
 
 
 def process_return_event(doc: Any) -> tuple[str | None, str | None]:
@@ -37,7 +34,6 @@ def process_return_event(doc: Any) -> tuple[str | None, str | None]:
                 frappe.ValidationError,
             )
         settlement_document = ensure_return_settlement(doc, return_invoice)
-        reversal_entry = create_reversal_stock_entry(doc)
     if not settlement_document:
         frappe.throw(
             "Accounting settlement failed for FB Return Event {0}".format(
@@ -45,16 +41,8 @@ def process_return_event(doc: Any) -> tuple[str | None, str | None]:
             ),
             frappe.ValidationError,
         )
-    if int(getattr(doc, "return_to_stock", 0) or 0) and not reversal_entry:
-        frappe.throw(
-            "Stock reversal projection failed for FB Return Event {0}".format(
-                getattr(doc, "name", "")
-            ),
-            frappe.ValidationError,
-        )
     refresh_fb_shift_cash(shift_name)
-    _update_resolved_sale_statuses(doc)
-    return return_invoice, reversal_entry
+    return return_invoice, None
 
 
 def ensure_existing_return_event_settlement(doc: Any) -> str:

@@ -90,7 +90,8 @@ def fake_frappe(monkeypatch):
             "create_sales_invoice": lambda *args, **kwargs: None
         },
         "kopos_connector.kopos.services.accounting.maybank_payment_service": {
-            "register_qr_payment_settlement": lambda *args, **kwargs: None
+            "register_qr_payment_settlement": lambda *args, **kwargs: None,
+            "normalize_qr_token": lambda value: value,
         },
         "kopos_connector.kopos.services.inventory.stock_issue_service": {
             "create_ingredient_stock_entry": lambda *args, **kwargs: None
@@ -121,6 +122,7 @@ def fake_frappe(monkeypatch):
     )
 
 
+@pytest.mark.inventory_regression
 def test_detect_and_log_stock_shortfall(fake_frappe):
     fake_frappe.stock_by_bin[("ITEM-1", "WH-1")] = 1.0
     warning_service = importlib.import_module(
@@ -172,7 +174,7 @@ def test_detect_and_log_stock_shortfall(fake_frappe):
     assert log_doc.approved_at == fake_frappe.timestamp
 
 
-def test_before_submit_logs_shortfall_without_throwing(fake_frappe):
+def test_before_submit_does_not_touch_inventory_before_accounting(fake_frappe):
     fake_frappe.stock_by_bin[("ITEM-1", "WH-1")] = 0.5
     fb_order_module = importlib.import_module(
         "kopos_connector.kopos.doctype.fb_order.fb_order"
@@ -182,7 +184,7 @@ def test_before_submit_logs_shortfall_without_throwing(fake_frappe):
     order.name = "FB-ORDER-1"
     order.order_id = "ORDER-1"
     order.booth_warehouse = "WH-1"
-    captured_resolutions: list[object] = []
+    resolved_sale_calls: list[object] = []
     line_resolutions = [
         {
             "resolved_components": [
@@ -192,18 +194,17 @@ def test_before_submit_logs_shortfall_without_throwing(fake_frappe):
     ]
 
     order.build_line_resolutions = lambda: line_resolutions
-    order.create_resolved_sales = lambda resolutions: captured_resolutions.append(
+    order.create_resolved_sales = lambda resolutions: resolved_sale_calls.append(
         resolutions
     )
 
     order.before_submit()
 
-    assert captured_resolutions == [line_resolutions]
-    assert len(fake_frappe.created_logs) == 1
-    assert fake_frappe.created_logs[0].item == "ITEM-1"
-    assert fake_frappe.created_logs[0].order_reference == "ORDER-1"
+    assert resolved_sale_calls == []
+    assert fake_frappe.created_logs == []
 
 
+@pytest.mark.inventory_regression
 def test_before_submit_rejects_shortfall_when_negative_stock_policy_is_disabled(
     fake_frappe,
 ):
@@ -235,6 +236,7 @@ def test_before_submit_rejects_shortfall_when_negative_stock_policy_is_disabled(
     assert fake_frappe.created_logs == []
 
 
+@pytest.mark.inventory_regression
 def test_before_submit_rejects_serialised_shortfall_even_when_negative_stock_is_enabled(
     fake_frappe,
 ):
@@ -270,7 +272,7 @@ def test_before_submit_rejects_serialised_shortfall_even_when_negative_stock_is_
     assert fake_frappe.created_logs == []
 
 
-def test_before_submit_still_raises_non_stock_failures(fake_frappe):
+def test_before_submit_does_not_invoke_failing_resolved_sale_subsystem(fake_frappe):
     fb_order_module = importlib.import_module(
         "kopos_connector.kopos.doctype.fb_order.fb_order"
     )
@@ -284,8 +286,7 @@ def test_before_submit_still_raises_non_stock_failures(fake_frappe):
 
     order.create_resolved_sales = raise_non_stock_failure
 
-    with pytest.raises(RuntimeError, match="resolved sale projection failed"):
-        order.before_submit()
+    order.before_submit()
 
 
 def _prepared_component() -> dict[str, object]:
@@ -304,6 +305,7 @@ def _prepared_component() -> dict[str, object]:
     }
 
 
+@pytest.mark.inventory_regression
 def test_prepared_sale_reuses_only_the_frozen_resolved_snapshot(
     fake_frappe,
     monkeypatch,
@@ -366,6 +368,7 @@ def test_prepared_sale_reuses_only_the_frozen_resolved_snapshot(
     assert resolutions[0]["resolved_components"] == [component]
 
 
+@pytest.mark.inventory_regression
 def test_prepared_sale_rejects_a_changed_resolution_hash(fake_frappe, monkeypatch):
     fb_order_module = importlib.import_module(
         "kopos_connector.kopos.doctype.fb_order.fb_order"
@@ -415,21 +418,20 @@ def test_prepared_sale_rejects_a_changed_resolution_hash(fake_frappe, monkeypatc
         order.validate_prepared_resolved_sales()
 
 
-def test_prepared_before_submit_never_re_resolves_the_current_catalog(
+def test_prepared_before_submit_uses_only_the_commercial_line_snapshot(
     fake_frappe,
     monkeypatch,
 ):
     fb_order_module = importlib.import_module(
         "kopos_connector.kopos.doctype.fb_order.fb_order"
     )
-    frozen_resolutions = [{"resolved_components": []}]
     calls: list[tuple[str, object]] = []
     order = fb_order_module.FBOrder()
     order.accepted_sale_fingerprint = "f" * 64
-    order.build_line_resolutions = lambda: (_ for _ in ()).throw(
-        AssertionError("prepared sale must not re-resolve the catalog")
+    order.build_line_resolutions = lambda: calls.append(("commercial", order)) or []
+    order.validate_prepared_resolved_sales = lambda: (_ for _ in ()).throw(
+        AssertionError("prepared sale must not load resolved recipe snapshots")
     )
-    order.validate_prepared_resolved_sales = lambda: frozen_resolutions
     order.validate_stock_availability = lambda value: calls.append(("stock", value))
     order.mark_prepared_resolved_sales_submitted = lambda value: calls.append(
         ("resolved", value)
@@ -442,10 +444,7 @@ def test_prepared_before_submit_never_re_resolves_the_current_catalog(
 
     order.before_submit()
 
-    assert calls == [
-        ("resolved", frozen_resolutions),
-        ("settlement", order),
-    ]
+    assert calls == [("commercial", order), ("settlement", order)]
 
 
 def test_prepared_sale_rejects_persisted_price_customer_or_payment_edits(
@@ -492,6 +491,7 @@ def test_prepared_sale_rejects_persisted_price_customer_or_payment_edits(
         order.validate_prepared_sale_immutability()
 
 
+@pytest.mark.inventory_regression
 def test_prepared_sale_rejects_persisted_recipe_identity_edits(
     fake_frappe,
 ) -> None:
@@ -522,6 +522,52 @@ def test_prepared_sale_rejects_persisted_recipe_identity_edits(
     with pytest.raises(
         fb_order_module.frappe.ValidationError,
         match=r"immutable sale snapshot cannot be changed: items\[1\]\.recipe_version",
+    ):
+        order.validate_prepared_sale_immutability()
+
+
+def test_prepared_sale_rejects_commercial_modifier_snapshot_edits(
+    fake_frappe,
+) -> None:
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    original_snapshot = json.dumps(
+        [
+            {
+                "modifier_group": "MILK",
+                "modifier": "OAT",
+                "price_adjustment_sen": 200,
+            }
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    before = SimpleNamespace(
+        accepted_sale_fingerprint="f" * 64,
+        items=[
+            SimpleNamespace(
+                line_id="LINE-1",
+                item="ITEM-1",
+                qty=1,
+                commercial_modifier_snapshot_json=original_snapshot,
+            )
+        ],
+        payments=[],
+    )
+    order = fb_order_module.FBOrder()
+    order.accepted_sale_fingerprint = "f" * 64
+    order.items = [SimpleNamespace(**vars(before.items[0]))]
+    order.items[0].commercial_modifier_snapshot_json = "[]"
+    order.payments = []
+    order.get_doc_before_save = lambda: before
+
+    with pytest.raises(
+        fb_order_module.frappe.ValidationError,
+        match=(
+            r"immutable sale snapshot cannot be changed: "
+            r"items\[1\]\.commercial_modifier_snapshot_json"
+        ),
     ):
         order.validate_prepared_sale_immutability()
 
@@ -650,7 +696,7 @@ def test_prepared_sale_tax_rate_canonicalizes_omitted_float_to_zero(
         order.validate_prepared_sale_immutability()
 
 
-def test_unprepared_before_submit_still_validates_current_stock(
+def test_unprepared_before_submit_does_not_run_inventory_before_accounting(
     fake_frappe,
     monkeypatch,
 ):
@@ -672,14 +718,58 @@ def test_unprepared_before_submit_still_validates_current_stock(
 
     order.before_submit()
 
-    assert calls == [
-        ("stock", current_resolutions),
-        ("resolved", current_resolutions),
-        ("settlement", order),
+    assert calls == [("settlement", order)]
+
+
+def test_commercial_line_snapshot_never_loads_recipe_or_inventory(fake_frappe):
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    modifier = SimpleNamespace(
+        modifier_group="EXTRAS",
+        modifier="EXTRA-SHOT",
+        price_adjustment=Decimal("2.00"),
+        instruction_text=None,
+        sort_order=1,
+        affects_stock=0,
+        affects_recipe=0,
+    )
+    line = SimpleNamespace(
+        recipe="MISSING-RECIPE",
+        recipe_version=7,
+        is_recipe_managed=1,
+        resolved_sale="STALE-RESOLVED-SALE",
+        resolved_components_snapshot="not-a-current-inventory-snapshot",
+    )
+    order = fb_order_module.FBOrder()
+    order.items = [line]
+    order.get_selected_modifier_rows = lambda _line: [modifier]
+    order.resolve_recipe_for_line = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("recipe lookup must not run")
+    )
+    order.resolve_components_for_line = lambda *_args, **_kwargs: (
+        _ for _ in ()
+    ).throw(AssertionError("ingredient expansion must not run"))
+    order.validate_stock_availability = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("stock validation must not run")
+    )
+
+    resolutions = order.build_line_resolutions()
+
+    assert resolutions == [
+        {
+            "line": line,
+            "line_index": 1,
+            "recipe_doc": None,
+            "selected_modifiers": [{"row": modifier}],
+            "resolved_components": [],
+        }
     ]
+    assert line.resolved_sale is None
+    assert line.resolved_components_snapshot == "[]"
 
 
-def test_on_submit_marks_noop_stock_projection_as_terminal_success(fake_frappe, monkeypatch):
+def test_on_submit_never_invokes_optional_inventory(fake_frappe, monkeypatch):
     fb_order_module = importlib.import_module(
         "kopos_connector.kopos.doctype.fb_order.fb_order"
     )
@@ -713,28 +803,77 @@ def test_on_submit_marks_noop_stock_projection_as_terminal_success(fake_frappe, 
     order.stock_status = "Pending"
     order.shift = None
     order.items = [SimpleNamespace(resolved_sale="RESOLVED-1")]
+    order.create_projection_entry = lambda projection_type: {
+        "Sales Invoice": "INV-LOG",
+        "FB Shift": "SHIFT-LOG",
+    }[projection_type]
     order.db_set_calls = []
     order.db_set = lambda fieldname, value, update_modified=False: order.db_set_calls.append(
         (fieldname, value, update_modified)
     )
-    order.get_resolved_sales = lambda: [
-        SimpleNamespace(
-            name="RESOLVED-1",
-            booth_warehouse="WH-1",
-            resolved_components=[
-                SimpleNamespace(
-                    item="ITEM-1",
-                    warehouse="WH-1",
-                    stock_qty=1,
-                    affects_stock=0,
-                )
-            ],
-        )
-    ]
+    order.get_resolved_sales = lambda: (_ for _ in ()).throw(
+        AssertionError("inventory snapshots must not be loaded during submit")
+    )
+    order.update_shift_expected_cash = lambda: None
 
     order.on_submit()
 
     assert stock_service_called["value"] is False
-    assert order.stock_status == "Posted"
-    assert ("stock_status", "Posted", False) in order.db_set_calls
-    assert ("PROJECTION-LOG", "Succeeded", "Stock Entry", None, None) in projection_updates
+    assert order.stock_status == "Pending"
+    assert ("stock_status", "Pending", False) in order.db_set_calls
+    assert all(update[2] != "Stock Entry" for update in projection_updates)
+
+
+def test_on_submit_keeps_accounting_when_inventory_hooks_would_fail(
+    fake_frappe,
+    monkeypatch,
+):
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    projection_updates: list[tuple[str, str, str, str | None, str | None]] = []
+
+    monkeypatch.setattr(fb_order_module, "create_sales_invoice", lambda order: "SINV-1")
+    monkeypatch.setattr(
+        fb_order_module,
+        "update_projection_state",
+        lambda log, state, doctype, target_name, error: projection_updates.append(
+            (log, state, doctype, target_name, error)
+        ),
+    )
+
+    order = fb_order_module.FBOrder()
+    order.name = "FB-ORDER-1"
+    order.order_id = "ORDER-1"
+    order.external_idempotency_key = "idem-1"
+    order.status = "Draft"
+    order.invoice_status = "Pending"
+    order.stock_status = "Pending"
+    order.shift = None
+    order.items = [SimpleNamespace(resolved_sale="RESOLVED-1")]
+    order.create_projection_entry = lambda projection_type: {
+        "Sales Invoice": "INV-LOG",
+        "FB Shift": "SHIFT-LOG",
+    }[projection_type]
+    order.get_resolved_sales = lambda: (_ for _ in ()).throw(
+        ModuleNotFoundError("optional inventory adapter is not installed")
+    )
+    order.requires_stock_projection = lambda _resolved: (_ for _ in ()).throw(
+        ModuleNotFoundError("optional inventory adapter is not installed")
+    )
+    order.update_shift_expected_cash = lambda: None
+    order.db_set_calls = []
+    order.db_set = lambda fieldname, value, update_modified=False: order.db_set_calls.append(
+        (fieldname, value, update_modified)
+    )
+
+    order.on_submit()
+
+    assert order.status == "Submitted"
+    assert order.invoice_status == "Posted"
+    assert order.sales_invoice == "SINV-1"
+    assert order.stock_status == "Pending"
+    assert ("status", "Submitted", False) in order.db_set_calls
+    assert ("invoice_status", "Posted", False) in order.db_set_calls
+    assert ("sales_invoice", "SINV-1", False) in order.db_set_calls
+    assert all(update[2] != "Stock Entry" for update in projection_updates)

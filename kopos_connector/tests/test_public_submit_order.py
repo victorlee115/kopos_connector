@@ -205,6 +205,7 @@ def test_process_refund_wrapper_executes_fb_return_target(monkeypatch: Any) -> N
         "reason_text": "Customer changed mind",
         "refund_method": "cash",
         "return_to_stock": None,
+        "inventory_evaluation": None,
         "lines": [],
         "manager_approval_token": None,
     }

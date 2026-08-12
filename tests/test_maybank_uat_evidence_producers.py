@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -13,6 +14,13 @@ from .fake_frappe import install_fake_frappe_modules
 
 
 install_fake_frappe_modules()
+if "Crypto.Cipher" not in sys.modules:
+    crypto = ModuleType("Crypto")
+    cipher = ModuleType("Crypto.Cipher")
+    cipher.AES = SimpleNamespace(MODE_CBC=2)
+    crypto.Cipher = cipher
+    sys.modules["Crypto"] = crypto
+    sys.modules["Crypto.Cipher"] = cipher
 
 import frappe  # noqa: E402
 
@@ -442,7 +450,6 @@ def _install_business_database(monkeypatch, *, bank_type: str = "Bank") -> None:
         "status": "Submitted",
         "docstatus": 1,
         "sales_invoice": "SINV-UAT-1",
-        "ingredient_stock_entry": "STE-UAT-1",
         "device_id": DEVICE,
         "company": COMPANY,
         "currency": "MYR",
@@ -451,7 +458,6 @@ def _install_business_database(monkeypatch, *, bank_type: str = "Bank") -> None:
         "automatic_qr_payment": "FB-PAYMENT-UAT-1",
         "automatic_qr_winner_channel": "maybank_qr",
         "invoice_status": "Posted",
-        "stock_status": "Posted",
     }
     invoice = {
         "name": "SINV-UAT-1",
@@ -469,14 +475,6 @@ def _install_business_database(monkeypatch, *, bank_type: str = "Bank") -> None:
         "outstanding_amount": "0.00",
         "customer": "Walk-in Customer",
         "debit_to": "Debtors - JIJI",
-    }
-    stock_entry = {
-        "name": "STE-UAT-1",
-        "docstatus": 1,
-        "purpose": "Material Issue",
-        "stock_entry_type": "Material Issue",
-        "company": COMPANY,
-        "custom_fb_order": "FB-ORDER-UAT-1",
     }
     order_payment = SimpleNamespace(
         name="FB-PAYMENT-UAT-1",
@@ -507,10 +505,11 @@ def _install_business_database(monkeypatch, *, bank_type: str = "Bank") -> None:
     }
 
     def get_value(doctype, name, fields, as_dict=False):
+        if doctype == "Stock Entry":
+            raise AssertionError("commercial evidence queried optional stock")
         row = {
             ("FB Order", "FB-ORDER-UAT-1"): order,
             ("Sales Invoice", "SINV-UAT-1"): invoice,
-            ("Stock Entry", "STE-UAT-1"): stock_entry,
         }.get((doctype, name))
         return row
 
@@ -550,15 +549,7 @@ def _install_business_database(monkeypatch, *, bank_type: str = "Bank") -> None:
         if doctype == "Account":
             return accounts
         if doctype == "Stock Ledger Entry":
-            return [
-                {
-                    "name": "SLE-UAT-1",
-                    "voucher_type": "Stock Entry",
-                    "voucher_no": "STE-UAT-1",
-                    "is_cancelled": 0,
-                    "actual_qty": "-0.25",
-                }
-            ]
+            raise AssertionError("commercial evidence queried optional stock")
         raise AssertionError((doctype, kwargs))
 
     monkeypatch.setattr(frappe.db, "get_value", get_value)
@@ -600,6 +591,13 @@ def test_business_state_exporter_queries_exact_sale_without_equating_idempotenci
     report = business.export_v1(**_export_kwargs())
 
     assert report["status"] == "passed"
+    assert report["schemaVersion"] == "3"
+    assert report["inventoryAcceptance"] is False
+    assert report["inventoryEvaluation"] == "excluded_not_evaluated"
+    assert "inventoryMutationCount" not in report
+    assert "stockEntries" not in report
+    assert "stockLedgerEntries" not in report
+    assert "ingredientStockEntry" not in report["fbOrders"][0]
     assert len(report["providerTransactions"]) == 10
     assert report["providerTransactions"][0]["idempotencyKey"] != (
         report["fbOrders"][0]["idempotencyKey"]

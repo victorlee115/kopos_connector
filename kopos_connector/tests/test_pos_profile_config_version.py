@@ -162,6 +162,7 @@ def test_existing_smoke_profile_is_repaired_to_explicitly_disable_sst(
         name = "KoPOS Main"
         company = "Old Company"
         currency = "USD"
+        selling_price_list = "Old Selling"
         warehouse = "Old Warehouse"
         customer = "Old Customer"
         write_off_account = "Old Write Off"
@@ -192,6 +193,11 @@ def test_existing_smoke_profile_is_repaired_to_explicitly_disable_sst(
     )
     monkeypatch.setattr(frappe, "get_doc", lambda *args, **kwargs: profile)
     monkeypatch.setattr(smoke, "_get_demo_currency", lambda company: "MYR")
+    monkeypatch.setattr(
+        smoke,
+        "_ensure_selling_price_list",
+        lambda currency: smoke.SMOKE_SELLING_PRICE_LIST,
+    )
 
     result = smoke._ensure_pos_profile(
         company=smoke.SMOKE_COMPANY_NAME,
@@ -204,6 +210,7 @@ def test_existing_smoke_profile_is_repaired_to_explicitly_disable_sst(
     assert result == "KoPOS Main"
     assert profile.custom_kopos_enable_sst == smoke.SMOKE_ENABLE_SST == 0
     assert profile.custom_kopos_sst_rate == smoke.SMOKE_SST_RATE_PERCENT == 8
+    assert profile.selling_price_list == smoke.SMOKE_SELLING_PRICE_LIST
     assert profile.saved is True
 
 

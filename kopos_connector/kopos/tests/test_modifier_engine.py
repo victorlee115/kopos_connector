@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import frappe
+import pytest
 from frappe.tests.utils import FrappeTestCase
 
 from kopos_connector.kopos.tests.frappe_test_fixtures import modifier_doc
+
+pytestmark = pytest.mark.inventory_regression
 
 
 class TestModifierEngine(FrappeTestCase):

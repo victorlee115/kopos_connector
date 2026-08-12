@@ -4,6 +4,8 @@ import pytest
 
 from .fake_frappe import install_fake_frappe_modules
 
+pytestmark = pytest.mark.inventory_regression
+
 
 install_fake_frappe_modules()
 

@@ -3929,6 +3929,10 @@ def _assert_no_open_shift_or_unresolved_projection(device_id: str) -> None:
                     frappe.ValidationError,
                 )
 
+    # Safe reset protects unresolved commercial work only. Inventory, stock,
+    # and waste projections are optional operational diagnostics and must not
+    # become credential-redemption authority (or require their optional schema
+    # to be installed).
     unresolved_projection_queries = (
         """
         SELECT projection.name
@@ -3937,6 +3941,7 @@ def _assert_no_open_shift_or_unresolved_projection(device_id: str) -> None:
           ON source.name = projection.source_name
         WHERE projection.source_doctype = 'FB Order'
           AND projection.state IN ('Pending', 'Failed')
+          AND projection.projection_type IN ('Sales Invoice', 'FB Shift')
           AND source.device_id = %s
         ORDER BY projection.name
         LIMIT 1
@@ -3948,6 +3953,7 @@ def _assert_no_open_shift_or_unresolved_projection(device_id: str) -> None:
           ON source.name = projection.source_name
         WHERE projection.source_doctype = 'FB Shift'
           AND projection.state IN ('Pending', 'Failed')
+          AND projection.projection_type IN ('Sales Invoice', 'FB Shift')
           AND source.device_id = %s
         ORDER BY projection.name
         LIMIT 1
@@ -3961,19 +3967,7 @@ def _assert_no_open_shift_or_unresolved_projection(device_id: str) -> None:
           ON source.name = return_event.fb_order
         WHERE projection.source_doctype = 'FB Return Event'
           AND projection.state IN ('Pending', 'Failed')
-          AND source.device_id = %s
-        ORDER BY projection.name
-        LIMIT 1
-        """,
-        """
-        SELECT projection.name
-        FROM `tabFB Projection Log` AS projection
-        INNER JOIN `tabFB Waste Event` AS waste_event
-          ON waste_event.name = projection.source_name
-        INNER JOIN `tabFB Shift` AS source
-          ON source.name = waste_event.shift
-        WHERE projection.source_doctype = 'FB Waste Event'
-          AND projection.state IN ('Pending', 'Failed')
+          AND projection.projection_type = 'Sales Return'
           AND source.device_id = %s
         ORDER BY projection.name
         LIMIT 1
@@ -3988,8 +3982,8 @@ def _assert_no_open_shift_or_unresolved_projection(device_id: str) -> None:
         if projection_rows:
             frappe.throw(
                 _(
-                    "Safe reset requires all device projections to succeed or be "
-                    "reversed"
+                    "Safe reset requires all commercial device projections to "
+                    "succeed or be reversed"
                 ),
                 frappe.ValidationError,
             )

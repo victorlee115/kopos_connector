@@ -90,10 +90,9 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          python -m pytest -q \
+          python -m pytest -q -m "not inventory_regression" \
             tests \
             kopos_connector/tests \
-            tests/test_modifier_bounds_persistence_contract.py \
             tests/test_release_methodology_contract.py \
             kopos_connector/kopos/tests/test_sales_invoice_service.py \
             kopos_connector/kopos/tests/test_maybank_qr_sales_invoice_flow.py

@@ -21,7 +21,7 @@ now = frappe_utils.now
 
 
 BLOCKING_PROJECTION_STATUSES = {"Pending", "Failed"}
-BLOCKING_PROJECTION_TYPES = {"Sales Invoice", "Stock Issue", "Stock Entry", "FB Shift"}
+BLOCKING_PROJECTION_TYPES = {"Sales Invoice", "FB Shift"}
 NON_BLOCKING_PREPARED_QR_STATES = {"provider_rejected"}
 UNRESOLVED_DUPLICATE_QR_STATUSES = (
     "accounting_pending",
@@ -156,8 +156,6 @@ def get_shift_close_projection_blockers(shift_name):
         for order in orders
         if cstr(_row_value(order, "name")).strip()
     ]
-    stock_required_by_order = _orders_requiring_stock_projection(order_names)
-
     for order in orders:
         order_name = _row_value(order, "name")
 
@@ -169,19 +167,6 @@ def get_shift_close_projection_blockers(shift_name):
                     "projection_type": "Sales Invoice",
                     "state": invoice_status,
                     "reason": "invoice_status",
-                }
-            )
-
-        stock_status = cstr(_row_value(order, "stock_status"))
-        if stock_status == "Failed" or (
-            stock_status == "Pending" and stock_required_by_order.get(order_name, True)
-        ):
-            blockers.append(
-                {
-                    "fb_order": order_name,
-                    "projection_type": "Stock Issue",
-                    "state": stock_status,
-                    "reason": "stock_status",
                 }
             )
 
@@ -200,14 +185,14 @@ def get_shift_close_projection_blockers(shift_name):
         for projection in projection_logs:
             projection_type = cstr(_row_value(projection, "projection_type"))
             projection_state = cstr(_row_value(projection, "state"))
-            projection_order = cstr(_row_value(projection, "source_name")) or None
-            if _is_noop_stock_projection(
-                projection_type,
-                projection_state,
-                projection_order,
-                stock_required_by_order,
+            if (
+                projection_type not in BLOCKING_PROJECTION_TYPES
+                or projection_state not in BLOCKING_PROJECTION_STATUSES
             ):
+                # Inventory projections are advisory for this release and must
+                # never prevent the cashier from closing an accounted shift.
                 continue
+            projection_order = cstr(_row_value(projection, "source_name")) or None
             blockers.append(
                 {
                     "fb_order": projection_order,

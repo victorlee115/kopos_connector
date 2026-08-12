@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import pytest
+
 
 ERP_ROOT = Path(__file__).resolve().parents[1]
 
@@ -14,15 +16,20 @@ class TestFBServiceContracts(unittest.TestCase):
         ).read_text()
         self.assertIn("invoice.update_stock = 0", content)
 
-    def test_sale_and_ingredient_stock_services_use_fb_order_sale_datetime(self):
-        for relative in [
-            "kopos/services/accounting/sales_invoice_service.py",
-            "kopos/services/inventory/stock_issue_service.py",
-        ]:
-            content = (ERP_ROOT / relative).read_text()
-            self.assertIn("resolve_order_sale_datetime", content, relative)
-            self.assertIn("posting_dt.date().isoformat()", content, relative)
-            self.assertIn('posting_dt.time().strftime("%H:%M:%S")', content, relative)
+    def test_sales_invoice_service_uses_fb_order_sale_datetime(self):
+        relative = "kopos/services/accounting/sales_invoice_service.py"
+        content = (ERP_ROOT / relative).read_text()
+        self.assertIn("resolve_order_sale_datetime", content, relative)
+        self.assertIn("posting_dt.date().isoformat()", content, relative)
+        self.assertIn('posting_dt.time().strftime("%H:%M:%S")', content, relative)
+
+    @pytest.mark.inventory_regression
+    def test_ingredient_stock_service_uses_fb_order_sale_datetime(self):
+        relative = "kopos/services/inventory/stock_issue_service.py"
+        content = (ERP_ROOT / relative).read_text()
+        self.assertIn("resolve_order_sale_datetime", content, relative)
+        self.assertIn("posting_dt.date().isoformat()", content, relative)
+        self.assertIn('posting_dt.time().strftime("%H:%M:%S")', content, relative)
 
     def test_sales_invoice_service_maps_custom_fb_fields(self):
         content = (
@@ -36,11 +43,16 @@ class TestFBServiceContracts(unittest.TestCase):
             "custom_fb_idempotency_key",
             "custom_fb_operational_status",
             "custom_fb_order_line_ref",
+        ]:
+            self.assertIn(token, content)
+        for optional_link in [
             "custom_fb_resolved_sale",
             "custom_fb_recipe_snapshot_json",
             "custom_fb_resolution_hash",
+            'frappe.get_doc("FB Resolved Sale"',
+            'frappe.db.get_value("FB Modifier"',
         ]:
-            self.assertIn(token, content)
+            self.assertNotIn(optional_link, content)
 
     def test_return_invoice_service_uses_standard_credit_note_without_pos_payments(self):
         content = (
@@ -51,6 +63,7 @@ class TestFBServiceContracts(unittest.TestCase):
         self.assertIn('return_invoice.set("payments", [])', content)
         self.assertIn("_validate_full_standard_return_items", content)
 
+    @pytest.mark.inventory_regression
     def test_return_service_updates_resolved_sale_status(self):
         content = (
             ERP_ROOT / "kopos" / "services" / "operations" / "return_service.py"
@@ -59,6 +72,7 @@ class TestFBServiceContracts(unittest.TestCase):
         self.assertIn("Returned", content)
         self.assertIn('resolved_sale.db_set("status"', content)
 
+    @pytest.mark.inventory_regression
     def test_return_quantity_guard_locks_resolved_sales_before_validation(self):
         content = (
             ERP_ROOT
@@ -80,6 +94,7 @@ class TestFBServiceContracts(unittest.TestCase):
         self.assertIn("ORDER BY name", content)
         self.assertIn("lock_and_validate_return_quantities", controller)
 
+    @pytest.mark.inventory_regression
     def test_transfer_service_uses_resolved_basic_rate(self):
         content = (
             ERP_ROOT / "kopos" / "services" / "inventory" / "transfer_service.py"

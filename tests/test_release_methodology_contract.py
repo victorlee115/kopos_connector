@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,6 +30,7 @@ def test_normal_connector_ci_cannot_claim_production_acceptance() -> None:
     )
 
     assert "Run mocked-unit connector contract suite" in workflow
+    assert 'python -m pytest -q -m "not inventory_regression"' in workflow
     assert '"evidenceLevel": "mocked_unit"' in workflow
     assert '"testedInput": "source_checkout"' in workflow
     assert '"wheelTested": False' in workflow
@@ -39,8 +42,10 @@ def test_normal_connector_ci_cannot_claim_production_acceptance() -> None:
     assert '${{ runner.temp }}/kopos-connector-wheel/*.whl' in workflow
     assert "Run complete connector contract suite" not in workflow
     assert "Build exact connector wheel for contract tests" not in workflow
+    assert "tests/test_modifier_bounds_persistence_contract.py" not in workflow
 
 
+@pytest.mark.inventory_regression
 def test_real_frappe_modifier_persistence_contract_is_present() -> None:
     source = (
         ROOT
@@ -52,6 +57,10 @@ def test_real_frappe_modifier_persistence_contract_is_present() -> None:
     assert "override_min_selection" in source
     assert "override_max_selection" in source
     assert "inventory" in source.lower()
+    assert "pytestmark = pytest.mark.inventory_regression" in source
+    assert source.index("def test_blank_child_int_fields_round_trip") < source.index(
+        "from kopos_connector.kopos.services.recipe.modifier_bounds import"
+    )
 
 
 def test_methodology_evidence_schema_is_identity_bound_and_honest() -> None:
@@ -82,7 +91,7 @@ def test_modifier_catalog_incident_has_a_non_inventory_repair_runbook() -> None:
         "ADDITIONAL_ESPRESSO_SHOT",
         "status-only change",
         "component rows is not",
-        "complete catalog twice for every enabled tablet",
+        "commercial catalog twice for every enabled tablet",
         "Do not edit recipe ingredients",
         "inventory-readiness",
     ):
