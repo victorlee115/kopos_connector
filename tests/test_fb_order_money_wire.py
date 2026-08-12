@@ -182,6 +182,38 @@ def test_live_sen_contract_accepts_catalog_discount_modifier_adjustments() -> No
     assert normalized["items"][0]["line_total_sen"] == 2500
 
 
+def test_invalid_modifier_decoration_preserves_sale_and_records_redacted_warning() -> None:
+    payload = _sen_payload()
+    payload["order"]["items"][0]["modifiers"].append(
+        {
+            "modifier_group": "",
+            "modifier": "SHOULD-NOT-BE-PERSISTED",
+            "price_adjustment_sen": 0,
+        }
+    )
+
+    normalized = fb_orders._normalize_submit_order_payload(payload)
+
+    first_item = normalized["items"][0]
+    assert first_item["line_total_sen"] == 3300
+    assert first_item["modifier_total_sen"] == 200
+    assert first_item["selected_modifiers"] == [
+        {
+            "modifier_group": "FB-GRP-MILK",
+            "modifier": "FB-MOD-OAT",
+            "price_adjustment_sen": 200,
+            "instruction_text": None,
+            "sort_order": 0,
+        }
+    ]
+    assert first_item["selected_modifier_diagnostics"] == [
+        {"row_index": 2, "reason": "invalid_contract"}
+    ]
+    assert "SHOULD-NOT-BE-PERSISTED" not in str(
+        first_item["selected_modifier_diagnostics"]
+    )
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [

@@ -2310,7 +2310,7 @@ def _normalize_order_item(
             f"items[{index}].line_total_sen must be 0 or greater",
             frappe.ValidationError,
         )
-    validated_modifiers = _normalize_optional_selected_modifiers(
+    validated_modifiers, modifier_diagnostics = _normalize_optional_selected_modifiers(
         modifiers,
         item_index=index,
         money_contract_version=money_contract_version,
@@ -2343,6 +2343,7 @@ def _normalize_order_item(
         "recipe_version": recipe_version,
         "remarks": remarks,
         "selected_modifiers": validated_modifiers,
+        "selected_modifier_diagnostics": modifier_diagnostics,
         "promotion_allocations": promotion_allocations,
     }
 
@@ -2401,12 +2402,13 @@ def _normalize_optional_selected_modifiers(
     *,
     item_index: int,
     money_contract_version: str,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Keep valid display rows without making decoration sale authority."""
 
     if not isinstance(value, list):
-        return []
+        return [], []
     normalized: list[dict[str, Any]] = []
+    diagnostics: list[dict[str, Any]] = []
     for modifier_index, row in enumerate(value, start=1):
         try:
             normalized.append(
@@ -2417,12 +2419,30 @@ def _normalize_optional_selected_modifiers(
                     money_contract_version,
                 )
             )
-        except (frappe.ValidationError, TypeError, ValueError, ArithmeticError):
+        except (frappe.ValidationError, TypeError, ValueError, ArithmeticError) as error:
             # Historical/outbox decoration may be incomplete or corrupt. The
             # exact modifier_total_sen and line_total_sen above remain fully
-            # validated, so dropping only this display row is fail-safe.
+            # validated, so dropping only this display row is fail-safe. Keep
+            # a redacted durable diagnostic so a paid modifier cannot vanish
+            # from ERP history without an operational signal.
+            diagnostics.append(
+                {
+                    "row_index": modifier_index,
+                    "reason": _selected_modifier_diagnostic_reason(error),
+                }
+            )
             continue
-    return normalized
+    return normalized, diagnostics
+
+
+def _selected_modifier_diagnostic_reason(error: Exception) -> str:
+    if isinstance(error, frappe.ValidationError):
+        return "invalid_contract"
+    if isinstance(error, ArithmeticError):
+        return "invalid_arithmetic"
+    if isinstance(error, TypeError):
+        return "invalid_type"
+    return "invalid_value"
 
 
 def _normalize_order_payment(
@@ -2582,6 +2602,9 @@ def _resolve_order_item(value: dict[str, Any], index: int) -> dict[str, Any]:
         "is_recipe_managed": 0,
         "remarks": value["remarks"],
         "selected_modifiers": resolved_modifiers,
+        "selected_modifier_diagnostics": list(
+            value.get("selected_modifier_diagnostics") or []
+        ),
         "promotion_allocations": value["promotion_allocations"],
     }
 
@@ -3010,6 +3033,9 @@ def _build_fb_order(validated: dict[str, Any]):
     order_doc.notes = validated["notes"]
 
     for item in validated["items"]:
+        modifier_diagnostics = list(
+            item.get("selected_modifier_diagnostics") or []
+        )
         row = order_doc.append(
             "items",
             {
@@ -3028,6 +3054,17 @@ def _build_fb_order(validated: dict[str, Any]):
                 "is_recipe_managed": 0,
                 "promotion_allocations_json": json.dumps(
                     item.get("promotion_allocations", []),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                "commercial_modifier_snapshot_status": (
+                    "Degraded"
+                    if modifier_diagnostics
+                    else "Complete"
+                ),
+                "dropped_modifier_count": len(modifier_diagnostics),
+                "commercial_modifier_diagnostic_json": json.dumps(
+                    modifier_diagnostics,
                     sort_keys=True,
                     separators=(",", ":"),
                 ),
@@ -3254,6 +3291,7 @@ def _build_submit_response(result_status: str, order_doc) -> dict[str, Any]:
         if projection_status["diagnostics"]
         else None
     )
+    commercial_warnings = _get_commercial_warnings(order_doc)
     return {
         "status": response_status,
         "partial_failure": bool(projection_status["diagnostics"]),
@@ -3272,8 +3310,37 @@ def _build_submit_response(result_status: str, order_doc) -> dict[str, Any]:
         else None,
         "diagnostics": projection_status["diagnostics"],
         "message": first_diagnostic["error_message"] if first_diagnostic else None,
+        "commercial_warnings": commercial_warnings or None,
         "projections": projections,
     }
+
+
+def _get_commercial_warnings(order_doc: Any) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    get_value = getattr(order_doc, "get", None)
+    items = get_value("items") if callable(get_value) else getattr(order_doc, "items", [])
+    for line_index, line in enumerate(items or [], start=1):
+        if isinstance(line, Mapping):
+            dropped_count = cint(line.get("dropped_modifier_count"))
+            line_id = cstr(line.get("line_id")) or None
+        else:
+            dropped_count = cint(getattr(line, "dropped_modifier_count", 0))
+            line_id = cstr(getattr(line, "line_id", None)) or None
+        if dropped_count <= 0:
+            continue
+        warnings.append(
+            {
+                "code": "commercial_modifier_snapshot_degraded",
+                "line_id": line_id,
+                "line_index": line_index,
+                "dropped_modifier_count": dropped_count,
+                "message": (
+                    "One or more modifier display rows were invalid. "
+                    "The charged total was preserved; review the local kitchen ticket."
+                ),
+            }
+        )
+    return warnings
 
 
 def _get_submit_projection_status(

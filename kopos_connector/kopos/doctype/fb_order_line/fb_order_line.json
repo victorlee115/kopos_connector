@@ -30,8 +30,11 @@
         "resolved_sale",
         "modifiers_section",
         "selected_modifiers",
+        "commercial_modifier_snapshot_status",
+        "dropped_modifier_count",
         "snapshot_section",
         "commercial_modifier_snapshot_json",
+        "commercial_modifier_diagnostic_json",
         "promotion_allocations_json",
         "resolved_components_snapshot",
         "remarks"
@@ -164,6 +167,21 @@
             "options": "FB Selected Modifier"
         },
         {
+            "default": "Complete",
+            "fieldname": "commercial_modifier_snapshot_status",
+            "fieldtype": "Select",
+            "label": "Commercial Modifier Snapshot Status",
+            "options": "Complete\nDegraded",
+            "read_only": 1
+        },
+        {
+            "default": "0",
+            "fieldname": "dropped_modifier_count",
+            "fieldtype": "Int",
+            "label": "Dropped Modifier Rows",
+            "read_only": 1
+        },
+        {
             "fieldname": "snapshot_section",
             "fieldtype": "Section Break",
             "label": "Resolved Snapshot"
@@ -173,6 +191,14 @@
             "fieldtype": "Code",
             "hidden": 1,
             "label": "Commercial Modifier Snapshot",
+            "options": "JSON",
+            "read_only": 1
+        },
+        {
+            "fieldname": "commercial_modifier_diagnostic_json",
+            "fieldtype": "Code",
+            "hidden": 1,
+            "label": "Commercial Modifier Diagnostic",
             "options": "JSON",
             "read_only": 1
         },

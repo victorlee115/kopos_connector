@@ -6,12 +6,29 @@ from datetime import date, datetime, timedelta
 from types import ModuleType, SimpleNamespace
 
 
+_KOPOS_FAKE_FRAPPE_MARKER = "__kopos_test_fake_frappe__"
+
+
 def _raise(error):
     raise error
 
 
 def install_fake_frappe_modules() -> None:
     frappe_module = sys.modules.get("frappe")
+    if frappe_module is not None and not getattr(
+        frappe_module, _KOPOS_FAKE_FRAPPE_MARKER, False
+    ):
+        # These helpers support the isolated mocked-unit suite. Bench imports
+        # the real Frappe package before collecting app tests; mutating that
+        # package here corrupts frappe.local, frappe.db, and frappe.cache for
+        # every real integration test collected afterward. Skip this mocked
+        # module at collection time instead of contaminating the live runtime.
+        import pytest
+
+        pytest.skip(
+            "mocked-Frappe unit module is excluded from real Bench integration tests",
+            allow_module_level=True,
+        )
     utils_module = sys.modules.get("frappe.utils")
     password_module = sys.modules.get("frappe.utils.password")
     twofactor_module = sys.modules.get("frappe.twofactor")
@@ -32,6 +49,7 @@ def install_fake_frappe_modules() -> None:
 
     if frappe_module is None:
         frappe_module = ModuleType("frappe")
+        setattr(frappe_module, _KOPOS_FAKE_FRAPPE_MARKER, True)
         sys.modules["frappe"] = frappe_module
     if utils_module is None:
         utils_module = ModuleType("frappe.utils")
