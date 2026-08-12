@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import unittest
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -20,9 +21,12 @@ def test_fake_installer_never_mutates_an_existing_real_frappe_module(
     real_frappe.cache = real_cache
     monkeypatch.setitem(sys.modules, "frappe", real_frappe)
 
-    with pytest.raises(pytest.skip.Exception):
-        install_fake_frappe_modules()
+    install_fake_frappe_modules()
 
     assert real_frappe.local is real_local
     assert real_frappe.db is real_db
     assert real_frappe.cache is real_cache
+    assert "load_tests" in globals()
+    assert globals()["load_tests"](
+        unittest.TestLoader(), unittest.TestSuite(), None
+    ).countTestCases() == 0

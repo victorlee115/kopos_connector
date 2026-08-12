@@ -21,13 +21,14 @@ def install_fake_frappe_modules() -> None:
         # This helper is for the isolated mocked-unit suite only. Bench has
         # already imported the real Frappe package before app-test discovery;
         # overwriting it here would poison every real integration test in the
-        # process. Skip the mocked module rather than mutating live globals.
-        import pytest
+        # process. Frappe's runner uses unittest discovery and treats a
+        # pytest.skip raised during import as fatal, so install an empty
+        # load_tests hook for this mocked module and preserve real globals.
+        def load_tests(loader, _standard_tests, _pattern):
+            return loader.suiteClass()
 
-        pytest.skip(
-            "mocked-Frappe unit module is excluded from real Bench integration tests",
-            allow_module_level=True,
-        )
+        sys._getframe(1).f_globals["load_tests"] = load_tests
+        return
     utils_module = sys.modules.get("frappe.utils")
     password_module = sys.modules.get("frappe.utils.password")
     twofactor_module = sys.modules.get("frappe.twofactor")

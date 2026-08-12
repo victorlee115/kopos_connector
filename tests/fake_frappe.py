@@ -22,13 +22,15 @@ def install_fake_frappe_modules() -> None:
         # the real Frappe package before collecting app tests; mutating that
         # package here corrupts frappe.local, frappe.db, and frappe.cache for
         # every real integration test collected afterward. Skip this mocked
-        # module at collection time instead of contaminating the live runtime.
-        import pytest
+        # module from unittest discovery instead of contaminating the live
+        # runtime. Frappe's native runner treats pytest.skip raised during
+        # import as a fatal discovery error, while unittest's load_tests hook
+        # is the supported way to return an empty suite for that runner.
+        def load_tests(loader, _standard_tests, _pattern):
+            return loader.suiteClass()
 
-        pytest.skip(
-            "mocked-Frappe unit module is excluded from real Bench integration tests",
-            allow_module_level=True,
-        )
+        sys._getframe(1).f_globals["load_tests"] = load_tests
+        return
     utils_module = sys.modules.get("frappe.utils")
     password_module = sys.modules.get("frappe.utils.password")
     twofactor_module = sys.modules.get("frappe.twofactor")
