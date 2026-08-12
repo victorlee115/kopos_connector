@@ -141,7 +141,7 @@ def test_worker_runs_real_handler_under_atomic_worker_lease(monkeypatch) -> None
     monkeypatch.setattr(
         fb_orders,
         "_retry_projection_log",
-        lambda name: {
+        lambda name, *, preserve_lease: {
             "projection_log": name,
             "projection_type": "Sales Invoice",
             "state": "Succeeded",
@@ -241,7 +241,12 @@ def test_worker_never_claims_or_retries_recorded_inventory_failures(
         lambda **_kwargs: None,
     )
 
-    def retry_projection(log_name: str) -> dict[str, Any]:
+    def retry_projection(
+        log_name: str,
+        *,
+        preserve_lease: bool,
+    ) -> dict[str, Any]:
+        assert preserve_lease is True
         retried.append(log_name)
         projection_type = next(
             row["projection_type"] for row in candidates if row["name"] == log_name
@@ -323,7 +328,7 @@ def test_forced_worker_can_recover_projection_after_retry_ceiling(monkeypatch) -
     monkeypatch.setattr(
         fb_orders,
         "_retry_projection_log",
-        lambda name: {
+        lambda name, *, preserve_lease: {
             "projection_log": name,
             "projection_type": "Sales Invoice",
             "state": "Succeeded",

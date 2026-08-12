@@ -3887,13 +3887,18 @@ def _get_or_create_projection_log(doc, source_doctype: str, config: dict[str, st
 
 
 def _update_projection_log(
-    log, state: str, target_name: str | None, last_error: str | None
+    log,
+    state: str,
+    target_name: str | None,
+    last_error: str | None,
+    *,
+    preserve_lease: bool = False,
 ) -> None:
     log.state = state
     log.target_name = target_name
     log.last_error = last_error
     log.last_attempt_at = now_datetime()
-    if state == "Succeeded":
+    if state == "Succeeded" and not preserve_lease:
         # A supported manual retry may recover a row after automatic retries
         # exhausted.  Clear obsolete scheduler/dead-letter evidence together
         # with the successful state so support views cannot report a recovered
@@ -3905,7 +3910,11 @@ def _update_projection_log(
     log.save(ignore_permissions=True)
 
 
-def _retry_projection_log(log_name: str) -> dict[str, Any]:
+def _retry_projection_log(
+    log_name: str,
+    *,
+    preserve_lease: bool = False,
+) -> dict[str, Any]:
     # Serialize tablet, scheduler, and support retries for the same projection.
     # Target services are independently idempotent, but the row lock also keeps
     # retry counters and terminal evidence monotonic.
@@ -3943,7 +3952,13 @@ def _retry_projection_log(log_name: str) -> dict[str, Any]:
     log.last_attempt_at = now_datetime()
     log.save(ignore_permissions=True)
 
-    result = _retry_projection_target(source_doc, cstr(log.source_doctype), config, log)
+    result = _retry_projection_target(
+        source_doc,
+        cstr(log.source_doctype),
+        config,
+        log,
+        preserve_lease=preserve_lease,
+    )
     reload_doc = getattr(source_doc, "reload", None)
     if callable(reload_doc):
         reload_doc()
@@ -3978,12 +3993,31 @@ def _retry_projection_target(
     source_doctype: str,
     config: dict[str, str],
     log,
+    *,
+    preserve_lease: bool = False,
 ) -> dict[str, Any]:
     projection_type = config["projection_type"]
+
+    def record_result(
+        state: str,
+        target_name: str | None,
+        last_error: str | None,
+    ) -> None:
+        if preserve_lease:
+            _update_projection_log(
+                log,
+                state,
+                target_name,
+                last_error,
+                preserve_lease=True,
+            )
+            return
+        _update_projection_log(log, state, target_name, last_error)
+
     try:
         target_name = _run_projection_handler(source_doc, source_doctype, projection_type)
     except Exception as error:
-        _update_projection_log(log, "Failed", None, str(error))
+        record_result("Failed", None, str(error))
         return {
             "projection_type": projection_type,
             "state": "Failed",
@@ -3992,7 +4026,7 @@ def _retry_projection_target(
         }
 
     if target_name:
-        _update_projection_log(log, "Succeeded", target_name, None)
+        record_result("Succeeded", target_name, None)
         return {
             "projection_type": projection_type,
             "state": "Succeeded",
@@ -4002,7 +4036,7 @@ def _retry_projection_target(
 
     if _projection_can_remain_pending(source_doc, source_doctype, projection_type):
         # There is no stock target to create; this is a completed no-op.
-        _update_projection_log(log, "Succeeded", None, None)
+        record_result("Succeeded", None, None)
         return {
             "projection_type": projection_type,
             "state": "Succeeded",
@@ -4011,7 +4045,7 @@ def _retry_projection_target(
         }
 
     error_message = f"{projection_type} projection retry did not create a target document"
-    _update_projection_log(log, "Failed", None, error_message)
+    record_result("Failed", None, error_message)
     return {
         "projection_type": projection_type,
         "state": "Failed",

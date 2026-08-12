@@ -118,7 +118,7 @@ def _retry_projection_batch(
         try:
             from kopos_connector.kopos.api.fb_orders import _retry_projection_log
 
-            result = _retry_projection_log(log_name)
+            result = _retry_projection_log(log_name, preserve_lease=True)
             _finalize_projection_attempt(
                 log_name=log_name,
                 lease_token=lease_token,
