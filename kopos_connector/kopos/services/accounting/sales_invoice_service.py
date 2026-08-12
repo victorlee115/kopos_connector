@@ -691,9 +691,14 @@ def _validate_invoice_item_equivalence(
         ).strip()
         actual_warehouse = str(_value(invoice_item, "warehouse") or "").strip()
         if expected_warehouse and actual_warehouse != expected_warehouse:
-            frappe.throw(
-                f"Recovered Sales Invoice {invoice_name} item {line_ref} warehouse does not match FB Order",
-                frappe.ValidationError,
+            # The recovered invoice is already proven to be submitted,
+            # update_stock=0, commercially bound to this order, and identical
+            # in item, quantity, amount, modifiers, tender, and settlement.
+            # Warehouse is excluded inventory metadata for this release; a
+            # legacy/default warehouse mismatch must remain visible to support
+            # but cannot strand an otherwise valid daily sale projection.
+            log_sanitized_error(
+                "Recovered Sales Invoice has an excluded inventory warehouse mismatch"
             )
 
 

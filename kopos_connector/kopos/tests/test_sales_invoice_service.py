@@ -428,6 +428,7 @@ class TestSalesInvoiceService(unittest.TestCase):
         order = self.make_fb_order_stub()
         order.external_idempotency_key = "idem-existing-1"
         order.sales_invoice = "SINV-EXISTING-1"
+        order.booth_warehouse = "Order Warehouse - TC"
         invoice = frappe._dict(
             {
                 "doctype": "Sales Invoice",
@@ -461,7 +462,7 @@ class TestSalesInvoiceService(unittest.TestCase):
                             "amount": order.net_total,
                             "net_amount": order.net_total,
                             "custom_kopos_modifier_total": Decimal("0.00"),
-                            "warehouse": None,
+                            "warehouse": "Legacy Warehouse - TC",
                         }
                     )
                 ],
@@ -499,11 +500,17 @@ class TestSalesInvoiceService(unittest.TestCase):
             patch(
                 "kopos_connector.kopos.services.accounting.sales_invoice_service.bind_qr_payment_settlement"
             ) as bind_qr,
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.log_sanitized_error"
+            ) as log_error,
         ):
             result = create_sales_invoice(order)
 
         self.assertEqual(result, "SINV-EXISTING-1")
         bind_qr.assert_called_once_with(order, "SINV-EXISTING-1")
+        log_error.assert_called_once_with(
+            "Recovered Sales Invoice has an excluded inventory warehouse mismatch"
+        )
 
     def test_existing_invoice_recovery_rejects_draft_or_unbound_document(self):
         order = self.make_fb_order_stub()
