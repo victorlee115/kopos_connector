@@ -10,6 +10,19 @@ from frappe.utils import cint, cstr
 class KoPOSSalesInvoiceIntegrityMixin:
     """Allow original KoPOS sale cancellation only through its exact void proof."""
 
+    def before_save(self) -> None:
+        parent_before_save: Any = getattr(super(), "before_save", None)
+        if callable(parent_before_save):
+            parent_before_save()
+        # ERPNext's native hook resets payment rows from Mode of Payment.  The
+        # connector must restore only branch-scoped static-QR suspense rows
+        # after that refresh, before the document is posted.
+        from kopos_connector.kopos.services.accounting.sales_invoice_service import (
+            enforce_static_qr_payment_accounts,
+        )
+
+        enforce_static_qr_payment_accounts(self)
+
     def before_cancel(self) -> None:
         if _is_original_kopos_sale(self):
             _validate_kopos_void_proof(self)

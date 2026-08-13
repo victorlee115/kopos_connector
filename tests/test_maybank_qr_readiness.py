@@ -33,20 +33,47 @@ def test_readiness_validates_configuration_without_provider_transaction() -> Non
         encrypted_pin="encrypted-pin",
         user_type="corporate",
         outlet_id=test_outlet_id,
+        base_url="https://emerchant.maybank2u.com.my:8443/api/",
         generate_qr=Mock(),
         check_status=Mock(),
     )
+    account = SimpleNamespace(
+        name="Maybank QRPayBiz Account - Test",
+        enabled=1,
+        base_url="https://emerchant.maybank2u.com.my:8443/api/",
+    )
     checked_at = datetime(2026, 7, 19, 10, 0, 0)
+    profile = SimpleNamespace(
+        name="Test POS Profile",
+        company="KoPOS Sdn Bhd",
+        currency="MYR",
+        custom_kopos_automatic_qr_enabled=1,
+        custom_kopos_maybank_qrpaybiz_account=account.name,
+        custom_kopos_maybank_outlet_id=test_outlet_id,
+        custom_kopos_manual_qr_suspense_account="QR Suspense - TC",
+        custom_kopos_qr_clearing_account="QR Clearing - TC",
+        custom_kopos_qr_settlement_bank_account="Settlement Bank - TC",
+    )
 
     with (
-        patch.object(readiness.MaybankClient, "from_settings", return_value=client),
+        patch.object(
+            readiness,
+            "require_provider_binding",
+            return_value=(account, test_outlet_id),
+        ),
+        patch.object(
+            readiness.MaybankClient,
+            "from_account_doc",
+            return_value=client,
+        ),
         patch.object(readiness, "resolve_manual_qr_suspense_account") as suspense,
         patch.object(readiness, "resolve_verified_qr_settlement_account") as bank,
+        patch.object(readiness, "validate_settlement_bank_account"),
         patch.object(readiness, "now_datetime", return_value=checked_at),
     ):
         result = readiness.get_maybank_qr_readiness_payload(
             SimpleNamespace(device_id="TAB-1"),
-            SimpleNamespace(company="KoPOS Sdn Bhd", currency="MYR"),
+            profile,
         )
 
     assert result == {
@@ -60,25 +87,48 @@ def test_readiness_validates_configuration_without_provider_transaction() -> Non
         "reason_code": None,
     }
     suspense.assert_called_once_with(
-        {"company": "KoPOS Sdn Bhd", "currency": "MYR"}
+        {
+            "device_id": "TAB-1",
+            "pos_profile": "Test POS Profile",
+            "company": "KoPOS Sdn Bhd",
+            "currency": "MYR",
+        }
     )
-    bank.assert_called_once_with("DuitNow QR", "KoPOS Sdn Bhd", "MYR")
+    bank.assert_called_once_with(
+        "DuitNow QR",
+        "KoPOS Sdn Bhd",
+        "MYR",
+        "QR Clearing - TC",
+    )
     client.generate_qr.assert_not_called()
     client.check_status.assert_not_called()
 
 
 def test_readiness_returns_safe_unavailable_without_provider_details() -> None:
+    profile = SimpleNamespace(
+        name="Test POS Profile",
+        company="KoPOS Sdn Bhd",
+        currency="MYR",
+        custom_kopos_automatic_qr_enabled=1,
+        custom_kopos_maybank_qrpaybiz_account="Maybank QRPayBiz Account - Test",
+        custom_kopos_maybank_outlet_id="TEST-OUTLET-2524334",
+        custom_kopos_manual_qr_suspense_account="QR Suspense - TC",
+        custom_kopos_qr_clearing_account="QR Clearing - TC",
+        custom_kopos_qr_settlement_bank_account="Settlement Bank - TC",
+    )
     with (
         patch.object(
-            readiness.MaybankClient,
-            "from_settings",
-            side_effect=readiness.frappe.ValidationError("secret provider failure"),
+            readiness,
+            "require_provider_binding",
+            side_effect=readiness.QrAccountingNotConfigured(
+                "provider account secret failure"
+            ),
         ),
         patch.object(readiness, "log_sanitized_error") as log_error,
     ):
         result = readiness.get_maybank_qr_readiness_payload(
             SimpleNamespace(device_id="TAB-1"),
-            SimpleNamespace(company="KoPOS Sdn Bhd", currency="MYR"),
+            profile,
         )
 
     assert result["status"] == "unavailable"
@@ -116,6 +166,52 @@ def test_readiness_route_uses_authenticated_device_scope() -> None:
         **expected,
         "http_status_code": 200,
     }
+
+
+def test_static_readiness_validates_new_profile_suspense_before_save() -> None:
+    """Guided setup must not reload the pre-save POS Profile value."""
+
+    profile = SimpleNamespace(
+        name="Branch Profile",
+        company="KoPOS Sdn Bhd",
+        currency="MYR",
+        custom_kopos_static_qr_enabled=1,
+        custom_kopos_static_qr_payload="payload",
+        custom_kopos_manual_qr_suspense_account="QR Suspense - TC",
+        custom_kopos_automatic_qr_enabled=0,
+    )
+    device = SimpleNamespace(device_id="TAB-1")
+
+    with (
+        patch.object(
+            readiness,
+            "commissioned_profile_static_qr_config",
+            return_value={"static_qr_payload_sha256": "hash"},
+        ),
+        patch.object(
+            readiness,
+            "validate_manual_qr_suspense_account",
+            return_value="QR Suspense - TC",
+        ) as validate_suspense,
+        patch.object(
+            readiness,
+            "resolve_manual_qr_suspense_account",
+            side_effect=AssertionError("readiness reloaded the stale profile"),
+        ),
+    ):
+        result = readiness.get_payment_readiness_payload(device, profile)
+
+    assert result["static_qr"] == {
+        "ready": True,
+        "status": "ready",
+        "reason_code": None,
+        "payload_sha256": "hash",
+    }
+    validate_suspense.assert_called_once_with(
+        "QR Suspense - TC",
+        company="KoPOS Sdn Bhd",
+        currency="MYR",
+    )
 
 
 def test_device_api_allows_readiness_only_as_get() -> None:

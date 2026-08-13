@@ -40,6 +40,9 @@ ALLOWED_DEVICE_API_PATHS = frozenset(
         "/api/method/kopos_connector.api.request_shift_manager_approval",
         "/api/method/kopos_connector.api.generate_maybank_qr",
         "/api/method/kopos_connector.api.get_maybank_qr_readiness",
+        "/api/method/kopos_connector.api.get_payment_readiness",
+        "/api/method/kopos_connector.api.get_qr_setup_preview",
+        "/api/method/kopos_connector.api.apply_qr_configuration",
         "/api/method/kopos_connector.api.check_maybank_payment",
         "/api/method/kopos_connector.api.upload_manual_qr_receipt",
         "/api/method/kopos_connector.api.fetch_manual_qr_reconciliation_status",
@@ -65,6 +68,7 @@ DEVICE_API_HTTP_METHODS.update(
             "confirm_prepared_automatic_qr_static_payment"
         ): frozenset({"POST"}),
         "/api/method/kopos_connector.api.submit_order": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.apply_qr_configuration": frozenset({"POST"}),
         "/api/method/kopos_connector.api.request_device_safe_reset": frozenset(
             {"POST"}
         ),

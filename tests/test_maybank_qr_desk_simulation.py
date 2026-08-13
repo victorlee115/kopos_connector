@@ -52,6 +52,11 @@ def _transaction(**overrides: object) -> dict[str, object]:
         "provider": "maybank_qr",
         "company": "Test Company",
         "currency": "MYR",
+        "pos_profile": "Test POS Profile",
+        "maybank_qrpaybiz_account": "Maybank QRPayBiz Account - Test",
+        "suspense_account": "Manual QR Suspense - TC",
+        "clearing_account": "QR Clearing - TC",
+        "settlement_bank_account": "Settlement Bank - TC",
         "outlet_id": "SMOKE-MOCK-OUTLET",
         "idempotency_key": "MOCK-QR-IDEMPOTENCY-1",
         "request_fingerprint": request_fingerprint,
@@ -122,6 +127,9 @@ def _enabled_simulation_context():
                 "from_settings",
                 return_value=SimpleNamespace(base_url="mock://"),
             )
+        )
+        stack.enter_context(
+            patch.object(maybank_qr.frappe.db, "exists", return_value=True)
         )
         yield
 

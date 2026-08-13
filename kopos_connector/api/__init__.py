@@ -92,6 +92,8 @@ def _validation_error_payload(exc: frappe.ValidationError) -> dict[str, Any]:
     error_code = frappe.utils.cstr(getattr(exc, "error_code", None)).strip()
     if error_code:
         payload["error_code"] = error_code
+    if getattr(exc, "retryable_after_configuration", False):
+        payload["retryable_after_configuration"] = True
     return payload
 
 
@@ -291,7 +293,7 @@ def get_promotion_snapshot(
             _write_response(response_payload)
     except frappe.ValidationError as exc:
         frappe.db.rollback()
-        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+        _write_response(_validation_error_payload(exc), http_status_code=400)
     except Exception as error:
         frappe.db.rollback()
         log_sanitized_error("KoPOS get_promotion_snapshot failed", error)
@@ -1004,7 +1006,14 @@ def submit_order(**kwargs: Any) -> None:
         _write_response(_to_public_fb_submit_response(fb_payload, result))
     except frappe.ValidationError as exc:
         frappe.db.rollback()
-        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+        _write_response(
+            _validation_error_payload(exc),
+            http_status_code=(
+                417
+                if getattr(exc, "error_code", "") == "qr_accounting_not_configured"
+                else 400
+            ),
+        )
     except Exception as error:
         frappe.db.rollback()
         log_sanitized_error("KoPOS submit_order failed", error)
@@ -1855,14 +1864,14 @@ def get_maybank_qr_readiness(device_id: str | None = None) -> None:
                 resolved_device_id,
                 currency="MYR",
             )
-        _write_response(
-            get_maybank_qr_readiness_payload(device_doc, profile_doc)
-        )
+        _write_response(get_maybank_qr_readiness_payload(device_doc, profile_doc))
     except frappe.ValidationError as exc:
         _write_response(
             {"status": "error", "message": str(exc)},
             http_status_code=400,
         )
+
+
     except Exception as error:
         log_sanitized_error("KoPOS Maybank QR readiness check failed", error)
         _write_response(
@@ -1874,6 +1883,56 @@ def get_maybank_qr_readiness(device_id: str | None = None) -> None:
         )
 
 
+@frappe.whitelist(methods=["GET"])
+def get_payment_readiness(device_id: str | None = None) -> None:
+    """Return independent cash/static/automatic payment lane readiness."""
+    from .maybank_qr_readiness import get_payment_readiness_payload
+
+    try:
+        require_kopos_api_access()
+        resolved_device_id = frappe.utils.cstr(device_id).strip() or None
+        if resolved_device_id:
+            device_doc, profile_doc = require_device_operational_scope(
+                resolved_device_id, currency="MYR"
+            )
+        else:
+            authenticated_device = get_authenticated_device_doc()
+            resolved_device_id = frappe.utils.cstr(
+                getattr(authenticated_device, "device_id", None)
+            ).strip()
+            device_doc, profile_doc = require_device_operational_scope(
+                resolved_device_id, currency="MYR"
+            )
+        _write_response(get_payment_readiness_payload(device_doc, profile_doc))
+    except frappe.ValidationError as exc:
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        log_sanitized_error("KoPOS payment readiness check failed", error)
+        _write_response(
+            {"status": "error", "message": "Failed to check payment availability"},
+            http_status_code=500,
+        )
+
+
+@frappe.whitelist(methods=["GET"])
+def get_qr_setup_preview(profile_name: str, config: Any = None) -> None:
+    from .qr_setup import get_qr_setup_preview as build_preview
+
+    try:
+        _write_response({"status": "ok", "preview": build_preview(profile_name, config)})
+    except frappe.ValidationError as exc:
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+
+
+@frappe.whitelist(methods=["POST"])
+def apply_qr_configuration(profile_name: str, config: Any = None) -> None:
+    from .qr_setup import apply_qr_configuration as apply_configuration
+
+    try:
+        _write_response({"status": "ok", "preview": apply_configuration(profile_name, config or {})})
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
 @frappe.whitelist(methods=["POST"])
 def generate_maybank_qr(**kwargs: Any) -> None:
     """Generate a Maybank DuitNow QR code for POS payment."""
@@ -2196,6 +2255,9 @@ __all__ = [
     "fetch_manual_qr_reconciliation_status",
     "generate_maybank_qr",
     "get_maybank_qr_readiness",
+    "get_payment_readiness",
+    "get_qr_setup_preview",
+    "apply_qr_configuration",
     "get_catalog",
     "get_device_config",
     "get_item_modifiers",

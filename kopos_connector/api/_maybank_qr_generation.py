@@ -16,6 +16,12 @@ from kopos_connector.kopos.services.accounting.maybank_payment_service import (
     resolve_verified_qr_settlement_account,
 )
 from kopos_connector.services.maybank.client import MaybankClient
+from kopos_connector.services.maybank.branch_config import (
+    PROFILE_AUTOMATIC_ENABLED_FIELD,
+    profile_for_device,
+    require_provider_binding,
+    validate_settlement_bank_account,
+)
 from kopos_connector.utils.diagnostics import log_sanitized_error, redacted_json
 
 from ._maybank_qr_contract import (
@@ -960,11 +966,21 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     try:
+        # Resolve the authenticated device's POS Profile once and use that
+        # immutable snapshot for all accounting/provider preflight checks.  A
+        # second lookup here could otherwise observe a branch configuration
+        # change halfway through one QR request.
+        profile = profile_for_device(device_id)
         resolve_manual_qr_suspense_account(prepared_sale)
         resolve_verified_qr_settlement_account(
             prepared_sale["payment_method"],
             prepared_sale["company"],
             prepared_sale["currency"],
+            cstr(getattr(profile, "custom_kopos_qr_clearing_account", None)).strip(),
+        )
+        validate_settlement_bank_account(
+            profile,
+            currency=prepared_sale["currency"],
         )
     except frappe.ValidationError:
         return _register_preflight_rejection_fence(
@@ -979,7 +995,14 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     try:
-        client = MaybankClient.from_settings()
+        if not cint(getattr(profile, PROFILE_AUTOMATIC_ENABLED_FIELD, 0)):
+            raise frappe.ValidationError("Automatic QR is disabled on the POS Profile")
+        account, profile_outlet_id = require_provider_binding(profile, for_new_payment=True)
+        client = MaybankClient.from_account_doc(
+            account,
+            profile_outlet_id,
+            require_enabled=True,
+        )
     except frappe.ValidationError:
         return _register_preflight_rejection_fence(
             device_id=device_id,
@@ -1035,6 +1058,17 @@ def generate_maybank_qr_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "doctype": "Maybank QR Transaction",
             "transaction_refno": _reservation_reference(request_fingerprint),
             "outlet_id": outlet_id,
+            "pos_profile": cstr(getattr(profile, "name", None)).strip(),
+            "maybank_qrpaybiz_account": cstr(getattr(account, "name", None)).strip(),
+            "suspense_account": cstr(
+                getattr(profile, "custom_kopos_manual_qr_suspense_account", None)
+            ).strip(),
+            "clearing_account": cstr(
+                getattr(profile, "custom_kopos_qr_clearing_account", None)
+            ).strip(),
+            "settlement_bank_account": cstr(
+                getattr(profile, "custom_kopos_qr_settlement_bank_account", None)
+            ).strip(),
             "sale_amount": amount_rm,
             "sale_amount_sen": amount_sen,
             "currency": currency,

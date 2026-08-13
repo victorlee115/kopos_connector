@@ -273,3 +273,39 @@ def commissioned_static_qr_config(
             getattr(device_doc, "static_qr_company", None)
         ).strip(),
     }
+
+
+def commissioned_profile_static_qr_config(
+    profile_doc: Any,
+    *,
+    expected_company: str | None,
+) -> dict[str, str] | None:
+    """Validate the branch-owned static QR fields on a POS Profile."""
+
+    payload = cstr(getattr(profile_doc, "custom_kopos_static_qr_payload", None)).strip()
+    if not payload:
+        return None
+    inspection = inspect_paynet_static_qr(payload)
+    validate_static_qr_metadata(
+        inspection,
+        payload_sha256=getattr(profile_doc, "custom_kopos_static_qr_payload_sha256", None),
+        merchant_id=getattr(profile_doc, "custom_kopos_static_qr_merchant_id", None),
+        acquirer_id=getattr(profile_doc, "custom_kopos_static_qr_acquirer_id", None),
+        merchant_name=getattr(profile_doc, "custom_kopos_static_qr_merchant_name", None),
+        version=getattr(profile_doc, "custom_kopos_static_qr_version", None),
+        commissioned_at=getattr(profile_doc, "custom_kopos_static_qr_commissioned_at", None),
+        configured_company=getattr(profile_doc, "company", None),
+        expected_company=expected_company,
+    )
+    return {
+        "static_qr_payload": inspection["payload"],
+        "static_qr_payload_sha256": inspection["payload_sha256"],
+        "static_qr_merchant_id": inspection["merchant_id"],
+        "static_qr_acquirer_id": inspection["acquirer_id"],
+        "static_qr_merchant_name": inspection["merchant_name"],
+        "static_qr_version": inspection["version"],
+        "static_qr_commissioned_at": cstr(
+            getattr(profile_doc, "custom_kopos_static_qr_commissioned_at", None)
+        ).strip(),
+        "static_qr_company": cstr(getattr(profile_doc, "company", None)).strip(),
+    }

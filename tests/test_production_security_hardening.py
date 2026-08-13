@@ -260,6 +260,59 @@ def test_provider_login_uses_persisted_device_metadata() -> None:
     assert request["device_os"] == "Android 16"
 
 
+def test_rotating_a_shared_account_invalidates_profile_and_historical_outlet_tokens() -> None:
+    account = SimpleNamespace(
+        name="Maybank QRPayBiz Account - Shared",
+        username="merchant",
+        user_type="merchant",
+        base_url=maybank_client.DEFAULT_BASE_URL,
+    )
+    cache = Mock()
+    with (
+        patch.object(
+            maybank_client.frappe,
+            "get_all",
+            side_effect=[
+                [{"custom_kopos_maybank_outlet_id": "OUTLET-A"}],
+                [{"outlet_id": "OUTLET-B"}],
+            ],
+        ),
+        patch.object(maybank_client.frappe, "cache", return_value=cache),
+        patch.object(maybank_client.frappe.local, "site", "test.localhost", create=True),
+    ):
+        maybank_client.invalidate_account_auth_cache(account)
+
+    expected = []
+    for outlet in ("OUTLET-A", "OUTLET-B"):
+        scope = maybank_client._auth_scope_for(
+            "merchant", "merchant", outlet, maybank_client.DEFAULT_BASE_URL
+        )
+        expected.extend(
+            [
+                f"maybank_jwt:{scope}:test.localhost",
+                f"maybank_outlet_token:{scope}:test.localhost",
+            ]
+        )
+    assert [call.args[0] for call in cache.delete.call_args_list] == expected
+
+
+def test_maybank_account_rejects_non_https_provider_url() -> None:
+    account_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.maybank_qrpaybiz_account.maybank_qrpaybiz_account"
+    )
+    account = account_module.MaybankQRPayBizAccount()
+    account.username = "merchant"
+    account.user_type = "merchant"
+    account.environment = "production"
+    account.base_url = "http://emerchant.maybank2u.com.my:8443/api/"
+    account.provider_device_id = VALID_DEVICE_ID
+    account.provider_device_name = maybank_client.DEFAULT_DEVICE_NAME
+    account.provider_device_os = maybank_client.DEFAULT_DEVICE_OS
+    account.is_new = lambda: True
+    with pytest.raises(maybank_client.frappe.ValidationError):
+        account.validate()
+
+
 def test_migrate_persists_configured_provider_metadata_once() -> None:
     persisted: dict[str, str] = {}
 

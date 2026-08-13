@@ -199,18 +199,19 @@ def _config_value(name: str, default: Any = None) -> Any:
     return getattr(config, name, default) if config is not None else default
 
 
-def _provider_configuration() -> tuple[str, str]:
-    enabled = cint(
-        frappe.db.get_single_value("Maybank Settings", "enabled")
-    )
-    outlet_id = cstr(
-        frappe.db.get_single_value("Maybank Settings", "outlet_id")
-    ).strip()
-    base_url = cstr(
-        frappe.db.get_single_value("Maybank Settings", "base_url")
-    ).strip()
-    if not enabled or not outlet_id:
-        _fail("Enabled Maybank Settings with an outlet are required")
+def _provider_configuration(transactions: Any) -> tuple[str, str]:
+    if not transactions:
+        _fail("Maybank UAT requires provider transaction snapshots")
+    from kopos_connector.services.maybank.client import MaybankClient
+
+    try:
+        client = MaybankClient.from_transaction(transactions[0])
+    except Exception as error:
+        _fail(f"Branch-scoped Maybank provider snapshot is unavailable: {error}")
+    outlet_id = cstr(client.outlet_id).strip()
+    base_url = cstr(client.base_url).strip()
+    if not outlet_id:
+        _fail("A branch-scoped Maybank outlet is required")
     provider_origin = validate_base_url(
         base_url or DEFAULT_BASE_URL,
         allow_mock=False,
@@ -532,8 +533,8 @@ def load_acceptance_context(
 ) -> AcceptanceContext:
     require_acceptance_operator()
     references = parse_transaction_references(transaction_references)
-    provider_origin, outlet_id = _provider_configuration()
     transactions = _load_transactions(references)
+    provider_origin, outlet_id = _provider_configuration(transactions)
     company, currency, amount_sen = _validate_transactions(
         transactions,
         bindings=bindings,

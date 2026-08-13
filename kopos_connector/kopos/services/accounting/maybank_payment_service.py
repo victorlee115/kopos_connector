@@ -14,6 +14,11 @@ frappe_utils = import_module("frappe.utils")
 from kopos_connector.kopos.services.orders.sale_datetime import (
     normalize_site_datetime,
 )
+from kopos_connector.services.maybank.branch_config import (
+    QrAccountingNotConfigured,
+    profile_for_order,
+    suspense_account as profile_suspense_account,
+)
 
 cstr = frappe_utils.cstr
 cint = frappe_utils.cint
@@ -48,6 +53,7 @@ def resolve_verified_qr_settlement_account(
     mode_of_payment: Any,
     company: Any,
     currency: Any,
+    account_override: Any = None,
 ) -> dict[str, str]:
     """Resolve a verified QR tender only to a non-cash Asset ledger."""
 
@@ -84,7 +90,7 @@ def resolve_verified_qr_settlement_account(
             frappe.ValidationError,
         )
     mode_row = mode_rows[0]
-    account = cstr(
+    account = cstr(account_override).strip() or cstr(
         _value(mode_row, "account") or _value(mode_row, "default_account")
     ).strip()
     mode_type = cstr(_value(mode_row, "type")).strip()
@@ -857,53 +863,68 @@ def _validate_manual_evidence_identity(
 def resolve_manual_qr_suspense_account(order_doc: Any) -> str:
     """Return the configured QR suspense ledger after exact order-bound checks."""
 
-    account = cstr(
-        frappe.db.get_single_value(
-            "Maybank Settings", "manual_qr_suspense_account"
-        )
-    ).strip()
+    try:
+        profile = profile_for_order(order_doc)
+        account = profile_suspense_account(profile)
+    except QrAccountingNotConfigured:
+        raise
+    except Exception as error:
+        raise QrAccountingNotConfigured() from error
     if not account:
-        frappe.throw(
-            "Maybank Settings manual_qr_suspense_account is required for manual QR confirmation",
-            frappe.ValidationError,
+        raise QrAccountingNotConfigured(
+            "Manual QR Suspense Account is required on the POS Profile"
+        )
+    return validate_manual_qr_suspense_account(
+        account,
+        company=cstr(_value(order_doc, "company")).strip(),
+        currency=cstr(_value(order_doc, "currency")).strip(),
+    )
+
+
+def validate_manual_qr_suspense_account(
+    account: str,
+    *,
+    company: str,
+    currency: str,
+) -> str:
+    """Validate a profile suspense account without reloading a stale profile.
+
+    Guided POS Profile setup validates an in-memory profile before its save is
+    committed.  Re-resolving that profile by name during readiness can observe
+    the previous database value and incorrectly report a newly selected account
+    as unavailable.  Keep the durable order resolver above database-bound while
+    allowing readiness to validate the candidate account directly.
+    """
+
+    normalized_account = cstr(account).strip()
+    if not normalized_account:
+        raise QrAccountingNotConfigured(
+            "Manual QR Suspense Account is required on the POS Profile"
         )
     account_row = frappe.db.get_value(
         "Account",
-        account,
+        normalized_account,
         ["company", "is_group", "disabled", "root_type", "account_currency"],
         as_dict=True,
     )
     if not account_row:
-        frappe.throw("manual QR suspense account was not found", frappe.ValidationError)
-    order_company = cstr(_value(order_doc, "company")).strip()
+        raise QrAccountingNotConfigured("Manual QR suspense account was not found")
     if (
-        not order_company
-        or cstr(_value(account_row, "company")).strip() != order_company
+        not cstr(company).strip()
+        or cstr(_value(account_row, "company")).strip() != cstr(company).strip()
     ):
-        frappe.throw(
-            "manual QR suspense account belongs to another company",
-            frappe.ValidationError,
-        )
+        raise QrAccountingNotConfigured("Manual QR suspense account belongs to another company")
     is_group = _strict_account_flag(_value(account_row, "is_group"))
     disabled = _strict_account_flag(_value(account_row, "disabled"))
     if is_group is None or disabled is None or is_group or disabled:
-        frappe.throw(
-            "manual QR suspense account must be an enabled ledger account",
-            frappe.ValidationError,
-        )
+        raise QrAccountingNotConfigured("Manual QR suspense account must be an enabled ledger account")
     if cstr(_value(account_row, "root_type")).strip() != "Asset":
-        frappe.throw(
-            "manual QR suspense account must be an Asset account",
-            frappe.ValidationError,
-        )
+        raise QrAccountingNotConfigured("Manual QR suspense account must be an Asset account")
     account_currency = cstr(_value(account_row, "account_currency")).strip().upper()
-    order_currency = cstr(_value(order_doc, "currency")).strip().upper()
+    order_currency = cstr(currency).strip().upper()
     if not order_currency or account_currency != order_currency:
-        frappe.throw(
-            "manual QR suspense account currency does not match FB Order",
-            frappe.ValidationError,
-        )
-    return account
+        raise QrAccountingNotConfigured("Manual QR suspense account currency does not match FB Order")
+    return normalized_account
 
 
 def _strict_account_flag(value: Any) -> int | None:
@@ -1033,7 +1054,9 @@ def _load_transaction_for_update(fieldname: str, value: str) -> Any | None:
         f"""
         SELECT
             name, transaction_refno, status, maybank_status, sale_amount_sen,
-            device_id, outlet_id, company, currency, provider,
+            device_id, pos_profile, maybank_qrpaybiz_account, outlet_id,
+            suspense_account, clearing_account, settlement_bank_account,
+            company, currency, provider,
             expires_at, paid_at, fb_order, sales_invoice,
             consumption_key, invoice_consumption_key, consumed_at,
             qr_data, fb_order_payment, reconciliation_idempotency_key,
@@ -1142,6 +1165,11 @@ def _validate_transaction_for_order(
     if not cstr(_value(transaction, "outlet_id")).strip():
         frappe.throw(
             "Maybank QR transaction outlet metadata is missing",
+            frappe.ValidationError,
+        )
+    if not cstr(_value(transaction, "maybank_qrpaybiz_account")).strip():
+        frappe.throw(
+            "Maybank QR transaction provider account snapshot is missing",
             frappe.ValidationError,
         )
 

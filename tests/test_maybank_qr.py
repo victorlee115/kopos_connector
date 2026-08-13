@@ -45,6 +45,8 @@ def _prepared_sale() -> dict[str, str]:
         "fb_order": PREPARED_FB_ORDER,
         "fb_order_payment": PREPARED_FB_ORDER_PAYMENT,
         "accepted_sale_fingerprint": PREPARED_SALE_FINGERPRINT,
+        "device_id": "device-1",
+        "pos_profile": "Test POS Profile",
         "payment_method": "DuitNow QR",
         "company": "Test Company",
         "currency": "MYR",
@@ -69,6 +71,37 @@ def _prepared_request_fingerprint(
 
 class MaybankQrStatusTests(unittest.TestCase):
     def setUp(self) -> None:
+        profile = SimpleNamespace(
+            name="Test POS Profile",
+            company="Test Company",
+            currency="MYR",
+            custom_kopos_automatic_qr_enabled=1,
+            custom_kopos_manual_qr_suspense_account="Manual QR Suspense - TC",
+            custom_kopos_qr_clearing_account="QR Clearing - TC",
+            custom_kopos_qr_settlement_bank_account="Settlement Bank - TC",
+        )
+        account = SimpleNamespace(
+            name="Maybank QRPayBiz Account - Test",
+            enabled=1,
+            get_password=lambda _field: "encrypted-pin",
+        )
+        profile_lookup = patch.object(
+            maybank_generation, "profile_for_device", return_value=profile
+        )
+        profile_lookup.start()
+        self.addCleanup(profile_lookup.stop)
+        provider_binding = patch.object(
+            maybank_generation,
+            "require_provider_binding",
+            return_value=(account, "outlet-B"),
+        )
+        provider_binding.start()
+        self.addCleanup(provider_binding.stop)
+        settlement_bank = patch.object(
+            maybank_generation, "validate_settlement_bank_account"
+        )
+        settlement_bank.start()
+        self.addCleanup(settlement_bank.stop)
         suspense_account = patch.object(
             maybank_generation,
             "resolve_manual_qr_suspense_account",
@@ -149,7 +182,7 @@ class MaybankQrStatusTests(unittest.TestCase):
                 side_effect=capture_get_doc,
             ),
             patch.object(
-                maybank_qr.MaybankClient, "from_settings", return_value=client
+                maybank_qr.MaybankClient, "from_account_doc", return_value=client
             ),
             patch.object(
                 maybank_generation,
@@ -249,7 +282,7 @@ class MaybankQrStatusTests(unittest.TestCase):
                 "_register_preflight_rejection_fence",
                 return_value=rejection,
             ) as register_fence,
-            patch.object(maybank_qr.MaybankClient, "from_settings") as client,
+            patch.object(maybank_qr.MaybankClient, "from_account_doc") as client,
         ):
             result = maybank_qr.generate_maybank_qr_payload(
                 {
@@ -482,7 +515,7 @@ class MaybankQrStatusTests(unittest.TestCase):
             patch.object(maybank_qr.frappe, "get_doc", return_value=reservation),
             patch.object(
                 maybank_qr.MaybankClient,
-                "from_settings",
+                "from_account_doc",
                 return_value=client,
             ),
             patch.object(
@@ -826,7 +859,7 @@ class MaybankQrStatusTests(unittest.TestCase):
             patch.object(maybank_qr.frappe.db, "get_value", return_value=None),
             patch.object(maybank_qr.frappe, "get_doc", return_value=Mock()),
             patch.object(
-                maybank_qr.MaybankClient, "from_settings", return_value=client
+                maybank_qr.MaybankClient, "from_account_doc", return_value=client
             ),
             patch.object(
                 maybank_generation,
@@ -860,7 +893,7 @@ class MaybankQrStatusTests(unittest.TestCase):
             patch.object(maybank_qr.frappe.db, "get_value", return_value=None),
             patch.object(maybank_qr.frappe, "get_doc", return_value=Mock()),
             patch.object(
-                maybank_qr.MaybankClient, "from_settings", return_value=client
+                maybank_qr.MaybankClient, "from_account_doc", return_value=client
             ),
             patch.object(
                 maybank_generation,
@@ -902,7 +935,7 @@ class MaybankQrStatusTests(unittest.TestCase):
                 maybank_generation, "_resolve_existing_txn", return_value=None
             ) as resolve_existing,
             patch.object(
-                maybank_qr.MaybankClient, "from_settings", return_value=client
+                maybank_qr.MaybankClient, "from_account_doc", return_value=client
             ),
             patch.object(
                 maybank_qr.frappe,
@@ -961,7 +994,7 @@ class MaybankQrStatusTests(unittest.TestCase):
                 return_value=winning_transaction,
             ),
             patch.object(
-                maybank_qr.MaybankClient, "from_settings", return_value=client
+                maybank_qr.MaybankClient, "from_account_doc", return_value=client
             ),
             patch.object(maybank_qr.frappe, "get_doc", return_value=reservation),
             patch.object(
@@ -1032,7 +1065,7 @@ class MaybankQrStatusTests(unittest.TestCase):
                 side_effect=[txn, persisted_txn],
             ),
             patch.object(
-                maybank_qr.MaybankClient, "from_settings", return_value=client
+                maybank_qr.MaybankClient, "from_account_doc", return_value=client
             ),
             patch.object(
                 maybank_status,
@@ -2380,7 +2413,7 @@ class MaybankQrStatusTests(unittest.TestCase):
             ),
             patch.object(
                 maybank_resolution.MaybankClient,
-                "from_settings",
+                "from_transaction",
                 return_value=client,
             ),
             patch.object(maybank_resolution, "_load_txn_for_update", side_effect=lock_row),

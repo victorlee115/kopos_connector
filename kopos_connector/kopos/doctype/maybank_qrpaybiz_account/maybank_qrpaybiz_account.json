@@ -1,0 +1,39 @@
+{
+ "allow_copy": 0,
+ "allow_import": 0,
+ "allow_rename": 0,
+ "autoname": "field:display_name",
+ "creation": "2026-08-13 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "display_name", "enabled", "environment", "base_url", "username", "encrypted_pin", "user_type",
+  "provider_device_id", "provider_device_name", "provider_device_os", "last_connection_test_at",
+  "last_connection_status", "credential_rotated_at"
+ ],
+ "fields": [
+  {"fieldname":"display_name","fieldtype":"Data","in_list_view":1,"label":"Display Name","reqd":1},
+  {"default":"0","fieldname":"enabled","fieldtype":"Check","in_list_view":1,"label":"Enabled for New Payments"},
+  {"default":"production","fieldname":"environment","fieldtype":"Select","label":"Environment","options":"sandbox\nproduction","reqd":1},
+  {"default":"https://emerchant.maybank2u.com.my:8443/api/","fieldname":"base_url","fieldtype":"Data","label":"API URL","reqd":1},
+  {"fieldname":"username","fieldtype":"Data","label":"Username","reqd":1},
+  {"fieldname":"encrypted_pin","fieldtype":"Password","label":"PIN","permlevel":1,"reqd":1},
+  {"default":"merchant","fieldname":"user_type","fieldtype":"Select","label":"User Type","options":"merchant\ncashier\ncorporate","reqd":1},
+  {"fieldname":"provider_device_id","fieldtype":"Data","hidden":1,"label":"Provider Device Identity","read_only":1},
+  {"fieldname":"provider_device_name","fieldtype":"Data","hidden":1,"label":"Provider Device Name","read_only":1},
+  {"fieldname":"provider_device_os","fieldtype":"Data","hidden":1,"label":"Provider Device OS","read_only":1},
+  {"fieldname":"last_connection_test_at","fieldtype":"Datetime","label":"Last Connection Test","read_only":1},
+  {"fieldname":"last_connection_status","fieldtype":"Data","label":"Last Connection Status","read_only":1},
+  {"fieldname":"credential_rotated_at","fieldtype":"Datetime","label":"Credential Rotated At","read_only":1}
+ ],
+ "module": "KoPOS",
+ "name": "Maybank QRPayBiz Account",
+ "permissions": [
+  {"role":"System Manager","read":1,"write":1,"create":1,"delete":1,"print":1,"email":1,"export":1},
+  {"role":"System Manager","permlevel":1,"read":1,"write":1,"create":1,"delete":1,"print":1,"email":1,"export":1},
+  {"role":"Accounts Manager","read":1,"write":1,"create":1,"print":1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

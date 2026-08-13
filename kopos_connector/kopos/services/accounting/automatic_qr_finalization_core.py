@@ -225,13 +225,14 @@ def _load_paid_attempts_for_update(
         """
         SELECT
             name, transaction_refno, status, maybank_status,
-            sale_amount_sen, currency, provider, device_id, outlet_id,
+            sale_amount_sen, currency, provider, device_id, pos_profile,
+            maybank_qrpaybiz_account, outlet_id,
             qr_data, expires_at, paid_at, creation,
             fb_order, fb_order_payment, sales_invoice,
             consumption_key, invoice_consumption_key, consumed_at,
             manual_reconciliation_status, reconciliation_note,
             reconciliation_idempotency_key,
-            company, suspense_account,
+            company, suspense_account, clearing_account, settlement_bank_account,
             reclassification_journal_entry,
             reconciliation_failed_reason, failure_journal_entry,
             duplicate_payment_status, duplicate_winning_channel,

@@ -308,6 +308,123 @@ def create_kopos_custom_fields():
                 "description": "SST percentage rate (default: 8% for Malaysia)",
                 "precision": 2,
             },
+            {
+                "fieldname": "kopos_qr_payments_section",
+                "fieldtype": "Section Break",
+                "label": "KoPOS QR Payments",
+                "insert_after": "custom_kopos_sst_rate",
+                "collapsible": 1,
+            },
+            {
+                "fieldname": "custom_kopos_static_qr_enabled",
+                "label": "Enable Static QR",
+                "fieldtype": "Check",
+                "default": 0,
+                "insert_after": "kopos_qr_payments_section",
+            },
+            {
+                "fieldname": "custom_kopos_static_qr_payload",
+                "label": "Static QR Payload",
+                "fieldtype": "Long Text",
+                "read_only": 1,
+                "insert_after": "custom_kopos_static_qr_enabled",
+                "depends_on": "eval:doc.custom_kopos_static_qr_enabled==1",
+            },
+            {
+                "fieldname": "custom_kopos_static_qr_payload_sha256",
+                "label": "Static QR Payload SHA-256",
+                "fieldtype": "Data",
+                "read_only": 1,
+                "hidden": 1,
+                "insert_after": "custom_kopos_static_qr_payload",
+            },
+            {
+                "fieldname": "custom_kopos_static_qr_merchant_id",
+                "label": "Verified Merchant ID",
+                "fieldtype": "Data",
+                "read_only": 1,
+                "insert_after": "custom_kopos_static_qr_payload_sha256",
+            },
+            {
+                "fieldname": "custom_kopos_static_qr_acquirer_id",
+                "label": "Verified Acquirer ID",
+                "fieldtype": "Data",
+                "read_only": 1,
+                "insert_after": "custom_kopos_static_qr_merchant_id",
+            },
+            {
+                "fieldname": "custom_kopos_static_qr_merchant_name",
+                "label": "Verified Merchant Name",
+                "fieldtype": "Data",
+                "read_only": 1,
+                "insert_after": "custom_kopos_static_qr_acquirer_id",
+            },
+            {
+                "fieldname": "custom_kopos_static_qr_version",
+                "label": "Static QR Version",
+                "fieldtype": "Data",
+                "read_only": 1,
+                "hidden": 1,
+                "insert_after": "custom_kopos_static_qr_merchant_name",
+            },
+            {
+                "fieldname": "custom_kopos_static_qr_commissioned_at",
+                "label": "Static QR Commissioned At",
+                "fieldtype": "Datetime",
+                "read_only": 1,
+                "insert_after": "custom_kopos_static_qr_version",
+            },
+            {
+                "fieldname": "custom_kopos_manual_qr_suspense_account",
+                "label": "Manual QR Suspense Account",
+                "fieldtype": "Link",
+                "options": "Account",
+                "insert_after": "custom_kopos_static_qr_commissioned_at",
+            },
+            {
+                "fieldname": "custom_kopos_automatic_qr_enabled",
+                "label": "Enable Automatic QR",
+                "fieldtype": "Check",
+                "default": 0,
+                "insert_after": "custom_kopos_manual_qr_suspense_account",
+            },
+            {
+                "fieldname": "custom_kopos_maybank_qrpaybiz_account",
+                "label": "Maybank QRPayBiz Account",
+                "fieldtype": "Link",
+                "options": "Maybank QRPayBiz Account",
+                "insert_after": "custom_kopos_automatic_qr_enabled",
+                "depends_on": "eval:doc.custom_kopos_automatic_qr_enabled==1",
+            },
+            {
+                "fieldname": "custom_kopos_maybank_outlet_id",
+                "label": "Maybank Outlet ID",
+                "fieldtype": "Data",
+                "insert_after": "custom_kopos_maybank_qrpaybiz_account",
+                "depends_on": "eval:doc.custom_kopos_automatic_qr_enabled==1",
+            },
+            {
+                "fieldname": "custom_kopos_qr_clearing_account",
+                "label": "QR Clearing Account",
+                "fieldtype": "Link",
+                "options": "Account",
+                "insert_after": "custom_kopos_maybank_outlet_id",
+                "description": "Company-wide DuitNow QR Mode of Payment account; changing it affects this company.",
+            },
+            {
+                "fieldname": "custom_kopos_qr_settlement_bank_account",
+                "label": "Settlement Bank Account",
+                "fieldtype": "Link",
+                "options": "Bank Account",
+                "insert_after": "custom_kopos_qr_clearing_account",
+            },
+            {
+                "fieldname": "custom_kopos_qr_configuration_status",
+                "label": "QR Configuration Status",
+                "fieldtype": "Data",
+                "read_only": 1,
+                "insert_after": "custom_kopos_qr_settlement_bank_account",
+            },
         ],
         "Sales Invoice": [
             {
@@ -562,7 +679,7 @@ frappe.ui.form.on(\"POS Profile\", {
       return;
     }
 
-    if (!(frappe.user_roles || []).includes(\"System Manager\")) {
+    if (!((frappe.user_roles || []).includes(\"System Manager\") || (frappe.user_roles || []).includes(\"Accounts Manager\"))) {
       return;
     }
 
@@ -574,6 +691,48 @@ frappe.ui.form.on(\"POS Profile\", {
         currency: frm.doc.currency || undefined,
       };
       frappe.set_route(\"kopos_provisioning\");
+    }, __(\"KoPOS\"));
+
+    frm.add_custom_button(__(\"Validate Configuration\"), async () => {
+      frappe.dom.freeze(__(\"Checking QR configuration...\"));
+      try {
+        const response = await frappe.call({
+          method: \"kopos_connector.api.get_qr_setup_preview\",
+          args: { profile_name: frm.doc.name },
+        });
+        const preview = response.message?.preview || response.preview || {};
+        frappe.msgprint({ title: __(\"QR configuration\"), message: `<pre style=\"white-space:pre-wrap\">${frappe.utils.escape_html(JSON.stringify(preview, null, 2))}</pre>`, wide: true });
+      } catch (error) {
+        frappe.msgprint({ title: __(\"Validation failed\"), message: error?.message || __(\"QR configuration is invalid\"), indicator: \"red\" });
+      } finally {
+        frappe.dom.unfreeze();
+      }
+    }, __(\"KoPOS\"));
+
+    frm.add_custom_button(__(\"Set Up QR Payments\"), async () => {
+      const fields = [\"custom_kopos_static_qr_enabled\", \"custom_kopos_static_qr_payload\", \"custom_kopos_manual_qr_suspense_account\", \"custom_kopos_automatic_qr_enabled\", \"custom_kopos_maybank_qrpaybiz_account\", \"custom_kopos_maybank_outlet_id\", \"custom_kopos_qr_clearing_account\", \"custom_kopos_qr_settlement_bank_account\"];
+      const config = Object.fromEntries(fields.map((field) => [field, frm.doc[field] || 0]));
+      frappe.dom.freeze(__(\"Preparing QR configuration preview...\"));
+      try {
+        const previewResponse = await frappe.call({ method: \"kopos_connector.api.get_qr_setup_preview\", args: { profile_name: frm.doc.name, config } });
+        const preview = previewResponse.message?.preview || previewResponse.preview || {};
+        frappe.dom.unfreeze();
+        const confirmed = await new Promise((resolve) => frappe.confirm(
+          __(\"Review this QR configuration, then confirm. Standard DuitNow QR Mode of Payment changes are company-wide.\") + `<pre style=\"white-space:pre-wrap\">${frappe.utils.escape_html(JSON.stringify(preview, null, 2))}</pre>`,
+          () => resolve(true), () => resolve(false)
+        ));
+        if (!confirmed) return;
+        frappe.dom.freeze(__(\"Applying QR configuration...\"));
+        const response = await frappe.call({ method: \"kopos_connector.api.apply_qr_configuration\", args: { profile_name: frm.doc.name, config } });
+        const appliedPreview = response.message?.preview || response.preview || {};
+        frappe.show_alert({ message: __(\"QR configuration applied\"), indicator: \"green\" });
+        frappe.msgprint({ title: __(\"QR configuration ready\"), message: `<pre style=\"white-space:pre-wrap\">${frappe.utils.escape_html(JSON.stringify(appliedPreview, null, 2))}</pre>`, wide: true });
+        frm.reload_doc();
+      } catch (error) {
+        frappe.msgprint({ title: __(\"Setup failed\"), message: error?.message || __(\"QR configuration was rolled back\"), indicator: \"red\" });
+      } finally {
+        frappe.dom.unfreeze();
+      }
     }, __(\"KoPOS\"));
   },
 });

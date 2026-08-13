@@ -304,7 +304,22 @@ def _build_context(
             company=company,
         )
     else:
-        target_account = _configured_mode_of_payment_account(mode_of_payment, company)
+        # Automatic QR transactions snapshot the real settlement bank on the
+        # POS Profile.  Fall back to the standard DuitNow QR Mode of Payment
+        # account only for legacy/manual reconciliation rows without a snapshot.
+        settlement_bank_account = cstr(_value(source, "settlement_bank_account")).strip()
+        target_account = ""
+        if settlement_bank_account:
+            target_account = cstr(
+                frappe.db.get_value("Bank Account", settlement_bank_account, "account")
+            ).strip()
+            if not target_account:
+                frappe.throw(
+                    "QR settlement Bank Account has no linked ledger account",
+                    frappe.ValidationError,
+                )
+        if not target_account:
+            target_account = _configured_mode_of_payment_account(mode_of_payment, company)
         failure_cost_center = ""
     if target_account == suspense_account:
         frappe.throw(

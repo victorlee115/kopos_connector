@@ -45,6 +45,15 @@ def test_pos_profile_extension_is_registered_without_doc_event_lifecycle() -> No
         "currency",
         "custom_kopos_enable_sst",
         "custom_kopos_sst_rate",
+        "custom_kopos_static_qr_enabled",
+        "custom_kopos_static_qr_payload",
+        "custom_kopos_static_qr_payload_sha256",
+        "custom_kopos_manual_qr_suspense_account",
+        "custom_kopos_automatic_qr_enabled",
+        "custom_kopos_maybank_qrpaybiz_account",
+        "custom_kopos_maybank_outlet_id",
+        "custom_kopos_qr_clearing_account",
+        "custom_kopos_qr_settlement_bank_account",
     )
 
 

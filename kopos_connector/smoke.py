@@ -791,8 +791,22 @@ def _require_maybank_mock_smoke_context() -> None:
 
 
 def _ensure_smoke_maybank_outlet() -> None:
-    current = str(
-        frappe.db.get_single_value("Maybank Settings", "outlet_id") or ""
+    device_name = frappe.db.get_value(
+        "KoPOS Device", {"device_id": SMOKE_DEVICE_ID}, "name"
+    )
+    if not device_name:
+        frappe.throw(
+            "Smoke device is required before configuring its Maybank outlet",
+            frappe.ValidationError,
+        )
+    device = frappe.get_doc("KoPOS Device", device_name)
+    profile_name = cstr(getattr(device, "pos_profile", None)).strip()
+    if not profile_name:
+        frappe.throw("Smoke device must be assigned to a POS Profile", frappe.ValidationError)
+    current = cstr(
+        frappe.db.get_value(
+            "POS Profile", profile_name, "custom_kopos_maybank_outlet_id"
+        )
     ).strip()
     if current and current != SMOKE_MAYBANK_OUTLET_ID:
         frappe.throw(
@@ -800,9 +814,10 @@ def _ensure_smoke_maybank_outlet() -> None:
             frappe.ValidationError,
         )
     if not current:
-        frappe.db.set_single_value(
-            "Maybank Settings",
-            "outlet_id",
+        frappe.db.set_value(
+            "POS Profile",
+            profile_name,
+            "custom_kopos_maybank_outlet_id",
             SMOKE_MAYBANK_OUTLET_ID,
         )
 

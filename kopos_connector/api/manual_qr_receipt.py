@@ -1269,15 +1269,13 @@ def _validate_device_business_context(device: Any, payload: dict[str, str]) -> N
 
 
 def _validate_provider_context(txn: Any) -> None:
-    configured_outlet = cstr(
-        getattr(frappe.db, "get_single_value", lambda *_args, **_kwargs: None)(
-            "Maybank Settings", "outlet_id"
-        )
-    ).strip()
     txn_outlet = cstr(getattr(txn, "outlet_id", None)).strip()
-    if configured_outlet and txn_outlet and txn_outlet != configured_outlet:
-        frappe.throw(_("Maybank outlet context does not match settings"), frappe.ValidationError)
-
+    account = cstr(getattr(txn, "maybank_qrpaybiz_account", None)).strip()
+    if not txn_outlet or not account:
+        frappe.throw(
+            _("Maybank transaction provider snapshot is missing"),
+            frappe.ValidationError,
+        )
     if not cstr(getattr(txn, "transaction_refno", None)).strip():
         frappe.throw(_("Maybank provider transaction reference is missing"), frappe.ValidationError)
 

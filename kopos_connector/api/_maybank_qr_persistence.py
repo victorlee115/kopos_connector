@@ -42,7 +42,9 @@ def _load_existing_txn(device_id: str, idempotency_key: str) -> Any:
         SELECT
             name, transaction_refno, status, qr_data, sale_amount,
             sale_amount_sen, expires_at, device_id, provider, company, currency,
-            business_date, idempotency_key, request_fingerprint, outlet_id, created_at,
+            business_date, idempotency_key, request_fingerprint, pos_profile,
+            maybank_qrpaybiz_account, outlet_id, suspense_account,
+            clearing_account, settlement_bank_account, created_at,
             replacement_reason, replaces_transaction_refno,
             fb_order, fb_order_payment, sales_invoice,
             raw_response,
@@ -67,7 +69,9 @@ def _load_reserved_txn_for_update(request_fingerprint: str) -> Any:
         SELECT
             name, transaction_refno, status, qr_data, sale_amount,
             sale_amount_sen, expires_at, device_id, provider, company, currency,
-            business_date, idempotency_key, request_fingerprint, outlet_id, created_at,
+            business_date, idempotency_key, request_fingerprint, pos_profile,
+            maybank_qrpaybiz_account, outlet_id, suspense_account,
+            clearing_account, settlement_bank_account, created_at,
             replacement_reason, replaces_transaction_refno,
             fb_order, fb_order_payment, sales_invoice,
             raw_response,
@@ -525,7 +529,9 @@ def _load_txn_for_update(txn_name: str) -> Any:
         SELECT
             name, transaction_refno, status, qr_data, sale_amount,
             sale_amount_sen, expires_at, device_id, provider, company, currency,
-            business_date, request_fingerprint, outlet_id, created_at,
+            business_date, request_fingerprint, pos_profile,
+            maybank_qrpaybiz_account, outlet_id, suspense_account,
+            clearing_account, settlement_bank_account, created_at,
             idempotency_key, fb_order, fb_order_payment, sales_invoice,
             replacement_reason, replaces_transaction_refno, raw_response,
             last_polled_at, poll_count, maybank_status, paid_at, scanned_at,
@@ -558,7 +564,9 @@ def _load_linked_generation_attempts_for_update(
             SELECT
                 name, transaction_refno, status, maybank_status,
                 qr_data, expires_at, sale_amount_sen, currency, provider,
-                company, device_id, outlet_id,
+                company, device_id, pos_profile, maybank_qrpaybiz_account,
+                outlet_id, suspense_account, clearing_account,
+                settlement_bank_account,
                 idempotency_key, request_fingerprint,
                 replacement_reason, replaces_transaction_refno, round_number,
                 fb_order, fb_order_payment, sales_invoice,
@@ -593,7 +601,9 @@ def _load_generation_attempt_candidates_for_release_for_update(
             SELECT
                 name, transaction_refno, status, maybank_status,
                 qr_data, expires_at, sale_amount_sen, currency, provider,
-                company, device_id, outlet_id,
+                company, device_id, pos_profile, maybank_qrpaybiz_account,
+                outlet_id, suspense_account, clearing_account,
+                settlement_bank_account,
                 idempotency_key, request_fingerprint,
                 replacement_reason, replaces_transaction_refno, round_number,
                 fb_order, fb_order_payment, sales_invoice,
@@ -692,7 +702,9 @@ def _load_generation_snapshot(transaction_name: str) -> Any:
         SELECT
             name, transaction_refno, status, qr_data, sale_amount,
             sale_amount_sen, expires_at, device_id, provider, currency,
-            business_date, request_fingerprint, outlet_id, created_at,
+            business_date, request_fingerprint, pos_profile,
+            maybank_qrpaybiz_account, outlet_id, suspense_account,
+            clearing_account, settlement_bank_account, created_at,
             fb_order, fb_order_payment, sales_invoice,
             last_polled_at, poll_count, maybank_status, paid_at, scanned_at
         FROM `tabMaybank QR Transaction`

@@ -22,11 +22,15 @@
    "reconciliation_idempotency_key",
     "sales_invoice",
     "outlet_id",
+    "pos_profile",
+    "maybank_qrpaybiz_account",
    "device_id",
     "provider",
     "company",
     "currency",
     "suspense_account",
+    "clearing_account",
+    "settlement_bank_account",
     "idempotency_key",
     "request_fingerprint",
     "replacement_reason",
@@ -197,6 +201,22 @@
    "label": "Outlet ID",
    "read_only": 1
   },
+  {
+   "fieldname": "pos_profile",
+   "fieldtype": "Link",
+   "label": "POS Profile",
+   "options": "POS Profile",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "maybank_qrpaybiz_account",
+   "fieldtype": "Link",
+   "label": "Maybank QRPayBiz Account",
+   "options": "Maybank QRPayBiz Account",
+   "read_only": 1,
+   "search_index": 1
+  },
    {
     "fieldname": "device_id",
     "fieldtype": "Data",
@@ -209,7 +229,21 @@
     "fieldtype": "Data",
     "label": "Provider",
     "read_only": 1
-   },
+    },
+    {
+     "fieldname": "clearing_account",
+     "fieldtype": "Link",
+     "label": "QR Clearing Account",
+     "options": "Account",
+     "read_only": 1
+    },
+    {
+     "fieldname": "settlement_bank_account",
+     "fieldtype": "Link",
+     "label": "Settlement Bank Account",
+     "options": "Bank Account",
+     "read_only": 1
+    },
     {
      "fieldname": "company",
      "fieldtype": "Link",

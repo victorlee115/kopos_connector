@@ -70,9 +70,14 @@ POLL_FIELDS = (
     "expires_at",
     "poll_count",
     "sale_amount_sen",
+    "pos_profile",
     "outlet_id",
     "currency",
     "device_id",
+    "maybank_qrpaybiz_account",
+    "suspense_account",
+    "clearing_account",
+    "settlement_bank_account",
     "provider",
     "idempotency_key",
     "request_fingerprint",
@@ -182,7 +187,7 @@ def poll_maybank_transaction(transaction_name: str, lane: str) -> dict[str, str]
             return {"status": "not_due", "transaction_name": resolved_name}
 
         try:
-            client = MaybankClient.from_settings()
+            client = MaybankClient.from_transaction(transaction)
             if not _refresh_lock(
                 cache,
                 lock_key,

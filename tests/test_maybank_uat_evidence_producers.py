@@ -67,6 +67,8 @@ def _transactions() -> tuple[dict, ...]:
                 "provider": "maybank_qr",
                 "company": COMPANY,
                 "device_id": DEVICE,
+                "pos_profile": "UAT POS Profile",
+                "maybank_qrpaybiz_account": "Maybank QRPayBiz Account - UAT",
                 "outlet_id": OUTLET,
                 "idempotency_key": f"sale-order-{index}:qr:payment-{index}:1",
                 "request_fingerprint": _digest(f"generation-{index}"),
@@ -321,7 +323,7 @@ def test_transport_exporter_reads_live_status_without_business_mutation() -> Non
         patch.object(transport, "load_acceptance_context", return_value=_context()),
         patch.object(
             transport.MaybankClient,
-            "from_settings",
+            "from_transaction",
             return_value=_LiveStatusClient(),
         ),
         patch.object(
@@ -363,7 +365,7 @@ def test_transport_exporter_does_not_write_partial_report_on_status_mismatch() -
         patch.object(transport, "load_acceptance_context", return_value=_context()),
         patch.object(
             transport.MaybankClient,
-            "from_settings",
+            "from_transaction",
             return_value=_LiveStatusClient(mismatch=True),
         ),
         patch.object(transport, "write_report_atomically") as writer,

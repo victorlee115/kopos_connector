@@ -16,6 +16,15 @@ SERIALIZED_POS_PROFILE_FIELDS = (
     "currency",
     "custom_kopos_enable_sst",
     "custom_kopos_sst_rate",
+    "custom_kopos_static_qr_enabled",
+    "custom_kopos_static_qr_payload",
+    "custom_kopos_static_qr_payload_sha256",
+    "custom_kopos_manual_qr_suspense_account",
+    "custom_kopos_automatic_qr_enabled",
+    "custom_kopos_maybank_qrpaybiz_account",
+    "custom_kopos_maybank_outlet_id",
+    "custom_kopos_qr_clearing_account",
+    "custom_kopos_qr_settlement_bank_account",
 )
 
 
@@ -85,13 +94,22 @@ def bump_bound_device_config_versions(profile_name: str) -> None:
     )
 
 
-def _profile_config_signature(profile_doc: Any) -> tuple[str, str, str, int, float]:
+def _profile_config_signature(profile_doc: Any) -> tuple[Any, ...]:
     return (
         cstr(_value(profile_doc, "company")).strip(),
         cstr(_value(profile_doc, "warehouse")).strip(),
         cstr(_value(profile_doc, "currency")).strip(),
         cint(_value(profile_doc, "custom_kopos_enable_sst")),
         flt(_value(profile_doc, "custom_kopos_sst_rate"), 6),
+        cint(_value(profile_doc, "custom_kopos_static_qr_enabled")),
+        cstr(_value(profile_doc, "custom_kopos_static_qr_payload")).strip(),
+        cstr(_value(profile_doc, "custom_kopos_static_qr_payload_sha256")).strip(),
+        cstr(_value(profile_doc, "custom_kopos_manual_qr_suspense_account")).strip(),
+        cint(_value(profile_doc, "custom_kopos_automatic_qr_enabled")),
+        cstr(_value(profile_doc, "custom_kopos_maybank_qrpaybiz_account")).strip(),
+        cstr(_value(profile_doc, "custom_kopos_maybank_outlet_id")).strip(),
+        cstr(_value(profile_doc, "custom_kopos_qr_clearing_account")).strip(),
+        cstr(_value(profile_doc, "custom_kopos_qr_settlement_bank_account")).strip(),
     )
 
 

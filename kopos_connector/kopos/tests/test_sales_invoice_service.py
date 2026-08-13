@@ -17,6 +17,7 @@ from kopos_connector.kopos.services.accounting.sales_invoice_service import (
     _apply_rounding,
     _append_payment_rows,
     _build_modifier_snapshot,
+    enforce_static_qr_payment_accounts,
     _resolve_line_rate,
     _resolve_customer,
     _resolve_mode_of_payment_context,
@@ -633,6 +634,96 @@ class TestSalesInvoiceService(unittest.TestCase):
         self.assertEqual(invoice.payments[0].account, "Manual QR Suspense - TC")
         self.assertEqual(invoice.payments[0].amount, Decimal("12.95"))
 
+    def test_static_qr_pre_registration_projects_to_profile_suspense(self):
+        """Invoice projection must not inherit a legacy Cash MOP mapping."""
+        order = self.make_fb_order_stub()
+        order.payments = [
+            frappe._dict(
+                {
+                    "payment_method": "DuitNow QR",
+                    "payment_channel_code": "static_qr",
+                    "amount": Decimal("12.95"),
+                    "tendered_amount": Decimal("12.95"),
+                    "change_amount": Decimal("0.00"),
+                    "reference_no": "STATIC-REF-PRE-1",
+                    # The order-submit hook can populate these fields after
+                    # the invoice projection starts.
+                    "settlement_status": "",
+                    "suspense_account": None,
+                    "is_manual_confirmation": 1,
+                }
+            )
+        ]
+        invoice = frappe._dict(
+            {
+                "company": self.company,
+                "currency": "MYR",
+                "payments": [],
+                "append": lambda field, value: invoice[field].append(
+                    frappe._dict(value)
+                ),
+            }
+        )
+
+        with (
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.resolve_manual_qr_suspense_account",
+                return_value="Manual QR Suspense - TC",
+            ) as resolve_suspense,
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._resolve_mode_of_payment_context",
+                return_value={"account": "Cash - TC", "type": "Bank"},
+            ),
+        ):
+            _append_payment_rows(invoice, order)
+
+        resolve_suspense.assert_called_once_with(order)
+        self.assertEqual(invoice.payments[0].account, "Manual QR Suspense - TC")
+
+    def test_native_invoice_before_save_refresh_cannot_restore_cash_for_static_qr(self):
+        order = self.make_fb_order_stub()
+        order.payments = [
+            frappe._dict(
+                {
+                    "source_payment_id": "PAY-STATIC-SNAPSHOT-1",
+                    "payment_method": "DuitNow QR",
+                    "payment_channel_code": "static_qr",
+                    "settlement_status": "pending_reconciliation",
+                    "suspense_account": "Manual QR Suspense - TC",
+                }
+            )
+        ]
+        invoice_payment = frappe._dict(
+            {
+                "custom_fb_source_payment_id": "PAY-STATIC-SNAPSHOT-1",
+                "mode_of_payment": "DuitNow QR",
+                "account": "Cash - TC",
+            }
+        )
+        invoice = frappe._dict(
+            {
+                "custom_fb_order": order.name,
+                "company": self.company,
+                "currency": "MYR",
+                "payments": [invoice_payment],
+            }
+        )
+
+        with (
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.frappe.get_doc",
+                return_value=order,
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.validate_manual_qr_suspense_account",
+                return_value="Manual QR Suspense - TC",
+            ) as validate_suspense,
+        ):
+            enforce_static_qr_payment_accounts(invoice)
+
+        validate_suspense.assert_called_once()
+        self.assertEqual(invoice_payment.account, "Manual QR Suspense - TC")
+
     def test_verified_maybank_qr_projects_only_through_account_policy(self):
         order = self.make_fb_order_stub()
         order.payments = [
@@ -679,6 +770,7 @@ class TestSalesInvoiceService(unittest.TestCase):
             "DuitNow QR",
             self.company,
             "MYR",
+            None,
         )
         self.assertEqual(invoice.payments[0].account, "QR Clearing - TC")
         self.assertEqual(invoice.payments[0].type, "Bank")
@@ -818,6 +910,7 @@ class TestSalesInvoiceService(unittest.TestCase):
             "DuitNow QR",
             self.company,
             "MYR",
+            None,
         )
         self.assertEqual(invoice.payments[0].account, "QR Clearing - TC")
 

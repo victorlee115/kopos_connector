@@ -22,7 +22,9 @@ DEFAULT_ALLOWED_ORIGINS = frozenset({"https://emerchant.maybank2u.com.my:8443"})
 DEFAULT_DEVICE_NAME = "Samsung Galaxy Tab A11 Small"
 DEFAULT_DEVICE_OS = "Android"
 # Compatibility aliases for support tooling that displays the defaults. Runtime
-# provider requests use the immutable values persisted in Maybank Settings.
+# provider requests use the immutable values persisted in a branch-scoped
+# Maybank QRPayBiz Account.  The singleton remains available only for the
+# compatibility migration path.
 DEVICE_NAME = DEFAULT_DEVICE_NAME
 DEVICE_OS = DEFAULT_DEVICE_OS
 PROVIDER_DEVICE_ID_FIELD = "provider_device_id"
@@ -168,6 +170,98 @@ def _status_transport_evidence(
 
 def _site_cache_key(key: str) -> str:
     return f"{key}:{frappe.local.site}"
+
+
+def _auth_scope_for(
+    username: object,
+    user_type: object,
+    outlet_id: object,
+    base_url: object,
+) -> str:
+    """Build the cache scope shared by provider clients and rotation cleanup."""
+
+    raw = "|".join(
+        [
+            cstr(username),
+            cstr(user_type),
+            cstr(outlet_id),
+            cstr(base_url).rstrip("/"),
+        ]
+    )
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def invalidate_account_auth_cache(account_doc: Any) -> None:
+    """Delete every cached auth token bound to one credential principal.
+
+    A credential may be shared by several POS Profiles, and historical QR
+    transactions retain their original outlet snapshot after reassignment.  We
+    therefore invalidate profile and transaction outlet scopes, without ever
+    reading or logging the PIN.
+    """
+
+    username = cstr(getattr(account_doc, "username", None)).strip()
+    user_type = cstr(getattr(account_doc, "user_type", None)).strip() or "merchant"
+    base_url = validate_base_url(
+        cstr(getattr(account_doc, "base_url", None)).strip() or DEFAULT_BASE_URL,
+        allow_mock=_explicit_mock_mode_enabled(),
+    )
+    account_name = cstr(getattr(account_doc, "name", None)).strip()
+    if not username or not account_name:
+        return
+
+    outlets: set[str] = set()
+    sources = (
+        (
+            "POS Profile",
+            {
+                "custom_kopos_maybank_qrpaybiz_account": account_name,
+            },
+            "custom_kopos_maybank_outlet_id",
+        ),
+        (
+            "Maybank QR Transaction",
+            {"maybank_qrpaybiz_account": account_name},
+            "outlet_id",
+        ),
+    )
+    for doctype, filters, fieldname in sources:
+        try:
+            rows = frappe.get_all(
+                doctype,
+                filters=filters,
+                fields=[fieldname],
+                limit_page_length=0,
+            )
+        except Exception:
+            # A partially migrated site may not have the historical table yet;
+            # profile cleanup still proceeds and the next migration retries it.
+            rows = []
+        outlets.update(
+            cstr(
+                row.get(fieldname)
+                if isinstance(row, dict)
+                else getattr(row, fieldname, None)
+            ).strip()
+            for row in rows
+        )
+
+    cache = frappe.cache()
+    for outlet_id in sorted(outlet for outlet in outlets if outlet):
+        scope = _auth_scope_for(username, user_type, outlet_id, base_url)
+        for key in (
+            _site_cache_key(f"maybank_jwt:{scope}"),
+            _site_cache_key(f"maybank_outlet_token:{scope}"),
+        ):
+            delete = getattr(cache, "delete", None) or getattr(
+                cache, "delete_value", None
+            )
+            if not callable(delete):
+                frappe.throw(
+                    "Maybank authentication cache cannot be invalidated; credential rotation was not applied",
+                    frappe.ValidationError,
+                )
+            delete(key)
 
 
 def _config_value(name: str, default: object = None) -> object:
@@ -463,10 +557,12 @@ class MaybankClient:
         self.session = _create_session()
 
     def _auth_scope(self) -> str:
-        raw = "|".join(
-            [self.username, self.user_type, self.outlet_id, self.base_url.rstrip("/")]
+        return _auth_scope_for(
+            self.username,
+            self.user_type,
+            self.outlet_id,
+            self.base_url,
         )
-        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
     def _jwt_cache_key(self) -> str:
         return _site_cache_key(f"maybank_jwt:{self._auth_scope()}")
@@ -492,6 +588,7 @@ class MaybankClient:
 
     @classmethod
     def from_settings(cls) -> "MaybankClient":
+        """Compatibility-only constructor for legacy tools and migration."""
         s = frappe.get_single("Maybank Settings")
         if not s.enabled:
             frappe.throw("Maybank QRPayBiz is not enabled")
@@ -506,6 +603,63 @@ class MaybankClient:
             provider_device_os=cstr(getattr(s, PROVIDER_DEVICE_OS_FIELD, None)),
             allow_mock=_explicit_mock_mode_enabled(),
         )
+
+    @classmethod
+    def from_account_doc(
+        cls,
+        account_doc: Any,
+        outlet_id: str,
+        *,
+        require_enabled: bool = False,
+    ) -> "MaybankClient":
+        """Build a client from one immutable credential principal."""
+
+        if require_enabled and not int(getattr(account_doc, "enabled", 0) or 0):
+            frappe.throw("Maybank QRPayBiz Account is disabled", frappe.ValidationError)
+        resolved_outlet = cstr(outlet_id).strip()
+        if not resolved_outlet:
+            frappe.throw("Maybank outlet ID is required on the POS Profile", frappe.ValidationError)
+        encrypted_pin = account_doc.get_password("encrypted_pin") or ""
+        return cls(
+            username=cstr(getattr(account_doc, "username", None)),
+            encrypted_pin=encrypted_pin,
+            user_type=cstr(getattr(account_doc, "user_type", None)) or "merchant",
+            outlet_id=resolved_outlet,
+            base_url=cstr(getattr(account_doc, "base_url", None)) or DEFAULT_BASE_URL,
+            provider_device_id=cstr(getattr(account_doc, PROVIDER_DEVICE_ID_FIELD, None)),
+            provider_device_name=cstr(getattr(account_doc, PROVIDER_DEVICE_NAME_FIELD, None)),
+            provider_device_os=cstr(getattr(account_doc, PROVIDER_DEVICE_OS_FIELD, None)),
+            allow_mock=_explicit_mock_mode_enabled(),
+        )
+
+    @classmethod
+    def from_device(cls, device_id: str) -> "MaybankClient":
+        from kopos_connector.services.maybank.branch_config import (
+            profile_for_device,
+            require_provider_binding,
+        )
+
+        profile = profile_for_device(device_id)
+        account, outlet = require_provider_binding(profile, for_new_payment=True)
+        return cls.from_account_doc(account, outlet, require_enabled=True)
+
+    @classmethod
+    def from_transaction(cls, transaction_doc: Any) -> "MaybankClient":
+        """Recover a transaction using its persisted account/outlet snapshot."""
+
+        if isinstance(transaction_doc, dict):
+            account_name = cstr(transaction_doc.get("maybank_qrpaybiz_account")).strip()
+            outlet = cstr(transaction_doc.get("outlet_id")).strip()
+        else:
+            account_name = cstr(getattr(transaction_doc, "maybank_qrpaybiz_account", None)).strip()
+            outlet = cstr(getattr(transaction_doc, "outlet_id", None)).strip()
+        if not account_name or not outlet:
+            frappe.throw(
+                "Maybank QR transaction provider snapshot is missing",
+                frappe.ValidationError,
+            )
+        account = frappe.get_doc("Maybank QRPayBiz Account", account_name)
+        return cls.from_account_doc(account, outlet, require_enabled=False)
 
     def _get_jwt(self, force_refresh: bool = False) -> str:
         cache_key = self._jwt_cache_key()

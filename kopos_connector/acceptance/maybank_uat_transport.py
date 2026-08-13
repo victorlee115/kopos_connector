@@ -121,7 +121,9 @@ def export_v1(
         capacity_fence_transaction=capacity_fence_transaction,
         bindings=bindings,
     )
-    client = MaybankClient.from_settings()
+    if not context.transactions:
+        _fail("Maybank UAT requires at least one transaction snapshot")
+    client = MaybankClient.from_transaction(context.transactions[0])
     if (
         client.base_url != context.provider_origin
         or cstr(client.outlet_id).strip() != context.outlet_id

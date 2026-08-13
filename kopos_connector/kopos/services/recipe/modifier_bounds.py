@@ -140,12 +140,12 @@ def _selection_type(value: object) -> Literal["single", "multiple"]:
 
 
 def _optional_override(value: object, label: str) -> int | None:
-    """Read a Frappe Int override whose persisted unset sentinel is zero.
+    """Read an override column that stores "unset" as zero rather than NULL.
 
-    Frappe child-table Int fields are ``not null default 0``. The authoring
-    contract has always treated zero as no override, so only a non-zero integer
-    can alter the modifier group's canonical rule. A recipe that needs zero as
-    a real selection bound must use a separate modifier group instead.
+    Frappe emits Int columns as ``not null default 0``, so an authoring row that
+    never set an override is indistinguishable from one pinned to zero. Zero is
+    therefore read as absent, matching how FB Recipe has always validated these
+    fields.
     """
 
     if value is None or value == "":

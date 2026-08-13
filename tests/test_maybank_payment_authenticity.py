@@ -144,7 +144,12 @@ def _transaction(**overrides: Any) -> dict[str, Any]:
         "maybank_status": 1,
         "sale_amount_sen": 1250,
         "device_id": "DEVICE-1",
+        "pos_profile": "Test POS Profile",
+        "maybank_qrpaybiz_account": "Maybank QRPayBiz Account - Test",
         "outlet_id": "OUTLET-1",
+        "suspense_account": "Manual QR Suspense - TC",
+        "clearing_account": "QR Clearing - TC",
+        "settlement_bank_account": "Settlement Bank - TC",
         "company": "Test Company",
         "currency": "MYR",
         "provider": "maybank_qr",
@@ -217,6 +222,15 @@ def _install_transaction_db(
 
     monkeypatch.setattr(service.frappe.db, "get_single_value", get_single_value)
     monkeypatch.setattr(service.frappe.db, "get_value", get_value)
+    monkeypatch.setattr(
+        service,
+        "profile_for_order",
+        lambda _order: SimpleNamespace(
+            company="Test Company",
+            currency="MYR",
+            custom_kopos_manual_qr_suspense_account="Manual QR Suspense - TC",
+        ),
+    )
     monkeypatch.setattr(
         service,
         "now_datetime",
@@ -632,6 +646,15 @@ def _install_static_reconciliation_db(monkeypatch):
 
     monkeypatch.setattr(service.frappe.db, "get_single_value", get_single_value)
     monkeypatch.setattr(service.frappe.db, "get_value", get_value)
+    monkeypatch.setattr(
+        service,
+        "profile_for_order",
+        lambda _order: SimpleNamespace(
+            company="Test Company",
+            currency="MYR",
+            custom_kopos_manual_qr_suspense_account="Manual QR Suspense - TC",
+        ),
+    )
     monkeypatch.setattr(service.frappe.db, "exists", lambda *args, **kwargs: False)
     monkeypatch.setattr(service.frappe.db, "sql", sql)
     monkeypatch.setattr(service.frappe.db, "set_value", set_value)

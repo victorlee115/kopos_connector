@@ -590,6 +590,8 @@ def build_transaction(
         device_id=device_id,
         sale_amount_sen=amount_sen,
         status="pending",
+        pos_profile="POS-MAIN",
+        maybank_qrpaybiz_account="Maybank QRPayBiz Account - Test",
         outlet_id="OUTLET-1",
         created_at=datetime(2026, 3, 13, 18, 4, 30),
         expires_at=datetime(2026, 3, 13, 18, 5, 30),

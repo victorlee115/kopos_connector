@@ -121,12 +121,24 @@ def test_delayed_maybank_smoke_refuses_non_smoke_outlet(monkeypatch) -> None:
     writes: list[tuple[object, ...]] = []
     monkeypatch.setattr(
         smoke.frappe.db,
-        "get_single_value",
-        lambda *_args: "LIVE-OUTLET-DO-NOT-TOUCH",
+        "get_value",
+        lambda doctype, filters, fieldname: (
+            "SMOKE-DEVICE-NAME"
+            if doctype == "KoPOS Device" and fieldname == "name"
+            else "LIVE-OUTLET-DO-NOT-TOUCH"
+            if doctype == "POS Profile"
+            and fieldname == "custom_kopos_maybank_outlet_id"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        smoke.frappe,
+        "get_doc",
+        lambda doctype, name: SimpleNamespace(pos_profile="SMOKE-POS-PROFILE"),
     )
     monkeypatch.setattr(
         smoke.frappe.db,
-        "set_single_value",
+        "set_value",
         lambda *args: writes.append(args),
         raising=False,
     )

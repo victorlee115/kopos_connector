@@ -117,7 +117,11 @@ def _resolve_generation_with_provider_reference(
             "resolution": "already_paid",
         }
 
-    client = MaybankClient.from_settings()
+    # The first provider status check intentionally happens before taking the
+    # mutable transaction row lock.  The immutable generation snapshot already
+    # contains the provider account/outlet binding, so use it as the client
+    # source instead of consulting the current POS Profile.
+    client = MaybankClient.from_transaction(snapshot)
     result = client.check_status(provider_transaction_refno)
     _validate_status_response(result)
     entry = _extract_status_entry(result)

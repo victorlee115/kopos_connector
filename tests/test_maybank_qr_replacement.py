@@ -34,6 +34,35 @@ SALE_FINGERPRINT = "a" * 64
 NOW = datetime.fromisoformat("2026-07-19T14:00:00+08:00")
 
 
+@pytest.fixture(autouse=True)
+def branch_scoped_provider_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    profile = SimpleNamespace(
+        name="Test POS Profile",
+        company=COMPANY,
+        currency=CURRENCY,
+        custom_kopos_automatic_qr_enabled=1,
+        custom_kopos_manual_qr_suspense_account="Manual QR Suspense - TC",
+        custom_kopos_qr_clearing_account="QR Clearing - TC",
+        custom_kopos_qr_settlement_bank_account="Settlement Bank - TC",
+    )
+    account = SimpleNamespace(
+        name="Maybank QRPayBiz Account - Test",
+        enabled=1,
+        get_password=lambda _field: "encrypted-pin",
+    )
+    monkeypatch.setattr(generation, "profile_for_device", lambda _device: profile)
+    monkeypatch.setattr(
+        generation,
+        "require_provider_binding",
+        lambda _profile, for_new_payment=True: (account, "OUTLET-1"),
+    )
+    monkeypatch.setattr(
+        generation,
+        "validate_settlement_bank_account",
+        lambda _profile, currency=None: "Settlement Bank - TC",
+    )
+
+
 def _request(
     reason: str = "unrenderable_display",
     reference: str = "MBB-REF-1",
@@ -78,6 +107,11 @@ def _attempt(
         "provider": "maybank_qr",
         "company": COMPANY,
         "device_id": DEVICE_ID,
+        "pos_profile": "Test POS Profile",
+        "maybank_qrpaybiz_account": "Maybank QRPayBiz Account - Test",
+        "suspense_account": "Manual QR Suspense - TC",
+        "clearing_account": "QR Clearing - TC",
+        "settlement_bank_account": "Settlement Bank - TC",
         "idempotency_key": resolved_key,
         "request_fingerprint": request_fingerprint,
         "replacement_reason": replacement_reason or None,
@@ -418,7 +452,7 @@ def test_rejected_replacement_never_constructs_or_calls_provider() -> None:
         patch.object(generation.frappe.db, "commit"),
         patch.object(
             generation.MaybankClient,
-            "from_settings",
+            "from_account_doc",
             client_factory,
         ),
     ):
@@ -526,7 +560,7 @@ def test_generation_persists_replacement_identity_without_parsing_dynamic_qr() -
         patch.object(generation.frappe, "get_doc", side_effect=get_doc),
         patch.object(
             generation.MaybankClient,
-            "from_settings",
+            "from_account_doc",
             return_value=provider_client,
         ),
         patch.object(
@@ -563,6 +597,8 @@ def _prepared_sale() -> dict[str, str]:
         "fb_order": FB_ORDER,
         "fb_order_payment": FB_ORDER_PAYMENT,
         "accepted_sale_fingerprint": SALE_FINGERPRINT,
+        "device_id": DEVICE_ID,
+        "pos_profile": "Test POS Profile",
         "payment_method": "DuitNow QR",
         "company": COMPANY,
         "currency": CURRENCY,

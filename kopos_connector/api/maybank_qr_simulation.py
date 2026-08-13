@@ -67,7 +67,11 @@ def _maybank_desk_simulation_context_enabled() -> bool:
     try:
         if _mock_payment_mode() != MAYBANK_MOCK_PAYMENT_MODE_MANUAL:
             return False
-        return MaybankClient.from_settings().base_url == "mock://"
+        return bool(
+            frappe.db.exists(
+                "Maybank QRPayBiz Account", {"enabled": 1, "base_url": "mock://"}
+            )
+        )
     except Exception:
         return False
 
@@ -88,9 +92,11 @@ def _require_maybank_desk_simulation_context() -> None:
             "Maybank payment simulation requires maybank_mock_payment_mode=manual",
             frappe.ValidationError,
         )
-    if MaybankClient.from_settings().base_url != "mock://":
+    if not frappe.db.exists(
+        "Maybank QRPayBiz Account", {"enabled": 1, "base_url": "mock://"}
+    ):
         frappe.throw(
-            "Maybank payment simulation requires enabled Maybank Settings with API Base URL mock://",
+            "Maybank payment simulation requires an enabled branch-scoped Maybank account with API Base URL mock://",
             frappe.ValidationError,
         )
 

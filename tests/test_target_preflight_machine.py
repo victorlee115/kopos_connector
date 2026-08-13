@@ -154,7 +154,7 @@ def _install_success_helpers(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     monkeypatch.setattr(
         preflight,
         "_provider_controls_check",
-        lambda expected_account_type: {
+        lambda expected_account_type, company: {
             "passed": True,
             "mockDisabled": True,
             "simulationDisabled": True,
@@ -607,7 +607,7 @@ def test_provider_probe_rejects_any_mock_or_simulation_opt_in(
     )
 
     with pytest.raises(frappe.ValidationError, match="production-only"):
-        preflight._provider_controls_check("corporate")
+        preflight._provider_controls_check("corporate", "Test Company")
 
 
 def _production_maybank_settings(
@@ -642,12 +642,24 @@ def test_provider_probe_requires_credentials_account_type_and_device_metadata(
     monkeypatch.setattr(preflight, "_config_value", lambda *args: 0)
     monkeypatch.setattr(
         preflight.frappe,
-        "get_single",
-        lambda doctype: _production_maybank_settings(),
+        "get_all",
+        lambda *args, **kwargs: [
+            {
+                "name": "UAT POS Profile",
+                "custom_kopos_maybank_qrpaybiz_account": "Maybank QRPayBiz Account - UAT",
+                "custom_kopos_maybank_outlet_id": "outlet-private",
+            }
+        ],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        preflight.frappe,
+        "get_doc",
+        lambda _doctype, _name: _production_maybank_settings(),
         raising=False,
     )
 
-    proof = preflight._provider_controls_check("corporate")
+    proof = preflight._provider_controls_check("corporate", "Test Company")
 
     assert proof["usernamePresent"] is True
     assert proof["pinPresent"] is True
@@ -659,19 +671,19 @@ def test_provider_probe_requires_credentials_account_type_and_device_metadata(
 
     monkeypatch.setattr(
         preflight.frappe,
-        "get_single",
-        lambda doctype: _production_maybank_settings(pin=""),
+        "get_doc",
+        lambda _doctype, _name: _production_maybank_settings(pin=""),
     )
     with pytest.raises(frappe.ValidationError, match="production-only"):
-        preflight._provider_controls_check("corporate")
+        preflight._provider_controls_check("corporate", "Test Company")
 
     monkeypatch.setattr(
         preflight.frappe,
-        "get_single",
-        lambda doctype: _production_maybank_settings(account_type="merchant"),
+        "get_doc",
+        lambda _doctype, _name: _production_maybank_settings(account_type="merchant"),
     )
     with pytest.raises(frappe.ValidationError, match="production-only"):
-        preflight._provider_controls_check("corporate")
+        preflight._provider_controls_check("corporate", "Test Company")
 
 
 def test_machine_report_rejects_another_installed_runtime_inventory(

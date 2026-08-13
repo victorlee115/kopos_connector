@@ -58,6 +58,7 @@ SALE_ATTEMPT_STATUS_FIELDS = (
     "expires_at",
     "creation",
     "device_id",
+    "maybank_qrpaybiz_account",
     "provider",
     "currency",
     "fb_order",
@@ -196,7 +197,7 @@ def _resolve_existing_txn(
 
 
 def _poll_txn_status(txn: Any) -> str:
-    client = MaybankClient.from_settings()
+    client = MaybankClient.from_transaction(txn)
     result = client.check_status(txn.transaction_refno)
     return _apply_provider_poll_result(txn.name, result)
 

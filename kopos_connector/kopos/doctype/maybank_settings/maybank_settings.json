@@ -26,7 +26,8 @@
    "default": "0",
    "fieldname": "enabled",
    "fieldtype": "Check",
-   "label": "Enabled"
+   "label": "Enabled",
+   "read_only": 1
   },
   {
    "fieldname": "section_credentials",
@@ -37,12 +38,14 @@
    "fieldname": "username",
    "fieldtype": "Data",
    "label": "Username",
+   "read_only": 1,
    "reqd": 1
   },
   {
    "fieldname": "encrypted_pin",
    "fieldtype": "Password",
    "label": "PIN (PBKDF2 Encrypted)",
+   "read_only": 1,
    "reqd": 1
   },
   {
@@ -50,12 +53,14 @@
    "fieldname": "user_type",
    "fieldtype": "Select",
    "label": "Account Type",
-   "options": "merchant\ncashier\ncorporate"
+   "options": "merchant\ncashier\ncorporate",
+   "read_only": 1
   },
   {
    "fieldname": "outlet_id",
    "fieldtype": "Data",
    "label": "Default Outlet ID",
+   "read_only": 1,
    "reqd": 1
   },
   {
@@ -90,6 +95,7 @@
    "fieldname": "manual_qr_suspense_account",
    "fieldtype": "Link",
    "label": "Manual QR Suspense Account",
+   "read_only": 1,
    "options": "Account"
   },
   {
@@ -101,7 +107,8 @@
    "default": "https://emerchant.maybank2u.com.my:8443/api/",
    "fieldname": "base_url",
    "fieldtype": "Data",
-   "label": "API Base URL"
+   "label": "API Base URL",
+   "read_only": 1
   }
  ],
  "issingle": 1,
@@ -110,11 +117,11 @@
  "owner": "Administrator",
  "permissions": [
   {
-   "create": 1,
-   "delete": 1,
+   "create": 0,
+   "delete": 0,
    "read": 1,
    "role": "System Manager",
-   "write": 1
+   "write": 0
   }
  ],
  "sort_field": "modified",

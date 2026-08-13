@@ -21,6 +21,7 @@ from kopos_connector.api import (
     _maybank_qr_status as maybank_qr_status,
     maybank_qr,
 )
+from kopos_connector.kopos.services.accounting import maybank_payment_service
 
 
 DEVICE_ID = "TEST-DEVICE-A11"
@@ -36,6 +37,8 @@ def _prepared_sale() -> dict[str, str]:
         "fb_order": FB_ORDER,
         "fb_order_payment": FB_ORDER_PAYMENT,
         "accepted_sale_fingerprint": ACCEPTED_SALE_FINGERPRINT,
+        "device_id": DEVICE_ID,
+        "pos_profile": "Test POS Profile",
         "payment_method": "DuitNow QR",
         "company": "Test Company",
         "currency": "MYR",
@@ -43,12 +46,47 @@ def _prepared_sale() -> dict[str, str]:
 
 
 @pytest.fixture(autouse=True)
-def verified_qr_account_policy(monkeypatch: Any) -> None:
+def branch_scoped_qr_policy(monkeypatch: Any) -> SimpleNamespace:
+    profile = SimpleNamespace(
+        name="Test POS Profile",
+        company="Test Company",
+        currency="MYR",
+        custom_kopos_automatic_qr_enabled=1,
+        custom_kopos_manual_qr_suspense_account="Manual QR Suspense - TC",
+        custom_kopos_qr_clearing_account="QR Clearing - TC",
+        custom_kopos_qr_settlement_bank_account="Settlement Bank - TC",
+    )
+    account = SimpleNamespace(
+        name="Maybank QRPayBiz Account - Test",
+        enabled=1,
+        get_password=lambda _field: "encrypted-pin",
+    )
+    monkeypatch.setattr(
+        maybank_qr_generation,
+        "profile_for_device",
+        lambda _device_id: profile,
+    )
+    monkeypatch.setattr(
+        maybank_qr_generation,
+        "require_provider_binding",
+        lambda _profile, for_new_payment=True: (account, "OUTLET-1"),
+    )
+    monkeypatch.setattr(
+        maybank_qr_generation,
+        "validate_settlement_bank_account",
+        lambda _profile, currency=None: "Settlement Bank - TC",
+    )
+    monkeypatch.setattr(
+        maybank_payment_service,
+        "profile_for_order",
+        lambda _order: profile,
+    )
     monkeypatch.setattr(
         maybank_qr_generation,
         "resolve_verified_qr_settlement_account",
         lambda *_args: {"account": "QR Clearing - TC", "type": "Bank"},
     )
+    return profile
 
 
 def _install_fence_capture(
@@ -75,7 +113,7 @@ def _install_fence_capture(
     return events, captured
 
 
-def _configuration_failure(_cls: type[Any]) -> Any:
+def _configuration_failure(_cls: type[Any], *_args: Any, **_kwargs: Any) -> Any:
     raise frappe.ValidationError("Maybank QRPayBiz is not enabled")
 
 
@@ -107,7 +145,7 @@ def test_configuration_rejection_is_bound_and_durably_fenced_before_release(
     )
     monkeypatch.setattr(
         maybank_qr_generation.MaybankClient,
-        "from_settings",
+        "from_account_doc",
         classmethod(_configuration_failure),
     )
     monkeypatch.setattr(
@@ -207,7 +245,7 @@ def test_static_winner_late_generation_is_durably_fenced_and_replays_exactly(
     )
     monkeypatch.setattr(
         maybank_qr_generation.MaybankClient,
-        "from_settings",
+        "from_account_doc",
         classmethod(lambda _cls: pytest.fail("provider must not be contacted")),
     )
 
@@ -267,7 +305,9 @@ def test_invalid_suspense_account_is_durably_fenced_without_provider_contact(
     monkeypatch: Any,
     configured_account: str | None,
     account_row: dict[str, Any] | None,
+    branch_scoped_qr_policy: SimpleNamespace,
 ) -> None:
+    branch_scoped_qr_policy.custom_kopos_manual_qr_suspense_account = configured_account
     events, captured = _install_fence_capture(monkeypatch)
     monkeypatch.setattr(
         maybank_qr_generation,
@@ -317,7 +357,7 @@ def test_invalid_suspense_account_is_durably_fenced_without_provider_contact(
     monkeypatch.setattr(maybank_qr_generation.frappe.db, "get_value", get_value)
     monkeypatch.setattr(
         maybank_qr_generation.MaybankClient,
-        "from_settings",
+        "from_account_doc",
         classmethod(lambda _cls: pytest.fail("provider client must not be created")),
     )
     monkeypatch.setattr(
@@ -347,6 +387,7 @@ def test_invalid_suspense_account_is_durably_fenced_without_provider_contact(
 
 def test_valid_suspense_account_is_proved_before_provider_contact(
     monkeypatch: Any,
+    branch_scoped_qr_policy: SimpleNamespace,
 ) -> None:
     events: list[str] = []
     client = SimpleNamespace(outlet_id="OUTLET-1")
@@ -372,14 +413,6 @@ def test_valid_suspense_account_is_proved_before_provider_contact(
         lambda **_kwargs: _prepared_sale(),
     )
 
-    def get_single_value(doctype: str, fieldname: str) -> str:
-        assert (doctype, fieldname) == (
-            "Maybank Settings",
-            "manual_qr_suspense_account",
-        )
-        events.append("suspense_setting_checked")
-        return "Manual QR Suspense - TC"
-
     def get_value(
         doctype: str,
         name: str,
@@ -393,8 +426,12 @@ def test_valid_suspense_account_is_proved_before_provider_contact(
         events.append("suspense_ledger_checked")
         return _account_row()
 
-    def from_settings(_cls: type[Any]) -> Any:
-        events.append("provider_settings_loaded")
+    def resolve_suspense(order: Any) -> str:
+        events.append("suspense_profile_checked")
+        return maybank_payment_service.resolve_manual_qr_suspense_account(order)
+
+    def from_account_doc(_cls: type[Any], *_args: Any, **_kwargs: Any) -> Any:
+        events.append("provider_account_loaded")
         return client
 
     def generate_provider_qr(
@@ -412,14 +449,12 @@ def test_valid_suspense_account_is_proved_before_provider_contact(
             "2026-03-13T18:06:00+08:00",
         )
 
-    monkeypatch.setattr(
-        maybank_qr_generation.frappe.db, "get_single_value", get_single_value
-    )
+    monkeypatch.setattr(maybank_qr_generation, "resolve_manual_qr_suspense_account", resolve_suspense)
     monkeypatch.setattr(maybank_qr_generation.frappe.db, "get_value", get_value)
     monkeypatch.setattr(
         maybank_qr_generation.MaybankClient,
-        "from_settings",
-        classmethod(from_settings),
+        "from_account_doc",
+        classmethod(from_account_doc),
     )
     monkeypatch.setattr(
         maybank_qr_generation,
@@ -455,9 +490,9 @@ def test_valid_suspense_account_is_proved_before_provider_contact(
 
     assert response == {"status": "ok"}
     assert events == [
-        "suspense_setting_checked",
+        "suspense_profile_checked",
         "suspense_ledger_checked",
-        "provider_settings_loaded",
+        "provider_account_loaded",
         "rate_limit_checked",
         "reservation_inserted",
         "commit",
@@ -768,8 +803,10 @@ def test_provider_call_failure_never_returns_local_release_authority(
     )
     monkeypatch.setattr(
         maybank_qr_generation.MaybankClient,
-        "from_settings",
-        classmethod(lambda _cls: SimpleNamespace(outlet_id="OUTLET-1")),
+        "from_account_doc",
+        classmethod(
+            lambda _cls, *_args, **_kwargs: SimpleNamespace(outlet_id="OUTLET-1")
+        ),
     )
     monkeypatch.setattr(
         maybank_qr_generation,

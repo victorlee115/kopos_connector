@@ -11,6 +11,7 @@ from frappe import _
 from frappe.utils import cint, cstr, now_datetime
 
 from kopos_connector.services.static_qr_commissioning import (
+    commissioned_profile_static_qr_config,
     commissioned_static_qr_config,
 )
 from kopos_connector.utils.diagnostics import log_sanitized_error
@@ -583,7 +584,23 @@ def serialize_device_config(
 
     static_qr_config: dict[str, str] | None = None
     static_qr_status = "not_configured"
-    if cstr(getattr(device_doc, "static_qr_payload", None)):
+    profile_static_payload = cstr(
+        getattr(profile_doc, "custom_kopos_static_qr_payload", None)
+    ).strip()
+    if profile_static_payload:
+        try:
+            static_qr_config = commissioned_profile_static_qr_config(
+                profile_doc,
+                expected_company=company,
+            )
+            static_qr_status = "commissioned"
+        except frappe.ValidationError as error:
+            static_qr_status = "invalid"
+            log_sanitized_error(
+                "KoPOS POS Profile static QR commissioning validation failed",
+                error,
+            )
+    elif cstr(getattr(device_doc, "static_qr_payload", None)):
         try:
             static_qr_config = commissioned_static_qr_config(
                 device_doc,

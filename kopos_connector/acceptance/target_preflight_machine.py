@@ -690,7 +690,7 @@ def _qr_account_check(company: str, currency: str) -> dict[str, Any]:
     }
 
 
-def _provider_controls_check(expected_account_type: str) -> dict[str, Any]:
+def _provider_controls_check(expected_account_type: str, company: str) -> dict[str, Any]:
     allow_mock = bool(cint(_config_value("allow_maybank_mock", 0)))
     allow_simulation = bool(
         cint(_config_value("allow_maybank_desk_simulation", 0))
@@ -706,12 +706,29 @@ def _provider_controls_check(expected_account_type: str) -> dict[str, Any]:
     ).lower()
     if required_account_type not in MAYBANK_ACCOUNT_TYPES:
         _fail("expected_maybank_account_type is not supported")
+    # Reject any mock, simulation, developer, or test opt-in before looking up
+    # branch data.  A production preflight must fail for the unsafe mode itself
+    # rather than masking it behind a missing-profile error.
+    if allow_mock or allow_simulation or developer_mode or test_mode:
+        _fail("Target Maybank configuration is not production-only and complete")
 
-    settings = frappe.get_single("Maybank Settings")
+    profiles = frappe.get_all(
+        "POS Profile",
+        filters={"company": company, "custom_kopos_automatic_qr_enabled": 1},
+        fields=["name", "custom_kopos_maybank_qrpaybiz_account", "custom_kopos_maybank_outlet_id"],
+        limit_page_length=0,
+    )
+    if not profiles:
+        _fail("No enabled branch-scoped Maybank POS Profile was found")
+    profile = profiles[0]
+    account_name = cstr(profile.get("custom_kopos_maybank_qrpaybiz_account")).strip()
+    if not account_name:
+        _fail("The target POS Profile has no Maybank QRPayBiz Account")
+    settings = frappe.get_doc("Maybank QRPayBiz Account", account_name)
     enabled = bool(cint(getattr(settings, "enabled", 0)))
     username = cstr(getattr(settings, "username", None)).strip()
     account_type = cstr(getattr(settings, "user_type", None)).strip().lower()
-    outlet_id = cstr(getattr(settings, "outlet_id", None)).strip()
+    outlet_id = cstr(profile.get("custom_kopos_maybank_outlet_id")).strip()
     provider_device_id = cstr(
         getattr(settings, maybank_client.PROVIDER_DEVICE_ID_FIELD, None)
     ).strip().lower()
@@ -877,7 +894,7 @@ def run_v1(
     index_check = _index_check()
     job_check = _scheduler_check()
     qr_account_check = _qr_account_check(target_company, target_currency)
-    provider_controls = _provider_controls_check(expected_maybank_account_type)
+    provider_controls = _provider_controls_check(expected_maybank_account_type, target_company)
     catalog = catalog_preflight.build_enabled_device_catalog_proof_v1()
     final_static_qr_check = _static_qr_check(target_company)
     _require_stable_enabled_device_configuration(
