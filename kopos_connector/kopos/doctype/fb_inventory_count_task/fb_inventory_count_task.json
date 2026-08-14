@@ -16,5 +16,5 @@
   {"fieldname":"status","fieldtype":"Select","label":"Status","options":"Assigned\nSubmitted\nReviewed\nCancelled","default":"Assigned","reqd":1},
   {"fieldname":"lines","fieldtype":"Table","label":"Items","options":"FB Inventory Count Task Line"}
  ],
- "permissions": [{"role":"Stock User","read":1,"write":1,"create":1},{"role":"Stock Manager","read":1,"write":1,"create":1}]
+ "permissions": [{"role":"Company Director","read":1,"write":1,"create":1},{"role":"KoPOS Device API","read":1}]
 }

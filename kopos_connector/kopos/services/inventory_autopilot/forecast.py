@@ -9,7 +9,7 @@ from typing import Sequence
 MIN_TRAINING_DAYS = 14
 MIN_TEST_DAYS = 14
 MIN_RELIABLE_DAYS = MIN_TRAINING_DAYS + MIN_TEST_DAYS
-MODEL_ORDER = ("same_weekday_seasonal_naive", "trailing_open_day_median", "ewma")
+MODEL_ORDER = ("same_weekday_seasonal_naive", "trailing_open_day_median")
 ALGORITHM_VERSION = "inventory-autopilot-forecast-v1"
 
 
@@ -109,12 +109,6 @@ def _predict(values: tuple[Decimal, ...], model: str) -> Decimal:
         return weekday_values[-1] if weekday_values else values[-1]
     if model == "trailing_open_day_median":
         return Decimal(str(median(values[-7:])))
-    if model == "ewma":
-        result = values[0]
-        alpha = Decimal("0.3")
-        for value in values[1:]:
-            result = alpha * value + (Decimal("1") - alpha) * result
-        return result
     raise ValueError(f"unsupported forecast model: {model}")
 
 

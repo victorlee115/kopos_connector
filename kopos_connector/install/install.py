@@ -235,6 +235,8 @@ def create_kopos_custom_fields():
                 "options": "auto\nforce_available\nforce_unavailable",
                 "default": "auto",
                 "insert_after": "kopos_availability_section",
+                "hidden": 1,
+                "read_only": 1,
                 "description": "Controls item availability in KoPOS:<br>"
                 "• Auto - Use stock level (if tracking enabled)<br>"
                 "• Force Available - Always show as available<br>"
@@ -246,6 +248,8 @@ def create_kopos_custom_fields():
                 "fieldtype": "Check",
                 "default": 0,
                 "insert_after": "custom_kopos_availability_mode",
+                "hidden": 1,
+                "read_only": 1,
                 "description": "Enable stock-based availability checking in KoPOS",
             },
             {
@@ -254,6 +258,8 @@ def create_kopos_custom_fields():
                 "fieldtype": "Float",
                 "default": 1,
                 "insert_after": "custom_kopos_track_stock",
+                "hidden": 1,
+                "read_only": 1,
                 "depends_on": "eval:doc.custom_kopos_track_stock==1",
                 "description": "Minimum quantity required for item to be available",
             },
@@ -556,6 +562,10 @@ def ensure_kopos_client_scripts() -> None:
 def ensure_kopos_roles() -> None:
     if not frappe.db.exists("Role", KOPOS_DEVICE_API_ROLE):
         frappe.get_doc({"doctype": "Role", "role_name": KOPOS_DEVICE_API_ROLE}).insert(
+            ignore_permissions=True
+        )
+    if not frappe.db.exists("Role", "Company Director"):
+        frappe.get_doc({"doctype": "Role", "role_name": "Company Director"}).insert(
             ignore_permissions=True
         )
 

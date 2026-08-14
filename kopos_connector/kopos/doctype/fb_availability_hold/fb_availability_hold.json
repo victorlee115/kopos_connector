@@ -48,7 +48,8 @@
     "owner": "Administrator",
     "permissions": [
         {"create": 1, "delete": 0, "read": 1, "write": 1, "role": "System Manager"},
-        {"create": 1, "delete": 0, "read": 1, "write": 1, "role": "KoPOS Manager"}
+        {"create": 1, "delete": 0, "read": 1, "write": 1, "role": "Company Director"},
+        {"create": 1, "delete": 0, "read": 1, "write": 1, "role": "KoPOS Device API"}
     ],
     "sort_field": "active_from",
     "sort_order": "DESC",

@@ -15,7 +15,7 @@ from kopos_connector.kopos.services.inventory_autopilot.exceptions import (
 from kopos_connector.kopos.services.inventory_autopilot.recipe_compiler import (
     compile_recipe_components,
 )
-from kopos_connector.kopos.services.inventory_autopilot.holds import restore_automation_holds
+from kopos_connector.kopos.services.inventory_autopilot.holds import create_reliable_automation_holds, restore_automation_holds
 from kopos_connector.kopos.services.projection.log_service import (
     create_projection_log,
     update_projection_state,
@@ -28,6 +28,7 @@ INVENTORY_WORKER_LOCK_TTL_SECONDS = 5 * 60
 INVENTORY_LEASE_SECONDS = 2 * 60
 DEFAULT_BATCH_SIZE = 20
 DEFAULT_MAX_RETRIES = 8
+INVENTORY_RETRY_SETTING = "kopos_inventory_projection_retry_max_attempts"
 COMPARE_AND_DELETE_LUA = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('del', KEYS[1])
@@ -58,6 +59,7 @@ def recover_inventory_projections(*, batch_size: int | None = None) -> list[dict
     if not token:
         return []
     try:
+        create_reliable_automation_holds()
         restore_automation_holds()
         limit = max(1, min(cint(batch_size or DEFAULT_BATCH_SIZE), 100))
         rows = frappe.get_all(
@@ -330,7 +332,7 @@ def _record_failure(order: Any, log_name: str, policy: Any, error: Exception) ->
 def _configured_retry_limit() -> int:
     config = getattr(frappe, "conf", None)
     getter = getattr(config, "get", None) if config is not None else None
-    configured = cint(getter("kopos_projection_retry_max_attempts") if callable(getter) else None)
+    configured = cint(getter(INVENTORY_RETRY_SETTING) if callable(getter) else None)
     return max(1, min(configured or DEFAULT_MAX_RETRIES, 50))
 
 

@@ -25,6 +25,7 @@ from kopos_connector.kopos.services.inventory_autopilot.holds import (
 )
 from kopos_connector.kopos.services.inventory_autopilot.legacy_migration import (
     discover_legacy_values,
+    legacy_input_digest,
     migrate_legacy_values,
 )
 from kopos_connector.kopos.services.inventory_autopilot.exceptions import upsert_inventory_exception
@@ -32,8 +33,11 @@ from kopos_connector.kopos.services.inventory_autopilot.document_coordinator imp
     create_and_submit_material_request,
     create_draft_purchase_order,
     outbound_configuration_safe,
+    persist_inventory_plan,
 )
 from kopos_connector.kopos.services.inventory_autopilot.replenishment import ReplenishmentLine
+from kopos_connector.kopos.services.inventory_autopilot.promotion_economics import calculate_promotion_economics, PromotionEconomicsError
+from kopos_connector.utils.manager_approval import verify_manager_approval_token
 
 
 @frappe.whitelist(methods=["GET", "POST"])
@@ -196,6 +200,65 @@ def get_autopilot_health(warehouse: str | None = None) -> dict[str, Any]:
 
 
 @frappe.whitelist(methods=["GET"])
+def get_menu_authoring_summary() -> dict[str, Any]:
+    """Return a non-financial completion checklist for Company Directors."""
+
+    _require_company_director("Menu authoring")
+    if not frappe.has_permission("FB Recipe", ptype="read"):
+        frappe.throw(_("Menu authoring requires Company Director permission"), frappe.PermissionError)
+    item_fields = ["name", "is_stock_item", "disabled"]
+    if frappe.get_meta("Item").has_field("custom_fb_item_role"):
+        item_fields.append("custom_fb_item_role")
+    item_rows = frappe.get_all(
+        "Item",
+        filters={"disabled": 0},
+        fields=item_fields,
+        limit_page_length=10_000,
+    )
+    recipe_rows = frappe.get_all(
+        "FB Recipe",
+        fields=["name", "status", "sellable_item"],
+        limit_page_length=10_000,
+    ) if frappe.db.exists("DocType", "FB Recipe") else []
+    active_items = {cstr(row.get("sellable_item")).strip() for row in recipe_rows if cstr(row.get("status")).strip() == "Active"}
+    stock_items = {
+        cstr(row.get("name")).strip()
+        for row in item_rows
+        if cstr(row.get("name")).strip()
+    }
+    unclassified_items = sum(1 for row in item_rows if not cstr(row.get("custom_fb_item_role")).strip()) if "custom_fb_item_role" in item_fields else len(item_rows)
+    bom_count = frappe.db.count("BOM", {"docstatus": 1}) if frappe.db.exists("DocType", "BOM") else 0
+    modifier_count = frappe.db.count("FB Modifier Group") if frappe.db.exists("DocType", "FB Modifier Group") else 0
+    promotion_count = frappe.db.count("Promotion", {"disable": 0}) if frappe.db.exists("DocType", "Promotion") else 0
+    missing = len(stock_items - active_items)
+    return {
+        "items_ready": len(active_items & stock_items),
+        "items_missing_recipe": missing,
+        "published_recipes": sum(1 for row in recipe_rows if cstr(row.get("status")).strip() == "Active"),
+        "draft_recipes": sum(1 for row in recipe_rows if cstr(row.get("status")).strip() == "Draft"),
+        "boms": int(bom_count or 0),
+        "modifier_groups": int(modifier_count or 0),
+        "active_promotions": int(promotion_count or 0),
+        "unclassified_items": unclassified_items,
+        "ready": missing == 0 and unclassified_items == 0 and bool(recipe_rows),
+    }
+
+
+@frappe.whitelist(methods=["POST"])
+def get_promotion_economics(*, payload: str | dict[str, Any]) -> dict[str, Any]:
+    """Calculate exact director-only promotion economics; never expose it to POS."""
+
+    _require_company_director("Promotion economics")
+    if not frappe.has_permission("Promotion", ptype="read"):
+        frappe.throw(_("Promotion economics requires Company Director permission"), frappe.PermissionError)
+    value = _parse_json_object(payload, "Promotion economics payload")
+    try:
+        return {"status": "ok", "economics": calculate_promotion_economics(items=value.get("items", []), scenarios=value.get("scenarios"))}
+    except PromotionEconomicsError as error:
+        return {"status": "blocked", "reason": cstr(error), "planning_mode": "Review First"}
+
+
+@frappe.whitelist(methods=["GET"])
 def get_edge_snapshot(
     *,
     device_id: str,
@@ -264,7 +327,7 @@ def get_count_task(*, device_id: str, task_id: str | None = None) -> dict[str, A
 
 @frappe.whitelist(methods=["GET", "POST"])
 def preflight_legacy_inventory_values(
-    *, company: str | None = None, warehouse: str | None = None, apply: bool = False
+    *, company: str | None = None, warehouse: str | None = None, apply: bool = False, input_digest: str | None = None
 ) -> dict[str, Any]:
     """Discover legacy availability values before outlet cutover.
 
@@ -272,20 +335,25 @@ def preflight_legacy_inventory_values(
     manager action and retains the source fields for the retention window.
     """
 
+    _require_company_director("Legacy inventory migration")
     if not frappe.has_permission("Item", ptype="read"):
         frappe.throw(_("Legacy inventory preflight requires Item read permission"), frappe.PermissionError)
     values = discover_legacy_values(company=cstr(company).strip() or None)
     if not cint(apply):
-        return {"status": "dry_run", "values": values, "unknown_count": sum(1 for value in values if value["availability_mode"].strip().lower() not in {"", "auto", "force_available", "force_unavailable"})}
+        return {"status": "dry_run", "input_digest": legacy_input_digest(values), "values": values, "unknown_count": sum(1 for value in values if value["availability_mode"].strip().lower() not in {"", "auto", "force_available", "force_unavailable"})}
     resolved_company = cstr(company).strip()
     resolved_warehouse = cstr(warehouse).strip()
     if not resolved_company or not resolved_warehouse:
         frappe.throw(_("Company and warehouse are required to apply legacy migration"), frappe.ValidationError)
+    expected_digest = legacy_input_digest(values)
+    if cstr(input_digest).strip() != expected_digest:
+        frappe.throw(_("Legacy migration input digest does not match the reviewed dry run"), frappe.ValidationError)
     return {"status": "applied", **migrate_legacy_values(company=resolved_company, warehouse=resolved_warehouse, dry_run=False)}
 
 
 @frappe.whitelist(methods=["POST"])
 def create_inventory_material_request(*, payload: str | dict[str, Any]) -> dict[str, Any]:
+    _require_company_director("Material Request creation")
     if not frappe.has_permission("Material Request", ptype="create"):
         frappe.throw(_("Material Request creation requires manager permission"), frappe.PermissionError)
     value = _parse_json_object(payload, "Material Request payload")
@@ -299,9 +367,11 @@ def create_inventory_material_request(*, payload: str | dict[str, Any]) -> dict[
         for line in value.get("lines", [])
         if isinstance(line, dict)
     )
+    requested_purpose = cstr(value.get("purpose") or "Purchase").strip()
+    purpose = "Material Transfer" if requested_purpose.lower() in {"transfer", "material transfer"} else ("Manufacture" if requested_purpose.lower() == "manufacture" else "Purchase")
     result = create_and_submit_material_request(
         company=cstr(value.get("company")),
-        purpose=cstr(value.get("purpose") or "Purchase"),
+        purpose=purpose,
         required_date=value.get("required_date"),
         lines=lines,
         gates=value.get("gates") if isinstance(value.get("gates"), dict) else {},
@@ -311,7 +381,28 @@ def create_inventory_material_request(*, payload: str | dict[str, Any]) -> dict[
 
 
 @frappe.whitelist(methods=["POST"])
+def create_inventory_plan(*, payload: str | dict[str, Any]) -> dict[str, Any]:
+    _require_company_director("Inventory planning")
+    if not frappe.has_permission("FB Inventory Plan", ptype="create"):
+        frappe.throw(_("Inventory planning requires Company Director permission"), frappe.PermissionError)
+    value = _parse_json_object(payload, "Inventory plan payload")
+    result = persist_inventory_plan(
+        company=cstr(value.get("company")),
+        warehouse=cstr(value.get("warehouse")),
+        planning_date=value.get("planning_date"),
+        input_hash=cstr(value.get("input_hash")),
+        policy_hash=cstr(value.get("policy_hash")),
+        forecast_state=cstr(value.get("forecast_state") or "Not ready"),
+        gates=value.get("gates") if isinstance(value.get("gates"), dict) else {},
+        lines=value.get("lines") if isinstance(value.get("lines"), list) else [],
+    )
+    _set_health_marker("last_plan")
+    return result
+
+
+@frappe.whitelist(methods=["POST"])
 def create_inventory_draft_purchase_order(*, payload: str | dict[str, Any]) -> dict[str, Any]:
+    _require_company_director("Draft Purchase Order creation")
     if not frappe.has_permission("Purchase Order", ptype="create"):
         frappe.throw(_("Draft Purchase Order creation requires manager permission"), frappe.PermissionError)
     value = _parse_json_object(payload, "Draft Purchase Order payload")
@@ -356,12 +447,89 @@ def create_availability_hold(
 
 
 @frappe.whitelist(methods=["POST"])
-def release_availability_hold(*, device_id: str, hold_id: str) -> dict[str, Any]:
+def release_availability_hold(*, device_id: str, hold_id: str, reason: str | None = None) -> dict[str, Any]:
     require_device_context(device_id=device_id)
+    hold_source = cstr(frappe.db.get_value("FB Availability Hold", hold_id, "source")).strip()
+    if hold_source != "automation":
+        frappe.throw(_("POS can release only an automation stock hold; manual, safety, quality and equipment holds require a director"), frappe.PermissionError)
+    if not cstr(reason).strip():
+        frappe.throw(_("A manager reason is required to release an automation stock hold"), frappe.ValidationError)
     with lock_device_for_operational_mutation(device_id=device_id):
         name = release_hold(hold_id)
         frappe.db.commit()
     return {"status": "accepted", "hold_id": name}
+
+
+@frappe.whitelist(methods=["POST"])
+def confirm_count_reconciliation(*, device_id: str, payload: str | dict[str, Any]) -> dict[str, Any]:
+    """Submit one reviewed Stock Reconciliation using the existing approval token."""
+
+    device = require_device_context(device_id=device_id)
+    value = _parse_json_object(payload, "Count confirmation payload")
+    command_id = cstr(value.get("command_id")).strip()
+    observation_id = cstr(value.get("observation_id")).strip()
+    token = cstr(value.get("manager_approval_token")).strip()
+    staff_id = cstr(value.get("staff_user") or value.get("staff_id") or getattr(device, "api_user", None)).strip()
+    if not command_id or not observation_id or not staff_id:
+        frappe.throw(_("Count confirmation requires command_id, observation_id and staff_user"), frappe.ValidationError)
+    try:
+        verify_manager_approval_token(
+            token,
+            device_id=device_id,
+            staff_id=staff_id,
+            action="inventory_count_reconciliation",
+            resource_id=observation_id,
+            idempotency_key=command_id,
+        )
+    except Exception as error:
+        frappe.throw(_("Manager approval for this count is invalid: {0}").format(cstr(error)), frappe.PermissionError)
+    observation = frappe.db.get_value(
+        "FB Inventory Count Observation",
+        {"observation_id": observation_id},
+        ["name", "reconciliation", "status"],
+        as_dict=True,
+    )
+    if not observation or not cstr(observation.get("reconciliation")).strip():
+        frappe.throw(_("The count observation has no draft reconciliation to confirm"), frappe.ValidationError)
+    reconciliation = frappe.get_doc("Stock Reconciliation", observation["reconciliation"])
+    if reconciliation.docstatus == 1:
+        return {"status": "replayed", "observation_id": observation_id, "reconciliation": reconciliation.name}
+    reconciliation.submit()
+    frappe.db.set_value("FB Inventory Count Observation", observation["name"], "status", "Accepted", update_modified=False)
+    if cstr(value.get("task_id")).strip() and frappe.db.exists("FB Inventory Count Task", value["task_id"]):
+        frappe.db.set_value("FB Inventory Count Task", value["task_id"], "status", "Reviewed", update_modified=False)
+    frappe.db.commit()
+    return {"status": "accepted", "observation_id": observation_id, "reconciliation": reconciliation.name}
+
+
+@frappe.whitelist(methods=["POST"])
+def accept_preparation_task(*, device_id: str, payload: str | dict[str, Any]) -> dict[str, Any]:
+    return _handle_guided_task(device_id=device_id, payload=payload, task_type="accept_preparation_task")
+
+
+@frappe.whitelist(methods=["POST"])
+def start_preparation_task(*, device_id: str, payload: str | dict[str, Any]) -> dict[str, Any]:
+    return _handle_guided_task(device_id=device_id, payload=payload, task_type="start_preparation_task")
+
+
+@frappe.whitelist(methods=["POST"])
+def complete_preparation_task(*, device_id: str, payload: str | dict[str, Any]) -> dict[str, Any]:
+    return _handle_guided_task(device_id=device_id, payload=payload, task_type="complete_preparation_task")
+
+
+@frappe.whitelist(methods=["POST"])
+def submit_purchase_receipt(*, device_id: str, payload: str | dict[str, Any]) -> dict[str, Any]:
+    return _handle_guided_task(device_id=device_id, payload=payload, task_type="submit_purchase_receipt")
+
+
+@frappe.whitelist(methods=["POST"])
+def submit_transfer_dispatch(*, device_id: str, payload: str | dict[str, Any]) -> dict[str, Any]:
+    return _handle_guided_task(device_id=device_id, payload=payload, task_type="submit_transfer_dispatch")
+
+
+@frappe.whitelist(methods=["POST"])
+def submit_transfer_receipt(*, device_id: str, payload: str | dict[str, Any]) -> dict[str, Any]:
+    return _handle_guided_task(device_id=device_id, payload=payload, task_type="submit_transfer_receipt")
 
 
 @frappe.whitelist(methods=["POST"])
@@ -425,6 +593,7 @@ def submit_count_observation(*, device_id: str, payload: str | dict[str, Any]) -
         if existing:
             return {"status": "replayed", "observation_id": observation_id, "reconciliation": existing}
         reconciliation = frappe.new_doc("Stock Reconciliation")
+        reconciliation.flags.ignore_permissions = True
         reconciliation.name = observation_name
         reconciliation.company = cstr(profile.get("company"))
         reconciliation.purpose = "Stock Reconciliation"
@@ -615,6 +784,218 @@ def _parse_json_object(payload: str | dict[str, Any], label: str) -> dict[str, A
     if not isinstance(value, dict):
         frappe.throw(_("{0} must be an object").format(label), frappe.ValidationError)
     return value
+
+
+def _require_company_director(action: str) -> None:
+    roles = set(frappe.get_roles(frappe.session.user))
+    if "Company Director" not in roles and "System Manager" not in roles:
+        frappe.throw(_("{0} requires Company Director permission").format(action), frappe.PermissionError)
+
+
+def _handle_guided_task(*, device_id: str, payload: str | dict[str, Any], task_type: str) -> dict[str, Any]:
+    """Execute one fixed POS task against a standard ERPNext document."""
+
+    device = require_device_context(device_id=device_id)
+    value = _parse_json_object(payload, f"{task_type} payload")
+    command_id = cstr(value.get("command_id")).strip()
+    config_version = value.get("device_config_version")
+    if (
+        not command_id
+        or len(command_id) > 160
+        or isinstance(config_version, bool)
+        or not isinstance(config_version, int)
+        or config_version < 0
+    ):
+        frappe.throw(_("{0} requires command_id and device_config_version").format(task_type), frappe.ValidationError)
+    if cstr(value.get("device_id") or device_id).strip() != device_id:
+        frappe.throw(_("Guided task device_id does not match the authenticated device"), frappe.ValidationError)
+    _validate_guided_task_scope(device_id, value, task_type)
+    doctype = {
+        "accept_preparation_task": "Work Order",
+        "start_preparation_task": "Work Order",
+        "complete_preparation_task": "Stock Entry",
+        "submit_purchase_receipt": "Purchase Receipt",
+        "submit_transfer_dispatch": "Stock Entry",
+        "submit_transfer_receipt": "Stock Entry",
+    }[task_type]
+    with lock_device_for_operational_mutation(device_id=device_id):
+        existing = _find_command_document(doctype, command_id)
+        if existing:
+            return {"status": "replayed", "task_type": task_type, "document": existing}
+        if task_type == "accept_preparation_task":
+            document = _create_work_order_from_task(value, command_id)
+        elif task_type == "start_preparation_task":
+            document = _submit_work_order(value)
+        elif task_type == "complete_preparation_task":
+            document = _create_manufacture_entry(value, command_id)
+        elif task_type == "submit_purchase_receipt":
+            document = _create_purchase_receipt(value, command_id)
+        else:
+            document = _create_transfer_entry(value, command_id, dispatch=task_type == "submit_transfer_dispatch")
+        frappe.db.commit()
+    return {"status": "accepted", "task_type": task_type, "document": document}
+
+
+def _find_command_document(doctype: str, command_id: str) -> str | None:
+    if not frappe.db.exists("DocType", doctype):
+        frappe.throw(_("{0} is not installed").format(doctype), frappe.ValidationError)
+    meta = frappe.get_meta(doctype)
+    if not meta.has_field("custom_kopos_inventory_command_id"):
+        return None
+    return cstr(frappe.db.get_value(doctype, {"custom_kopos_inventory_command_id": command_id}, "name")).strip() or None
+
+
+def _create_work_order_from_task(value: dict[str, Any], command_id: str) -> str:
+    for fieldname in ("company", "item_code", "qty", "fg_warehouse"):
+        if not cstr(value.get(fieldname)).strip() and fieldname != "qty":
+            frappe.throw(_("Preparation task requires {0}").format(fieldname), frappe.ValidationError)
+    document = frappe.new_doc("Work Order")
+    _set_document_value(document, "company", value.get("company"))
+    _set_document_value(document, "production_item", value.get("item_code"))
+    _set_document_value(document, "qty", value.get("qty"))
+    _set_document_value(document, "fg_warehouse", value.get("fg_warehouse"))
+    _set_document_value(document, "bom_no", value.get("bom_no"))
+    _set_document_value(document, "custom_kopos_inventory_command_id", command_id)
+    document.insert(ignore_permissions=True)
+    return document.name
+
+
+def _submit_work_order(value: dict[str, Any]) -> str:
+    name = cstr(value.get("work_order")).strip()
+    if not name:
+        frappe.throw(_("Preparation start requires a Work Order"), frappe.ValidationError)
+    document = frappe.get_doc("Work Order", name)
+    if document.docstatus == 0:
+        document.flags.ignore_permissions = True
+        document.submit()
+    elif document.docstatus != 1:
+        frappe.throw(_("This Work Order is not available to start"), frappe.ValidationError)
+    return document.name
+
+
+def _create_manufacture_entry(value: dict[str, Any], command_id: str) -> str:
+    work_order = cstr(value.get("work_order")).strip()
+    if not work_order:
+        frappe.throw(_("Preparation completion requires a Work Order"), frappe.ValidationError)
+    order = frappe.get_doc("Work Order", work_order)
+    if order.docstatus != 1:
+        frappe.throw(_("Start the Work Order before recording batch completion"), frappe.ValidationError)
+    document = frappe.new_doc("Stock Entry")
+    document.stock_entry_type = "Manufacture"
+    document.purpose = "Manufacture"
+    _set_document_value(document, "company", value.get("company") or getattr(order, "company", None))
+    _set_document_value(document, "work_order", work_order)
+    _set_document_value(document, "fg_completed_qty", value.get("actual_yield") or value.get("qty"))
+    _set_document_value(document, "to_warehouse", value.get("fg_warehouse") or getattr(order, "fg_warehouse", None))
+    _set_document_value(document, "custom_kopos_inventory_command_id", command_id)
+    for row in value.get("items", []):
+        if not isinstance(row, dict) or not cstr(row.get("item_code")).strip():
+            frappe.throw(_("Batch completion contains an invalid component row"), frappe.ValidationError)
+        document.append("items", {
+            "item_code": row["item_code"],
+            "qty": row.get("qty"),
+            "s_warehouse": row.get("warehouse") or row.get("s_warehouse"),
+        })
+    document.insert(ignore_permissions=True)
+    document.flags.ignore_permissions = True
+    document.submit()
+    return document.name
+
+
+def _create_purchase_receipt(value: dict[str, Any], command_id: str) -> str:
+    purchase_order = cstr(value.get("purchase_order")).strip()
+    if not purchase_order:
+        frappe.throw(_("Receiving requires a Purchase Order"), frappe.ValidationError)
+    po = frappe.get_doc("Purchase Order", purchase_order)
+    if po.docstatus != 1:
+        frappe.throw(_("Only a submitted Purchase Order can be received"), frappe.ValidationError)
+    document = frappe.new_doc("Purchase Receipt")
+    _set_document_value(document, "supplier", po.supplier)
+    _set_document_value(document, "company", po.company)
+    _set_document_value(document, "custom_kopos_inventory_command_id", command_id)
+    po_rows = {cstr(row.name): row for row in po.items}
+    lines = value.get("lines")
+    if not isinstance(lines, list) or not lines:
+        frappe.throw(_("Receiving requires accepted item lines"), frappe.ValidationError)
+    for line in lines:
+        if not isinstance(line, dict):
+            frappe.throw(_("Receiving contains an invalid line"), frappe.ValidationError)
+        source = po_rows.get(cstr(line.get("purchase_order_item")))
+        item_code = cstr(line.get("item_code") or getattr(source, "item_code", None)).strip()
+        line_warehouse = cstr(line.get("warehouse") or getattr(source, "warehouse", None)).strip()
+        device_warehouse = cstr(value.get("warehouse")).strip()
+        if device_warehouse and line_warehouse and line_warehouse != device_warehouse:
+            frappe.throw(_("Receiving cannot post outside the device warehouse"), frappe.PermissionError)
+        if not source or not item_code or Decimal(str(line.get("qty", 0))) <= 0:
+            frappe.throw(_("Receiving line does not match the submitted Purchase Order"), frappe.ValidationError)
+        document.append("items", {
+            "item_code": item_code,
+            "qty": line["qty"],
+            "rate": getattr(source, "rate", 0),
+            "purchase_order": purchase_order,
+            "purchase_order_item": source.name,
+            "warehouse": line_warehouse,
+        })
+    document.insert(ignore_permissions=True)
+    document.flags.ignore_permissions = True
+    document.submit()
+    return document.name
+
+
+def _create_transfer_entry(value: dict[str, Any], command_id: str, *, dispatch: bool) -> str:
+    company = cstr(value.get("company")).strip()
+    from_warehouse = cstr(value.get("from_warehouse") if dispatch else value.get("transit_warehouse")).strip()
+    to_warehouse = cstr(value.get("transit_warehouse") if dispatch else value.get("to_warehouse")).strip()
+    if not company or not from_warehouse or not to_warehouse:
+        frappe.throw(_("Transfer requires company, source, transit and destination warehouses"), frappe.ValidationError)
+    lines = value.get("lines")
+    if not isinstance(lines, list) or not lines:
+        frappe.throw(_("Transfer requires item lines"), frappe.ValidationError)
+    document = frappe.new_doc("Stock Entry")
+    document.stock_entry_type = "Material Transfer"
+    document.purpose = "Material Transfer"
+    document.company = company
+    _set_document_value(document, "custom_kopos_inventory_command_id", command_id)
+    for line in lines:
+        if not isinstance(line, dict) or not cstr(line.get("item_code")).strip() or Decimal(str(line.get("qty", 0))) <= 0:
+            frappe.throw(_("Transfer contains an invalid line"), frappe.ValidationError)
+        document.append("items", {
+            "item_code": line["item_code"],
+            "qty": line["qty"],
+            "s_warehouse": from_warehouse,
+            "t_warehouse": to_warehouse,
+            "batch_no": line.get("batch_no"),
+        })
+    document.insert(ignore_permissions=True)
+    document.flags.ignore_permissions = True
+    document.submit()
+    return document.name
+
+
+def _validate_guided_task_scope(device_id: str, value: dict[str, Any], task_type: str) -> None:
+    """Keep a device command inside its assigned outlet warehouses."""
+
+    profile = resolve_catalog_pos_profile(device_id=device_id) or {}
+    assigned_warehouse = cstr(profile.get("warehouse")).strip()
+    if not assigned_warehouse:
+        frappe.throw(_("This device has no assigned inventory warehouse"), frappe.ValidationError)
+    if task_type == "accept_preparation_task":
+        controlled = cstr(value.get("fg_warehouse")).strip()
+    elif task_type == "complete_preparation_task":
+        controlled = cstr(value.get("fg_warehouse") or value.get("warehouse")).strip()
+    elif task_type == "submit_purchase_receipt":
+        controlled = assigned_warehouse
+    elif task_type == "submit_transfer_dispatch":
+        controlled = cstr(value.get("from_warehouse")).strip()
+    else:
+        controlled = cstr(value.get("to_warehouse")).strip()
+    if controlled and controlled != assigned_warehouse:
+        frappe.throw(_("This guided task is outside the device warehouse"), frappe.PermissionError)
+
+
+def _set_document_value(document: Any, fieldname: str, value: Any) -> None:
+    if value not in (None, "") and frappe.get_meta(document.doctype).has_field(fieldname):
+        setattr(document, fieldname, value)
 
 
 def _payload_hash(payload: dict[str, Any]) -> str:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 import frappe
@@ -33,12 +35,26 @@ def discover_legacy_values(*, company: str | None = None) -> list[dict[str, Any]
     ]
 
 
+def legacy_input_digest(values: list[dict[str, Any]]) -> str:
+    """Bind execution to the exact dry-run rows a director reviewed."""
+
+    encoded = json.dumps(values, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def migrate_legacy_values(*, warehouse: str, company: str, dry_run: bool = True) -> dict[str, Any]:
-    report = {"warehouse": warehouse, "company": company, "dry_run": dry_run, "migrated": [], "blocked": []}
-    for value in discover_legacy_values(company=company):
+    values = discover_legacy_values(company=company)
+    unknown = [
+        {**value, "reason": "unknown_availability_mode"} for value in values
+        if value["availability_mode"].strip().lower() not in {"", "auto", "force_available", "force_unavailable"}
+    ]
+    report = {"warehouse": warehouse, "company": company, "dry_run": dry_run, "input_digest": legacy_input_digest(values), "migrated": [], "blocked": unknown}
+    if unknown and not dry_run:
+        report["status"] = "blocked"
+        return report
+    for value in values:
         mode = value["availability_mode"].strip().lower()
         if mode not in {"", "auto", "force_available", "force_unavailable"}:
-            report["blocked"].append({**value, "reason": "unknown_availability_mode"})
             continue
         report["migrated"].append(value)
         if dry_run or mode in {"", "auto"}:

@@ -1,0 +1,15 @@
+{
+ "doctype": "DocType",
+ "name": "FB Inventory Plan Line",
+ "module": "KoPOS",
+ "istable": 1,
+ "fields": [
+  {"fieldname":"item","fieldtype":"Link","label":"Item","options":"Item","reqd":1},
+  {"fieldname":"action","fieldtype":"Select","label":"Action","options":"Purchase\nManufacture\nTransfer","reqd":1},
+  {"fieldname":"warehouse","fieldtype":"Link","label":"Warehouse","options":"Warehouse","reqd":1},
+  {"fieldname":"quantity","fieldtype":"Float","label":"Proposed Quantity","reqd":1},
+  {"fieldname":"uom","fieldtype":"Link","label":"UOM","options":"UOM","reqd":1},
+  {"fieldname":"reason","fieldtype":"Small Text","label":"Plain-English Reason"}
+ ],
+ "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]
+}

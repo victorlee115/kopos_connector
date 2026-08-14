@@ -19,5 +19,5 @@
   {"fieldname":"status","fieldtype":"Select","label":"Status","options":"Accepted\nConflict\nReplayed","default":"Accepted","reqd":1},
   {"fieldname":"reconciliation","fieldtype":"Link","label":"Draft Reconciliation","options":"Stock Reconciliation","read_only":1}
  ],
- "permissions": [{"role":"Stock User","read":1,"create":1},{"role":"Stock Manager","read":1,"write":1,"create":1}]
+ "permissions": [{"role":"Company Director","read":1,"write":1,"create":1},{"role":"KoPOS Device API","read":1,"write":1,"create":1}]
 }

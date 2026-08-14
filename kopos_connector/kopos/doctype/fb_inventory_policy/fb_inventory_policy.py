@@ -30,6 +30,14 @@ class FBInventoryPolicy(Document):
                 "Inventory automation cannot be Active before an immutable cutover is recorded",
                 frappe.ValidationError,
             )
+        if cstr(getattr(self, "automation_state", None)).strip() == "Active" and not cstr(getattr(self, "opening_stock_reconciliation", None)).strip():
+            frappe.throw(
+                "Inventory automation cannot be Active before the opening Stock Reconciliation is submitted",
+                frappe.ValidationError,
+            )
+        max_age = int(getattr(self, "max_source_age_minutes", 30) or 30)
+        if max_age < 1 or max_age > 24 * 60:
+            frappe.throw("Maximum source age must be between 1 and 1440 minutes", frappe.ValidationError)
 
         before = self.get_doc_before_save()
         previous_token = cstr(getattr(before, "cutover_token", None)).strip() if before else ""

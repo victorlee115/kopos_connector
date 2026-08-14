@@ -108,6 +108,54 @@ def restore_automation_holds() -> int:
     return released
 
 
+def create_reliable_automation_holds() -> int:
+    """Create zero-capacity holds only after a current reliable plan exists."""
+
+    if not frappe.db.exists("DocType", "FB Inventory Availability Rule"):
+        return 0
+    rows = frappe.get_all(
+        "FB Inventory Availability Rule",
+        filters={"mode": "Auto Pause & Restore"},
+        fields=["target_type", "target_id", "company", "warehouse"],
+        limit_page_length=10_000,
+    )
+    created = 0
+    for row in rows:
+        if cstr(row.get("target_type")) != "Item" or not _reliable_warehouse(cstr(row.get("warehouse"))):
+            continue
+        qty = frappe.db.get_value("Bin", {"item_code": row.get("target_id"), "warehouse": row.get("warehouse")}, "actual_qty")
+        try:
+            is_zero = Decimal(str(qty or 0)) <= Decimal("0")
+        except (InvalidOperation, ValueError):
+            is_zero = True
+        if not is_zero:
+            continue
+        create_hold(
+            target_type="Item",
+            target_id=cstr(row.get("target_id")),
+            company=cstr(row.get("company")),
+            warehouse=cstr(row.get("warehouse")),
+            source="automation",
+            reason_code="automation_zero_capacity",
+            reason_label="Selling paused because reliable stock evidence shows zero usable capacity",
+            originating_doctype="FB Inventory Availability Rule",
+            originating_name=cstr(row.get("name")),
+            idempotency_key=f"automation-zero-capacity:{row.get('company')}:{row.get('warehouse')}:{row.get('target_id')}",
+        )
+        created += 1
+    if created:
+        frappe.db.commit()
+    return created
+
+
+def _reliable_warehouse(warehouse: str) -> bool:
+    if not warehouse or not frappe.db.exists("DocType", "FB Inventory Plan"):
+        return False
+    if frappe.db.exists("FB Inventory Exception", {"warehouse": warehouse, "status": "Open", "severity": "Critical"}):
+        return False
+    return bool(frappe.db.exists("FB Inventory Plan", {"warehouse": warehouse, "forecast_state": "Reliable", "status": ("in", ["Ready", "Executed"])}))
+
+
 def choose_availability(*, commercially_enabled: bool, holds: list[dict[str, Any]], warning: bool) -> str:
     if not commercially_enabled:
         return "held"

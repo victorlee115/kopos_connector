@@ -32,7 +32,10 @@ def _component_row(row: Mapping[str, Any], index: int) -> tuple[str, Decimal]:
     item = str(row.get("item") or "").strip()
     if not item:
         raise RecipeCompilerError(f"component {index} is missing an Item")
-    quantity = _decimal(row.get("stock_qty", row.get("qty")), f"component {index} quantity")
+    raw_quantity = row.get("stock_qty")
+    if raw_quantity in (None, ""):
+        raw_quantity = _decimal(row.get("qty"), f"component {index} quantity") * _decimal(row.get("conversion_factor", 1), f"component {index} conversion factor")
+    quantity = _decimal(raw_quantity, f"component {index} quantity")
     if str(row.get("stock_uom") or row.get("uom") or "").strip() == "":
         raise RecipeCompilerError(f"component {index} is missing a stock UOM")
     return item, quantity
@@ -43,10 +46,10 @@ def _modifier_rows(modifiers: Iterable[Mapping[str, Any]]) -> Iterable[tuple[str
         item = str(modifier.get("item") or modifier.get("stock_item") or "").strip()
         if not item:
             raise RecipeCompilerError(f"modifier {index} is missing an Item")
-        quantity = _decimal(
-            modifier.get("stock_qty", modifier.get("qty")),
-            f"modifier {index} quantity",
-        )
+        raw_quantity = modifier.get("stock_qty")
+        if raw_quantity in (None, ""):
+            raw_quantity = _decimal(modifier.get("qty"), f"modifier {index} quantity") * _decimal(modifier.get("conversion_factor", 1), f"modifier {index} conversion factor")
+        quantity = _decimal(raw_quantity, f"modifier {index} quantity")
         yield item, quantity
 
 

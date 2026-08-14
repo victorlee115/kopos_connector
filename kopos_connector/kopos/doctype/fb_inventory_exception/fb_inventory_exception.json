@@ -46,7 +46,7 @@
     "owner": "Administrator",
     "permissions": [
         {"create": 1, "delete": 0, "read": 1, "write": 1, "role": "System Manager"},
-        {"create": 1, "delete": 0, "read": 1, "write": 1, "role": "KoPOS Manager"}
+        {"create": 1, "delete": 0, "read": 1, "write": 1, "role": "Company Director"}
     ],
     "sort_field": "modified",
     "sort_order": "DESC",
