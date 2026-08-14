@@ -32,7 +32,7 @@ class KoPOSInventoryAutopilotPage {
 				<div class="alert alert-info">${__("Inventory automation is a read model. Use standard ERPNext forms for counts, receiving, transfers, manufacture, and Purchase Order approval.")}</div>
 				<div class="row align-items-end mb-4">
 					<div class="col-sm-5"><div data-warehouse></div></div>
-					<div class="col-sm-7"><p class="text-muted mb-0">${__("Choose a warehouse to see its health and the next safe action. Nothing is changed by Refresh health.")}</p></div>
+					<div class="col-sm-7"><p class="text-muted mb-0">${__("Select a warehouse to load its health and next safe action. Refresh health only reads state; it never changes stock.")}</p></div>
 				</div>
 				<div class="row kopos-autopilot-cards">
 					${["Needs you", "Today", "Stock", "Counts", "Plans & buying", "Settings"].map((title) => `<div class="col-sm-6 col-lg-4"><div class="card h-100"><div class="card-body d-flex flex-column"><h4>${__(title)}</h4><p class="text-muted">${__("Open the linked standard ERPNext records and resolve the next safe action.")}</p><div data-card="${title}" class="mb-3">${__("Choose a warehouse first")}</div><button class="btn btn-sm btn-default mt-auto align-self-start" type="button" data-open-card="${title}">${__("Open records")}</button></div></div></div>`).join("")}

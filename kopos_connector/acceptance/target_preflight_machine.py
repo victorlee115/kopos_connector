@@ -57,7 +57,12 @@ REQUIRED_FIELD_SPECS = preflight_contract.REQUIRED_FIELD_SPECS
 REQUIRED_SCHEDULER_FREQUENCIES = (
     preflight_contract.REQUIRED_SCHEDULER_FREQUENCIES
 )
-REQUIRED_SCHEDULER_JOBS = tuple(REQUIRED_SCHEDULER_FREQUENCIES)
+REQUIRED_CRON_SCHEDULER_FREQUENCIES = (
+    preflight_contract.REQUIRED_CRON_SCHEDULER_FREQUENCIES
+)
+REQUIRED_SCHEDULER_JOBS = tuple(
+    (*REQUIRED_SCHEDULER_FREQUENCIES, *REQUIRED_CRON_SCHEDULER_FREQUENCIES)
+)
 OBSOLETE_SCHEDULER_JOBS = preflight_contract.OBSOLETE_SCHEDULER_JOBS
 
 PRODUCER_CLOSURE_MODULES: tuple[ModuleType, ...] = (
@@ -579,16 +584,29 @@ def _scheduler_check() -> dict[str, Any]:
         and not isinstance(all_methods, (str, bytes))
         else []
     )
+    configured_cron = (
+        connector_hooks.scheduler_events.get("cron", {})
+        if isinstance(connector_hooks.scheduler_events, Mapping)
+        else {}
+    )
+    normalized_cron: dict[str, str] = {}
+    if isinstance(configured_cron, Mapping):
+        for expression, methods in configured_cron.items():
+            for method in _flatten_scheduler_hooks(methods):
+                normalized_cron[method] = cstr(expression).strip()
+    commercial_required = set(REQUIRED_SCHEDULER_FREQUENCIES)
+    expected_cron = dict(REQUIRED_CRON_SCHEDULER_FREQUENCIES)
     if (
         configured != set(required)
         or len(normalized_all) != len(set(normalized_all))
-        or set(normalized_all) != set(required)
+        or set(normalized_all) != commercial_required
+        or normalized_cron != expected_cron
     ):
         _fail("Connector scheduler hooks differ from the reviewed required jobs")
     rows = frappe.get_all(
         "Scheduled Job Type",
         filters={"method": ["in", required]},
-        fields=["method", "stopped", "frequency"],
+        fields=["method", "stopped", "frequency", "cron_format"],
         order_by="method asc",
         limit_page_length=0,
     )
@@ -601,16 +619,26 @@ def _scheduler_check() -> dict[str, Any]:
     invalid = []
     for method in required:
         matches = rows_by_method[method]
-        expected_frequency = REQUIRED_SCHEDULER_FREQUENCIES[method]
+        if method in REQUIRED_SCHEDULER_FREQUENCIES:
+            expected_frequency = "All"
+            expected_cron_format = ""
+        else:
+            expected_frequency = "Cron"
+            expected_cron_format = expected_cron[method]
         if (
             len(matches) != 1
             or cint(_value(matches[0], "stopped"))
             or cstr(_value(matches[0], "frequency")).strip()
             != expected_frequency
+            or cstr(_value(matches[0], "cron_format")).strip()
+            != expected_cron_format
         ):
             invalid.append(method)
             continue
-        observed.append({"method": method, "frequency": expected_frequency})
+        observed_row = {"method": method, "frequency": expected_frequency}
+        if expected_cron_format:
+            observed_row["cronFormat"] = expected_cron_format
+        observed.append(observed_row)
     obsolete = sorted(
         cstr(row)
         for row in frappe.get_all(

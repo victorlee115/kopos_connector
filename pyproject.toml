@@ -7,7 +7,7 @@ name = "kopos_connector"
 description = "ERPNext v16 connector for KoPOS mobile POS"
 readme = "README.md"
 requires-python = ">=3.10"
-dynamic = ["version"]
+version = "1.0.11"
 authors = [{ name = "KoPOS", email = "support@kopos.my" }]
 license = "GPL-3.0-only"
 keywords = ["erpnext", "frappe", "offline-first", "point-of-sale"]
@@ -32,9 +32,6 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/victorlee115/kopos_connector"
 Repository = "https://github.com/victorlee115/kopos_connector"
-
-[tool.setuptools.dynamic]
-version = { attr = "kopos_connector.__version__" }
 
 [tool.bench.frappe-dependencies]
 frappe = ">=16.0.0,<17.0.0"

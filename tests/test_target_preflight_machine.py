@@ -561,7 +561,18 @@ def test_scheduler_probe_requires_one_active_all_frequency_row_per_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     required_rows = [
-        {"method": method, "stopped": 0, "frequency": "All"}
+        {
+            "method": method,
+            "stopped": 0,
+            "frequency": (
+                "All"
+                if method in preflight.REQUIRED_SCHEDULER_FREQUENCIES
+                else "Cron"
+            ),
+            "cron_format": preflight.REQUIRED_CRON_SCHEDULER_FREQUENCIES.get(
+                method, ""
+            ),
+        }
         for method in preflight.REQUIRED_SCHEDULER_JOBS
     ]
 

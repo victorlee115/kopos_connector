@@ -1,10 +1,12 @@
 from setuptools import find_namespace_packages, setup
 
-from kopos_connector import __version__
-
 setup(
     name="kopos_connector",
-    version=__version__,
+    # Keep build metadata independent from importing the application package.
+    # PEP 517 resolves this file in an isolated environment before the source
+    # package is importable; importing kopos_connector here made candidate
+    # builds fail before Frappe could install the app.
+    version="1.0.11",
     # Frappe modules intentionally use PEP 420 namespace directories in several
     # runtime paths. find_packages() silently omitted those modules from wheels,
     # so a source checkout worked while the published candidate was incomplete.
