@@ -47,6 +47,18 @@ from .provisioning import (
     get_device_config as get_device_config_payload,
     redeem_pos_provisioning as redeem_pos_provisioning_payload,
 )
+from .inventory import (
+    create_availability_hold,
+    create_inventory_draft_purchase_order,
+    create_inventory_material_request,
+    get_autopilot_health,
+    get_count_task,
+    get_edge_snapshot,
+    preflight_legacy_inventory_values,
+    release_availability_hold,
+    report_device_inventory_state,
+    submit_count_observation,
+)
 
 
 _REFUND_REASON_OPTIONS = {
@@ -176,11 +188,12 @@ def ping() -> None:
     _write_response({"message": "KoPOS ERPNext API ready"})
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def get_catalog(
     since: str | None = None,
     device_id: str | None = None,
     known_version: str | None = None,
+    known_overlay_version: str | None = None,
 ) -> None:
     """Public KoPOS endpoint for catalog sync."""
     try:
@@ -193,6 +206,7 @@ def get_catalog(
                     since=since,
                     device_id=device_id,
                     known_version=known_version,
+                    known_overlay_version=known_overlay_version,
                 )
             )
     except Exception as error:
@@ -2258,8 +2272,14 @@ __all__ = [
     "get_payment_readiness",
     "get_qr_setup_preview",
     "apply_qr_configuration",
+    "create_availability_hold",
+    "create_inventory_draft_purchase_order",
+    "create_inventory_material_request",
     "get_catalog",
+    "get_autopilot_health",
+    "get_count_task",
     "get_device_config",
+    "get_edge_snapshot",
     "get_item_modifiers",
     "get_order_history",
     "get_promotion_review_queue",
@@ -2271,6 +2291,7 @@ __all__ = [
     "prepare_automatic_qr_sale",
     "process_refund",
     "publish_promotion_snapshot",
+    "preflight_legacy_inventory_values",
     "redeem_pos_provisioning",
     "register_device_credential_recovery",
     "request_device_safe_reset",
@@ -2279,9 +2300,12 @@ __all__ = [
     "resolve_duplicate_automatic_qr_refund",
     "resolve_maybank_qr_generation",
     "resolve_secondary_static_qr_claim",
+    "release_availability_hold",
+    "report_device_inventory_state",
     "review_promotion_reconciliation",
     "simulate_maybank_qr_payment",
     "submit_order",
+    "submit_count_observation",
     "upload_manual_qr_receipt",
     "void_order",
 ]

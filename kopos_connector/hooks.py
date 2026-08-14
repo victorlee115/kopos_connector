@@ -127,6 +127,11 @@ scheduler_events = {
         "kopos_connector.kopos.services.accounting.automatic_qr_finalization_service.recover_paid_automatic_qr_sales",
         "kopos_connector.kopos.services.projection.retry_service.retry_projection_failures",
     ],
+    "cron": {
+        "*/5 * * * *": [
+            "kopos_connector.kopos.services.inventory_autopilot.projection_worker.recover_inventory_projections",
+        ],
+    },
 }
 
 # Testing

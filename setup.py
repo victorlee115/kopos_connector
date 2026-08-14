@@ -1,6 +1,10 @@
 from setuptools import find_namespace_packages, setup
 
+from kopos_connector import __version__
+
 setup(
+    name="kopos_connector",
+    version=__version__,
     # Frappe modules intentionally use PEP 420 namespace directories in several
     # runtime paths. find_packages() silently omitted those modules from wheels,
     # so a source checkout worked while the published candidate was incomplete.

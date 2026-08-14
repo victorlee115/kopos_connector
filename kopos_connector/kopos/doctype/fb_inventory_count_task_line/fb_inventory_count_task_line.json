@@ -1,0 +1,10 @@
+{
+ "doctype": "DocType",
+ "name": "FB Inventory Count Task Line",
+ "module": "KoPOS",
+ "istable": 1,
+ "fields": [
+  {"fieldname":"item_id","fieldtype":"Link","label":"Item","options":"Item","reqd":1},
+  {"fieldname":"uom","fieldtype":"Link","label":"UOM","options":"UOM","reqd":1}
+ ]
+}

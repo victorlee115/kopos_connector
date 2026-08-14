@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Collection, Mapping
 from datetime import date
+from zoneinfo import ZoneInfo
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
@@ -16,6 +17,9 @@ from kopos_connector.api.devices import (
     get_device_doc,
     get_session_roles,
 )
+from kopos_connector.kopos.services.inventory_autopilot.overlay import (
+    build_inventory_overlay,
+)
 CatalogPayload = dict[str, Any]
 ERPRecord = dict[str, Any]
 
@@ -24,6 +28,7 @@ def build_catalog_payload(
     since: str | None = None,
     device_id: str | None = None,
     known_version: str | None = None,
+    known_overlay_version: str | None = None,
 ) -> CatalogPayload:
     """Build a complete, versioned catalog payload consumed by KoPOS clients.
 
@@ -51,6 +56,21 @@ def build_catalog_payload(
             pos_profile=pos_profile,
         )
     )
+    modifier_group_ids_by_item = _item_modifier_group_ids(items, company)
+    modifier_groups, modifier_options = _load_modifier_catalog(
+        sorted({group_id for group_ids in modifier_group_ids_by_item.values() for group_id in group_ids})
+    )
+    declared_modifier_group_ids = {
+        cstr(group.get("id")).strip() for group in modifier_groups if cstr(group.get("id")).strip()
+    }
+    for item in items:
+        item["modifier_group_ids"] = [
+            group_id
+            for group_id in modifier_group_ids_by_item.get(
+                cstr(item.get("id") or item.get("item_code")).strip(), []
+            )
+            if group_id in declared_modifier_group_ids
+        ]
     category_ids = {
         cstr(item.get("category_id"))
         for item in items
@@ -60,8 +80,8 @@ def build_catalog_payload(
     snapshot = {
         "categories": get_categories(category_ids=category_ids),
         "items": items,
-        "modifier_groups": [],
-        "modifier_options": [],
+        "modifier_groups": modifier_groups,
+        "modifier_options": modifier_options,
         "metadata": {
             "company": company,
             "pos_profile": (pos_profile or {}).get("name"),
@@ -70,9 +90,16 @@ def build_catalog_payload(
             "tax_rate": get_tax_rate_value(device_id=device_id),
         },
     }
+    inventory_overlay = build_inventory_overlay(
+        warehouse=warehouse,
+        company=company,
+        items=items,
+        modifier_options=modifier_options,
+        known_version=known_overlay_version,
+    )
     validate_catalog_snapshot(snapshot)
     catalog_version = build_catalog_version(snapshot)
-    timestamp = now_datetime().isoformat()
+    timestamp = _iso_with_offset(now_datetime())
     normalized_known_version = cstr(known_version).strip()
 
     if normalized_known_version and normalized_known_version == catalog_version:
@@ -82,6 +109,7 @@ def build_catalog_payload(
             "catalog_version": catalog_version,
             "timestamp": timestamp,
             "metadata": snapshot["metadata"],
+            "inventory_overlay": inventory_overlay,
         }
 
     payload = {
@@ -90,6 +118,7 @@ def build_catalog_payload(
         "catalog_version": catalog_version,
         "timestamp": timestamp,
         **snapshot,
+        "inventory_overlay": inventory_overlay,
     }
 
     frappe.logger("kopos_connector").info(
@@ -115,6 +144,25 @@ def _without_optional_recipe_fields(items: list[ERPRecord]) -> list[ERPRecord]:
         }
         for item in items
     ]
+
+
+def _item_modifier_group_ids(items: list[ERPRecord], company: str | None) -> dict[str, list[str]]:
+    try:
+        snapshots = get_item_recipe_snapshots_map(items, company=company)
+        return get_item_modifier_groups_map(items, company=company, recipe_snapshots_by_item=snapshots)
+    except Exception as error:
+        # Modifier configuration is optional during rolling deployment. Keep
+        # checkout saleable and expose the failure through the existing logger.
+        frappe.logger("kopos_connector").warning("Modifier group mapping unavailable: %s", error)
+        return {}
+
+
+def _load_modifier_catalog(group_ids: list[str]) -> tuple[list[ERPRecord], list[ERPRecord]]:
+    try:
+        return get_modifier_groups(group_ids=group_ids), get_modifier_options(group_ids=group_ids)
+    except Exception as error:
+        frappe.logger("kopos_connector").warning("Modifier catalog unavailable: %s", error)
+        return [], []
 
 
 def build_catalog_version(snapshot: Mapping[str, Any]) -> str:
@@ -1088,11 +1136,14 @@ def get_modifier_options(
 
     rows = frappe.db.sql(
         f"""
-			SELECT
+            SELECT
 				opt.name AS id,
 				opt.modifier_group AS group_id,
 				opt.modifier_name AS name,
 				opt.price_adjustment,
+				opt.target_item,
+				opt.new_item,
+				opt.affects_stock,
 				opt.is_default,
 				opt.active AS is_active,
 				opt.display_order
@@ -1112,6 +1163,9 @@ def get_modifier_options(
             "name": row.get("name"),
             "price_adjustment": flt(row.get("price_adjustment")),
             "price_adjustment_sen": money_to_sen(row.get("price_adjustment")),
+            "target_item": row.get("target_item"),
+            "new_item": row.get("new_item"),
+            "affects_stock": cint(row.get("affects_stock") or 0),
             "is_default": cint(row.get("is_default")),
             "is_active": cint(
                 row.get("is_active") if row.get("is_active") is not None else 1
@@ -1187,6 +1241,13 @@ def cstr(value: Any) -> str:
 
 def flt(value: Any) -> float:
     return frappe.utils.flt(value)
+
+
+def _iso_with_offset(value: Any) -> str:
+    current = value
+    if getattr(current, "tzinfo", None) is None:
+        current = current.replace(tzinfo=ZoneInfo("Asia/Kuala_Lumpur"))
+    return current.isoformat()
 
 
 @frappe.whitelist()

@@ -239,6 +239,28 @@ class KoPOSDevice(Document):
         next_signature = _config_signature(self)
         if previous_signature != next_signature:
             self.config_version = max(1, current_version) + 1
+            # A device report is authority for one exact configuration. Any
+            # configuration change invalidates the prior inventory authority;
+            # the tablet must acknowledge a fresh overlay and report again.
+            for fieldname in (
+                "inventory_report_schema_version",
+                "inventory_report_revision",
+                "inventory_observed_at",
+                "inventory_report_received_at",
+                "inventory_config_version",
+                "inventory_overlay_version",
+                "inventory_overlay_hash",
+                "inventory_sales_pending",
+                "inventory_sales_syncing",
+                "inventory_sales_failed",
+                "inventory_sales_dead_letter",
+                "inventory_oldest_unsaved_sale_at",
+                "inventory_commands_pending",
+                "inventory_commands_failed",
+                "inventory_report_payload_hash",
+            ):
+                if hasattr(self, fieldname):
+                    setattr(self, fieldname, None if fieldname.endswith(("_at", "_hash", "_version")) else 0)
         else:
             self.config_version = max(1, current_version)
 
