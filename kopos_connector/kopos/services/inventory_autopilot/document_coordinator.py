@@ -386,7 +386,16 @@ def create_draft_purchase_order(
             "schedule_date": item.schedule_date or getattr(material_request_doc, "schedule_date", None) or quotation_doc.transaction_date,
             "warehouse": item.warehouse,
         }
-        for fieldname in ("conversion_factor", "stock_uom", "item_tax_template", "manufacturer", "manufacturer_part_no", "description"):
+        for fieldname in (
+            "conversion_factor",
+            "stock_uom",
+            "item_tax_template",
+            "manufacturer",
+            "manufacturer_part_no",
+            "description",
+            "material_request",
+            "material_request_item",
+        ):
             if getattr(item, fieldname, None) not in (None, ""):
                 item_payload[fieldname] = getattr(item, fieldname)
         document.append("items", item_payload)
