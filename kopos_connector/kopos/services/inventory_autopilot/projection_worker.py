@@ -2,12 +2,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import frappe
-from frappe.utils import add_to_date, cint, cstr, now_datetime
+from frappe.utils import cint, cstr, now_datetime
+
+try:
+    from frappe.utils import add_to_date
+except ImportError:
+    # Mocked commercial-contract tests intentionally provide only the small
+    # Frappe surface they exercise.  Keep the inventory worker optional at
+    # import time while preserving the real Frappe implementation in runtime.
+    def add_to_date(value: Any = None, **kwargs: Any) -> Any:
+        base = value if value is not None else now_datetime()
+        if isinstance(base, str):
+            from datetime import datetime
+
+            base = datetime.fromisoformat(base.replace("Z", "+00:00"))
+        return base + timedelta(**kwargs)
 
 from kopos_connector.kopos.services.inventory_autopilot.exceptions import (
     upsert_inventory_exception,

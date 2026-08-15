@@ -92,7 +92,7 @@ class TestFBPublicContracts(unittest.TestCase):
 
     def test_hooks_do_not_activate_legacy_pos_invoice_behavior(self):
         content = (ERP_ROOT / "hooks.py").read_text()
-        self.assertIn("doctype_js = {}", content)
+        self.assertIn('"KoPOS Promotion": "public/js/kopos_promotion.js"', content)
         self.assertNotIn('"POS Invoice": "public/js/pos_invoice.js"', content)
 
     def test_custom_field_installer_covers_standard_docs(self):

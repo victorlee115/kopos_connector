@@ -33,9 +33,20 @@ from kopos_connector.kopos.services.projection.log_service import (
     create_projection_log,
     update_projection_state,
 )
-from kopos_connector.kopos.services.inventory_autopilot.projection_worker import (
-    enqueue_inventory_projection,
-)
+
+
+def enqueue_inventory_projection(order_name: str) -> Any:
+    """Load inventory projection only after the commercial order commits.
+
+    Keeping this import behind the worker boundary means checkout tests and
+    deployments without the optional inventory modules can still register and
+    submit an FB Order.  The real caller remains the post-submit hook below.
+    """
+
+    service = import_module(
+        "kopos_connector.kopos.services.inventory_autopilot.projection_worker"
+    )
+    return service.enqueue_inventory_projection(order_name)
 from kopos_connector.utils.diagnostics import log_sanitized_error
 
 

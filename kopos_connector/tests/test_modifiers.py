@@ -467,6 +467,9 @@ class TestCatalogFBSource(unittest.TestCase):
                     "name": "Iced",
                     "price_adjustment": 0.5,
                     "price_adjustment_sen": 50,
+                    "target_item": None,
+                    "new_item": None,
+                    "affects_stock": 0,
                     "is_default": 0,
                     "is_active": 1,
                     "display_order": 1,
@@ -934,6 +937,7 @@ class TestCatalogApiElevation(unittest.TestCase):
             since=None,
             device_id="device-1",
             known_version=None,
+            known_overlay_version=None,
         )
         self.assertEqual(events, ["enter", "exit"])
 

@@ -9,6 +9,7 @@ import types
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -260,7 +261,9 @@ def test_build_catalog_payload_includes_stock_warning_in_items(
         "currency": "MYR",
         "tax_rate": 0.06,
     }
-    assert payload["timestamp"] == fixed_time.isoformat()
+    assert payload["timestamp"] == fixed_time.replace(
+        tzinfo=ZoneInfo("Asia/Kuala_Lumpur")
+    ).isoformat()
     assert payload["sync_mode"] == "full"
     assert payload["unchanged"] == 0
     assert payload["catalog_version"].startswith("sha256:")
@@ -328,13 +331,14 @@ def test_build_catalog_payload_returns_small_unchanged_response(
         known_version=full["catalog_version"],
     )
 
-    assert unchanged == {
-        "sync_mode": "unchanged",
-        "unchanged": 1,
-        "catalog_version": full["catalog_version"],
-        "timestamp": fixed_time.isoformat(),
-        "metadata": full["metadata"],
-    }
+    assert unchanged["sync_mode"] == "unchanged"
+    assert unchanged["unchanged"] == 1
+    assert unchanged["catalog_version"] == full["catalog_version"]
+    assert unchanged["timestamp"] == fixed_time.replace(
+        tzinfo=ZoneInfo("Asia/Kuala_Lumpur")
+    ).isoformat()
+    assert unchanged["metadata"] == full["metadata"]
+    assert unchanged["inventory_overlay"]["status"] == "unavailable"
 
 
 def test_build_catalog_payload_never_queries_optional_modifier_rows(

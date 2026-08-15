@@ -153,16 +153,27 @@ def _item_modifier_group_ids(items: list[ERPRecord], company: str | None) -> dic
     except Exception as error:
         # Modifier configuration is optional during rolling deployment. Keep
         # checkout saleable and expose the failure through the existing logger.
-        frappe.logger("kopos_connector").warning("Modifier group mapping unavailable: %s", error)
+        _log_catalog_warning("Modifier group mapping unavailable: %s", error)
         return {}
 
 
 def _load_modifier_catalog(group_ids: list[str]) -> tuple[list[ERPRecord], list[ERPRecord]]:
+    if not group_ids:
+        return [], []
     try:
         return get_modifier_groups(group_ids=group_ids), get_modifier_options(group_ids=group_ids)
     except Exception as error:
-        frappe.logger("kopos_connector").warning("Modifier catalog unavailable: %s", error)
+        _log_catalog_warning("Modifier catalog unavailable: %s", error)
         return [], []
+
+
+def _log_catalog_warning(message: str, error: Exception) -> None:
+    """Log optional catalog failures without making checkout depend on logger shape."""
+
+    logger = frappe.logger("kopos_connector")
+    warning = getattr(logger, "warning", None)
+    if callable(warning):
+        warning(message, error)
 
 
 def build_catalog_version(snapshot: Mapping[str, Any]) -> str:
