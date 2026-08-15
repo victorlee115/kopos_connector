@@ -49,6 +49,41 @@ class _FakeFrappe:
 
 
 class TestRestoredInventoryAcceptance(unittest.TestCase):
+    def test_expense_account_uses_company_default_and_validates_it(self) -> None:
+        class _AccountFrappe(_FakeFrappe):
+            def get_all(self, doctype: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+                if doctype == "Company":
+                    return [{"default_expense_account": "COGS - CERC"}]
+                if doctype == "Account":
+                    return [{"name": "COGS - CERC"}]
+                return []
+
+        with patch.object(acceptance, "frappe", _AccountFrappe([])):
+            self.assertEqual(
+                acceptance._discover_expense_account("CERC"),
+                "COGS - CERC",
+            )
+
+        class _MissingDefaultFrappe(_FakeFrappe):
+            def get_all(self, doctype: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+                if doctype == "Company":
+                    return [{"default_expense_account": ""}]
+                return [{"name": "Alphabetical Expense - CERC"}]
+
+        with patch.object(acceptance, "frappe", _MissingDefaultFrappe([])):
+            with self.assertRaisesRegex(ValueError, "default expense/COGS account is required"):
+                acceptance._discover_expense_account("CERC")
+
+        class _InvalidDefaultFrappe(_FakeFrappe):
+            def get_all(self, doctype: str, *args: object, **kwargs: object) -> list[dict[str, str]]:
+                if doctype == "Company":
+                    return [{"default_expense_account": "Not Expense - CERC"}]
+                return []
+
+        with patch.object(acceptance, "frappe", _InvalidDefaultFrappe([])):
+            with self.assertRaisesRegex(ValueError, "missing, disabled, grouped"):
+                acceptance._discover_expense_account("CERC")
+
     def test_opening_difference_account_uses_one_existing_semantic_authority(self) -> None:
         fake = _FakeFrappe(
             [
@@ -77,8 +112,11 @@ class TestRestoredInventoryAcceptance(unittest.TestCase):
             doctype = "Stock Reconciliation"
             docstatus = 0
 
-            def append(self, _fieldname: str, _value: object) -> None:
-                return None
+            def __init__(self) -> None:
+                self.appended: list[tuple[str, object]] = []
+
+            def append(self, fieldname: str, value: object) -> None:
+                self.appended.append((fieldname, value))
 
             def insert(self, **_kwargs: object) -> None:
                 return None
@@ -107,11 +145,55 @@ class TestRestoredInventoryAcceptance(unittest.TestCase):
             )
 
         self.assertEqual(reconciliation.docstatus, 1)
+        self.assertEqual(reconciliation.purpose, "Opening Stock")
+        self.assertEqual(reconciliation.appended[0][1]["stock_uom"], "Nos")
         assignments = {
             call.args[1]: call.args[2] for call in set_if_present.call_args_list
         }
         self.assertEqual(assignments["expense_account"], "Temporary Opening - CERC")
         self.assertNotIn("difference_account", assignments)
+
+    def test_policy_creation_uses_real_insert_for_new_named_fixture(self) -> None:
+        class _Policy:
+            doctype = "FB Inventory Policy"
+
+            def __init__(self) -> None:
+                self.inserted = False
+                self.saved = False
+                self.name = "New FB Inventory Policy"
+                self.insert_kwargs: dict[str, object] = {}
+
+            def is_new(self) -> bool:
+                return not self.inserted
+
+            def insert(self, **kwargs: object) -> None:
+                self.inserted = True
+                self.insert_kwargs = kwargs
+
+            def save(self, **_kwargs: object) -> None:
+                self.saved = True
+
+        policy = _Policy()
+        fake = _FakeFrappe([])
+        fake.db = SimpleNamespace(exists=lambda *_args: None)
+        fake.new_doc = lambda _doctype: policy
+        fake.utils = SimpleNamespace(
+            now_datetime=lambda: datetime(2026, 8, 16, 12, 0),
+        )
+
+        with patch.object(acceptance, "frappe", fake):
+            result = acceptance._ensure_policy(
+                company="CERC",
+                warehouse="Main - CERC",
+                opening_name="INV-ACCEPT-OPENING",
+                expense_account="COGS - CERC",
+            )
+
+        self.assertIs(result, policy)
+        self.assertEqual(policy.name, acceptance.POLICY_NAME)
+        self.assertTrue(policy.inserted)
+        self.assertEqual(policy.insert_kwargs.get("set_name"), acceptance.POLICY_NAME)
+        self.assertFalse(policy.saved)
 
     def test_inventory_acceptance_contract_requires_positive_real_evidence(self) -> None:
         self.assertEqual(validate_inventory_acceptance_proof(_proof())["glEntryCount"], 2)

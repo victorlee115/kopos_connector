@@ -139,6 +139,24 @@ def _required_sha256(value: Any, fieldname: str) -> str:
     return result
 
 
+def _proof_decimal(value: Any, fieldname: str) -> Decimal:
+    """Parse a persisted numeric value without making float authority."""
+
+    if isinstance(value, bool) or value in (None, ""):
+        _fail(f"{fieldname} must be a finite Decimal")
+    try:
+        result = Decimal(str(value).strip())
+    except (InvalidOperation, TypeError, ValueError, AttributeError):
+        _fail(f"{fieldname} must be a finite Decimal")
+    if not result.is_finite():
+        _fail(f"{fieldname} must be a finite Decimal")
+    return result
+
+
+def _proof_decimal_text(value: Any, fieldname: str) -> str:
+    return format(_proof_decimal(value, fieldname).normalize(), "f")
+
+
 def _sha256_json(value: Any) -> str:
     payload = json.dumps(
         value,
@@ -247,22 +265,35 @@ def _discover_item_group() -> str:
 
 
 def _discover_expense_account(company: str) -> str:
-    row = _first_row(
+    runtime_frappe = _require_frappe()
+    company_row = _first_row(
+        "Company",
+        {"name": company},
+        ["default_expense_account"],
+    )
+    configured_account = _required_text(
+        _value(company_row, "default_expense_account") if company_row else None,
+        f"Company {company} default expense/COGS account",
+    )
+    rows = runtime_frappe.get_all(
         "Account",
-        {
+        filters={
+            "name": configured_account,
             "company": company,
             "root_type": "Expense",
             "is_group": 0,
             "disabled": 0,
         },
-        ["name"],
+        fields=["name"],
+        limit_page_length=1,
     )
-    if not row:
+    if len(rows or []) != 1:
         _fail(
-            f"restored database has no enabled leaf Expense Account for {company}; "
-            "configure one before running the acceptance proof"
+            f"Company {company} default expense/COGS account {configured_account} "
+            "is missing, disabled, grouped, or not an Expense account; configure "
+            "the Company default before running the acceptance proof"
         )
-    return _required_text(_value(row, "name"), "acceptance expense account")
+    return _required_text(_value(rows[0], "name"), "acceptance expense account")
 
 
 def _discover_opening_difference_account(company: str) -> str:
@@ -524,7 +555,7 @@ def _ensure_opening_reconciliation(
     reconciliation = runtime_frappe.new_doc("Stock Reconciliation")
     reconciliation.name = OPENING_NAME
     reconciliation.company = company
-    reconciliation.purpose = "Stock Reconciliation"
+    reconciliation.purpose = "Opening Stock"
     reconciliation.posting_date = runtime_frappe.utils.nowdate()
     reconciliation.posting_time = runtime_frappe.utils.now_datetime().time()
     # ERPNext v16 has no ``difference_account`` field on Stock Reconciliation.
@@ -541,6 +572,7 @@ def _ensure_opening_reconciliation(
             "item_code": ingredient_item,
             "warehouse": warehouse,
             "qty": 10,
+            "stock_uom": uom,
             "uom": uom,
             "valuation_rate": 1,
         },
@@ -608,12 +640,13 @@ def _ensure_policy(
         if previous_token and previous_token != cutover_token:
             _fail("Acceptance policy cutover identity changed between reruns")
     else:
-        policy = runtime_frappe.get_doc(
-            {
-                "doctype": "FB Inventory Policy",
-                "name": POLICY_NAME,
-            }
-        )
+        # ``FB Inventory Policy`` uses a format autoname.  A document returned
+        # by ``get_doc({...})`` with a name is treated as an existing document
+        # by real Frappe and ``save`` then issues an UPDATE for a row that does
+        # not exist.  Start from ``new_doc`` so the first contained run always
+        # performs a real INSERT, while retaining the stable fixture name.
+        policy = runtime_frappe.new_doc("FB Inventory Policy")
+        policy.name = POLICY_NAME
 
     policy.company = company
     policy.warehouse = warehouse
@@ -626,7 +659,7 @@ def _ensure_policy(
     policy.expense_account = expense_account
     policy.permitted_actions = "stock_projection"
     if getattr(policy, "is_new", lambda: False)():
-        policy.insert(ignore_permissions=True)
+        policy.insert(ignore_permissions=True, set_name=POLICY_NAME)
     else:
         policy.save(ignore_permissions=True)
     if _text(getattr(policy, "automation_state", None)) != "Active":
@@ -834,6 +867,18 @@ def _proof_from_authorities(authorities: Mapping[str, Any]) -> tuple[dict[str, A
     check(bool(_text(policy.cutover_token)) and bool(policy.cutover_at), "Acceptance policy has no immutable cutover")
     check(_text(policy.opening_stock_reconciliation) == _text(opening.name), "Acceptance policy opening reconciliation link is wrong")
     check(int(getattr(opening, "docstatus", 0) or 0) == 1, "Acceptance opening reconciliation is not submitted")
+    check(_text(getattr(opening, "purpose", None)) == "Opening Stock", "Acceptance opening reconciliation is not an Opening Stock entry")
+    opening_items = list(getattr(opening, "items", None) or [])
+    check(len(opening_items) == 1, "Acceptance opening reconciliation must contain exactly one ingredient line")
+    if opening_items:
+        check(
+            _text(getattr(opening_items[0], "item_code", None)) == _text(ingredient.name),
+            "Acceptance opening reconciliation item is not the ingredient",
+        )
+        check(
+            _text(getattr(opening_items[0], "stock_uom", None)) == _text(ingredient.stock_uom),
+            "Acceptance opening reconciliation stock UOM is not the ingredient stock UOM",
+        )
     check(_text(shift.status) == "Open", "Acceptance FB Shift is not Open")
     check(_text(order.status) == "Submitted", "Acceptance FB Order is not Submitted")
     check(int(getattr(order, "docstatus", 0) or 0) == 1, "Acceptance FB Order has not completed real submit")
@@ -852,8 +897,64 @@ def _proof_from_authorities(authorities: Mapping[str, Any]) -> tuple[dict[str, A
     )
     check(len(resolved_sales) == 1, "Acceptance order must have exactly one FB Resolved Sale")
     resolved_sale_name = _text(_value(resolved_sales[0], "name")) if resolved_sales else ""
+    resolved_sale_doc = None
+    resolved_components: list[Any] = []
     if resolved_sales:
         check(bool(_text(_value(resolved_sales[0], "resolution_hash"))), "Acceptance resolved sale has no resolution hash")
+        resolved_sale_doc = runtime_frappe.get_doc("FB Resolved Sale", resolved_sale_name)
+        resolved_components = list(getattr(resolved_sale_doc, "resolved_components", None) or [])
+        check(
+            len(resolved_components) == 1,
+            "Acceptance resolved sale must contain exactly one resolved component",
+        )
+        if resolved_components:
+            resolved_component = resolved_components[0]
+            check(
+                _text(getattr(resolved_component, "item", None)) == _text(ingredient.name),
+                "Acceptance resolved component item is not the ingredient",
+            )
+            check(
+                _text(getattr(resolved_component, "source_type", None)) == "Frozen Recipe",
+                "Acceptance resolved component is not sourced from the frozen recipe",
+            )
+            check(
+                _proof_decimal(
+                    getattr(resolved_component, "qty_decimal", None),
+                    "Acceptance resolved component qty_decimal",
+                )
+                == Decimal("1"),
+                "Acceptance resolved component quantity is not exactly one",
+            )
+            check(
+                _text(getattr(resolved_component, "uom", None)) == _text(ingredient.stock_uom),
+                "Acceptance resolved component entered UOM is not the ingredient stock UOM",
+            )
+            check(
+                _proof_decimal(
+                    getattr(resolved_component, "stock_qty_decimal", None),
+                    "Acceptance resolved component stock_qty_decimal",
+                )
+                == Decimal("1"),
+                "Acceptance resolved component stock quantity is not exactly one",
+            )
+            check(
+                _text(getattr(resolved_component, "stock_uom", None))
+                == _text(ingredient.stock_uom),
+                "Acceptance resolved component stock UOM is not the ingredient stock UOM",
+            )
+            check(
+                _text(getattr(resolved_component, "warehouse", None))
+                == _text(getattr(resolved_sale_doc, "booth_warehouse", None)),
+                "Acceptance resolved component warehouse is not the sale warehouse",
+            )
+            check(
+                int(getattr(resolved_component, "affects_stock", 0) or 0) == 1,
+                "Acceptance resolved component does not affect stock",
+            )
+            check(
+                int(getattr(resolved_component, "affects_cogs", 0) or 0) == 1,
+                "Acceptance resolved component does not affect COGS",
+            )
 
     required_stock_fields = ("custom_fb_order", "custom_fb_projection_id")
     missing_stock_fields = [
@@ -880,6 +981,8 @@ def _proof_from_authorities(authorities: Mapping[str, Any]) -> tuple[dict[str, A
     )
     check(len(target_entries) == 1, "Acceptance order must have exactly one submitted Material Issue")
     target_name = _text(_value(target_entries[0], "name")) if target_entries else ""
+    stock_entry_doc = None
+    stock_entry_detail = None
     if target_entries:
         check(_text(_value(target_entries[0], "stock_entry_type")) == "Material Issue", "Acceptance Stock Entry type is not Material Issue")
         check(bool(_text(_value(target_entries[0], "custom_fb_projection_id"))), "Acceptance Stock Entry has no projection identity")
@@ -888,6 +991,52 @@ def _proof_from_authorities(authorities: Mapping[str, Any]) -> tuple[dict[str, A
             check(
                 _text(_value(resolved_sales[0], "stock_entry_issue")) == target_name,
                 "FB Resolved Sale does not point to its Material Issue",
+            )
+        stock_entry_doc = runtime_frappe.get_doc("Stock Entry", target_name)
+        stock_entry_items = list(getattr(stock_entry_doc, "items", None) or [])
+        check(
+            len(stock_entry_items) == 1,
+            "Acceptance Material Issue must contain exactly one ingredient detail",
+        )
+        if stock_entry_items:
+            stock_entry_detail = stock_entry_items[0]
+            check(
+                _text(getattr(stock_entry_detail, "item_code", None)) == _text(ingredient.name),
+                "Acceptance Stock Entry detail item is not the ingredient",
+            )
+            check(
+                _text(getattr(stock_entry_detail, "stock_uom", None))
+                == _text(ingredient.stock_uom),
+                "Acceptance Stock Entry detail stock UOM is not the ingredient stock UOM",
+            )
+            check(
+                _proof_decimal(
+                    getattr(stock_entry_detail, "qty", None),
+                    "Acceptance Stock Entry detail qty",
+                )
+                == Decimal("1"),
+                "Acceptance Stock Entry detail quantity is not exactly one",
+            )
+            check(
+                _proof_decimal(
+                    getattr(stock_entry_detail, "transfer_qty", None),
+                    "Acceptance Stock Entry detail transfer_qty",
+                )
+                == Decimal("1"),
+                "Acceptance Stock Entry detail transfer quantity is not exactly one",
+            )
+            check(
+                _proof_decimal(
+                    getattr(stock_entry_detail, "conversion_factor", None),
+                    "Acceptance Stock Entry detail conversion_factor",
+                )
+                == Decimal("1"),
+                "Acceptance Stock Entry detail conversion factor is not exactly one",
+            )
+            check(
+                _text(getattr(stock_entry_detail, "expense_account", None))
+                == _text(getattr(policy, "expense_account", None)),
+                "Acceptance Stock Entry detail does not use the policy Expense/COGS account",
             )
 
     stock_ledger_count = 0
@@ -915,16 +1064,91 @@ def _proof_from_authorities(authorities: Mapping[str, Any]) -> tuple[dict[str, A
     check(stock_ledger_count > 0, "Acceptance Material Issue created no Stock Ledger Entry")
     check(stock_ledger_has_issue, "Acceptance Stock Ledger has no negative ingredient issue row")
 
+    gl_rows: list[Any] = []
     gl_count = 0
     if target_name:
-        gl_count = int(
-            runtime_frappe.db.count(
-                "GL Entry",
-                {"voucher_type": "Stock Entry", "voucher_no": target_name, "is_cancelled": 0},
-            )
-            or 0
+        gl_rows = runtime_frappe.get_all(
+            "GL Entry",
+            filters={
+                "voucher_type": "Stock Entry",
+                "voucher_no": target_name,
+                "is_cancelled": 0,
+            },
+            fields=[
+                "name",
+                "account",
+                "debit",
+                "credit",
+                "debit_in_account_currency",
+                "credit_in_account_currency",
+            ],
+            order_by="creation asc, name asc",
+            limit_page_length=0,
         )
-    check(gl_count > 0, "Acceptance Material Issue created no GL Entry")
+        gl_count = len(gl_rows or [])
+    check(gl_count == 2, "Acceptance Material Issue must create exactly two GL Entries")
+
+    gl_debit_rows = [
+        row
+        for row in gl_rows
+        if _proof_decimal(_value(row, "debit"), "Acceptance GL debit") == Decimal("1")
+        and _proof_decimal(_value(row, "credit"), "Acceptance GL credit") == Decimal("0")
+    ]
+    gl_credit_rows = [
+        row
+        for row in gl_rows
+        if _proof_decimal(_value(row, "debit"), "Acceptance GL debit") == Decimal("0")
+        and _proof_decimal(_value(row, "credit"), "Acceptance GL credit") == Decimal("1")
+    ]
+    check(len(gl_debit_rows) == 1, "Acceptance GL must contain one debit of exactly one")
+    check(len(gl_credit_rows) == 1, "Acceptance GL must contain one credit of exactly one")
+    gl_debit_account = _text(_value(gl_debit_rows[0], "account")) if gl_debit_rows else ""
+    gl_credit_account = _text(_value(gl_credit_rows[0], "account")) if gl_credit_rows else ""
+    if gl_debit_rows:
+        check(
+            gl_debit_account == _text(getattr(policy, "expense_account", None)),
+            "Acceptance GL debit does not use the policy Expense/COGS account",
+        )
+    if gl_credit_rows:
+        check(bool(gl_credit_account), "Acceptance GL credit has no account")
+        inventory_accounts = runtime_frappe.get_all(
+            "Account",
+            filters={
+                "name": gl_credit_account,
+                "company": _text(getattr(order, "company", None)),
+                "root_type": "Asset",
+                "report_type": "Balance Sheet",
+                "account_type": "Stock",
+                "is_group": 0,
+                "disabled": 0,
+            },
+            fields=["name"],
+            limit_page_length=1,
+        )
+        check(
+            len(inventory_accounts or []) == 1,
+            "Acceptance GL credit is not the enabled leaf Stock asset account",
+        )
+        if stock_entry_detail is not None:
+            try:
+                from erpnext.stock import get_warehouse_account_map
+
+                warehouse_account_map = get_warehouse_account_map(
+                    _text(getattr(order, "company", None))
+                )
+                warehouse_account_row = warehouse_account_map.get(
+                    _text(getattr(stock_entry_detail, "s_warehouse", None))
+                )
+                expected_inventory_account = _required_text(
+                    _value(warehouse_account_row, "account"),
+                    "acceptance warehouse inventory account",
+                )
+                check(
+                    gl_credit_account == expected_inventory_account,
+                    "Acceptance GL credit does not match ERPNext warehouse inventory account",
+                )
+            except ImportError:
+                _fail("Acceptance proof could not load ERPNext warehouse account authority")
 
     projection_logs = runtime_frappe.get_all(
         "FB Projection Log",
@@ -951,6 +1175,63 @@ def _proof_from_authorities(authorities: Mapping[str, Any]) -> tuple[dict[str, A
         "stockLedgerEntryCount": stock_ledger_count,
         "glEntryCount": gl_count,
         "duplicateTargetCount": duplicate_target_count,
+        "resolvedComponent": {
+            "item": _text(getattr(resolved_components[0], "item", None))
+            if resolved_components
+            else "",
+            "sourceType": _text(getattr(resolved_components[0], "source_type", None))
+            if resolved_components
+            else "",
+            "qty": _proof_decimal_text(
+                getattr(resolved_components[0], "qty_decimal", None),
+                "Acceptance resolved component qty_decimal",
+            )
+            if resolved_components
+            else "",
+            "uom": _text(getattr(resolved_components[0], "uom", None))
+            if resolved_components
+            else "",
+            "stockQty": _proof_decimal_text(
+                getattr(resolved_components[0], "stock_qty_decimal", None),
+                "Acceptance resolved component stock_qty_decimal",
+            )
+            if resolved_components
+            else "",
+            "stockUom": _text(getattr(resolved_components[0], "stock_uom", None))
+            if resolved_components
+            else "",
+        },
+        "stockEntryDetail": {
+            "item": _text(getattr(stock_entry_detail, "item_code", None))
+            if stock_entry_detail is not None
+            else "",
+            "qty": _proof_decimal_text(
+                getattr(stock_entry_detail, "qty", None),
+                "Acceptance Stock Entry detail qty",
+            )
+            if stock_entry_detail is not None
+            else "",
+            "stockUom": _text(getattr(stock_entry_detail, "stock_uom", None))
+            if stock_entry_detail is not None
+            else "",
+            "expenseAccount": _text(getattr(stock_entry_detail, "expense_account", None))
+            if stock_entry_detail is not None
+            else "",
+        },
+        "gl": {
+            "debitAccount": gl_debit_account,
+            "debit": _proof_decimal_text(
+                _value(gl_debit_rows[0], "debit"), "Acceptance GL debit"
+            )
+            if gl_debit_rows
+            else "",
+            "creditAccount": gl_credit_account,
+            "credit": _proof_decimal_text(
+                _value(gl_credit_rows[0], "credit"), "Acceptance GL credit"
+            )
+            if gl_credit_rows
+            else "",
+        },
     }
     validate_inventory_acceptance_proof(proof)
     return proof, assertions, {
