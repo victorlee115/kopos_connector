@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -69,6 +71,48 @@ class TestRestoredInventoryAcceptance(unittest.TestCase):
         with patch.object(acceptance, "frappe", ambiguous):
             with self.assertRaisesRegex(ValueError, "Difference Account is ambiguous"):
                 acceptance._discover_opening_difference_account("CERC")
+
+    def test_opening_reconciliation_uses_difference_account_field_authority(self) -> None:
+        class _Document:
+            doctype = "Stock Reconciliation"
+            docstatus = 0
+
+            def append(self, _fieldname: str, _value: object) -> None:
+                return None
+
+            def insert(self, **_kwargs: object) -> None:
+                return None
+
+            def submit(self) -> None:
+                self.docstatus = 1
+
+        fake = _FakeFrappe([])
+        fake.db = SimpleNamespace(exists=lambda *_args: None)
+        fake.new_doc = lambda _doctype: _Document()
+        fake.utils = SimpleNamespace(
+            cstr=lambda value: "" if value is None else str(value),
+            nowdate=lambda: "2026-08-16",
+            now_datetime=lambda: datetime(2026, 8, 16, 12, 0),
+        )
+
+        with patch.object(acceptance, "frappe", fake), patch.object(
+            acceptance, "_set_if_present"
+        ) as set_if_present:
+            reconciliation = acceptance._ensure_opening_reconciliation(
+                company="CERC",
+                warehouse="Main - CERC",
+                ingredient_item="INV-ACCEPT-INGREDIENT",
+                uom="Nos",
+                expense_account="Inventory Expense - CERC",
+                difference_account="Temporary Opening - CERC",
+            )
+
+        self.assertEqual(reconciliation.docstatus, 1)
+        assignments = {
+            call.args[1]: call.args[2] for call in set_if_present.call_args_list
+        }
+        self.assertEqual(assignments["expense_account"], "Temporary Opening - CERC")
+        self.assertNotIn("difference_account", assignments)
 
     def test_inventory_acceptance_contract_requires_positive_real_evidence(self) -> None:
         self.assertEqual(validate_inventory_acceptance_proof(_proof())["glEntryCount"], 2)

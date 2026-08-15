@@ -528,8 +528,12 @@ def _ensure_opening_reconciliation(
     reconciliation.purpose = "Stock Reconciliation"
     reconciliation.posting_date = runtime_frappe.utils.nowdate()
     reconciliation.posting_time = runtime_frappe.utils.now_datetime().time()
-    _set_if_present(reconciliation, "expense_account", expense_account)
-    _set_if_present(reconciliation, "difference_account", difference_account)
+    # ERPNext v16 has no ``difference_account`` field on Stock Reconciliation.
+    # Its ``expense_account`` field is also the Difference Account for an
+    # opening reconciliation, and validation requires that value to be an
+    # Asset/Liability account.  Keep the policy's Expense account separate for
+    # later inventory postings; it must not be assigned to this opening entry.
+    _set_if_present(reconciliation, "expense_account", difference_account)
     _set_if_present(reconciliation, "remarks", f"{AUTHORITY_PREFIX} opening stock")
     _set_if_present(reconciliation, "cost_center", _discover_cost_center(company))
     reconciliation.append(
