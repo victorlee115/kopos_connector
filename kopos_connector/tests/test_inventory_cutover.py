@@ -118,6 +118,32 @@ class InventoryCutoverTests(TestCase):
             ),
         )
 
+    def test_device_preflight_normalizes_mixed_business_and_offset_timestamps(self) -> None:
+        # Frappe stores report receipt in the protected site timezone without an
+        # offset, while the tablet observation carries an explicit UTC offset.
+        # These represent 11:30 and 11:45 Asia/Kuala_Lumpur respectively.
+        now = datetime(2026, 8, 15, 4, 0, tzinfo=timezone.utc)
+        row = {
+            "name": "TABLET-1",
+            "config_version": "cfg-1",
+            "inventory_config_version": "cfg-1",
+            "inventory_report_received_at": "2026-08-15 11:30:00",
+            "inventory_observed_at": "2026-08-15T03:45:00+00:00",
+            "inventory_catalog_version": "catalog-2",
+            "inventory_overlay_version": "overlay-2",
+            "inventory_overlay_hash": "hash-2",
+        }
+
+        self.assertIn(
+            "device_report_stale:TABLET-1",
+            device_activation_failures(
+                [row],
+                max_source_age_minutes=20,
+                now=now,
+                overlay_is_current=lambda _row: True,
+            ),
+        )
+
     def test_monitoring_and_owner_preflight_is_explicit(self) -> None:
         failures = monitoring_owner_failures(
             {},

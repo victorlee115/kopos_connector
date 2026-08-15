@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
+from zoneinfo import ZoneInfo
 
 
 MONITOR_DESTINATION_KEYS = (
@@ -31,6 +32,8 @@ _INVENTORY_QUEUE_FIELDS = (
     "inventory_commands_failed",
     "inventory_commands_dead_letter",
 )
+
+BUSINESS_TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")
 
 
 def opening_reconciliation_failure(
@@ -74,7 +77,11 @@ def device_activation_failures(
         name = _text(row.get("name")) or "unknown"
         received = _datetime(row.get("inventory_report_received_at"))
         observed = _datetime(row.get("inventory_observed_at"))
-        effective = min((value for value in (received, observed) if value), default=None)
+        effective = min(
+            (value for value in (received, observed) if value),
+            key=_datetime_sort_key,
+            default=None,
+        )
         if effective is None:
             failures.append(f"device_report_missing:{name}")
         elif _age_minutes(effective, now) > max(1, int(max_source_age_minutes)):
@@ -144,6 +151,13 @@ def _age_minutes(value: datetime, now: datetime) -> int:
 
 
 def _as_utc_naive(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
+    current = value
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=BUSINESS_TIMEZONE)
+    return current.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _datetime_sort_key(value: datetime) -> float:
+    """Compare ERP-naive and device-offset timestamps as the same instant."""
+
+    return _as_utc_naive(value).replace(tzinfo=timezone.utc).timestamp()
