@@ -19,6 +19,8 @@ class JiJiMenuRecipesPage {
 		});
 		this.page.body.find("[data-csv-template]").on("click", () => this.downloadTemplate());
 		this.page.body.find("[data-csv-validate]").on("click", () => this.validateCsv());
+		this.page.body.find("[data-promotion-check]").on("click", () => this.checkPromotionEconomics());
+		this.setupPromotionEconomicsControls();
 		this.refresh();
 	}
 
@@ -39,6 +41,13 @@ class JiJiMenuRecipesPage {
 					<textarea class="form-control mb-2" rows="4" data-csv-input placeholder="${__("recipe_code,recipe_name,sellable_item,company,recipe_type,...")}"></textarea>
 					<div class="d-flex flex-wrap gap-2"><button class="btn btn-sm btn-default" type="button" data-csv-template>${__("Download template")}</button><button class="btn btn-sm btn-primary" type="button" data-csv-validate>${__("Check rows")}</button></div>
 					<pre class="small bg-light p-2 mt-3 mb-0 d-none" data-csv-results></pre>
+				</div></div>
+				<div class="card mb-4"><div class="card-body">
+					<div class="d-flex flex-wrap justify-content-between align-items-start mb-2"><div><h4 class="mb-1">${__("Promotion economics")}</h4><p class="text-muted mb-0">${__("Check server-calculated revenue, COGS, margin and ingredient demand before publishing. Scenarios are planning-only and never trigger purchasing.")}</p></div><div class="small text-muted" data-promotion-status>${__("No promotion checked")}</div></div>
+					<div class="row mb-3"><div class="col-md-6"><div data-promotion-link></div></div><div class="col-md-6"><div data-promotion-profile></div></div></div>
+					<div class="row mb-3"><div class="col-sm-4"><label class="text-muted small">${__("Low units")}</label><input class="form-control" type="number" min="1" step="1" value="10" data-promotion-low></div><div class="col-sm-4"><label class="text-muted small">${__("Base units")}</label><input class="form-control" type="number" min="1" step="1" value="25" data-promotion-base></div><div class="col-sm-4"><label class="text-muted small">${__("High units")}</label><input class="form-control" type="number" min="1" step="1" value="50" data-promotion-high></div></div>
+					<button class="btn btn-sm btn-primary" type="button" data-promotion-check>${__("Check COGS & margin")}</button>
+					<pre class="small bg-light p-2 mt-3 mb-0 d-none" data-promotion-results></pre>
 				</div></div>
 				<div class="row">${cards.map(([title, copy, action]) => `
 					<div class="col-sm-6 col-lg-4 mb-3"><div class="card h-100"><div class="card-body d-flex flex-column">
@@ -92,6 +101,76 @@ class JiJiMenuRecipesPage {
 			promotion: "KoPOS Promotion",
 		};
 		if (doctypes[action]) frappe.new_doc(doctypes[action]);
+	}
+
+	setupPromotionEconomicsControls() {
+		this.promotionControl = frappe.ui.form.make_control({
+			parent: this.page.body.find("[data-promotion-link]")[0],
+			df: { fieldtype: "Link", fieldname: "promotion", options: "KoPOS Promotion", label: __("Promotion"), reqd: 1 },
+		});
+		this.promotionControl.refresh();
+		this.profileControl = frappe.ui.form.make_control({
+			parent: this.page.body.find("[data-promotion-profile]")[0],
+			df: { fieldtype: "Link", fieldname: "pos_profile", options: "POS Profile", label: __("POS Profile (optional)") },
+		});
+		this.profileControl.refresh();
+	}
+
+	checkPromotionEconomics() {
+		const promotion = this.promotionControl?.get_value?.() || "";
+		if (!promotion) {
+			this.page.body.find("[data-promotion-status]").text(__("Choose a promotion first"));
+			return;
+		}
+		const scenarios = {};
+		for (const [label, selector] of [["low", "[data-promotion-low]"], ["base", "[data-promotion-base]"], ["high", "[data-promotion-high]"]]) {
+			const value = Number.parseInt(this.page.body.find(selector).val(), 10);
+			if (!Number.isInteger(value) || value <= 0) {
+				this.page.body.find("[data-promotion-status]").text(`${__("Enter a positive unit count for")} ${label}.`);
+				return;
+			}
+			scenarios[label] = value;
+		}
+		this.page.body.find("[data-promotion-status]").text(__("Checking on the ERP server…"));
+		frappe.call({
+			method: "kopos_connector.api.inventory.get_promotion_economics",
+			type: "POST",
+			args: {
+				payload: JSON.stringify({ promotion, pos_profile: this.profileControl?.get_value?.() || "", scenarios }),
+			},
+			callback: (response) => this.renderPromotionEconomics(response.message || {}),
+			error: () => this.renderPromotionEconomics({ status: "blocked", reason: __("The ERP could not calculate promotion economics") }),
+		});
+	}
+
+	renderPromotionEconomics(response) {
+		const output = this.page.body.find("[data-promotion-results]");
+		output.removeClass("d-none");
+		if (response.status !== "ok" || !response.economics) {
+			this.page.body.find("[data-promotion-status]").text(__("Publication blocked"));
+			output.text(response.reason || __("Missing cost, recipe or valuation evidence."));
+			return;
+		}
+		const economics = response.economics;
+		const scenarioLines = (economics.scenarios || []).map((row) => `${row.label}: ${row.units} units → revenue ${this.formatSen(row.revenue_sen)}, COGS ${this.formatSen(row.cogs_sen)}, gross profit ${this.formatSen(row.gross_profit_sen)}`);
+		const demandLines = Object.entries(economics.ingredient_demand || {}).map(([item, quantity]) => `${item}: ${quantity}`);
+		const lines = [
+			`${__("Revenue")}: ${this.formatSen(economics.revenue_sen)}`,
+			`${__("COGS")}: ${this.formatSen(economics.cogs_sen)}`,
+			`${__("Gross profit")}: ${this.formatSen(economics.gross_profit_sen)}`,
+			`${__("Margin")}: ${economics.margin_percent}% (${__("baseline")} ${economics.baseline_margin_percent}%, ${__("change")} ${economics.margin_change_percent}%)`,
+			`${__("Break-even additional units")}: ${economics.break_even_additional_units ?? __("Not available")}`,
+			`${__("Ingredient demand")}: ${demandLines.length ? demandLines.join(", ") : __("None")}`,
+			__("Scenarios:"),
+			...scenarioLines,
+		];
+		this.page.body.find("[data-promotion-status]").text(__("Economics checked — Review First"));
+		output.text(lines.join("\n"));
+	}
+
+	formatSen(value) {
+		const amount = Number(value || 0) / 100;
+		return `RM ${amount.toFixed(2)}`;
 	}
 
 	downloadTemplate() {
