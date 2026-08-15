@@ -23,6 +23,7 @@
         "recipe_info",
         "recipe",
         "recipe_version",
+        "recipe_hash",
         "resolution_hash",
         "status_section",
         "status",
@@ -123,6 +124,12 @@
             "fieldtype": "Int",
             "label": "Recipe Version",
             "reqd": 1
+        },
+        {
+            "fieldname": "recipe_hash",
+            "fieldtype": "Data",
+            "label": "Sale-time Recipe Hash",
+            "read_only": 1
         },
         {
             "fieldname": "resolution_hash",

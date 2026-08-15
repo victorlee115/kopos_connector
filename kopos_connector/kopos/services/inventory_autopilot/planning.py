@@ -22,19 +22,27 @@ from frappe.utils import cstr, get_datetime, now_datetime
 
 from kopos_connector.kopos.services.inventory_autopilot.document_coordinator import (
     create_and_submit_material_request,
+    create_eligible_draft_purchase_order,
+    has_open_material_request_intent,
     persist_inventory_plan,
 )
+from kopos_connector.kopos.services.inventory_autopilot.automation_identity import (
+    automation_identity_is_configured,
+)
 from kopos_connector.kopos.services.inventory_autopilot.exceptions import (
+    resolve_inventory_exception,
     upsert_inventory_exception,
 )
 from kopos_connector.kopos.services.inventory_autopilot.forecast import (
     ForecastResult,
     evaluate_forecast,
 )
+from kopos_connector.kopos.services.inventory_autopilot.overlay import device_overlay_is_current
 from kopos_connector.kopos.services.inventory_autopilot.replenishment import (
     ReplenishmentInput,
     ReplenishmentLine,
     build_replenishment_plan,
+    shelf_life_allows_replenishment,
 )
 
 
@@ -74,6 +82,7 @@ def generate_inventory_plans() -> list[dict[str, Any]]:
     for policy in policies:
         try:
             results.append(_generate_for_policy(policy))
+            _set_planning_marker(cstr(policy.get("warehouse")).strip())
         except Exception as error:
             exception = upsert_inventory_exception(
                 reason_code="inventory_planning_failure",
@@ -88,23 +97,27 @@ def generate_inventory_plans() -> list[dict[str, Any]]:
             results.append({"status": "failed", "policy": cstr(policy.get("name")), "exception": exception})
     if results:
         frappe.db.commit()
-        _set_planning_marker()
     return results
 
 
 def aggregate_consumption(
-    rows: Iterable[dict[str, Any]], *, timezone: ZoneInfo = BUSINESS_TIMEZONE
+    rows: Iterable[dict[str, Any]],
+    *,
+    operating_days: Iterable[date] | None = None,
+    tracked_items: Iterable[str] | None = None,
+    timezone: ZoneInfo = BUSINESS_TIMEZONE,
 ) -> tuple[tuple[date, ...], dict[str, tuple[Decimal, ...]]]:
     """Turn resolved-component rows into dense open-day series.
 
-    A day is an operating day only when at least one valid post-cutover stock
-    component was observed.  Missing items on an observed day are represented
-    as zero, which keeps the seasonal comparison honest without inventing
-    closed days.
+    Production callers pass closed-shift days as explicit operating evidence.
+    A real zero-demand open day is then retained as zero, while a day without
+    an outlet shift is not invented. The optional fallback to observed days is
+    kept for pure compatibility callers and never drives production planning.
     """
 
     totals: dict[tuple[date, str], Decimal] = defaultdict(lambda: Decimal("0"))
-    operating_days: set[date] = set()
+    explicit_days = set(operating_days) if operating_days is not None else None
+    observed_days: set[date] = set()
     for row in rows:
         item = cstr(row.get("item")).strip()
         if not item or not _truthy(row.get("affects_stock")):
@@ -119,10 +132,15 @@ def aggregate_consumption(
         if observed_at.tzinfo is None:
             observed_at = observed_at.replace(tzinfo=timezone)
         local_day = observed_at.astimezone(timezone).date()
+        if explicit_days is not None and local_day not in explicit_days:
+            continue
         totals[(local_day, item)] += quantity
-        operating_days.add(local_day)
-    ordered_days = tuple(sorted(operating_days))
-    item_names = tuple(sorted({item for _, item in totals}))
+        observed_days.add(local_day)
+    ordered_days = tuple(sorted(explicit_days if explicit_days is not None else observed_days))
+    item_names = tuple(sorted(
+        {cstr(item).strip() for item in (tracked_items or ()) if cstr(item).strip()}
+        | {item for _, item in totals}
+    ))
     series = {
         item: tuple(totals.get((operating_day, item), Decimal("0")) for operating_day in ordered_days)
         for item in item_names
@@ -169,7 +187,39 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
         )
 
     rows = _resolved_component_rows(warehouse=warehouse, cutover_at=cutover_at)
-    operating_days, series = aggregate_consumption(rows)
+    operating_days = _valid_operating_days(
+        warehouse=warehouse,
+        cutover_at=cutover_at,
+        before_day=planning_day,
+    )
+    tracked_items = _tracked_component_items(company=company)
+    if not operating_days:
+        return _persist_blocked_plan(
+            policy=policy,
+            planning_day=planning_day,
+            policy_hash=policy_hash,
+            input_hash=_hash({"reason": "operating_day_evidence_missing"}),
+            forecast_state="Not ready",
+            gates=_base_gates(policy, warehouse, max_source_age=int(policy.get("max_source_age_minutes") or 30)),
+            lines=(),
+            reason="operating_day_evidence_missing",
+        )
+    if not tracked_items:
+        return _persist_blocked_plan(
+            policy=policy,
+            planning_day=planning_day,
+            policy_hash=policy_hash,
+            input_hash=_hash({"reason": "recipe_component_coverage_missing"}),
+            forecast_state="Not ready",
+            gates=_base_gates(policy, warehouse, max_source_age=int(policy.get("max_source_age_minutes") or 30)),
+            lines=(),
+            reason="recipe_component_coverage_missing",
+        )
+    operating_days, series = aggregate_consumption(
+        rows,
+        operating_days=operating_days,
+        tracked_items=tracked_items,
+    )
     item_data: list[dict[str, Any]] = []
     forecast_results: list[ForecastResult] = []
     all_recipe_uom = bool(series)
@@ -178,10 +228,13 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
     replenishment_inputs: list[ReplenishmentInput] = []
     proposed_actions: list[dict[str, Any]] = []
     for item, actuals in series.items():
-        config = _item_configuration(item=item, warehouse=warehouse, company=company)
+        config = _item_configuration(item=item, warehouse=warehouse, company=company, cutover_at=cutover_at)
         result = evaluate_forecast(
             actuals,
             operating_days=[True] * len(operating_days),
+            operating_dates=operating_days,
+            forecast_date=planning_day + timedelta(days=1),
+            safety_stock=config.get("safety_stock"),
             shelf_life_days=config.get("shelf_life_days"),
         )
         # A shelf-life cap is derived only after the measured forecast exists;
@@ -191,6 +244,9 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
             result = evaluate_forecast(
                 actuals,
                 operating_days=[True] * len(operating_days),
+                operating_dates=operating_days,
+                forecast_date=planning_day + timedelta(days=1),
+                safety_stock=config.get("safety_stock"),
                 shelf_life_days=config.get("shelf_life_days"),
                 shelf_life_cap=shelf_life_cap,
             )
@@ -203,10 +259,35 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
         if "shelf_life_cap_below_measured_uncertainty" in result.reasons:
             all_shelf_life_safe = False
         forecast_quantity = result.forecast
+        item_data.append({
+            "item": item,
+            "action": cstr(config.get("replenishment_action") or "Purchase"),
+            "actual_days": len(actuals),
+            "forecast": str(forecast_quantity) if forecast_quantity is not None else None,
+            "forecast_state": result.state,
+            "algorithm_version": result.algorithm_version,
+            "model": result.selected_model,
+            "training_days": result.training_days,
+            "test_days": result.test_days,
+            "valid_operating_days": result.valid_operating_days,
+            "mae": str(result.mae) if result.mae is not None else None,
+            "wape": str(result.wape) if result.wape is not None else None,
+            "signed_bias": str(result.signed_bias) if result.signed_bias is not None else None,
+            "positive_underforecast_p90": (
+                str(result.positive_underforecast_p90)
+                if result.positive_underforecast_p90 is not None
+                else None
+            ),
+            "reasons": result.reasons,
+            "explanation": result.explanation,
+            "config": config,
+        })
         if forecast_quantity is None:
             continue
         lead_days = config.get("lead_time_days")
-        safety_stock = result.positive_underforecast_p90 or Decimal("0")
+        action = cstr(config.get("replenishment_action") or "Purchase")
+        minimum_horizon = Decimal("1") if action == "Purchase" else (Decimal("1") / Decimal("24"))
+        safety_stock = config.get("safety_stock") or Decimal("0")
         replenishment_inputs.append(
             ReplenishmentInput(
                 item=item,
@@ -215,29 +296,15 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
                 reservations=config["reservations"],
                 unposted_consumption=config["unposted_consumption"],
                 open_supply=config["open_supply"],
-                forecast_through_lead_time=forecast_quantity * max(Decimal("1"), lead_days or Decimal("0")),
+                forecast_through_lead_time=forecast_quantity * max(minimum_horizon, lead_days or Decimal("0")),
                 safety_stock=safety_stock,
                 supplier_pack=config["supplier_pack"],
                 supplier_minimum=config["supplier_minimum"],
                 shelf_life_cap=config.get("shelf_life_cap"),
             )
         )
-        item_data.append({
-            "item": item,
-            "actual_days": len(actuals),
-            "forecast": str(forecast_quantity),
-            "forecast_state": result.state,
-            "model": result.selected_model,
-            "reasons": result.reasons,
-            "config": config,
-        })
 
     forecast_state = overall_forecast_state(forecast_results)
-    input_hash = _hash({
-        "planning_day": planning_day.isoformat(),
-        "operating_days": [value.isoformat() for value in operating_days],
-        "items": item_data,
-    })
     base_gates = _base_gates(policy, warehouse, max_source_age=int(policy.get("max_source_age_minutes") or 30))
     gates = {
         **base_gates,
@@ -246,25 +313,74 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
         "source_current": all_source_current,
         "shelf_life_cap": all_shelf_life_safe,
     }
+    if not all(shelf_life_allows_replenishment(value) for value in replenishment_inputs):
+        all_shelf_life_safe = False
+        gates["shelf_life_cap"] = False
     raw_lines = build_replenishment_plan(replenishment_inputs)
     quantity_ceiling = _decimal(policy.get("quantity_ceiling"))
     total_quantity = sum((line.quantity for line in raw_lines), Decimal("0"))
-    if quantity_ceiling is not None and quantity_ceiling > 0 and total_quantity > quantity_ceiling:
-        gates["quantity_ceiling"] = False
     allowed_actions = _permitted_actions(policy.get("permitted_actions"))
     if not allowed_actions:
         gates["quantity_ceiling"] = False
+    item_data_by_item = {
+        cstr(row.get("item")).strip(): row
+        for row in item_data
+        if cstr(row.get("item")).strip()
+    }
     lines = tuple(
         {
             "item": line.item,
-            "action": "Purchase",
+            "action": cstr(item_data_by_item.get(line.item, {}).get("action") or "Purchase"),
             "warehouse": line.warehouse,
+            "source_warehouse": cstr(item_data_by_item.get(line.item, {}).get("source_warehouse")).strip() or None,
             "quantity": str(line.quantity),
+            "quantity_decimal": str(line.quantity),
             "uom": _stock_uom(line.item),
             "reason": line.reason,
         }
         for line in raw_lines
-        if "Purchase" in allowed_actions
+        if cstr(item_data_by_item.get(line.item, {}).get("action") or "Purchase") in allowed_actions
+    )
+    request_lines_by_action = {
+        action: tuple(
+            ReplenishmentLine(line["item"], line["warehouse"], Decimal(line["quantity"]), line["reason"])
+            for line in lines
+            if cstr(line.get("action")) == action
+        )
+        for action in ("Purchase", "Manufacture")
+    }
+    request_lines = tuple(line for group in request_lines_by_action.values() for line in group)
+    value_ceiling = _decimal(policy.get("value_ceiling"))
+    estimated_value = _estimate_replenishment_value(request_lines)
+    gates.update(
+        automation_ceiling_gates(
+            quantity_ceiling=quantity_ceiling,
+            value_ceiling=value_ceiling,
+            proposed_quantity=total_quantity,
+            proposed_value=estimated_value,
+        )
+    )
+    if request_lines:
+        gates["intent_not_open"] = all(
+            not has_open_material_request_intent(
+                company=company,
+                purpose=action,
+                required_date=planning_day + timedelta(days=1),
+                lines=action_lines,
+            )
+            for action, action_lines in request_lines_by_action.items()
+            if action_lines
+        )
+    input_hash = _hash({
+        "planning_day": planning_day.isoformat(),
+        "operating_days": [value.isoformat() for value in operating_days],
+        "items": item_data,
+        "proposed_actions": lines,
+        "estimated_value": str(estimated_value) if estimated_value is not None else None,
+    })
+    forecast_evidence = build_forecast_evidence(
+        operating_days=operating_days,
+        item_data=item_data,
     )
     result = persist_inventory_plan(
         company=company,
@@ -273,30 +389,54 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
         input_hash=input_hash,
         policy_hash=policy_hash,
         forecast_state=forecast_state,
+        forecast_evidence=forecast_evidence,
         gates=gates,
         lines=lines,
     )
     created_documents: list[dict[str, Any]] = []
-    if result.get("status") == "created" and all(gates.get(name) is True for name in gates) and lines:
-        mr_result = create_and_submit_material_request(
-            company=company,
-            purpose="Purchase",
-            required_date=planning_day + timedelta(days=1),
-            lines=tuple(
-                ReplenishmentLine(line["item"], line["warehouse"], Decimal(line["quantity"]), line["reason"])
-                for line in lines
-            ),
-            gates=gates,
+    failed_gates = tuple(sorted(name for name, passed in gates.items() if passed is not True))
+    exception_identity = {
+        "reason_code": "inventory_plan_gate_failed",
+        "company": company,
+        "warehouse": warehouse,
+        "source_doctype": "FB Inventory Policy",
+        "source_name": cstr(policy.get("name")),
+    }
+    if failed_gates:
+        upsert_inventory_exception(
+            **exception_identity,
+            summary="Inventory planning did not create work because a safety check needs attention",
+            next_action="Review: " + ", ".join(failed_gates),
+            severity="Warning",
         )
-        created_documents.append(mr_result)
-        if mr_result.get("material_request") and frappe.get_meta("FB Inventory Plan").has_field("created_documents"):
-            frappe.db.set_value(
-                "FB Inventory Plan",
-                result["plan"],
-                "created_documents",
-                json.dumps(created_documents, sort_keys=True, default=str),
-                update_modified=False,
+    else:
+        resolve_inventory_exception(**exception_identity)
+    if result.get("status") in {"created", "duplicate"} and not failed_gates and lines:
+        for action, action_lines in request_lines_by_action.items():
+            if not action_lines:
+                continue
+            mr_result = create_and_submit_material_request(
+                company=company,
+                purpose=action,
+                required_date=planning_day + timedelta(days=1),
+                lines=action_lines,
+                plan_hash=input_hash,
+                policy_hash=policy_hash,
             )
+            created_documents.append(mr_result)
+            material_request = cstr(mr_result.get("material_request")).strip()
+            if (
+                action == "Purchase"
+                and material_request
+                and "Draft Purchase Order" in allowed_actions
+                and mr_result.get("status") in {"created", "duplicate"}
+            ):
+                created_documents.append(create_eligible_draft_purchase_order(
+                    company=company,
+                    material_request=material_request,
+                    plan_hash=input_hash,
+                    policy_hash=policy_hash,
+                ))
     return {
         "status": result.get("status"),
         "policy": cstr(policy.get("name")),
@@ -320,6 +460,14 @@ def _persist_blocked_plan(
         input_hash=input_hash,
         policy_hash=policy_hash,
         forecast_state=forecast_state,
+        forecast_evidence={
+            "algorithm_version": "inventory-autopilot-forecast-v1",
+            "valid_operating_days": 0,
+            "data_window": {"first": None, "last": None},
+            "items": [],
+            "reasons": [reason],
+            "explanation": "Required post-cutover planning evidence is not yet complete",
+        },
         gates=gates,
         lines=lines,
     )
@@ -336,13 +484,64 @@ def _persist_blocked_plan(
     return {"status": result.get("status"), "policy": cstr(policy.get("name")), "plan": result.get("plan"), "forecast_state": forecast_state, "gates": gates}
 
 
+def build_forecast_evidence(
+    *, operating_days: Iterable[date], item_data: Iterable[dict[str, Any]]
+) -> dict[str, Any]:
+    """Return the readable forecast proof persisted with one plan snapshot."""
+
+    days = tuple(operating_days)
+    items = []
+    for row in item_data:
+        items.append({
+            key: row.get(key)
+            for key in (
+                "item",
+                "algorithm_version",
+                "model",
+                "forecast_state",
+                "forecast",
+                "training_days",
+                "test_days",
+                "valid_operating_days",
+                "mae",
+                "wape",
+                "signed_bias",
+                "positive_underforecast_p90",
+                "reasons",
+                "explanation",
+            )
+        })
+    versions = sorted(
+        {
+            cstr(row.get("algorithm_version")).strip()
+            for row in items
+            if cstr(row.get("algorithm_version")).strip()
+        }
+    )
+    return {
+        "algorithm_version": versions[0] if len(versions) == 1 else versions,
+        "horizon": "supplier lead time through the next planning run",
+        "data_window": {
+            "first": days[0].isoformat() if days else None,
+            "last": days[-1].isoformat() if days else None,
+        },
+        "valid_operating_days": len(days),
+        "items": items,
+        "explanation": (
+            "Forecasts use only earlier post-cutover resolved ingredient consumption; "
+            "each Item records model selection and rolling-origin error arithmetic."
+        ),
+    }
+
+
 def _resolved_component_rows(*, warehouse: str, cutover_at: Any) -> list[dict[str, Any]]:
     if not frappe.db.exists("DocType", "FB Resolved Sale") or not frappe.db.exists("DocType", "FB Resolved Component"):
         return []
     try:
+        quantity_expression = _resolved_component_quantity_expression("rc")
         return frappe.db.sql(
-            """
-            SELECT rs.creation AS observed_at, rc.item, rc.stock_qty, rc.affects_stock
+            f"""
+            SELECT rs.creation AS observed_at, rc.item, {quantity_expression} AS stock_qty, rc.affects_stock
             FROM `tabFB Resolved Sale` rs
             INNER JOIN `tabFB Resolved Component` rc ON rc.parent = rs.name
             INNER JOIN `tabItem` i ON i.name = rc.item
@@ -350,7 +549,7 @@ def _resolved_component_rows(*, warehouse: str, cutover_at: Any) -> list[dict[st
               AND rs.creation >= %s
               AND i.is_stock_item = 1
               AND rc.affects_stock = 1
-              AND rc.stock_qty > 0
+              AND {quantity_expression} > 0
             """,
             (warehouse, cutover_at),
             as_dict=True,
@@ -366,9 +565,63 @@ def _resolved_component_rows(*, warehouse: str, cutover_at: Any) -> list[dict[st
         return []
 
 
-def _item_configuration(*, item: str, warehouse: str, company: str) -> dict[str, Any]:
+def _valid_operating_days(*, warehouse: str, cutover_at: Any, before_day: date) -> tuple[date, ...]:
+    """Use completed outlet shifts as evidence that a calendar day operated."""
+
+    if not warehouse or not cutover_at or not frappe.db.exists("DocType", "FB Shift"):
+        return ()
+    rows = frappe.get_all(
+        "FB Shift",
+        filters={
+            "warehouse": warehouse,
+            "status": "Closed",
+            "opened_at": [">=", cutover_at],
+        },
+        fields=["opened_at"],
+        limit_page_length=10_000,
+    )
+    days: set[date] = set()
+    for row in rows:
+        opened_at = row.get("opened_at")
+        if not opened_at:
+            continue
+        observed = get_datetime(opened_at)
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=BUSINESS_TIMEZONE)
+        local_day = observed.astimezone(BUSINESS_TIMEZONE).date()
+        if local_day < before_day:
+            days.add(local_day)
+    return tuple(sorted(days))
+
+
+def _tracked_component_items(*, company: str) -> tuple[str, ...]:
+    """Return current recipe components while retaining historical demand rows."""
+
+    if not company or not frappe.db.exists("DocType", "FB Recipe") or not frappe.db.exists("DocType", "FB Recipe Component"):
+        return ()
+    rows = frappe.db.sql(
+        """
+        SELECT DISTINCT component.item
+        FROM `tabFB Recipe` recipe
+        INNER JOIN `tabFB Recipe Component` component ON component.parent = recipe.name
+        INNER JOIN `tabItem` item ON item.name = component.item
+        WHERE recipe.company = %s
+          AND recipe.status = 'Active'
+          AND component.affects_stock = 1
+          AND item.is_stock_item = 1
+        ORDER BY component.item ASC
+        """,
+        (company,),
+        as_dict=True,
+    ) or []
+    return tuple(cstr(row.get("item")).strip() for row in rows if cstr(row.get("item")).strip())
+
+
+def _item_configuration(*, item: str, warehouse: str, company: str, cutover_at: Any) -> dict[str, Any]:
     meta = frappe.get_meta("Item")
     fields = ["name", "stock_uom", "is_stock_item"]
+    if meta.has_field("custom_fb_item_role"):
+        fields.append("custom_fb_item_role")
     for fieldname in ("shelf_life_in_days", "custom_kopos_shelf_life_days", "custom_kopos_supplier_pack_size"):
         if meta.has_field(fieldname):
             fields.append(fieldname)
@@ -380,26 +633,90 @@ def _item_configuration(*, item: str, warehouse: str, company: str) -> dict[str,
     bin_fields = [field for field in ("actual_qty", "reserved_qty", "ordered_qty", "indented_qty") if bin_meta and bin_meta.has_field(field)]
     bin_values = frappe.db.get_value("Bin", {"item_code": item, "warehouse": warehouse}, bin_fields, as_dict=True) if bin_fields else None
     bin_values = bin_values or {}
-    supplier = _supplier_configuration(item)
+    item_role = cstr(values.get("custom_fb_item_role")).strip()
+    prepared = _prepared_component_configuration(item=item, company=company) if item_role == "Prep Item" else None
+    supplier = prepared or _supplier_configuration(item)
+    unposted_consumption = _unposted_resolved_consumption(
+        item=item,
+        warehouse=warehouse,
+        cutover_at=cutover_at,
+    )
     current_stock = _decimal(bin_values.get("actual_qty")) or Decimal("0")
     reservations = _decimal(bin_values.get("reserved_qty")) or Decimal("0")
     open_supply = (_decimal(bin_values.get("ordered_qty")) or Decimal("0")) + (_decimal(bin_values.get("indented_qty")) or Decimal("0"))
-    source_current = bool(bin_fields) and supplier["source_current"]
+    source_current = bool(bin_fields) and supplier["source_current"] and unposted_consumption is not None
     shelf_life_cap = None
+    safety_stock = _configured_safety_stock(item=item, warehouse=warehouse)
     return {
         "recipe_uom_complete": is_stock_item and bool(stock_uom),
         "source_current": source_current,
         "current_stock": current_stock,
         "reservations": reservations,
         "open_supply": open_supply,
-        "unposted_consumption": Decimal("0"),
+        "unposted_consumption": unposted_consumption or Decimal("0"),
         "lead_time_days": supplier["lead_time_days"],
         "supplier_pack": supplier["supplier_pack"],
         "supplier_minimum": supplier["supplier_minimum"],
         "shelf_life_days": int(shelf_life_days) if shelf_life_days is not None else None,
         "shelf_life_cap": shelf_life_cap,
+        "safety_stock": safety_stock,
         "stock_uom": stock_uom,
+        "replenishment_action": "Manufacture" if prepared else "Purchase",
     }
+
+
+def _configured_safety_stock(*, item: str, warehouse: str) -> Decimal | None:
+    """Read the standard ERPNext warehouse reorder level as safety stock."""
+
+    if not frappe.db.exists("DocType", "Item Reorder"):
+        return None
+    rows = frappe.get_all(
+        "Item Reorder",
+        filters={"parent": item, "warehouse": warehouse},
+        fields=["warehouse_reorder_level"],
+        limit_page_length=2,
+    )
+    if len(rows) != 1:
+        return None
+    value = _decimal(rows[0].get("warehouse_reorder_level"))
+    return value if value is not None and value >= 0 else None
+
+
+def _unposted_resolved_consumption(*, item: str, warehouse: str, cutover_at: Any) -> Decimal | None:
+    """Include frozen ingredient consumption not yet posted to Stock Entry.
+
+    It is deliberately read from ``FB Resolved Sale`` rather than current
+    recipes so a delayed projection continues to reserve the exact historical
+    component vector.  A read failure blocks purchasing instead of assuming
+    the unresolved demand is zero.
+    """
+
+    if (
+        not cutover_at
+        or not frappe.db.exists("DocType", "FB Resolved Sale")
+        or not frappe.db.exists("DocType", "FB Resolved Component")
+    ):
+        return None
+    try:
+        quantity_expression = _resolved_component_quantity_expression("rc")
+        rows = frappe.db.sql(
+            f"""
+            SELECT COALESCE(SUM({quantity_expression}), 0) AS quantity
+            FROM `tabFB Resolved Sale` rs
+            INNER JOIN `tabFB Resolved Component` rc ON rc.parent = rs.name
+            WHERE rs.booth_warehouse = %s
+              AND rs.creation >= %s
+              AND rs.stock_entry_issue IS NULL
+              AND rc.item = %s
+              AND rc.affects_stock = 1
+              AND {quantity_expression} > 0
+            """,
+            (warehouse, cutover_at, item),
+            as_dict=True,
+        ) or []
+    except Exception:
+        return None
+    return _decimal(rows[0].get("quantity") if rows else "0")
 
 
 def _supplier_configuration(item: str) -> dict[str, Any]:
@@ -426,9 +743,68 @@ def _supplier_configuration(item: str) -> dict[str, Any]:
     }
 
 
+def _prepared_component_configuration(*, item: str, company: str) -> dict[str, Any] | None:
+    """Use one active standard BOM as supply authority for a prepared Item.
+
+    Prepared stock is made internally, not purchased.  The BOM's configured
+    batch quantity supplies the same conservative rounding input that a
+    supplier pack supplies for an Ingredient.  If the BOM is absent or
+    inactive, planning blocks rather than silently treating the prepared Item
+    as a purchasable ingredient.
+    """
+
+    if not frappe.db.exists("DocType", "BOM"):
+        return {
+            "source_current": False,
+            "lead_time_days": None,
+            "supplier_pack": Decimal("0"),
+            "supplier_minimum": Decimal("0"),
+        }
+    bom_meta = frappe.get_meta("BOM")
+    fields = ["name", "quantity"]
+    if bom_meta.has_field("custom_kopos_batch_qty"):
+        fields.append("custom_kopos_batch_qty")
+    if bom_meta.has_field("custom_kopos_preparation_lead_minutes"):
+        fields.append("custom_kopos_preparation_lead_minutes")
+    rows = frappe.get_all(
+        "BOM",
+        filters={"item": item, "company": company, "docstatus": 1, "is_active": 1},
+        fields=fields,
+        order_by="modified desc",
+        limit_page_length=2,
+    )
+    if len(rows) != 1:
+        return {
+            "source_current": False,
+            "lead_time_days": None,
+            "supplier_pack": Decimal("0"),
+            "supplier_minimum": Decimal("0"),
+        }
+    bom = rows[0]
+    batch = _decimal(bom.get("custom_kopos_batch_qty") or bom.get("quantity"))
+    lead_minutes = _decimal(bom.get("custom_kopos_preparation_lead_minutes"))
+    if batch is None or batch <= 0 or lead_minutes is None or lead_minutes < 0:
+        return {
+            "source_current": False,
+            "lead_time_days": None,
+            "supplier_pack": Decimal("0"),
+            "supplier_minimum": Decimal("0"),
+        }
+    return {
+        "source_current": True,
+        "lead_time_days": lead_minutes / Decimal("1440"),
+        "supplier_pack": batch,
+        "supplier_minimum": Decimal("0"),
+    }
+
+
 def _base_gates(policy: dict[str, Any], warehouse: str, *, max_source_age: int) -> dict[str, bool]:
     return {
         "policy_active": cstr(policy.get("automation_state")).strip() == "Active",
+        "automation_identity": automation_identity_is_configured(
+            company=cstr(policy.get("company")).strip(),
+            warehouse=warehouse,
+        ),
         "input_hash_match": True,
         "no_unresolved_count": _no_unresolved_count(warehouse),
         "devices_current": _devices_current(warehouse, max_source_age),
@@ -436,9 +812,37 @@ def _base_gates(policy: dict[str, Any], warehouse: str, *, max_source_age: int) 
         "recipe_uom_complete": True,
         "forecast_reliable": False,
         "source_current": True,
-        "quantity_ceiling": True,
+        # A director must configure both ceilings before automation can act.
+        # The plan builder turns these gates on only after validating positive
+        # limits against the exact proposed quantity and ERP valuation.
+        "quantity_ceiling": False,
+        "value_ceiling": False,
         "shelf_life_cap": True,
         "intent_not_open": True,
+    }
+
+
+def automation_ceiling_gates(
+    *,
+    quantity_ceiling: Decimal | None,
+    value_ceiling: Decimal | None,
+    proposed_quantity: Decimal,
+    proposed_value: Decimal | None,
+) -> dict[str, bool]:
+    """Fail closed until directors configure both positive action ceilings."""
+
+    return {
+        "quantity_ceiling": bool(
+            quantity_ceiling is not None
+            and quantity_ceiling > 0
+            and proposed_quantity <= quantity_ceiling
+        ),
+        "value_ceiling": bool(
+            value_ceiling is not None
+            and value_ceiling > 0
+            and proposed_value is not None
+            and proposed_value <= value_ceiling
+        ),
     }
 
 
@@ -457,12 +861,14 @@ def _devices_current(warehouse: str, max_age_minutes: int) -> bool:
     try:
         rows = frappe.db.sql(
             """
-            SELECT d.inventory_report_received_at, d.inventory_observed_at,
+            SELECT d.name, d.inventory_report_received_at, d.inventory_observed_at,
                    d.config_version, d.inventory_config_version,
+                   d.inventory_catalog_version,
                    d.inventory_overlay_version, d.inventory_overlay_hash,
                    d.inventory_sales_pending, d.inventory_sales_syncing,
                    d.inventory_sales_failed, d.inventory_sales_dead_letter,
-                   d.inventory_commands_pending, d.inventory_commands_failed
+                   d.inventory_commands_pending, d.inventory_commands_syncing,
+                   d.inventory_commands_failed, d.inventory_commands_dead_letter
             FROM `tabKoPOS Device` d
             INNER JOIN `tabPOS Profile` p ON p.name = d.pos_profile
             WHERE d.enabled = 1 AND p.warehouse = %s
@@ -481,9 +887,16 @@ def _devices_current(warehouse: str, max_age_minutes: int) -> bool:
             return False
         if row.get("config_version") != row.get("inventory_config_version"):
             return False
-        if any(int(row.get(key) or 0) for key in ("inventory_sales_pending", "inventory_sales_syncing", "inventory_sales_failed", "inventory_sales_dead_letter", "inventory_commands_pending", "inventory_commands_failed")):
+        if any(int(row.get(key) or 0) for key in ("inventory_sales_pending", "inventory_sales_syncing", "inventory_sales_failed", "inventory_sales_dead_letter")):
             return False
-        if not row.get("inventory_overlay_version") or not row.get("inventory_overlay_hash"):
+        if any(int(row.get(key) or 0) for key in ("inventory_commands_pending", "inventory_commands_syncing", "inventory_commands_failed", "inventory_commands_dead_letter")):
+            return False
+        if not device_overlay_is_current(
+            device_name=cstr(row.get("name")),
+            acknowledged_version=cstr(row.get("inventory_overlay_version")),
+            acknowledged_hash=cstr(row.get("inventory_overlay_hash")),
+            acknowledged_catalog_version=cstr(row.get("inventory_catalog_version")),
+        ):
             return False
     return True
 
@@ -526,6 +939,24 @@ def _stock_uom(item: str) -> str:
     return cstr(frappe.db.get_value("Item", item, "stock_uom")).strip() or "Nos"
 
 
+def _estimate_replenishment_value(lines: Iterable[ReplenishmentLine]) -> Decimal | None:
+    """Use current ERP valuation only for a configured value ceiling.
+
+    A missing or non-positive valuation is not converted into a free purchase;
+    it makes the ceiling gate fail until a director supplies real authority.
+    """
+
+    total = Decimal("0")
+    for line in lines:
+        rate = _decimal(frappe.db.get_value(
+            "Bin", {"item_code": line.item, "warehouse": line.warehouse}, "valuation_rate"
+        ))
+        if rate is None or rate <= 0:
+            return None
+        total += line.quantity * rate
+    return total
+
+
 def _business_today() -> date:
     current = now_datetime()
     if current.tzinfo is None:
@@ -533,10 +964,22 @@ def _business_today() -> date:
     return current.astimezone(BUSINESS_TIMEZONE).date()
 
 
-def _set_planning_marker() -> None:
+def _planning_marker_key(warehouse: str) -> str:
+    normalized = cstr(warehouse).strip()
+    if not normalized:
+        raise ValueError("planning health marker requires a warehouse")
+    suffix = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+    return f"{PLANNING_MARKER_KEY}:{suffix}"
+
+
+def _set_planning_marker(warehouse: str) -> None:
     setter = getattr(frappe.cache(), "set_value", None)
     if callable(setter):
-        setter(PLANNING_MARKER_KEY, now_datetime().isoformat(), expires_in_sec=7 * 24 * 60 * 60)
+        setter(
+            _planning_marker_key(warehouse),
+            now_datetime().isoformat(),
+            expires_in_sec=7 * 24 * 60 * 60,
+        )
 
 
 def _decimal(value: Any, *, allow_zero: bool = True) -> Decimal | None:
@@ -553,6 +996,13 @@ def _decimal(value: Any, *, allow_zero: bool = True) -> Decimal | None:
 
 def _truthy(value: Any) -> bool:
     return value in (1, True, "1", "true", "True")
+
+
+def _resolved_component_quantity_expression(alias: str) -> str:
+    """Prefer the exact child-row text column, with legacy Float fallback."""
+
+    field = "stock_qty_decimal" if frappe.get_meta("FB Resolved Component").has_field("stock_qty_decimal") else None
+    return f"COALESCE(NULLIF({alias}.{field}, ''), {alias}.stock_qty)" if field else f"{alias}.stock_qty"
 
 
 def _hash(value: Any) -> str:

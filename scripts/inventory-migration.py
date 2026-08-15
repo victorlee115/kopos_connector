@@ -12,25 +12,33 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Discover or migrate legacy KoPOS availability fields")
     parser.add_argument("--company", required=True)
     parser.add_argument("--warehouse", required=True)
-    parser.add_argument("--execute", action="store_true")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--execute", action="store_true")
     parser.add_argument("--input-digest")
     args = parser.parse_args()
     try:
         from kopos_connector.kopos.services.inventory_autopilot.legacy_migration import (
-            discover_legacy_values,
-            legacy_input_digest,
+            execute_legacy_migration,
             migrate_legacy_values,
         )
-        values = discover_legacy_values(company=args.company)
-        digest = legacy_input_digest(values)
-        if not args.execute:
-            print(json.dumps({"status": "dry_run", "input_digest": digest, "values": values}, default=str, indent=2))
-            return 0
-        if args.input_digest != digest:
-            raise SystemExit("input digest does not match the current dry-run rows; run dry-run again")
-        report = migrate_legacy_values(company=args.company, warehouse=args.warehouse, dry_run=False)
-        print(json.dumps({"status": "applied", **report}, default=str, indent=2))
-        return 0
+        if args.dry_run:
+            report = migrate_legacy_values(
+                company=args.company,
+                warehouse=args.warehouse,
+                dry_run=True,
+            )
+            print(json.dumps(report, default=str, indent=2))
+            return 2 if report.get("status") == "blocked" else 0
+        if not args.input_digest:
+            raise SystemExit("--input-digest is required with --execute")
+        report = execute_legacy_migration(
+            company=args.company,
+            warehouse=args.warehouse,
+            expected_digest=args.input_digest,
+        )
+        print(json.dumps(report, default=str, indent=2))
+        return 2 if report.get("status") == "blocked" else 0
     except Exception as error:
         print(f"inventory migration blocked: {error}", file=sys.stderr)
         return 1

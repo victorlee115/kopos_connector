@@ -389,7 +389,7 @@ Verify the response includes the preset codes:
 6. Pull catalog again
 7. Verify item shows advisory warning (`is_available: true`, `stock_warning: "erp_stock_short"`)
 8. Submit an order with the item
-9. Verify order succeeds and shortfall is logged to `FB Stock Override Log`
+9. Verify order succeeds and one open `FB Inventory Exception` records the shortfall
 10. For ERPNext v16 POS setups, also verify availability follows `actual_qty - POS reserved qty`, not only raw `Bin.actual_qty`
 
 ### 4. Test Hard-Block Sold Out (Force Unavailable)

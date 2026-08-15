@@ -21,6 +21,7 @@
         "originating_doctype",
         "originating_name",
         "active_from",
+        "last_evaluated_at",
         "manager_override_reason",
         "manager_override_at",
         "expires_at",
@@ -40,6 +41,7 @@
         {"fieldname": "originating_doctype", "fieldtype": "Link", "label": "Originating DocType", "options": "DocType"},
         {"fieldname": "originating_name", "fieldtype": "Dynamic Link", "label": "Originating Document", "options": "originating_doctype"},
         {"default": "Now", "fieldname": "active_from", "fieldtype": "Datetime", "label": "Active From", "reqd": 1},
+        {"fieldname": "last_evaluated_at", "fieldtype": "Datetime", "label": "Last Trustworthy Stock Check", "read_only": 1},
         {"fieldname": "manager_override_reason", "fieldtype": "Small Text", "label": "Manager Override Reason", "read_only": 1},
         {"fieldname": "manager_override_at", "fieldtype": "Datetime", "label": "Manager Override At", "read_only": 1},
         {"fieldname": "expires_at", "fieldtype": "Datetime", "label": "Expires At"},
@@ -52,8 +54,7 @@
     "owner": "Administrator",
     "permissions": [
         {"create": 1, "delete": 0, "read": 1, "write": 1, "role": "System Manager"},
-        {"create": 1, "delete": 0, "read": 1, "write": 1, "role": "Company Director"},
-        {"create": 1, "delete": 0, "read": 1, "write": 1, "role": "KoPOS Device API"}
+        {"create": 1, "delete": 0, "read": 1, "write": 1, "role": "Company Director"}
     ],
     "sort_field": "active_from",
     "sort_order": "DESC",

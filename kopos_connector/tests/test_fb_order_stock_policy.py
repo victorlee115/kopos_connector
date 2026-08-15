@@ -123,7 +123,7 @@ def fake_frappe(monkeypatch):
 
 
 @pytest.mark.inventory_regression
-def test_detect_and_log_stock_shortfall(fake_frappe):
+def test_detect_and_record_stock_shortfall_exception(fake_frappe, monkeypatch):
     fake_frappe.stock_by_bin[("ITEM-1", "WH-1")] = 1.0
     warning_service = importlib.import_module(
         "kopos_connector.kopos.services.inventory.warning_service"
@@ -153,25 +153,39 @@ def test_detect_and_log_stock_shortfall(fake_frappe):
     assert shortfalls[0]["available_qty"] == 1.0
     assert shortfalls[0]["shortfall_qty"] == 1.0
 
-    log_names = warning_service.log_stock_shortfall(
+    exception_calls: list[dict[str, object]] = []
+
+    def record_exception(**kwargs: object) -> str:
+        exception_calls.append(kwargs)
+        return "FB-EXCEPTION-1"
+
+    fake_frappe_module = sys.modules["frappe"]
+    fake_frappe_module.db.exists = lambda doctype, name=None: (
+        doctype == "DocType" and name == "FB Inventory Exception"
+    )
+    monkeypatch.setattr(
+        warning_service,
+        "import_module",
+        lambda name: types.SimpleNamespace(
+            upsert_inventory_exception=record_exception
+        )
+        if name.endswith("inventory_autopilot.exceptions")
+        else importlib.import_module(name),
+    )
+
+    exception_names = warning_service.log_stock_shortfall(
         SimpleNamespace(name="FB-ORDER-1", order_id="ORDER-1"),
         shortfalls,
         timestamp=fake_frappe.timestamp,
     )
 
-    assert log_names == ["FB-OVERRIDE-LOG-1"]
-    assert len(fake_frappe.created_logs) == 1
-
-    log_doc = fake_frappe.created_logs[0]
-    assert log_doc.fb_order == "FB-ORDER-1"
-    assert log_doc.order_reference == "ORDER-1"
-    assert log_doc.item == "ITEM-1"
-    assert log_doc.warehouse == "WH-1"
-    assert log_doc.requested_qty == 2.0
-    assert log_doc.available_qty_before == 1.0
-    assert log_doc.shortfall_qty == 1.0
-    assert log_doc.logged_at == fake_frappe.timestamp
-    assert log_doc.approved_at == fake_frappe.timestamp
+    assert exception_names == ["FB-EXCEPTION-1"]
+    assert len(exception_calls) == 1
+    assert exception_calls[0]["reason_code"] == "inventory_stock_shortfall"
+    assert exception_calls[0]["source_name"] == "FB-ORDER-1"
+    assert exception_calls[0]["item"] == "ITEM-1"
+    assert exception_calls[0]["warehouse"] == "WH-1"
+    assert fake_frappe.created_logs == []
 
 
 def test_before_submit_does_not_touch_inventory_before_accounting(fake_frappe):
@@ -205,7 +219,7 @@ def test_before_submit_does_not_touch_inventory_before_accounting(fake_frappe):
 
 
 @pytest.mark.inventory_regression
-def test_before_submit_rejects_shortfall_when_negative_stock_policy_is_disabled(
+def test_shortfall_does_not_block_when_negative_stock_policy_is_disabled(
     fake_frappe,
 ):
     fake_frappe.stock_by_bin[("ITEM-1", "WH-1")] = 0
@@ -219,25 +233,21 @@ def test_before_submit_rejects_shortfall_when_negative_stock_policy_is_disabled(
     order.order_id = "ORDER-1"
     order.booth_warehouse = "WH-1"
 
-    with pytest.raises(
-        fb_order_module.frappe.ValidationError,
-        match="Allow Negative Stock",
-    ):
-        order.validate_stock_availability(
-            [
-                {
-                    "resolved_components": [
-                        {"item": "ITEM-1", "stock_qty": 1, "affects_stock": 1}
-                    ]
-                }
-            ]
-        )
+    order.validate_stock_availability(
+        [
+            {
+                "resolved_components": [
+                    {"item": "ITEM-1", "stock_qty": 1, "affects_stock": 1}
+                ]
+            }
+        ]
+    )
 
     assert fake_frappe.created_logs == []
 
 
 @pytest.mark.inventory_regression
-def test_before_submit_rejects_serialised_shortfall_even_when_negative_stock_is_enabled(
+def test_serialised_shortfall_does_not_block_commercial_registration(
     fake_frappe,
 ):
     fake_frappe.stock_by_bin[("SERIAL-ITEM", "WH-1")] = 0
@@ -251,23 +261,19 @@ def test_before_submit_rejects_serialised_shortfall_even_when_negative_stock_is_
     order.order_id = "ORDER-1"
     order.booth_warehouse = "WH-1"
 
-    with pytest.raises(
-        fb_order_module.frappe.ValidationError,
-        match="serialised or batched",
-    ):
-        order.validate_stock_availability(
-            [
-                {
-                    "resolved_components": [
-                        {
-                            "item": "SERIAL-ITEM",
-                            "stock_qty": 1,
-                            "affects_stock": 1,
-                        }
-                    ]
-                }
-            ]
-        )
+    order.validate_stock_availability(
+        [
+            {
+                "resolved_components": [
+                    {
+                        "item": "SERIAL-ITEM",
+                        "stock_qty": 1,
+                        "affects_stock": 1,
+                    }
+                ]
+            }
+        ]
+    )
 
     assert fake_frappe.created_logs == []
 
@@ -303,6 +309,121 @@ def _prepared_component() -> dict[str, object]:
         "affects_cogs": 1,
         "remarks": None,
     }
+
+
+@pytest.mark.inventory_regression
+def test_resolved_component_hash_uses_exact_decimal_text_not_float(
+    fake_frappe,
+):
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+    component = {
+        **_prepared_component(),
+        "qty": 0.000000000000000001,
+        "stock_qty": 0.000000000000000001,
+        "qty_decimal": "0.000000000000000001",
+        "stock_qty_decimal": "0.000000000000000001",
+    }
+
+    canonical = fb_order_module._canonical_resolved_component(component)
+
+    assert canonical["qty"] == Decimal("0.000000000000000001")
+    assert canonical["stock_qty"] == Decimal("0.000000000000000001")
+    first = fb_order_module._resolution_hash(
+        recipe="RECIPE-1",
+        recipe_version="1",
+        selected_modifiers=[],
+        resolved_components=[component],
+        recipe_hash="a" * 64,
+    )
+    changed = {
+        **component,
+        "qty_decimal": "0.000000000000000002",
+        "stock_qty_decimal": "0.000000000000000002",
+    }
+    second = fb_order_module._resolution_hash(
+        recipe="RECIPE-1",
+        recipe_version="1",
+        selected_modifiers=[],
+        resolved_components=[changed],
+        recipe_hash="a" * 64,
+    )
+
+    assert first != second
+
+
+@pytest.mark.inventory_regression
+def test_new_resolved_sale_persists_exact_decimal_component_fields(
+    fake_frappe,
+    monkeypatch,
+):
+    fb_order_module = importlib.import_module(
+        "kopos_connector.kopos.doctype.fb_order.fb_order"
+    )
+
+    class ResolvedSale:
+        def __init__(self):
+            self.name = ""
+            self.children: list[dict[str, object]] = []
+
+        def append(self, _fieldname: str, value: dict[str, object]) -> None:
+            self.children.append(value)
+
+        def insert(self, ignore_permissions: bool = False) -> None:
+            self.name = "FB-RESOLVED-1"
+
+    resolved = ResolvedSale()
+    fake_frappe_module = sys.modules["frappe"]
+    monkeypatch.setattr(
+        fake_frappe_module,
+        "new_doc",
+        lambda doctype: resolved if doctype == "FB Resolved Sale" else None,
+    )
+    monkeypatch.setattr(
+        fake_frappe_module.db, "get_value", lambda *args, **kwargs: None
+    )
+
+    line = SimpleNamespace(
+        name="FB-ORDER-LINE-1",
+        backend_line_uuid="LINE-1",
+        line_id="LINE-1",
+        item="MONT-BLANC",
+        recipe="RECIPE-1",
+        recipe_version=1,
+        recipe_hash="a" * 64,
+        qty=1,
+        resolved_sale=None,
+        resolved_components_snapshot="[]",
+    )
+    recipe = SimpleNamespace(name="RECIPE-1", version_no=1)
+    order = fb_order_module.FBOrder()
+    order.name = "FB-ORDER-1"
+    order.order_id = "ORDER-1"
+    order.booth_warehouse = "WH-1"
+    order.event_project = None
+    order.accepted_sale_fingerprint = ""
+    order.items = [line]
+
+    order.create_resolved_sales(
+        [
+            {
+                "line": line,
+                "recipe_doc": recipe,
+                "selected_modifiers": [],
+                "resolved_components": [
+                    {
+                        **_prepared_component(),
+                        "qty": "0.000000000000000001",
+                        "stock_qty": "0.000000000000000001",
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert resolved.children[0]["qty_decimal"] == "0.000000000000000001"
+    assert resolved.children[0]["stock_qty_decimal"] == "0.000000000000000001"
 
 
 @pytest.mark.inventory_regression

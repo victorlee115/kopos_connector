@@ -242,6 +242,10 @@ REQUIRED_SCHEDULER_FREQUENCIES = {
 REQUIRED_CRON_SCHEDULER_FREQUENCIES = {
     (
         "kopos_connector.kopos.services.inventory_autopilot."
+        "availability_events.recover_availability_hourly"
+    ): "0 * * * *",
+    (
+        "kopos_connector.kopos.services.inventory_autopilot."
         "projection_worker.recover_inventory_projections"
     ): "*/5 * * * *",
     (

@@ -108,6 +108,64 @@ class TestRecipeModifierAuthoringContract(FrappeTestCase):
         ):
             legacy.save(ignore_permissions=True)
 
+    def test_new_modifier_is_blocked_only_for_a_frozen_inventory_recipe(self) -> None:
+        legacy_group = self._new_modifier_group()
+        legacy_recipe = self._new_draft_recipe(
+            modifier_group=legacy_group.name,
+            required=0,
+        )
+        legacy_recipe.insert(ignore_permissions=True, ignore_links=True)
+        frappe.db.set_value(
+            "FB Recipe", legacy_recipe.name, "status", "Active", update_modified=False
+        )
+        frappe.clear_document_cache("FB Recipe", legacy_recipe.name)
+
+        legacy_modifier = frappe.get_doc(
+            {
+                "doctype": "FB Modifier",
+                "modifier_code": f"KOPOS-LEGACY-MOD-{frappe.generate_hash(length=8)}",
+                "modifier_name": "Legacy compatible modifier",
+                "modifier_group": legacy_group.name,
+                "kind": "Instruction Only",
+                "active": 1,
+            }
+        )
+        legacy_modifier.insert(ignore_permissions=True)
+
+        frozen_group = self._new_modifier_group()
+        frozen_recipe = self._new_draft_recipe(
+            modifier_group=frozen_group.name,
+            required=0,
+        )
+        frozen_recipe.insert(ignore_permissions=True, ignore_links=True)
+        frappe.db.set_value(
+            "FB Recipe", frozen_recipe.name, "status", "Active", update_modified=False
+        )
+        frappe.db.set_value(
+            "FB Recipe",
+            frozen_recipe.name,
+            "canonical_hash",
+            "a" * 64,
+            update_modified=False,
+        )
+        frappe.clear_document_cache("FB Recipe", frozen_recipe.name)
+
+        frozen_modifier = frappe.get_doc(
+            {
+                "doctype": "FB Modifier",
+                "modifier_code": f"KOPOS-FROZEN-MOD-{frappe.generate_hash(length=8)}",
+                "modifier_name": "Frozen recipe modifier",
+                "modifier_group": frozen_group.name,
+                "kind": "Instruction Only",
+                "active": 1,
+            }
+        )
+        with self.assertRaisesRegex(
+            frappe.ValidationError,
+            "cannot become active in a group used by a published recipe",
+        ):
+            frozen_modifier.insert(ignore_permissions=True)
+
     def _new_modifier_group(self):
         suffix = frappe.generate_hash(length=10)
         modifier_group = frappe.get_doc(

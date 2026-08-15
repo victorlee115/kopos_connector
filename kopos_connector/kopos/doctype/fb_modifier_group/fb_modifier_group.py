@@ -93,6 +93,7 @@ class FBModifierGroup(Document):
             "min_selection",
             "max_selection",
             "parent_modifier",
+            "default_resolution_policy",
         )
         changed_fields = [
             fieldname

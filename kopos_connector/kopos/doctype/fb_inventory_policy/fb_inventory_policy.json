@@ -17,11 +17,17 @@
         "cutover_at",
         "opening_stock_reconciliation",
         "max_source_age_minutes",
+        "preparation_device",
+        "preparation_variance_percent_ceiling",
         "permitted_actions",
         "quantity_ceiling",
         "value_ceiling",
+        "count_variance_percent_ceiling",
+        "count_variance_value_ceiling",
         "expense_account",
-        "cogs_account"
+        "cogs_account",
+        "automation_user",
+        "purchase_review_owner"
     ],
     "fields": [
         {"fieldname": "company", "fieldtype": "Link", "label": "Company", "options": "Company", "reqd": 1},
@@ -32,11 +38,17 @@
         {"fieldname": "cutover_at", "fieldtype": "Datetime", "label": "Cutover At", "read_only": 1},
         {"fieldname": "opening_stock_reconciliation", "fieldtype": "Link", "label": "Opening Stock Reconciliation", "options": "Stock Reconciliation"},
         {"default": "30", "fieldname": "max_source_age_minutes", "fieldtype": "Int", "label": "Maximum Source Age (minutes)", "reqd": 1},
+        {"fieldname": "preparation_device", "fieldtype": "Link", "label": "Preparation Device", "options": "KoPOS Device", "description": "Optional preferred tablet for batch-preparation tasks. If it is stale, a manager-capable outlet tablet receives the task."},
+        {"fieldname": "preparation_variance_percent_ceiling", "fieldtype": "Percent", "label": "Preparation Variance Ceiling (%)", "description": "Optional director-approved percentage ceiling for usable-yield or waste variance when a BOM does not provide one."},
         {"fieldname": "permitted_actions", "fieldtype": "Small Text", "label": "Permitted Automation Actions"},
         {"fieldname": "quantity_ceiling", "fieldtype": "Float", "label": "Quantity Ceiling"},
         {"fieldname": "value_ceiling", "fieldtype": "Currency", "label": "Value Ceiling"},
+        {"fieldname": "count_variance_percent_ceiling", "fieldtype": "Percent", "label": "Count Variance Percent Ceiling", "description": "Optional director-approved percentage ceiling."},
+        {"fieldname": "count_variance_value_ceiling", "fieldtype": "Currency", "label": "Count Variance Value Ceiling", "hidden": 1, "description": "Optional hidden director-approved value ceiling."},
         {"fieldname": "expense_account", "fieldtype": "Link", "label": "Expense / COGS Account", "options": "Account"},
-        {"fieldname": "cogs_account", "fieldtype": "Link", "label": "COGS Account", "options": "Account"}
+        {"fieldname": "cogs_account", "fieldtype": "Link", "label": "COGS Account", "options": "Account"},
+        {"fieldname": "automation_user", "fieldtype": "Link", "label": "Automation User", "options": "User", "description": "Dedicated least-privilege user used to create unattended Material Requests and Draft Purchase Orders."},
+        {"fieldname": "purchase_review_owner", "fieldtype": "Link", "label": "Draft PO Review Owner", "options": "User", "description": "Company Director who receives the review task for JiJi-created Draft Purchase Orders."}
     ],
     "index_web_pages_for_search": 1,
     "module": "KoPOS",

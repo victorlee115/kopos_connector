@@ -11,9 +11,11 @@
         "item",
         "source_type",
         "qty",
+        "qty_decimal",
         "uom",
         "column_break_1",
         "stock_qty",
+        "stock_qty_decimal",
         "stock_uom",
         "warehouse",
         "source_reference",
@@ -36,7 +38,7 @@
             "fieldtype": "Select",
             "in_list_view": 1,
             "label": "Source Type",
-            "options": "Base Recipe\nModifier Add\nModifier Replace\nModifier Remove\nModifier Scale\nReturn Reversal\nRemake Reissue",
+            "options": "Frozen Recipe\nBase Recipe\nModifier Add\nModifier Replace\nModifier Remove\nModifier Scale\nReturn Reversal\nRemake Reissue",
             "reqd": 1
         },
         {
@@ -45,6 +47,14 @@
             "in_list_view": 1,
             "label": "Qty",
             "reqd": 1
+        },
+        {
+            "fieldname": "qty_decimal",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Exact Qty (Decimal)",
+            "read_only": 1,
+            "description": "Canonical decimal text used by inventory projection and resolution hashing. Legacy records may leave this blank."
         },
         {
             "fieldname": "uom",
@@ -61,6 +71,14 @@
             "fieldname": "stock_qty",
             "fieldtype": "Float",
             "label": "Stock Qty"
+        },
+        {
+            "fieldname": "stock_qty_decimal",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Exact Stock Qty (Decimal)",
+            "read_only": 1,
+            "description": "Canonical stock-UOM decimal text used by inventory projection and resolution hashing. Legacy records may leave this blank."
         },
         {
             "fieldname": "stock_uom",

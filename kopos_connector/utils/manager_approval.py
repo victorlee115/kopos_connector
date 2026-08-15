@@ -653,6 +653,7 @@ def generate_manager_approval_token(
         "stock_remake",
         "manual_qr_override",
         "device_config_change",
+        "inventory_count_reconciliation",
     )
     if action not in valid_actions:
         frappe.throw(

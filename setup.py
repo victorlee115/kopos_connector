@@ -6,7 +6,7 @@ setup(
     # PEP 517 resolves this file in an isolated environment before the source
     # package is importable; importing kopos_connector here made candidate
     # builds fail before Frappe could install the app.
-    version="1.0.11",
+    version="1.1.0",
     # Frappe modules intentionally use PEP 420 namespace directories in several
     # runtime paths. find_packages() silently omitted those modules from wheels,
     # so a source checkout worked while the published candidate was incomplete.

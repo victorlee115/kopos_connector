@@ -103,7 +103,20 @@ before_uninstall = "kopos_connector.uninstall.before_uninstall"
 # 	"ToDo": "custom_app.overrides.CustomToDo"
 # }
 
-# Document event behavior is implemented directly in the DocType controllers.
+# Document event behavior is implemented directly in the DocType controllers
+# except for these fixed ERPNext-owned stock documents. Their submitted state
+# schedules one debounced, optional availability refresh after commit.
+doc_events = {
+    "Purchase Receipt": {
+        "on_submit": "kopos_connector.kopos.services.inventory_autopilot.availability_events.on_stock_document_submit",
+    },
+    "Stock Entry": {
+        "on_submit": "kopos_connector.kopos.services.inventory_autopilot.availability_events.on_stock_document_submit",
+    },
+    "Stock Reconciliation": {
+        "on_submit": "kopos_connector.kopos.services.inventory_autopilot.availability_events.on_stock_document_submit",
+    },
+}
 
 # POS Profile is an ERPNext-owned DocType, so extend its controller instead of
 # registering a second doc_events lifecycle.  The mixin invalidates managed
@@ -135,6 +148,8 @@ scheduler_events = {
             "kopos_connector.kopos.services.inventory_autopilot.preparation.schedule_preparation_tasks",
         ],
         "0 * * * *": [
+            "kopos_connector.kopos.services.inventory_autopilot.availability_events.recover_availability_hourly",
+            "kopos_connector.kopos.services.inventory_autopilot.count_scheduler.schedule_inventory_count_tasks",
             "kopos_connector.kopos.services.inventory_autopilot.planning.generate_inventory_plans",
         ],
     },

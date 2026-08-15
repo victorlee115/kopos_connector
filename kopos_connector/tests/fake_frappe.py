@@ -177,6 +177,7 @@ def install_fake_frappe_modules() -> None:
     setattr(frappe_module, "PermissionError", PermissionError)
     setattr(frappe_module, "whitelist", lambda *args, **kwargs: (lambda fn: fn))
     setattr(frappe_module, "sendmail", lambda *args, **kwargs: None)
+    setattr(frappe_module, "delete_doc", lambda *args, **kwargs: None)
     setattr(
         frappe_module,
         "throw",

@@ -1032,3 +1032,60 @@ def test_money_to_sen_uses_explicit_half_up_rounding(
     catalog_module, amount, expected_sen
 ):
     assert catalog_module.money_to_sen(amount) == expected_sen
+
+
+def test_inventory_overlay_failure_keeps_the_complete_commercial_catalog(
+    catalog_module, monkeypatch
+):
+    monkeypatch.setattr(
+        catalog_module,
+        "resolve_catalog_pos_profile",
+        lambda device_id=None: {
+            "name": "POS-1",
+            "company": "KoPOS Cafe",
+            "warehouse": "WH-1",
+            "selling_price_list": "Standard Selling",
+            "currency": "MYR",
+        },
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_items",
+        lambda **kwargs: [
+            {
+                "id": "LATTE",
+                "item_code": "LATTE",
+                "name": "Latte",
+                "category_id": "DRINKS",
+                "price": 12.0,
+                "price_sen": 1200,
+                "barcode": None,
+                "is_available": True,
+                "stock_warning": None,
+                "is_active": 1,
+                "is_prep_item": 0,
+                "modifier_group_ids": [],
+            }
+        ],
+    )
+    monkeypatch.setattr(catalog_module, "_item_recipe_snapshots", lambda items, company: {})
+    monkeypatch.setattr(catalog_module, "_item_modifier_group_ids", lambda items, company, recipe_snapshots=None: {})
+    monkeypatch.setattr(catalog_module, "_load_modifier_catalog", lambda group_ids: ([], []))
+    monkeypatch.setattr(
+        catalog_module,
+        "get_categories",
+        lambda category_ids=None: [{"id": "DRINKS", "name": "Drinks", "display_order": 1, "is_active": 1}],
+    )
+    monkeypatch.setattr(catalog_module, "get_tax_rate_value", lambda device_id=None: 0.06)
+    monkeypatch.setattr(
+        catalog_module,
+        "build_inventory_overlay",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("stock database unavailable")),
+    )
+
+    payload = catalog_module.build_catalog_payload(device_id="DEVICE-1")
+
+    assert payload["sync_mode"] == "full"
+    assert payload["items"][0]["id"] == "LATTE"
+    assert payload["inventory_overlay"]["status"] == "unavailable"
+    assert payload["inventory_overlay"]["items"] == []

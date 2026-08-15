@@ -27,6 +27,12 @@ Stock Entry, or accounting record is rewritten by the redesign.
 4. Suppliers, quotations, lead times, transfer warehouses, dimensions, staff
    access, devices, monitor destination, and pilot outlet are configured from
    the generated outlet matrix; none are guessed from this backup.
+   Staff access preflight verifies that every active central record points to
+   an existing enabled User and an active Employee whose `user_id` matches
+   exactly.  It also discovers the real POS users' `Has Role`/`DocPerm`
+   assignments and blocks legacy manager or sensitive stock/purchasing ERP
+   access; System Manager is reported as technical administration and Company
+   Director as the authorised business role.
 5. A standard opening Stock Reconciliation is submitted before an outlet
    policy can activate its immutable cutover token.
 

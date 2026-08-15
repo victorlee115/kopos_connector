@@ -6,8 +6,10 @@
  "fields": [
   {"fieldname":"item","fieldtype":"Link","label":"Item","options":"Item","reqd":1},
   {"fieldname":"action","fieldtype":"Select","label":"Action","options":"Purchase\nManufacture\nTransfer","reqd":1},
-  {"fieldname":"warehouse","fieldtype":"Link","label":"Warehouse","options":"Warehouse","reqd":1},
+  {"fieldname":"warehouse","fieldtype":"Link","label":"Destination Warehouse","options":"Warehouse","reqd":1},
+  {"fieldname":"source_warehouse","fieldtype":"Link","label":"Source Warehouse","options":"Warehouse","description":"Required for Transfer actions; blank for Purchase and Manufacture."},
   {"fieldname":"quantity","fieldtype":"Float","label":"Proposed Quantity","reqd":1},
+  {"fieldname":"quantity_decimal","fieldtype":"Data","label":"Exact Proposed Quantity (Decimal)","read_only":1,"hidden":1,"no_copy":1,"description":"Canonical decimal text used for plan identity and document execution. Historical plan lines may leave this blank."},
   {"fieldname":"uom","fieldtype":"Link","label":"UOM","options":"UOM","reqd":1},
   {"fieldname":"reason","fieldtype":"Small Text","label":"Plain-English Reason"}
  ],

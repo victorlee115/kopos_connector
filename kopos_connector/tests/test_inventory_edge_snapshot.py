@@ -1,0 +1,319 @@
+from __future__ import annotations
+
+import inspect
+import unittest
+from datetime import datetime
+from decimal import Decimal
+from unittest.mock import patch
+
+from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
+
+install_fake_frappe_modules()
+
+import frappe
+
+from kopos_connector.api import inventory
+from kopos_connector.kopos.services.inventory_autopilot.edge_snapshot import (
+    _attach_runout,
+    _safe_holds,
+    _safe_task,
+    build_edge_inventory_snapshot,
+    normalize_edge_query,
+)
+from kopos_connector.kopos.services.inventory_autopilot.availability_capacity import CapacityResult
+
+
+class InventoryEdgeSnapshotTest(unittest.TestCase):
+    def test_query_is_bounded(self) -> None:
+        self.assertEqual(normalize_edge_query("  milk  ", "100"), ("milk", 100))
+        self.assertEqual(normalize_edge_query(), ("", 50))
+        with self.assertRaisesRegex(frappe.ValidationError, "characters or fewer"):
+            normalize_edge_query("x" * 81)
+        with self.assertRaisesRegex(frappe.ValidationError, "between 1 and 100"):
+            normalize_edge_query(limit="101")
+
+    def test_task_allow_list_removes_financial_and_supplier_fields(self) -> None:
+        task = _safe_task(
+            {
+                "kind": "receiving",
+                "document": "PO-1",
+                "title": "Receive supplier delivery",
+                "supplier": "Private Supplier Name",
+                "rate": Decimal("12.34"),
+                "value": Decimal("999"),
+                "lines": [{
+                    "item_code": "MILK",
+                    "item_id": "MILK",
+                    "qty": Decimal("2.5"),
+                    "rate": Decimal("12.34"),
+                    "amount": Decimal("30.85"),
+                }],
+            },
+            max_lines=100,
+        )
+        self.assertEqual(task["document"], "PO-1")
+        self.assertEqual(task["lines"][0]["qty"], "2.5")
+        self.assertEqual(task["lines"][0]["item_id"], "MILK")
+        self.assertNotIn("supplier", task)
+        self.assertNotIn("rate", task)
+        self.assertNotIn("value", task)
+        self.assertNotIn("rate", task["lines"][0])
+        self.assertNotIn("amount", task["lines"][0])
+
+    def test_runout_is_null_until_target_is_reliable(self) -> None:
+        target = {
+            "stock_item": "MILK",
+            "reliability": "Please check",
+            "reliability_reason": "Stock evidence is stale",
+            "usable_qty": "10",
+            "runout": None,
+            "runout_reason": "",
+        }
+        _attach_runout(
+            target,
+            forecast_map={"MILK": Decimal("2")},
+            forecast_reason="",
+        )
+        self.assertIsNone(target["runout"])
+        self.assertEqual(target["runout_reason"], "Stock evidence is stale")
+
+    def test_edge_endpoint_requires_bound_device_and_supports_search_limit(self) -> None:
+        signature = inspect.signature(inventory.get_edge_snapshot)
+        self.assertIn("search", signature.parameters)
+        self.assertIn("limit", signature.parameters)
+        self.assertIn("device_id", signature.parameters)
+
+        with (
+            patch.object(inventory, "require_device_operational_scope", return_value=(object(), object())),
+            patch.object(
+                inventory,
+                "build_catalog_payload",
+                return_value={"sync_mode": "unchanged"},
+            ),
+            patch.object(
+                inventory,
+                "build_edge_inventory_snapshot",
+                return_value={"schema_version": "inventory-edge-v1", "tasks": []},
+            ) as build_snapshot,
+            patch.object(inventory, "_get_inventory_tasks", return_value={"tasks": []}),
+            patch.object(inventory, "_set_health_marker"),
+        ):
+            inventory.require_device_operational_scope.return_value = (
+                object(),
+                type("Profile", (), {"company": "JiJi Sdn Bhd", "warehouse": "Outlet - J"})(),
+            )
+            inventory.get_edge_snapshot(device_id="DEVICE-1", search="milk", limit="1")
+        build_snapshot.assert_called_once_with(
+            company="JiJi Sdn Bhd",
+            warehouse="Outlet - J",
+            search="milk",
+            limit="1",
+        )
+
+        with (
+            patch.object(
+                inventory,
+                "require_device_operational_scope",
+                return_value=(object(), type("Profile", (), {"company": "C", "warehouse": "W"})()),
+            ),
+            patch.object(inventory, "build_catalog_payload", return_value={"sync_mode": "full"}),
+            patch.object(inventory, "build_edge_inventory_snapshot", side_effect=RuntimeError("database detail")),
+            patch.object(inventory, "_get_inventory_tasks", side_effect=RuntimeError("task detail")),
+            patch.object(inventory, "log_sanitized_error"),
+            patch.object(inventory, "_set_health_marker"),
+        ):
+            fallback = inventory.get_edge_snapshot(device_id="DEVICE-1")
+        self.assertEqual(fallback["sync_mode"], "full")
+        self.assertEqual(fallback["inventory_snapshot"]["status"], "unavailable")
+        self.assertEqual(fallback["inventory_snapshot"]["tasks"], [])
+
+    def test_snapshot_is_bounded_and_contains_operational_values_only(self) -> None:
+        with (
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._policy",
+                return_value={
+                    "automation_state": "Review First",
+                    "max_source_age_minutes": 30,
+                    "cutover_token": "cutover-1",
+                    "cutover_at": "2026-01-01 00:00:00",
+                },
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._load_modifier_rows",
+                return_value=[
+                    {
+                        "name": "MOD-1", "modifier_group": "GROUP-1", "modifier_name": "Large",
+                        "target_item": "MILK", "active": 1,
+                    },
+                    {
+                        "name": "MOD-2", "modifier_group": "GROUP-1", "modifier_name": "Extra",
+                        "target_item": "MILK", "active": 1,
+                    },
+                ],
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._load_item_rows",
+                return_value=([
+                    {"name": "MILK", "item_name": "Milk", "stock_uom": "L", "disabled": 0},
+                    {"name": "SYRUP", "item_name": "Syrup", "stock_uom": "L", "disabled": 0},
+                ], True),
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._load_bin_rows",
+                return_value={"MILK": {"actual_qty": "5", "reserved_qty": "1", "modified": "2024-01-01T00:00:00"}},
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._load_rule_map",
+                return_value={},
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._safe_holds",
+                return_value=[],
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._reliable_forecasts",
+                return_value=({}, "Forecast is not ready"),
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._critical_exception_exists",
+                return_value=False,
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._projection_backlog_exists",
+                return_value=False,
+            ),
+        ):
+            snapshot = build_edge_inventory_snapshot(
+                company="JiJi Sdn Bhd",
+                warehouse="Outlet - J",
+                limit=1,
+                now=datetime(2026, 3, 13, 18, 5),
+            )
+        self.assertLessEqual(len(snapshot["items"]), 1)
+        self.assertLessEqual(len(snapshot["modifier_options"]), 1)
+        self.assertTrue(snapshot["truncated"]["items"])
+        self.assertIsNone(snapshot["items"][0]["runout"])
+        self.assertEqual(snapshot["items"][0]["actual_qty"], "5")
+        self.assertEqual(snapshot["items"][0]["freshness"], "current")
+        self.assertEqual(snapshot["items"][0]["last_stock_movement_at"], "2024-01-01T00:00:00+08:00")
+        forbidden = {"rate", "price", "amount", "valuation_rate", "cogs", "margin", "value_ceiling"}
+        self.assertTrue(forbidden.isdisjoint(snapshot["items"][0]))
+
+    def test_catalog_made_to_order_target_uses_shared_recipe_capacity(self) -> None:
+        with (
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._policy",
+                return_value={"automation_state": "Review First", "cutover_token": "cutover-1", "cutover_at": "2026-01-01 00:00:00"},
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._load_modifier_rows",
+                return_value=[],
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._load_item_rows",
+                return_value=(
+                    [
+                        {"name": "MONT-BLANC", "item_name": "Mont Blanc", "stock_uom": "Nos", "is_stock_item": 0, "disabled": 0},
+                        {"name": "COLD-FOAM", "item_name": "Cold Foam", "stock_uom": "Nos", "is_stock_item": 1, "disabled": 0},
+                    ],
+                    False,
+                ),
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._load_bin_rows",
+                return_value={"COLD-FOAM": {"actual_qty": "8", "reserved_qty": "0"}},
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._load_rule_map",
+                return_value={("Item", "MONT-BLANC"): "Warn"},
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._safe_holds",
+                return_value=[],
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot.target_capacity",
+                return_value=CapacityResult(
+                    target_type="Item",
+                    target_id="MONT-BLANC",
+                    capacity=Decimal("8"),
+                    reliable=True,
+                    reason="Current recipe stock evidence covers the frozen recipe components",
+                    requirements={"COLD-FOAM": Decimal("1")},
+                ),
+            ) as shared_capacity,
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._reliable_forecasts",
+                return_value=({}, "Forecast is not ready"),
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._critical_exception_exists",
+                return_value=False,
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot._projection_backlog_exists",
+                return_value=False,
+            ),
+        ):
+            snapshot = build_edge_inventory_snapshot(
+                company="JiJi Sdn Bhd",
+                warehouse="Outlet - J",
+                limit=2,
+                now=datetime(2026, 3, 13, 18, 5),
+                catalog_item_ids={"MONT-BLANC"},
+            )
+
+        mont_blanc = next(item for item in snapshot["items"] if item["target_id"] == "MONT-BLANC")
+        cold_foam = next(item for item in snapshot["items"] if item["target_id"] == "COLD-FOAM")
+        self.assertTrue(mont_blanc["is_catalog_target"])
+        self.assertEqual(mont_blanc["sellable_capacity"], "8")
+        self.assertIsNone(mont_blanc["stock_item"])
+        self.assertEqual(cold_foam["stock_item"], "COLD-FOAM")
+        self.assertEqual(cold_foam["usable_qty"], "8")
+        shared_capacity.assert_called_once_with(
+            target_type="Item",
+            target_id="MONT-BLANC",
+            company="JiJi Sdn Bhd",
+            warehouse="Outlet - J",
+            at_time=datetime(2026, 3, 13, 18, 5),
+        )
+
+    def test_edge_hold_marks_only_matching_pos_manual_hold_as_manager_owned(self) -> None:
+        with (
+            patch.object(frappe.db, "exists", return_value=True),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.edge_snapshot.active_holds",
+                return_value=[
+                    {
+                        "name": "MANUAL-1",
+                        "source": "manual",
+                        "reason_code": "manual_manager_pause",
+                        "reason_label": "Stock check required",
+                        "expires_at": None,
+                        "stale": False,
+                        "pos_profile": "Outlet POS",
+                    },
+                    {
+                        "name": "MANUAL-2",
+                        "source": "manual",
+                        "reason_code": "director_hold",
+                        "reason_label": "Director hold",
+                        "expires_at": None,
+                        "stale": False,
+                        "pos_profile": "Outlet POS",
+                    },
+                ],
+            ),
+        ):
+            holds = _safe_holds(
+                target_type="Item",
+                target_id="MONT-BLANC",
+                warehouse="Outlet - J",
+                pos_profile="Outlet POS",
+            )
+        self.assertTrue(holds[0]["manager_owned"])
+        self.assertFalse(holds[1]["manager_owned"])
+
+
+if __name__ == "__main__":
+    unittest.main()

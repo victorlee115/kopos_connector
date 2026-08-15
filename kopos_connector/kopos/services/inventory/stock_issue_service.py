@@ -163,7 +163,12 @@ def _build_grouped_issue_items(resolved_sale_docs: list[Any]) -> list[dict[str, 
                 resolved_sale_doc, "booth_warehouse"
             )
             item_code = _value(component, "item")
-            stock_qty_value = _value(component, "stock_qty")
+            # ``*_decimal`` is the canonical inventory quantity.  The Float
+            # columns remain as a compatibility fallback for pre-redesign
+            # resolved sales and must never be the authority for new rows.
+            stock_qty_value = _value(component, "stock_qty_decimal")
+            if stock_qty_value in (None, ""):
+                stock_qty_value = _value(component, "stock_qty")
             if stock_qty_value in (None, ""):
                 stock_qty_value = _value(component, "qty")
             qty = _positive_decimal_quantity(

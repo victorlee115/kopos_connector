@@ -12,7 +12,45 @@ class KoPOSPromotion(Document):
         self.validate_date_range()
         self.validate_outlet_scope()
         self.validate_discount_rule()
+        self.validate_economics_review_state()
         self.set_defaults()
+
+    def validate_economics_review_state(self):
+        """Keep review evidence writable only through the server review APIs."""
+
+        review_fields = (
+            "economics_status",
+            "economics_source_hash",
+            "economics_checked_at",
+            "economics_checked_by",
+            "economics_block_reason",
+            "economics_override_reason",
+            "economics_override_by",
+            "economics_override_at",
+            "economics_override_hash",
+        )
+        if getattr(getattr(self, "flags", None), "allow_economics_review_write", False):
+            return
+        before = self.get_doc_before_save()
+        if not before:
+            status = cstr(getattr(self, "economics_status", "") or "Not checked").strip()
+            if status not in {"", "Not checked"}:
+                frappe.throw(
+                    _("Promotion economics status is assigned by the server review flow"),
+                    frappe.ValidationError,
+                )
+            return
+        changed = [
+            fieldname
+            for fieldname in review_fields
+            if cstr(getattr(before, fieldname, "")).strip()
+            != cstr(getattr(self, fieldname, "")).strip()
+        ]
+        if changed:
+            frappe.throw(
+                _("Promotion economics evidence is server-managed; use the economics check or override action"),
+                frappe.ValidationError,
+            )
 
     def set_defaults(self):
         if not self.display_label:

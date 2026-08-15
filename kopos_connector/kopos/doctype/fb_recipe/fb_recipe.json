@@ -17,10 +17,13 @@
         "recipe_type",
         "status",
         "version_no",
+        "canonical_hash",
         "yield_section",
         "yield_qty",
+        "yield_qty_decimal",
         "yield_uom",
         "default_serving_qty",
+        "default_serving_qty_decimal",
         "default_serving_uom",
         "column_break_2",
         "station",
@@ -32,6 +35,8 @@
         "components",
         "modifier_groups_section",
         "allowed_modifier_groups",
+        "modifier_effects_section",
+        "recipe_modifier_effects",
         "notes_section",
         "notes"
     ],
@@ -94,6 +99,14 @@
             "reqd": 1
         },
         {
+            "fieldname": "canonical_hash",
+            "fieldtype": "Data",
+            "label": "Canonical Recipe Hash",
+            "read_only": 1,
+            "hidden": 1,
+            "no_copy": 1
+        },
+        {
             "fieldname": "yield_section",
             "fieldtype": "Section Break",
             "label": "Yield Information"
@@ -104,6 +117,15 @@
             "fieldtype": "Float",
             "label": "Yield Qty",
             "reqd": 1
+        },
+        {
+            "fieldname": "yield_qty_decimal",
+            "fieldtype": "Data",
+            "label": "Exact Yield Qty (Decimal)",
+            "read_only": 1,
+            "hidden": 1,
+            "no_copy": 1,
+            "description": "Canonical decimal text used for recipe hashing and inventory compilation. Historical recipes may leave this blank."
         },
         {
             "fieldname": "yield_uom",
@@ -118,6 +140,15 @@
             "fieldtype": "Float",
             "label": "Default Serving Qty",
             "reqd": 1
+        },
+        {
+            "fieldname": "default_serving_qty_decimal",
+            "fieldtype": "Data",
+            "label": "Exact Default Serving Qty (Decimal)",
+            "read_only": 1,
+            "hidden": 1,
+            "no_copy": 1,
+            "description": "Canonical decimal text used for recipe hashing and inventory compilation. Historical recipes may leave this blank."
         },
         {
             "fieldname": "default_serving_uom",
@@ -178,6 +209,19 @@
             "fieldtype": "Table",
             "label": "Allowed Modifier Groups",
             "options": "FB Allowed Modifier Group"
+        },
+        {
+            "fieldname": "modifier_effects_section",
+            "fieldtype": "Section Break",
+            "label": "Frozen Modifier Effects"
+        },
+        {
+            "fieldname": "recipe_modifier_effects",
+            "fieldtype": "Table",
+            "label": "Frozen Modifier Effects",
+            "options": "FB Recipe Modifier Effect",
+            "read_only": 1,
+            "description": "Generated on publish. Change a modifier effect by publishing a new recipe version."
         },
         {
             "fieldname": "notes_section",

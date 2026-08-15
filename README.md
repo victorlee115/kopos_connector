@@ -516,21 +516,18 @@ Response:
 
 ### Stock Availability Policy
 
-**Advisory Stock Warnings (Auto Mode)**
-- When `Track Stock` is enabled and stock falls below `custom_kopos_min_qty`, the catalog returns `stock_warning: "erp_stock_short"` with `is_available: true`
-- POS shows a "LOW STOCK" warning but allows the sale to proceed
-- At submit-time, ERP logs the shortfall to `FB Stock Override Log` instead of rejecting the order
-- This keeps operations flowing while maintaining an audit trail
+The commercial catalog remains saleable when inventory evidence is unavailable.
+Inventory availability is supplied separately through the versioned
+`inventory_overlay`: it can show an Item or modifier as available, warning or
+held, together with a human-readable reason and freshness.  A stale
+automation-owned hold remains held and opens a manager exception; a manual,
+safety, quality or equipment hold is never changed by device connectivity.
 
-**Hard-Block Scenarios**
-- `Force Unavailable` mode: item is hard-blocked (`is_available: false`)
-- Disabled items: hard-blocked
-- Local POS 86 (manual sold-out): hard-blocked
-- These prevent add-to-cart and checkout with clear error messages
-
-**Stock Calculation**
-- Availability follows ERPNext v16 POS behavior: `actual_qty - get_pos_reserved_qty(item_code, warehouse) >= custom_kopos_min_qty`
-- This keeps KoPOS availability aligned with submitted POS sales that reserve stock before it is reflected in `Bin.actual_qty`
+The former `custom_kopos_availability_mode`, `custom_kopos_track_stock`, and
+`custom_kopos_min_qty` fields are retained only as hidden, read-only migration
+evidence.  They are not read on the live catalog or checkout path.  Run the
+director-reviewed legacy migration to map `force_unavailable` to a manual hold
+and `force_available` to an explicit `Off` availability rule.
 
 ## DocTypes
 
@@ -570,9 +567,8 @@ Links items to modifier groups.
 
 ### Item DocType
 
-- `custom_kopos_availability_mode`: Availability mode (Auto/Force Available/Force Unavailable)
-- `custom_kopos_track_stock`: Enable stock tracking
-- `custom_kopos_min_qty`: Minimum quantity for availability
+- Legacy availability fields are hidden migration evidence; new availability
+  policy is owned by `FB Inventory Availability Rule` and `FB Availability Hold`.
 - `modifier_groups`: Child table linking modifier groups
 
 ### POS Profile DocType

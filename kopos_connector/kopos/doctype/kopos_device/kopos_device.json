@@ -24,6 +24,7 @@
   "pos_profile",
   "api_user",
   "config_version",
+  "central_staff_access_locked",
   "allow_training_mode",
   "allow_manual_settings_override",
   "app_min_version",
@@ -34,6 +35,7 @@
   "inventory_observed_at",
   "inventory_report_received_at",
   "inventory_config_version",
+  "inventory_catalog_version",
   "inventory_overlay_version",
   "inventory_overlay_hash",
   "inventory_sales_pending",
@@ -42,7 +44,9 @@
   "inventory_sales_dead_letter",
   "inventory_oldest_unsaved_sale_at",
   "inventory_commands_pending",
+  "inventory_commands_syncing",
   "inventory_commands_failed",
+  "inventory_commands_dead_letter",
   "inventory_report_payload_hash",
   "section_break_printers",
   "printers",
@@ -151,6 +155,14 @@
   },
   {
    "default": "0",
+   "fieldname": "central_staff_access_locked",
+   "fieldtype": "Check",
+   "label": "Central Staff Access Locked",
+   "hidden": 1,
+   "read_only": 1
+  },
+  {
+   "default": "0",
    "fieldname": "allow_training_mode",
    "fieldtype": "Check",
    "label": "Allow Training Mode"
@@ -209,6 +221,12 @@
    "read_only": 1
   },
   {
+   "fieldname": "inventory_catalog_version",
+   "fieldtype": "Data",
+   "label": "Applied Commercial Catalog Version",
+   "read_only": 1
+  },
+  {
    "fieldname": "inventory_overlay_version",
    "fieldtype": "Data",
    "label": "Applied Inventory Overlay Version",
@@ -257,9 +275,21 @@
    "read_only": 1
   },
   {
+   "fieldname": "inventory_commands_syncing",
+   "fieldtype": "Int",
+   "label": "Inventory Commands Syncing",
+   "read_only": 1
+  },
+  {
    "fieldname": "inventory_commands_failed",
    "fieldtype": "Int",
    "label": "Inventory Commands Failed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_commands_dead_letter",
+   "fieldtype": "Int",
+   "label": "Inventory Commands Dead Letter",
    "read_only": 1
   },
   {

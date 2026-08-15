@@ -89,6 +89,14 @@
  "owner": "Administrator",
  "permissions": [
   {
+   "read": 1,
+   "role": "KoPOS Device API"
+  },
+  {
+   "read": 1,
+   "role": "Company Director"
+  },
+  {
    "create": 1,
    "delete": 1,
    "email": 1,

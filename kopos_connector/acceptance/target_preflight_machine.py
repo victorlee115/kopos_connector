@@ -570,7 +570,14 @@ def _flatten_scheduler_hooks(value: Any) -> set[str]:
     return set()
 
 
-def _scheduler_check() -> dict[str, Any]:
+def _scheduler_check(*, allow_paused_scheduler: bool = False) -> dict[str, Any]:
+    """Verify the reviewed scheduler topology and its live job rows.
+
+    Production preflight must reject a paused scheduler.  The isolated
+    restored-data rehearsal deliberately pauses it so no retained business
+    data can trigger work; its integration test may opt into that one
+    containment condition while still proving the job records and timings.
+    """
     required = sorted(REQUIRED_SCHEDULER_JOBS)
     configured = _flatten_scheduler_hooks(connector_hooks.scheduler_events)
     all_methods = (
@@ -649,7 +656,14 @@ def _scheduler_check() -> dict[str, Any]:
         )
         or []
     )
-    if invalid or obsolete or cint(_config_value("pause_scheduler", 0)):
+    if (
+        invalid
+        or obsolete
+        or (
+            cint(_config_value("pause_scheduler", 0))
+            and not allow_paused_scheduler
+        )
+    ):
         _fail(
             "Target ERP scheduler jobs are missing, duplicated, paused, "
             "mis-timed, or obsolete"

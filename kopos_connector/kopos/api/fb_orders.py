@@ -2284,6 +2284,7 @@ def _normalize_order_item(
         except (InvalidOperation, TypeError, ValueError):
             recipe_version = raw_recipe_version
     backend_line_uuid = cstr(value.get("backend_line_uuid")) or None
+    recipe_hash = cstr(value.get("recipe_hash")).strip() or None
     modifiers = value.get("modifiers", value.get("selected_modifiers", []))
     promotion_allocations = _normalize_promotion_allocations(
         value.get("promotion_allocations"),
@@ -2341,6 +2342,7 @@ def _normalize_order_item(
         "line_total_sen": line_total_sen,
         "recipe": recipe,
         "recipe_version": recipe_version,
+        "recipe_hash": recipe_hash,
         "remarks": remarks,
         "selected_modifiers": validated_modifiers,
         "selected_modifier_diagnostics": modifier_diagnostics,
@@ -2581,6 +2583,7 @@ def _resolve_order_item(value: dict[str, Any], index: int) -> dict[str, Any]:
         _resolve_submitted_modifier_snapshot(row)
         for modifier_index, row in enumerate(value["selected_modifiers"], start=1)
     ]
+    recipe_snapshot = _valid_recipe_snapshot(value)
     return {
         "line_id": value["line_id"],
         "backend_line_uuid": value["backend_line_uuid"],
@@ -2594,18 +2597,45 @@ def _resolve_order_item(value: dict[str, Any], index: int) -> dict[str, Any]:
         "modifier_total": sen_to_decimal(value["modifier_total_sen"]),
         "discount_amount": sen_to_decimal(value["discount_amount_sen"]),
         "line_total": sen_to_decimal(value["line_total_sen"]),
-        # Recipe identity is optional metadata, not a live Link dependency.
-        # The authenticated raw values remain in the accepted fingerprint, but
-        # new commercial orders never persist them into recipe fields.
-        "recipe": None,
-        "recipe_version": None,
-        "is_recipe_managed": 0,
+        # This is sale-time catalog identity only. We deliberately do not read
+        # recipes during checkout: the asynchronous inventory worker validates
+        # the frozen identity against an immutable published recipe later.
+        "recipe": recipe_snapshot["recipe"] if recipe_snapshot else None,
+        "recipe_version": recipe_snapshot["recipe_version"] if recipe_snapshot else None,
+        "recipe_hash": recipe_snapshot["recipe_hash"] if recipe_snapshot else None,
+        "is_recipe_managed": 1 if recipe_snapshot else 0,
         "remarks": value["remarks"],
         "selected_modifiers": resolved_modifiers,
         "selected_modifier_diagnostics": list(
             value.get("selected_modifier_diagnostics") or []
         ),
         "promotion_allocations": value["promotion_allocations"],
+    }
+
+
+def _valid_recipe_snapshot(value: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Treat optional inventory metadata as evidence, never a sale blocker."""
+
+    recipe = cstr(value.get("recipe")).strip()
+    recipe_hash = cstr(value.get("recipe_hash")).strip().lower()
+    raw_version = value.get("recipe_version")
+    try:
+        recipe_version = int(raw_version)
+    except (TypeError, ValueError):
+        return None
+    if (
+        not recipe
+        or isinstance(raw_version, bool)
+        or recipe_version <= 0
+        or str(recipe_version) != str(raw_version).strip()
+        or len(recipe_hash) != 64
+        or any(character not in "0123456789abcdef" for character in recipe_hash)
+    ):
+        return None
+    return {
+        "recipe": recipe,
+        "recipe_version": recipe_version,
+        "recipe_hash": recipe_hash,
     }
 
 
@@ -3049,9 +3079,10 @@ def _build_fb_order(validated: dict[str, Any]):
                 "modifier_total": item["modifier_total"],
                 "discount_amount": item["discount_amount"],
                 "line_total": item["line_total"],
-                "recipe": None,
-                "recipe_version": None,
-                "is_recipe_managed": 0,
+                "recipe": item["recipe"],
+                "recipe_version": item["recipe_version"],
+                "recipe_hash": item["recipe_hash"],
+                "is_recipe_managed": item["is_recipe_managed"],
                 "promotion_allocations_json": json.dumps(
                     item.get("promotion_allocations", []),
                     sort_keys=True,

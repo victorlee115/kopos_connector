@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from collections import OrderedDict
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Mapping
 
 
 CSV_HEADERS = (
@@ -38,12 +39,23 @@ MAX_CSV_BYTES = 512 * 1024
 MAX_CSV_ROWS = 5_000
 RECIPE_TYPES = {"Finished Drink", "Add-On", "Prep Batch", "Packaging Assembly"}
 COMPONENT_TYPES = {"Ingredient", "Prep Item", "Packaging", "Tool Usage"}
+CANONICAL_RECIPE_HASH = re.compile(r"^[0-9a-f]{64}$")
+MAX_GUIDED_COMPONENTS = 100
+MAX_GUIDED_MODIFIER_GROUPS = 30
+MAX_GUIDED_MODIFIER_EFFECTS = 200
 
 
 def csv_template() -> str:
     """Return the stable header row used by the director spreadsheet template."""
 
     return ",".join(CSV_HEADERS) + "\n"
+
+
+def draft_recipe_code(*, sellable_item: str, company_abbr: str, version_no: int) -> str:
+    """Return a short, stable recipe code for the required-first Draft flow."""
+
+    suffix = f"-{company_abbr or 'COMPANY'}-v{version_no}"
+    return f"{sellable_item[: max(1, 140 - len(suffix))]}{suffix}"
 
 
 def validate_recipe_csv(csv_text: str) -> dict[str, Any]:
@@ -114,6 +126,376 @@ def validate_recipe_csv(csv_text: str) -> dict[str, Any]:
         recipe.update(recipe.pop("recipe_fields", {}))
     recipes = list(grouped.values())
     return {"valid": not errors and bool(recipes), "recipes": recipes, "errors": errors}
+
+
+def build_guided_recipe_preview(
+    *,
+    yield_qty: Any,
+    yield_uom: str,
+    default_serving_qty: Any,
+    default_serving_uom: str,
+    components: list[Mapping[str, Any]],
+    item_details: Mapping[str, Mapping[str, Any]],
+    modifier_effects: list[Mapping[str, Any]] | None = None,
+    prepared_components: Mapping[str, Mapping[str, Any]] | None = None,
+    yield_conversion_factor: Any = 1,
+    serving_conversion_factor: Any = 1,
+    require_prepared_bom: bool = True,
+) -> dict[str, Any]:
+    """Build the director-only recipe preview from ERP-resolved values.
+
+    The browser supplies measured entered quantities, but it never supplies a
+    stock conversion or valuation.  The API resolves those values from ERP and
+    passes this small pure function the resulting snapshot.  Quantities stay
+    Decimal strings so the preview and the published recipe use the same
+    arithmetic without introducing a second quantity authority.
+    """
+
+    errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    prepared_lookup = prepared_components or {}
+    if not components:
+        errors.append(_guided_error("components", "Add at least one measured component row"))
+    if len(components) > MAX_GUIDED_COMPONENTS:
+        errors.append(
+            _guided_error(
+                "components", f"A recipe can contain at most {MAX_GUIDED_COMPONENTS} rows"
+            )
+        )
+    if len(modifier_effects or []) > MAX_GUIDED_MODIFIER_EFFECTS:
+        errors.append(
+            _guided_error(
+                "modifier_effects",
+                f"A recipe can show at most {MAX_GUIDED_MODIFIER_EFFECTS} modifier effects",
+            )
+        )
+
+    try:
+        parsed_yield = _guided_positive_decimal(yield_qty, "yield_qty")
+        parsed_serving = _guided_positive_decimal(
+            default_serving_qty, "default_serving_qty"
+        )
+        parsed_yield_factor = _guided_positive_decimal(
+            yield_conversion_factor, "yield_conversion_factor"
+        )
+        parsed_serving_factor = _guided_positive_decimal(
+            serving_conversion_factor, "serving_conversion_factor"
+        )
+    except ValueError as error:
+        errors.append(_guided_error("yield", str(error)))
+        parsed_yield = Decimal("1")
+        parsed_serving = Decimal("1")
+        parsed_yield_factor = Decimal("1")
+        parsed_serving_factor = Decimal("1")
+
+    yield_name = str(yield_uom or "").strip()
+    serving_name = str(default_serving_uom or "").strip()
+    if not yield_name:
+        errors.append(_guided_error("yield_uom", "Yield UOM is required"))
+    if not serving_name:
+        errors.append(_guided_error("default_serving_uom", "Serving UOM is required"))
+    output_ratio = (
+        parsed_serving * parsed_serving_factor
+    ) / (parsed_yield * parsed_yield_factor)
+    preview_components: list[dict[str, Any]] = []
+    total_cost = Decimal("0")
+    cost_complete = True
+
+    for row_number, raw_row in enumerate(components, start=1):
+        if not isinstance(raw_row, Mapping):
+            errors.append(_guided_error(f"components[{row_number}]", "Component row must be an object"))
+            continue
+        item = str(raw_row.get("item") or "").strip()
+        component_type = str(raw_row.get("component_type") or "Ingredient").strip()
+        entered_uom = str(raw_row.get("uom") or "").strip()
+        if not item:
+            errors.append(_guided_error(f"components[{row_number}].item", "Item is required"))
+            continue
+        if not entered_uom:
+            errors.append(_guided_error(f"components[{row_number}].uom", "UOM is required"))
+            continue
+        try:
+            entered_qty = _guided_positive_decimal(
+                raw_row.get("qty"), f"components[{row_number}].qty"
+            )
+            loss_factor = _guided_non_negative_decimal(
+                raw_row.get("loss_factor_pct", 0),
+                f"components[{row_number}].loss_factor_pct",
+            )
+        except ValueError as error:
+            errors.append(_guided_error(f"components[{row_number}]", str(error)))
+            continue
+        if loss_factor > Decimal("100"):
+            errors.append(
+                _guided_error(
+                    f"components[{row_number}].loss_factor_pct",
+                    "Loss factor cannot exceed 100%",
+                )
+            )
+            continue
+
+        detail = item_details.get(item)
+        if not detail:
+            errors.append(_guided_error(f"components[{row_number}].item", f"Item {item} was not found"))
+            continue
+        stock_uom = str(detail.get("stock_uom") or "").strip()
+        affects_stock = _guided_truthy(raw_row.get("affects_stock", True))
+        affects_cogs = _guided_truthy(raw_row.get("affects_cogs", True))
+        conversion = _guided_conversion_factor(detail, entered_uom, stock_uom)
+        if affects_stock and conversion is None:
+            errors.append(
+                _guided_error(
+                    f"components[{row_number}].uom",
+                    f"No ERP conversion from {entered_uom} to {stock_uom or 'the stock UOM'} for {item}",
+                )
+            )
+            continue
+        conversion = conversion or Decimal("1")
+        batch_qty = entered_qty * conversion
+        if affects_stock:
+            batch_qty *= Decimal("1") + (loss_factor / Decimal("100"))
+        serving_qty = batch_qty * output_ratio
+        valuation = _guided_decimal_or_none(detail.get("valuation_rate"))
+        row_cost = valuation * batch_qty if affects_cogs and valuation is not None else None
+        if affects_cogs:
+            if row_cost is None:
+                cost_complete = False
+                warnings.append(
+                    _guided_error(
+                        f"components[{row_number}].cost",
+                        f"Current valuation is missing for {item}; promotion publication will remain blocked",
+                    )
+                )
+            else:
+                total_cost += row_cost
+
+        prepared = prepared_lookup.get(item)
+        if component_type == "Prep Item":
+            if not prepared or not _guided_truthy(prepared.get("ready")):
+                missing_bom = _guided_error(
+                    f"components[{row_number}].prepared_bom",
+                    f"Prepared Item {item} needs one active, submitted BOM before publishing",
+                )
+                (errors if require_prepared_bom else warnings).append(missing_bom)
+            elif not str(prepared.get("instructions") or "").strip():
+                warnings.append(
+                    _guided_error(
+                        f"components[{row_number}].prepared_bom",
+                        f"Add short preparation instructions to the BOM for {item}",
+                    )
+                )
+
+        preview_components.append(
+            {
+                "item": item,
+                "component_type": component_type,
+                "entered_qty": _guided_decimal_text(entered_qty),
+                "entered_uom": entered_uom,
+                "stock_qty_per_batch": _guided_decimal_text(batch_qty),
+                "stock_qty_per_serving": _guided_decimal_text(serving_qty),
+                "stock_uom": stock_uom,
+                "conversion_factor": _guided_decimal_text(conversion),
+                "loss_factor_pct": _guided_decimal_text(loss_factor),
+                "valuation_rate": _guided_decimal_text(valuation) if valuation is not None else None,
+                "cost_per_batch": _guided_decimal_text(row_cost) if row_cost is not None else None,
+                "affects_stock": affects_stock,
+                "affects_cogs": affects_cogs,
+                "prepared_bom": prepared,
+            }
+        )
+
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "yield": {
+            "qty": _guided_decimal_text(parsed_yield),
+            "uom": yield_name,
+        },
+        "serving": {
+            "qty": _guided_decimal_text(parsed_serving),
+            "uom": serving_name,
+            "output_ratio": _guided_decimal_text(output_ratio),
+        },
+        "components": preview_components,
+        "modifier_effects": [dict(row) for row in (modifier_effects or [])[:MAX_GUIDED_MODIFIER_EFFECTS]],
+        "cost_per_batch": _guided_decimal_text(total_cost) if cost_complete else None,
+        "cost_per_serving": _guided_decimal_text(total_cost * output_ratio) if cost_complete else None,
+        "cost_status": "complete" if cost_complete else "missing",
+        "prepared_component_count": sum(
+            1 for row in preview_components if row["component_type"] == "Prep Item"
+        ),
+    }
+
+
+def _guided_conversion_factor(
+    detail: Mapping[str, Any], entered_uom: str, stock_uom: str
+) -> Decimal | None:
+    if entered_uom == stock_uom:
+        return Decimal("1")
+    conversions = detail.get("conversion_factors") or {}
+    raw_value = conversions.get(entered_uom)
+    return _guided_decimal_or_none(raw_value)
+
+
+def _guided_positive_decimal(value: Any, label: str) -> Decimal:
+    parsed = _guided_decimal_or_none(value)
+    if parsed is None or parsed <= 0:
+        raise ValueError(f"{label} must be a finite number greater than zero")
+    return parsed
+
+
+def _guided_non_negative_decimal(value: Any, label: str) -> Decimal:
+    if value in (None, ""):
+        return Decimal("0")
+    parsed = _guided_decimal_or_none(value)
+    if parsed is None or parsed < 0:
+        raise ValueError(f"{label} must be a finite number greater than or equal to zero")
+    return parsed
+
+
+def _guided_decimal_or_none(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = Decimal(str(value).strip())
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return parsed if parsed.is_finite() else None
+
+
+def _guided_decimal_text(value: Decimal | None) -> str | None:
+    if value is None:
+        return None
+    return format(value.normalize(), "f")
+
+
+def _guided_truthy(value: Any) -> bool:
+    return value in (True, 1, "1", "true", "True")
+
+
+def _guided_error(field: str, message: str) -> dict[str, str]:
+    return {"field": field, "message": message}
+
+
+def summarize_menu_authoring(
+    *,
+    item_rows: list[Mapping[str, Any]],
+    recipe_rows: list[Mapping[str, Any]],
+    bom_count: int,
+    modifier_count: int,
+    promotion_count: int,
+    company: str | None,
+    company_selection_required: bool,
+    item_fields_ready: bool,
+    recipe_schema_ready: bool,
+) -> dict[str, Any]:
+    """Return one honest, non-financial commissioning checklist.
+
+    Ingredient, packaging, and prep Items are not saleable menu Items merely
+    because they carry stock.  The checklist therefore evaluates only enabled
+    ``is_sales_item`` rows.  Each of those rows needs either a published,
+    canonical recipe for the selected company or an explicit approved
+    exclusion with a reason.
+    """
+
+    selected_company = str(company or "").strip() or None
+    saleable_items = [
+        row
+        for row in item_rows
+        if _truthy(row.get("is_sales_item")) and not _truthy(row.get("disabled"))
+    ]
+    active_recipes = [
+        row
+        for row in recipe_rows
+        if str(row.get("status") or "").strip() == "Active"
+        and (not selected_company or str(row.get("company") or "").strip() == selected_company)
+        and _is_canonical_hash(row.get("canonical_hash"))
+    ]
+    recipe_items = {
+        str(row.get("sellable_item") or "").strip()
+        for row in active_recipes
+        if str(row.get("sellable_item") or "").strip()
+    }
+
+    unclassified = [
+        row
+        for row in saleable_items
+        if str(row.get("custom_fb_item_role") or "").strip() != "Sellable Drink"
+    ]
+    exclusions = [
+        row for row in saleable_items if _truthy(row.get("custom_fb_inventory_excluded"))
+    ]
+    invalid_exclusions = [
+        row
+        for row in exclusions
+        if not str(row.get("custom_fb_inventory_exclusion_reason") or "").strip()
+    ]
+    covered_items = {
+        str(row.get("name") or row.get("item_code") or "").strip()
+        for row in saleable_items
+        if str(row.get("name") or row.get("item_code") or "").strip() in recipe_items
+        and not _truthy(row.get("custom_fb_inventory_excluded"))
+    }
+    missing_recipe = [
+        row
+        for row in saleable_items
+        if not _truthy(row.get("custom_fb_inventory_excluded"))
+        and str(row.get("name") or row.get("item_code") or "").strip() not in recipe_items
+    ]
+    ready = bool(
+        selected_company
+        and not company_selection_required
+        and item_fields_ready
+        and recipe_schema_ready
+        and saleable_items
+        and not missing_recipe
+        and not unclassified
+        and not invalid_exclusions
+    )
+    return {
+        "selected_company": selected_company,
+        "company_selection_required": company_selection_required,
+        "item_fields_ready": item_fields_ready,
+        "recipe_schema_ready": recipe_schema_ready,
+        "saleable_items": len(saleable_items),
+        "items_ready": len(covered_items),
+        "items_missing_recipe": len(missing_recipe),
+        "published_recipes": len(active_recipes),
+        "draft_recipes": sum(
+            1
+            for row in recipe_rows
+            if str(row.get("status") or "").strip() == "Draft"
+            and (not selected_company or str(row.get("company") or "").strip() == selected_company)
+        ),
+        "boms": int(bom_count or 0),
+        "modifier_groups": int(modifier_count or 0),
+        "active_promotions": int(promotion_count or 0),
+        "unclassified_items": len(unclassified),
+        "approved_exclusions": len(exclusions) - len(invalid_exclusions),
+        "invalid_exclusions": len(invalid_exclusions),
+        "missing_recipe_items": _item_names(missing_recipe),
+        "unclassified_item_names": _item_names(unclassified),
+        "ready": ready,
+    }
+
+
+def _truthy(value: Any) -> bool:
+    return value in (True, 1, "1", "true", "True")
+
+
+def _is_canonical_hash(value: Any) -> bool:
+    return bool(CANONICAL_RECIPE_HASH.fullmatch(str(value or "").strip().lower()))
+
+
+def _item_names(rows: list[Mapping[str, Any]], *, limit: int = 12) -> list[str]:
+    return sorted(
+        {
+            str(row.get("item_name") or row.get("item_code") or row.get("name") or "").strip()
+            for row in rows
+            if str(row.get("item_name") or row.get("item_code") or row.get("name") or "").strip()
+        }
+    )[:limit]
 
 
 def _require_value(errors: list[dict[str, Any]], row: int, value: str, field: str) -> None:

@@ -18,6 +18,7 @@ from kopos_connector.kopos.api.money_contract import (
     persisted_money_to_sen,
     sen_to_decimal,
 )
+from kopos_connector.utils.diagnostics import log_sanitized_error
 
 
 DEMO_DRINK_ITEM = "SMOKE-STRAWBERRY-001"
@@ -829,7 +830,7 @@ def run_demo_advisory_stock_audit() -> dict[str, Any]:
     Sets matcha ingredient to zero stock (creates advisory shortfall),
     submits an order, and verifies:
     - Order succeeds (not blocked)
-    - Shortfall is logged to FB Stock Override Log
+    - Shortfall is recorded as an FB Inventory Exception
     - Catalog would show stock_warning: "erp_stock_short"
     """
     ensure_demo_fb_shift()
@@ -887,25 +888,41 @@ def run_demo_advisory_stock_audit() -> dict[str, Any]:
     result = submit_order()
     frappe.db.commit()
 
-    shortfall_logs = frappe.get_all(
-        "FB Stock Override Log",
-        filters={"order_reference": order_id},
+    order_name = frappe.db.get_value(
+        "FB Order", {"order_id": order_id}, "name"
+    )
+    # The production order path intentionally does not run this optional
+    # diagnostic before accounting. Invoke it explicitly here so this smoke
+    # audit proves the exception surface without making checkout depend on it.
+    if order_name:
+        try:
+            order_doc = frappe.get_doc("FB Order", order_name)
+            order_doc.validate_stock_availability(order_doc.build_line_resolutions())
+            frappe.db.commit()
+        except Exception as error:
+            log_sanitized_error(
+                f"Advisory shortfall smoke diagnostic failed for FB Order {order_name}",
+                error,
+            )
+    shortfall_exceptions = frappe.get_all(
+        "FB Inventory Exception",
+        filters={"source_doctype": "FB Order", "source_name": order_name},
         fields=[
             "name",
+            "reason_code",
+            "severity",
+            "status",
             "item",
             "warehouse",
-            "requested_qty",
-            "available_qty_before",
-            "shortfall_qty",
         ],
     )
 
     return {
         "status": "advisory_accepted",
         "order_result": result,
-        "shortfall_logs": shortfall_logs,
+        "shortfall_exceptions": shortfall_exceptions,
         "stock": get_demo_ingredient_state(),
-        "note": "Advisory shortfall: order accepted, shortfall logged to FB Stock Override Log",
+        "note": "Advisory shortfall: order accepted, FB Inventory Exception recorded",
     }
 
 

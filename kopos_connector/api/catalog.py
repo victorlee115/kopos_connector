@@ -56,7 +56,17 @@ def build_catalog_payload(
             pos_profile=pos_profile,
         )
     )
-    modifier_group_ids_by_item = _item_modifier_group_ids(items, company)
+    recipe_snapshots = _item_recipe_snapshots(items, company)
+    for item in items:
+        item_id = cstr(item.get("id") or item.get("item_code")).strip()
+        snapshot = recipe_snapshots.get(item_id)
+        if snapshot:
+            item.update(snapshot)
+    modifier_group_ids_by_item = _item_modifier_group_ids(
+        items,
+        company,
+        recipe_snapshots=recipe_snapshots,
+    )
     modifier_groups, modifier_options = _load_modifier_catalog(
         sorted({group_id for group_ids in modifier_group_ids_by_item.values() for group_id in group_ids})
     )
@@ -90,16 +100,27 @@ def build_catalog_payload(
             "tax_rate": get_tax_rate_value(device_id=device_id),
         },
     }
-    inventory_overlay = build_inventory_overlay(
-        warehouse=warehouse,
-        company=company,
-        items=items,
-        modifier_options=modifier_options,
-        known_version=known_overlay_version,
-    )
-    _cache_inventory_overlay_identity(device_id, inventory_overlay)
+    try:
+        inventory_overlay = build_inventory_overlay(
+            warehouse=warehouse,
+            company=company,
+            items=items,
+            modifier_options=modifier_options,
+            known_version=known_overlay_version,
+        )
+    except Exception as error:
+        # Inventory is an optional overlay.  A recipe/stock read failure must
+        # leave the complete commercial catalog saleable and make the overlay
+        # visibly unavailable for the next retry.
+        _log_catalog_warning("Inventory overlay generation unavailable: %s", error)
+        inventory_overlay = _unavailable_inventory_overlay()
     validate_catalog_snapshot(snapshot)
     catalog_version = build_catalog_version(snapshot)
+    _cache_inventory_overlay_identity(
+        device_id,
+        inventory_overlay,
+        catalog_version=catalog_version,
+    )
     timestamp = _iso_with_offset(now_datetime())
     normalized_known_version = cstr(known_version).strip()
 
@@ -132,7 +153,10 @@ def build_catalog_payload(
 
 
 def _cache_inventory_overlay_identity(
-    device_id: str | None, overlay: Mapping[str, Any]
+    device_id: str | None,
+    overlay: Mapping[str, Any],
+    *,
+    catalog_version: str | None = None,
 ) -> None:
     """Publish the latest generated overlay identity for the health read model.
 
@@ -156,6 +180,7 @@ def _cache_inventory_overlay_identity(
                 f"kopos:inventory-autopilot:overlay:{identifier}",
                 json.dumps(
                     {
+                        "catalog_version": cstr(catalog_version).strip(),
                         "version": version,
                         "overlay_hash": overlay_hash,
                         "valid_until": overlay.get("valid_until"),
@@ -181,14 +206,36 @@ def _without_optional_recipe_fields(items: list[ERPRecord]) -> list[ERPRecord]:
             "modifier_group_ids": [],
             "recipe_id": None,
             "recipe_version": None,
+            "recipe_hash": None,
         }
         for item in items
     ]
 
 
-def _item_modifier_group_ids(items: list[ERPRecord], company: str | None) -> dict[str, list[str]]:
+def _item_recipe_snapshots(
+    items: list[ERPRecord], company: str | None
+) -> dict[str, ERPRecord]:
     try:
-        snapshots = get_item_recipe_snapshots_map(items, company=company)
+        return get_item_recipe_snapshots_map(items, company=company)
+    except Exception as error:
+        # This optional enrichment can be unavailable during an in-place
+        # upgrade. Never let it erase the otherwise commercial catalog.
+        _log_catalog_warning("Recipe snapshot mapping unavailable: %s", error)
+        return {}
+
+
+def _item_modifier_group_ids(
+    items: list[ERPRecord],
+    company: str | None,
+    *,
+    recipe_snapshots: dict[str, ERPRecord] | None = None,
+) -> dict[str, list[str]]:
+    try:
+        snapshots = (
+            recipe_snapshots
+            if recipe_snapshots is not None
+            else get_item_recipe_snapshots_map(items, company=company)
+        )
         return get_item_modifier_groups_map(items, company=company, recipe_snapshots_by_item=snapshots)
     except Exception as error:
         # Modifier configuration is optional during rolling deployment. Keep
@@ -214,6 +261,23 @@ def _log_catalog_warning(message: str, error: Exception) -> None:
     warning = getattr(logger, "warning", None)
     if callable(warning):
         warning(message, error)
+
+
+def _unavailable_inventory_overlay() -> ERPRecord:
+    return {
+        "schema_version": "inventory-overlay-v1",
+        "status": "unavailable",
+        "generated_at": _iso_with_offset(now_datetime()),
+        "items": [],
+        "modifier_options": [],
+        "reasons": [
+            {
+                "code": "inventory_overlay_unavailable",
+                "label": "Stock availability is temporarily unavailable; selling continues",
+                "source": "inventory",
+            }
+        ],
+    }
 
 
 def build_catalog_version(snapshot: Mapping[str, Any]) -> str:
@@ -285,6 +349,7 @@ def validate_catalog_snapshot(snapshot: Mapping[str, Any]) -> None:
                 )
         recipe_id = cstr(item.get("recipe_id")).strip()
         recipe_version = item.get("recipe_version")
+        recipe_hash = cstr(item.get("recipe_hash")).strip().lower()
         if bool(recipe_id) != (recipe_version is not None):
             _throw_catalog_validation(
                 f"Item {item_id} recipe_id and recipe_version must be provided together"
@@ -296,6 +361,17 @@ def validate_catalog_snapshot(snapshot: Mapping[str, Any]) -> None:
         ):
             _throw_catalog_validation(
                 f"Item {item_id} recipe_version must be a positive integer"
+            )
+        if recipe_hash and (
+            len(recipe_hash) != 64
+            or any(character not in "0123456789abcdef" for character in recipe_hash)
+        ):
+            _throw_catalog_validation(
+                f"Item {item_id} recipe_hash must be a lowercase SHA-256 digest"
+            )
+        if recipe_hash and not recipe_id:
+            _throw_catalog_validation(
+                f"Item {item_id} recipe_hash requires recipe_id and recipe_version"
             )
         barcode = cstr(item.get("barcode")).strip()
         if barcode:
@@ -515,13 +591,52 @@ def get_items(
                 "stock_warning": None,
                 "is_active": 0 if cint(row.get("disabled")) else 1,
                 "is_prep_item": cint(row.get("custom_kopos_is_prep_item") or 0),
+                "inventory_excluded": cint(row.get("custom_fb_inventory_excluded") or 0),
                 "modifier_group_ids": [],
                 "recipe_id": None,
                 "recipe_version": None,
+                "recipe_hash": None,
             }
         )
 
     return items
+
+
+def get_catalog_target_ids(
+    *,
+    pos_profile: ERPRecord | None = None,
+    company: str | None = None,
+) -> tuple[set[str], set[str]]:
+    """Return the exact commercial Item and modifier targets for one outlet.
+
+    The stock screen also contains purchased and prepared stock Items.  This
+    compact identity set is the boundary used to decide whether a tablet may
+    show manager Pause/Restore controls; it is not a second catalog payload
+    and it carries no prices or other financial data.
+    """
+
+    profile = pos_profile or {}
+    warehouse = cstr(profile.get("warehouse")).strip() if isinstance(profile, dict) else cstr(getattr(profile, "warehouse", None)).strip()
+    items = get_items(warehouse=warehouse or None, pos_profile=profile)
+    item_ids = {
+        cstr(item.get("id") or item.get("item_code")).strip()
+        for item in items
+        if cstr(item.get("id") or item.get("item_code")).strip()
+    }
+    snapshots = _item_recipe_snapshots(items, company)
+    group_ids_by_item = _item_modifier_group_ids(
+        items,
+        company,
+        recipe_snapshots=snapshots,
+    )
+    group_ids = sorted({group_id for group_ids in group_ids_by_item.values() for group_id in group_ids})
+    _, options = _load_modifier_catalog(group_ids)
+    modifier_ids = {
+        cstr(option.get("id")).strip()
+        for option in options
+        if cstr(option.get("id")).strip()
+    }
+    return item_ids, modifier_ids
 
 
 def get_saleable_item_rows(
@@ -555,8 +670,12 @@ def get_saleable_item_rows(
     ]
     try:
         item_meta = frappe.get_meta("Item")
-        if item_meta.has_field("custom_kopos_is_prep_item"):
-            fields.append("custom_kopos_is_prep_item")
+        for fieldname in (
+            "custom_kopos_is_prep_item",
+            "custom_fb_inventory_excluded",
+        ):
+            if item_meta.has_field(fieldname):
+                fields.append(fieldname)
     except Exception:
         # A missing custom prep flag defaults to a normal sale item. It must
         # not make the catalog query invalid during staged deployments.
@@ -570,7 +689,11 @@ def get_saleable_item_rows(
             order_by="item_name asc",
         )
     except Exception:
-        if "custom_kopos_is_prep_item" not in fields:
+        custom_item_fields = {
+            "custom_kopos_is_prep_item",
+            "custom_fb_inventory_excluded",
+        }
+        if not custom_item_fields.intersection(fields):
             raise
         # During a rolling migration, cached metadata can briefly advertise a
         # custom column before this database has it. Retry once using only
@@ -581,7 +704,7 @@ def get_saleable_item_rows(
             fields=[
                 field
                 for field in fields
-                if field != "custom_kopos_is_prep_item"
+                if field not in custom_item_fields
             ],
             order_by="item_name asc",
         )
@@ -686,6 +809,7 @@ def get_item_modifier_groups_map(
             cstr(row.get("id") or row.get("item_code")).strip()
             for row in item_rows
             if cstr(row.get("id") or row.get("item_code")).strip()
+            and not cint(row.get("inventory_excluded") or 0)
         }
     )
     if not item_codes:
@@ -827,6 +951,7 @@ def get_item_recipe_snapshots_map(
             cstr(row.get("id") or row.get("item_code")).strip()
             for row in item_rows
             if cstr(row.get("id") or row.get("item_code")).strip()
+            and not cint(row.get("inventory_excluded") or 0)
         }
     )
     if not item_codes:
@@ -838,19 +963,26 @@ def get_item_recipe_snapshots_map(
     }
     if company:
         recipe_filters["company"] = company
-    recipe_rows = frappe.get_all(
-        "FB Recipe",
-        filters=recipe_filters,
-        fields=[
-            "name",
-            "sellable_item",
-            "effective_from",
-            "effective_to",
-            "version_no",
-            "modified",
-        ],
-        order_by="sellable_item asc, version_no desc, modified desc",
-    )
+    try:
+        recipe_rows = frappe.get_all(
+            "FB Recipe",
+            filters=recipe_filters,
+            fields=[
+                "name",
+                "sellable_item",
+                "effective_from",
+                "effective_to",
+                "version_no",
+                "canonical_hash",
+                "modified",
+            ],
+            order_by="sellable_item asc, version_no desc, modified desc",
+        )
+    except Exception:
+        # A database which has not migrated the new immutable recipe field is
+        # commercial-only until it does. Returning no snapshot is safer than
+        # using a mutable active recipe for a delayed sale.
+        return {}
 
     snapshots: dict[str, ERPRecord] = {}
     current_time = now_datetime()
@@ -867,11 +999,17 @@ def get_item_recipe_snapshots_map(
             # down the whole menu; keep the deterministic first snapshot.
             continue
         version_no = cint(row.get("version_no"))
-        if version_no <= 0:
+        canonical_hash = cstr(row.get("canonical_hash")).strip().lower()
+        if (
+            version_no <= 0
+            or len(canonical_hash) != 64
+            or any(character not in "0123456789abcdef" for character in canonical_hash)
+        ):
             continue
         snapshots[item_code] = {
             "recipe_id": recipe_name,
             "recipe_version": version_no,
+            "recipe_hash": canonical_hash,
         }
 
     return snapshots

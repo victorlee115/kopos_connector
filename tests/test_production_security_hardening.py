@@ -368,6 +368,6 @@ def test_connector_version_is_consistent() -> None:
     package = importlib.import_module("kopos_connector")
     pyproject_source = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert package.__version__ == "1.0.11"
-    assert 'version = "1.0.11"' in pyproject_source
+    assert package.__version__ == "1.1.0"
+    assert 'version = "1.1.0"' in pyproject_source
     assert '"requests>=2.31.0,<3.0.0"' in pyproject_source
