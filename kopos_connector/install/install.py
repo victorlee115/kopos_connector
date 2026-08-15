@@ -97,6 +97,11 @@ def ensure_standard_pages() -> None:
             "title": "JiJi Menu & Recipes",
             "roles": ("System Manager", "Company Director"),
         },
+        {
+            "name": "jiji_stock_autopilot",
+            "title": "JiJi Stock Autopilot",
+            "roles": ("System Manager", "Company Director"),
+        },
     )
     for page in pages:
         if frappe.db.exists("Page", page["name"]):

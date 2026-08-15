@@ -1,4 +1,4 @@
-frappe.pages["kopos_inventory_autopilot"].on_page_load = function (wrapper) {
+frappe.pages["jiji_stock_autopilot"].on_page_load = function (wrapper) {
 	new KoPOSInventoryAutopilotPage(wrapper);
 };
 
@@ -11,15 +11,18 @@ class KoPOSInventoryAutopilotPage {
 		});
 		this.render();
 		this.warehouseControl = frappe.ui.form.make_control({
-			parent: this.page.body.find("[data-warehouse]")[0],
-			df: {
-				fieldtype: "Link",
-				options: "Warehouse",
-				label: __("Warehouse"),
-				reqd: 1,
-			},
-		});
+				parent: this.page.body.find("[data-warehouse]")[0],
+				df: {
+					fieldtype: "Link",
+					options: "Warehouse",
+					label: __("Warehouse"),
+					description: __("Use an outlet warehouse; this page never changes stock."),
+					reqd: 1,
+				},
+			});
 		this.warehouseControl.refresh();
+		this.warehouseControl.$input.on("change awesomplete-selectcomplete", () => this.updateWarehouseHelp());
+		this.updateWarehouseHelp();
 		this.page.set_primary_action(__("Refresh health"), () => this.refresh());
 		this.page.body.find("[data-open-card]").on("click", (event) => {
 			this.openCard($(event.currentTarget).attr("data-open-card"));
@@ -32,7 +35,7 @@ class KoPOSInventoryAutopilotPage {
 				<div class="alert alert-info">${__("Inventory automation is a read model. Use standard ERPNext forms for counts, receiving, transfers, manufacture, and Purchase Order approval.")}</div>
 				<div class="row align-items-end mb-4">
 					<div class="col-sm-5"><div data-warehouse></div></div>
-					<div class="col-sm-7"><p class="text-muted mb-0">${__("Select a warehouse to load its health and next safe action. Refresh health only reads state; it never changes stock.")}</p></div>
+					<div class="col-sm-7"><p data-warehouse-help class="text-muted mb-0">${__("Select a warehouse to load its health and next safe action. Refresh health only reads state; it never changes stock.")}</p></div>
 				</div>
 				<div class="row kopos-autopilot-cards">
 					${["Needs you", "Today", "Stock", "Counts", "Plans & buying", "Settings"].map((title) => `<div class="col-sm-6 col-lg-4"><div class="card h-100"><div class="card-body d-flex flex-column"><h4>${__(title)}</h4><p class="text-muted">${__("Open the linked standard ERPNext records and resolve the next safe action.")}</p><div data-card="${title}" class="mb-3">${__("Choose a warehouse first")}</div><button class="btn btn-sm btn-default mt-auto align-self-start" type="button" data-open-card="${title}">${__("Open records")}</button></div></div></div>`).join("")}
@@ -40,8 +43,17 @@ class KoPOSInventoryAutopilotPage {
 			</div>`);
 	}
 
+	updateWarehouseHelp() {
+		const warehouse = this.warehouseControl && this.warehouseControl.get_value();
+		const message = warehouse
+			? __("Showing health and the next safe action for {0}. Refresh health only reads state; it never changes stock.", [warehouse])
+			: __("Select a warehouse to load its health and next safe action. Refresh health only reads state; it never changes stock.");
+		this.page.body.find("[data-warehouse-help]").text(message);
+	}
+
 	refresh() {
 		const warehouse = this.warehouseControl && this.warehouseControl.get_value();
+		this.updateWarehouseHelp();
 		if (!warehouse) {
 			frappe.msgprint({ title: __("Choose a warehouse"), message: __("Select a warehouse before refreshing health.") });
 			return;
