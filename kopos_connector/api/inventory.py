@@ -1222,31 +1222,85 @@ def _create_manufacture_entry(value: dict[str, Any], command_id: str) -> str:
     order = frappe.get_doc("Work Order", work_order)
     if order.docstatus != 1:
         frappe.throw(_("Start the Work Order before recording batch completion"), frappe.ValidationError)
-    document = frappe.new_doc("Stock Entry")
-    document.stock_entry_type = "Manufacture"
-    document.purpose = "Manufacture"
+    actual_yield = value.get("actual_yield") or value.get("qty")
+    target_warehouse = value.get("fg_warehouse") or getattr(order, "fg_warehouse", None)
+    try:
+        # ERPNext owns BOM expansion, finished-good flags, conversion factors,
+        # and serial/batch defaults.  Use its standard builder so a guided POS
+        # completion is equivalent to the normal Work Order form.
+        from erpnext.manufacturing.doctype.work_order.work_order import make_stock_entry
+
+        stock_entry_values = make_stock_entry(
+            work_order,
+            "Manufacture",
+            qty=actual_yield,
+            target_warehouse=target_warehouse,
+        )
+        document = frappe.get_doc(stock_entry_values)
+    except (ImportError, ModuleNotFoundError):
+        # Keep lightweight contract tests and installations without the
+        # manufacturing module importable; a real v16 site takes the branch
+        # above and never uses this compatibility path.
+        document = frappe.new_doc("Stock Entry")
+        document.stock_entry_type = "Manufacture"
+        document.purpose = "Manufacture"
+        _set_document_value(document, "company", value.get("company") or getattr(order, "company", None))
+        _set_document_value(document, "work_order", work_order)
+        _set_document_value(document, "fg_completed_qty", actual_yield)
+        _set_document_value(document, "to_warehouse", target_warehouse)
+        for row in value.get("items", []):
+            if not isinstance(row, dict) or not cstr(row.get("item_code")).strip():
+                frappe.throw(_("Batch completion contains an invalid component row"), frappe.ValidationError)
+            document.append("items", {
+                "item_code": row["item_code"],
+                "qty": row.get("qty"),
+                "s_warehouse": row.get("warehouse") or row.get("s_warehouse"),
+            })
     _set_document_value(document, "company", value.get("company") or getattr(order, "company", None))
     _set_document_value(document, "work_order", work_order)
-    _set_document_value(document, "fg_completed_qty", value.get("actual_yield") or value.get("qty"))
-    _set_document_value(document, "to_warehouse", value.get("fg_warehouse") or getattr(order, "fg_warehouse", None))
+    _set_document_value(document, "fg_completed_qty", actual_yield)
+    _set_document_value(document, "to_warehouse", target_warehouse)
     _set_document_value(document, "custom_kopos_inventory_command_id", command_id)
-    for row in value.get("items", []):
-        if not isinstance(row, dict) or not cstr(row.get("item_code")).strip():
-            frappe.throw(_("Batch completion contains an invalid component row"), frappe.ValidationError)
-        item_payload = {
-            "item_code": row["item_code"],
-            "qty": row.get("qty"),
-            "s_warehouse": row.get("warehouse") or row.get("s_warehouse"),
-        }
-        if cstr(value.get("batch_no")).strip() and frappe.get_meta("Stock Entry Detail").has_field("batch_no"):
-            item_payload["batch_no"] = cstr(value["batch_no"]).strip()
-        if cstr(value.get("expiry_date")).strip() and frappe.get_meta("Stock Entry Detail").has_field("expiry_date"):
-            item_payload["expiry_date"] = cstr(value["expiry_date"]).strip()
-        document.append("items", item_payload)
+    _apply_batch_completion_details(document, value)
     document.insert(ignore_permissions=True)
     document.flags.ignore_permissions = True
     document.submit()
     return document.name
+
+
+def _apply_batch_completion_details(document: Any, value: dict[str, Any]) -> None:
+    """Apply measured inputs and finished-batch metadata to ERPNext rows."""
+
+    component_rows = {
+        cstr(row.get("item_code")).strip(): row
+        for row in value.get("items", [])
+        if isinstance(row, dict) and cstr(row.get("item_code")).strip()
+    }
+    detail_meta = frappe.get_meta("Stock Entry Detail")
+    batch_no = cstr(value.get("batch_no")).strip()
+    expiry_date = cstr(value.get("expiry_date")).strip()
+    for row in getattr(document, "items", []) or []:
+        item_code = cstr(getattr(row, "item_code", None)).strip()
+        if getattr(row, "is_finished_item", 0):
+            if batch_no and detail_meta.has_field("batch_no"):
+                row.batch_no = batch_no
+            if expiry_date and detail_meta.has_field("expiry_date"):
+                row.expiry_date = expiry_date
+            continue
+        measured = component_rows.get(item_code)
+        if not measured:
+            continue
+        if measured.get("qty") not in (None, ""):
+            row.qty = measured["qty"]
+        source_warehouse = cstr(measured.get("warehouse") or measured.get("s_warehouse")).strip()
+        if source_warehouse:
+            row.s_warehouse = source_warehouse
+        measured_batch = cstr(measured.get("batch_no") or batch_no).strip()
+        measured_expiry = cstr(measured.get("expiry_date")).strip()
+        if measured_batch and detail_meta.has_field("batch_no"):
+            row.batch_no = measured_batch
+        if measured_expiry and detail_meta.has_field("expiry_date"):
+            row.expiry_date = measured_expiry
 
 
 def _create_purchase_receipt(value: dict[str, Any], command_id: str) -> str:
@@ -1338,16 +1392,31 @@ def _create_transfer_entry(value: dict[str, Any], command_id: str, *, dispatch: 
         ]
         if not matching:
             frappe.throw(_("Transfer line is not present on the submitted Material Request"), frappe.ValidationError)
-        requested_qty = sum(Decimal(str(getattr(row, "qty", 0) or 0)) for row in matching)
-        if Decimal(str(line.get("qty", 0))) > requested_qty:
+        requested_qty = sum(
+            max(
+                Decimal(str(getattr(row, "qty", 0) or 0))
+                - Decimal(str(getattr(row, "transferred_qty", 0) or 0)),
+                Decimal("0"),
+            )
+            for row in matching
+        )
+        line_quantity = Decimal(str(line.get("qty", 0)))
+        if line_quantity > requested_qty:
             frappe.throw(_("Transfer quantity exceeds the submitted Material Request"), frappe.ValidationError)
-        document.append("items", {
+        row = matching[0]
+        item_payload = {
             "item_code": item_code,
             "qty": line["qty"],
             "s_warehouse": from_warehouse,
             "t_warehouse": to_warehouse,
             "batch_no": line.get("batch_no"),
-        })
+        }
+        detail_meta = frappe.get_meta("Stock Entry Detail")
+        if detail_meta.has_field("material_request"):
+            item_payload["material_request"] = material_request_name
+        if detail_meta.has_field("material_request_item"):
+            item_payload["material_request_item"] = cstr(getattr(row, "name", ""))
+        document.append("items", item_payload)
     document.insert(ignore_permissions=True)
     document.flags.ignore_permissions = True
     document.submit()
