@@ -48,16 +48,22 @@ from .provisioning import (
     redeem_pos_provisioning as redeem_pos_provisioning_payload,
 )
 from .inventory import (
+    accept_preparation_task,
     create_availability_hold,
     create_inventory_draft_purchase_order,
     create_inventory_material_request,
+    complete_preparation_task,
     get_autopilot_health,
     get_count_task,
     get_edge_snapshot,
     preflight_legacy_inventory_values,
     release_availability_hold,
     report_device_inventory_state,
+    start_preparation_task,
+    submit_purchase_receipt,
     submit_count_observation,
+    submit_transfer_dispatch,
+    submit_transfer_receipt,
 )
 
 
@@ -2273,6 +2279,8 @@ __all__ = [
     "get_qr_setup_preview",
     "apply_qr_configuration",
     "create_availability_hold",
+    "accept_preparation_task",
+    "complete_preparation_task",
     "create_inventory_draft_purchase_order",
     "create_inventory_material_request",
     "get_catalog",
@@ -2302,10 +2310,14 @@ __all__ = [
     "resolve_secondary_static_qr_claim",
     "release_availability_hold",
     "report_device_inventory_state",
+    "start_preparation_task",
+    "submit_purchase_receipt",
     "review_promotion_reconciliation",
     "simulate_maybank_qr_payment",
     "submit_order",
     "submit_count_observation",
+    "submit_transfer_dispatch",
+    "submit_transfer_receipt",
     "upload_manual_qr_receipt",
     "void_order",
 ]

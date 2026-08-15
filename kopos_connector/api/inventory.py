@@ -17,7 +17,7 @@ from kopos_connector.api.devices import (
     lock_device_for_operational_mutation,
     require_device_context,
 )
-from kopos_connector.api.catalog import resolve_catalog_pos_profile
+from kopos_connector.api.catalog import get_default_pos_profile, resolve_catalog_pos_profile
 from kopos_connector.api.catalog import build_catalog_payload
 from kopos_connector.kopos.services.inventory_autopilot.holds import (
     create_hold,
@@ -37,6 +37,10 @@ from kopos_connector.kopos.services.inventory_autopilot.document_coordinator imp
 )
 from kopos_connector.kopos.services.inventory_autopilot.replenishment import ReplenishmentLine
 from kopos_connector.kopos.services.inventory_autopilot.promotion_economics import calculate_promotion_economics, PromotionEconomicsError
+from kopos_connector.kopos.services.inventory_autopilot.recipe_compiler import (
+    RecipeCompilerError,
+    compile_recipe_components,
+)
 from kopos_connector.utils.manager_approval import verify_manager_approval_token
 
 
@@ -229,7 +233,7 @@ def get_menu_authoring_summary() -> dict[str, Any]:
     unclassified_items = sum(1 for row in item_rows if not cstr(row.get("custom_fb_item_role")).strip()) if "custom_fb_item_role" in item_fields else len(item_rows)
     bom_count = frappe.db.count("BOM", {"docstatus": 1}) if frappe.db.exists("DocType", "BOM") else 0
     modifier_count = frappe.db.count("FB Modifier Group") if frappe.db.exists("DocType", "FB Modifier Group") else 0
-    promotion_count = frappe.db.count("Promotion", {"disable": 0}) if frappe.db.exists("DocType", "Promotion") else 0
+    promotion_count = frappe.db.count("KoPOS Promotion", {"is_active": 1}) if frappe.db.exists("DocType", "KoPOS Promotion") else 0
     missing = len(stock_items - active_items)
     return {
         "items_ready": len(active_items & stock_items),
@@ -249,13 +253,194 @@ def get_promotion_economics(*, payload: str | dict[str, Any]) -> dict[str, Any]:
     """Calculate exact director-only promotion economics; never expose it to POS."""
 
     _require_company_director("Promotion economics")
-    if not frappe.has_permission("Promotion", ptype="read"):
+    if not frappe.has_permission("KoPOS Promotion", ptype="read"):
         frappe.throw(_("Promotion economics requires Company Director permission"), frappe.PermissionError)
     value = _parse_json_object(payload, "Promotion economics payload")
     try:
-        return {"status": "ok", "economics": calculate_promotion_economics(items=value.get("items", []), scenarios=value.get("scenarios"))}
-    except PromotionEconomicsError as error:
+        items = value.get("items", [])
+        if cstr(value.get("promotion")).strip():
+            items = _build_promotion_economics_items(
+                promotion_name=cstr(value.get("promotion")).strip(),
+                pos_profile=cstr(value.get("pos_profile")).strip() or None,
+            )
+        result = calculate_promotion_economics(items=items, scenarios=value.get("scenarios"))
+        result["source"] = "promotion_document" if cstr(value.get("promotion")).strip() else "director_payload"
+        return {"status": "ok", "economics": result}
+    except (PromotionEconomicsError, RecipeCompilerError) as error:
         return {"status": "blocked", "reason": cstr(error), "planning_mode": "Review First"}
+
+
+def _build_promotion_economics_items(
+    *, promotion_name: str, pos_profile: str | None,
+) -> list[dict[str, Any]]:
+    """Resolve a saved promotion into exact, director-only economics inputs.
+
+    Prices and costs are resolved on the server. The browser may provide
+    scenario volumes, but it cannot provide or override COGS, recipe, or
+    valuation values.
+    """
+
+    if not frappe.db.exists("DocType", "KoPOS Promotion"):
+        raise PromotionEconomicsError("KoPOS Promotion is not installed")
+    promotion = frappe.get_doc("KoPOS Promotion", promotion_name)
+    if not int(promotion.is_active or 0):
+        raise PromotionEconomicsError("the promotion is inactive")
+    item_codes = {
+        cstr(row.item_code).strip()
+        for row in (promotion.eligible_items or [])
+        if cstr(row.item_code).strip()
+    }
+    group_names = {
+        cstr(row.item_group).strip()
+        for row in (promotion.eligible_item_groups or [])
+        if cstr(row.item_group).strip()
+    }
+    if group_names:
+        item_codes.update(
+            cstr(row.name).strip()
+            for row in frappe.get_all(
+                "Item",
+                filters={"item_group": ["in", sorted(group_names)], "disabled": 0},
+                fields=["name"],
+                limit_page_length=10_000,
+            )
+            if cstr(row.name).strip()
+        )
+    if not item_codes:
+        raise PromotionEconomicsError("select at least one eligible Item before checking economics")
+
+    profile = None
+    profile_name = cstr(pos_profile).strip()
+    if not profile_name and promotion.eligible_pos_profiles:
+        profile_name = cstr(promotion.eligible_pos_profiles[0].pos_profile).strip()
+    if profile_name:
+        profile = frappe.get_cached_doc("POS Profile", profile_name).as_dict()
+    else:
+        profile = get_default_pos_profile()
+    warehouse = cstr((profile or {}).get("warehouse")).strip()
+    price_list = cstr((profile or {}).get("selling_price_list")).strip()
+
+    item_meta = frappe.get_meta("Item")
+    item_fields = ["name", "standard_rate", "stock_uom"]
+    if item_meta.has_field("valuation_rate"):
+        item_fields.append("valuation_rate")
+    item_rows = frappe.get_all(
+        "Item",
+        filters={"name": ["in", sorted(item_codes)], "disabled": 0},
+        fields=item_fields,
+        limit_page_length=10_000,
+    )
+    item_by_code = {cstr(row.name).strip(): row for row in item_rows}
+    resolved: list[dict[str, Any]] = []
+    for item_code in sorted(item_codes):
+        item = item_by_code.get(item_code)
+        if not item:
+            raise PromotionEconomicsError(f"eligible Item {item_code} does not exist or is disabled")
+        baseline_price_sen = _promotion_price_sen(item_code, item, price_list)
+        recipe_rows = frappe.get_all(
+            "FB Recipe",
+            filters={"sellable_item": item_code, "status": "Active"},
+            fields=["name", "effective_from", "modified"],
+            order_by="effective_from desc, modified desc",
+            limit_page_length=1,
+        )
+        if not recipe_rows:
+            raise PromotionEconomicsError(f"{item_code} has no active recipe; publication is blocked")
+        recipe_doc = frappe.get_doc("FB Recipe", recipe_rows[0].name)
+        recipe = {
+            "yield_qty": recipe_doc.yield_qty,
+            "default_serving_qty": recipe_doc.default_serving_qty,
+            "components": [
+                row.as_dict()
+                for row in (recipe_doc.components or [])
+                if int(row.affects_cogs if row.affects_cogs is not None else 1)
+            ],
+        }
+        try:
+            components = compile_recipe_components(recipe)
+        except RecipeCompilerError:
+            raise
+        component_costs: list[dict[str, Any]] = []
+        cogs_sen = Decimal("0")
+        for component_item, quantity in components.items():
+            rate = _component_valuation_rate(component_item, warehouse)
+            rate_sen = _currency_to_sen(rate, f"{component_item} valuation rate")
+            cogs_sen += quantity * rate_sen
+            component_costs.append({"item": component_item, "qty": str(quantity)})
+        resolved.append({
+            "item": item_code,
+            "units": 1,
+            "baseline_price_sen": int(baseline_price_sen),
+            "promoted_price_sen": _promotion_discounted_price_sen(promotion, baseline_price_sen),
+            "cogs_sen": int(cogs_sen),
+            "components": component_costs,
+        })
+    return resolved
+
+
+def _promotion_price_sen(item_code: str, item: Any, price_list: str) -> Decimal:
+    if price_list and frappe.db.exists("DocType", "Item Price"):
+        rows = frappe.get_all(
+            "Item Price",
+            filters={"item_code": item_code, "price_list": price_list, "selling": 1},
+            fields=["price_list_rate", "valid_from", "valid_upto", "modified"],
+            order_by="valid_from desc, modified desc",
+            limit_page_length=20,
+        )
+        for row in rows:
+            if row.price_list_rate not in (None, ""):
+                return _currency_to_sen(row.price_list_rate, f"{item_code} selling price")
+    return _currency_to_sen(item.standard_rate, f"{item_code} selling price")
+
+
+def _promotion_discounted_price_sen(promotion: Any, baseline_price_sen: Decimal) -> int:
+    promotion_type = cstr(promotion.promotion_type).strip()
+    if promotion_type not in {"item_discount", "order_discount"}:
+        raise PromotionEconomicsError(
+            f"{promotion_type or 'this'} promotion type requires a reviewed economics rule before publication"
+        )
+    discount_type = cstr(promotion.discount_type).strip()
+    value = Decimal(str(promotion.discount_value or 0))
+    if value < 0:
+        raise PromotionEconomicsError("discount value cannot be negative")
+    if discount_type == "percentage":
+        discounted = baseline_price_sen * (Decimal("1") - value / Decimal("100"))
+    elif discount_type == "fixed_amount":
+        discounted = baseline_price_sen - value * Decimal("100")
+    elif discount_type == "fixed_price":
+        discounted = value * Decimal("100")
+    elif discount_type == "free_item":
+        discounted = Decimal("0")
+    else:
+        raise PromotionEconomicsError(f"unsupported discount type {discount_type or 'blank'}")
+    return max(0, int(discounted.quantize(Decimal("1"))))
+
+
+def _component_valuation_rate(item_code: str, warehouse: str) -> Any:
+    if warehouse and frappe.db.exists("DocType", "Bin"):
+        value = frappe.db.get_value(
+            "Bin", {"item_code": item_code, "warehouse": warehouse}, "valuation_rate"
+        )
+        if value not in (None, "", 0):
+            return value
+    item_meta = frappe.get_meta("Item")
+    if item_meta.has_field("valuation_rate"):
+        value = frappe.db.get_value("Item", item_code, "valuation_rate")
+        if value not in (None, "", 0):
+            return value
+    raise PromotionEconomicsError(
+        f"{item_code} has no current warehouse valuation; update stock evidence before publication"
+    )
+
+
+def _currency_to_sen(value: Any, label: str) -> Decimal:
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as error:
+        raise PromotionEconomicsError(f"{label} is not a valid currency amount") from error
+    if not amount.is_finite() or amount < 0:
+        raise PromotionEconomicsError(f"{label} is missing or invalid")
+    return (amount * Decimal("100")).quantize(Decimal("1"))
 
 
 @frappe.whitelist(methods=["GET"])
@@ -809,6 +994,7 @@ def _handle_guided_task(*, device_id: str, payload: str | dict[str, Any], task_t
         frappe.throw(_("{0} requires command_id and device_config_version").format(task_type), frappe.ValidationError)
     if cstr(value.get("device_id") or device_id).strip() != device_id:
         frappe.throw(_("Guided task device_id does not match the authenticated device"), frappe.ValidationError)
+    _validate_guided_task_actor(device, value, task_type)
     _validate_guided_task_scope(device_id, value, task_type)
     doctype = {
         "accept_preparation_task": "Work Order",
@@ -891,11 +1077,16 @@ def _create_manufacture_entry(value: dict[str, Any], command_id: str) -> str:
     for row in value.get("items", []):
         if not isinstance(row, dict) or not cstr(row.get("item_code")).strip():
             frappe.throw(_("Batch completion contains an invalid component row"), frappe.ValidationError)
-        document.append("items", {
+        item_payload = {
             "item_code": row["item_code"],
             "qty": row.get("qty"),
             "s_warehouse": row.get("warehouse") or row.get("s_warehouse"),
-        })
+        }
+        if cstr(value.get("batch_no")).strip() and frappe.get_meta("Stock Entry Detail").has_field("batch_no"):
+            item_payload["batch_no"] = cstr(value["batch_no"]).strip()
+        if cstr(value.get("expiry_date")).strip() and frappe.get_meta("Stock Entry Detail").has_field("expiry_date"):
+            item_payload["expiry_date"] = cstr(value["expiry_date"]).strip()
+        document.append("items", item_payload)
     document.insert(ignore_permissions=True)
     document.flags.ignore_permissions = True
     document.submit()
@@ -928,14 +1119,19 @@ def _create_purchase_receipt(value: dict[str, Any], command_id: str) -> str:
             frappe.throw(_("Receiving cannot post outside the device warehouse"), frappe.PermissionError)
         if not source or not item_code or Decimal(str(line.get("qty", 0))) <= 0:
             frappe.throw(_("Receiving line does not match the submitted Purchase Order"), frappe.ValidationError)
-        document.append("items", {
+        item_payload = {
             "item_code": item_code,
             "qty": line["qty"],
             "rate": getattr(source, "rate", 0),
             "purchase_order": purchase_order,
             "purchase_order_item": source.name,
             "warehouse": line_warehouse,
-        })
+        }
+        if cstr(line.get("batch_no")).strip() and frappe.get_meta("Purchase Receipt Item").has_field("batch_no"):
+            item_payload["batch_no"] = cstr(line["batch_no"]).strip()
+        if cstr(line.get("expiry_date")).strip() and frappe.get_meta("Purchase Receipt Item").has_field("expiry_date"):
+            item_payload["expiry_date"] = cstr(line["expiry_date"]).strip()
+        document.append("items", item_payload)
     document.insert(ignore_permissions=True)
     document.flags.ignore_permissions = True
     document.submit()
@@ -944,13 +1140,27 @@ def _create_purchase_receipt(value: dict[str, Any], command_id: str) -> str:
 
 def _create_transfer_entry(value: dict[str, Any], command_id: str, *, dispatch: bool) -> str:
     company = cstr(value.get("company")).strip()
+    material_request_name = cstr(value.get("material_request") or value.get("source_document")).strip()
     from_warehouse = cstr(value.get("from_warehouse") if dispatch else value.get("transit_warehouse")).strip()
     to_warehouse = cstr(value.get("transit_warehouse") if dispatch else value.get("to_warehouse")).strip()
     if not company or not from_warehouse or not to_warehouse:
         frappe.throw(_("Transfer requires company, source, transit and destination warehouses"), frappe.ValidationError)
+    if not material_request_name:
+        frappe.throw(_("Transfer requires the submitted Material Request number"), frappe.ValidationError)
+    if not frappe.db.exists("Material Request", material_request_name):
+        frappe.throw(_("The transfer Material Request does not exist"), frappe.ValidationError)
+    material_request = frappe.get_doc("Material Request", material_request_name)
+    if material_request.docstatus != 1 or cstr(getattr(material_request, "material_request_type", "")).strip() != "Material Transfer":
+        frappe.throw(_("Only a submitted Material Transfer Request can be executed on POS"), frappe.ValidationError)
+    if cstr(getattr(material_request, "company", "")).strip() != company:
+        frappe.throw(_("The transfer Material Request belongs to another company"), frappe.PermissionError)
     lines = value.get("lines")
     if not isinstance(lines, list) or not lines:
         frappe.throw(_("Transfer requires item lines"), frappe.ValidationError)
+    requested_rows = {
+        (cstr(row.item_code).strip(), cstr(row.warehouse).strip(), cstr(getattr(row, "target_warehouse", "")).strip()): row
+        for row in (material_request.items or [])
+    }
     document = frappe.new_doc("Stock Entry")
     document.stock_entry_type = "Material Transfer"
     document.purpose = "Material Transfer"
@@ -959,8 +1169,24 @@ def _create_transfer_entry(value: dict[str, Any], command_id: str, *, dispatch: 
     for line in lines:
         if not isinstance(line, dict) or not cstr(line.get("item_code")).strip() or Decimal(str(line.get("qty", 0))) <= 0:
             frappe.throw(_("Transfer contains an invalid line"), frappe.ValidationError)
+        item_code = cstr(line.get("item_code")).strip()
+        expected_source = cstr(line.get("source_warehouse") or (from_warehouse if dispatch else "")).strip()
+        expected_destination = cstr(line.get("destination_warehouse") or (to_warehouse if dispatch else "")).strip()
+        matching = [
+            row for (row_item, row_source, row_destination), row in requested_rows.items()
+            if row_item == item_code
+            and (not dispatch or row_source == from_warehouse)
+            and (not row_destination or row_destination == to_warehouse)
+            and (not expected_source or row_source == expected_source)
+            and (not expected_destination or row_destination == expected_destination)
+        ]
+        if not matching:
+            frappe.throw(_("Transfer line is not present on the submitted Material Request"), frappe.ValidationError)
+        requested_qty = sum(Decimal(str(getattr(row, "qty", 0) or 0)) for row in matching)
+        if Decimal(str(line.get("qty", 0))) > requested_qty:
+            frappe.throw(_("Transfer quantity exceeds the submitted Material Request"), frappe.ValidationError)
         document.append("items", {
-            "item_code": line["item_code"],
+            "item_code": item_code,
             "qty": line["qty"],
             "s_warehouse": from_warehouse,
             "t_warehouse": to_warehouse,
@@ -991,6 +1217,27 @@ def _validate_guided_task_scope(device_id: str, value: dict[str, Any], task_type
         controlled = cstr(value.get("to_warehouse")).strip()
     if controlled and controlled != assigned_warehouse:
         frappe.throw(_("This guided task is outside the device warehouse"), frappe.PermissionError)
+
+
+def _validate_guided_task_actor(device: Any, value: dict[str, Any], task_type: str) -> None:
+    """Bind the physical action to an active outlet user and capability."""
+
+    staff_id = cstr(value.get("staff_user") or value.get("staff_id")).strip()
+    if not staff_id:
+        frappe.throw(_("Guided task requires the signed-in staff user"), frappe.ValidationError)
+    active_by_user = {
+        cstr(getattr(row, "user", None)).strip(): row
+        for row in (getattr(device, "device_users", None) or [])
+        if cint(getattr(row, "active", 0)) and cstr(getattr(row, "user", None)).strip()
+    }
+    if staff_id not in active_by_user:
+        frappe.throw(_("Signed-in staff user is not active on this outlet tablet"), frappe.PermissionError)
+    if task_type in {"submit_purchase_receipt", "submit_transfer_dispatch", "submit_transfer_receipt"}:
+        if not cint(getattr(active_by_user[staff_id], "can_manager_override", 0)):
+            frappe.throw(
+                _("A manager must sign in before confirming this stock movement"),
+                frappe.PermissionError,
+            )
 
 
 def _set_document_value(document: Any, fieldname: str, value: Any) -> None:

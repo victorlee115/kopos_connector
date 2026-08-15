@@ -42,7 +42,9 @@ requires_erpnext_version = ">=16.0.0,<17.0.0"
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 
-doctype_js = {}
+doctype_js = {
+    "KoPOS Promotion": "public/js/kopos_promotion.js",
+}
 
 # Home Pages
 # ----------
