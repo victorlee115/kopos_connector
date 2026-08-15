@@ -23,4 +23,3 @@ def test_preparation_thresholds_accept_explicit_batch_and_ready_levels():
 def test_preparation_thresholds_reject_invalid_bom_quantity(value):
     with pytest.raises(ValueError):
         preparation_thresholds(bom_quantity=value)
-
