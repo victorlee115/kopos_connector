@@ -177,6 +177,7 @@ def test_fb_order_builder_persists_normalized_sale_datetime(monkeypatch: Any) ->
                     "line_total": 10.0,
                     "recipe": None,
                     "recipe_version": None,
+                    "recipe_hash": None,
                     "is_recipe_managed": 0,
                     "remarks": None,
                     "selected_modifiers": [],

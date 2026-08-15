@@ -459,7 +459,9 @@ def test_prepared_sale_reuses_only_the_frozen_resolved_snapshot(
         recipe="RECIPE-1",
         recipe_version="1",
         selected_modifiers=[],
-        resolved_components=[component],
+        resolved_components=[
+            fb_order_module._canonical_resolved_component(component)
+        ],
     )
     monkeypatch.setattr(
         fb_order_module.frappe,

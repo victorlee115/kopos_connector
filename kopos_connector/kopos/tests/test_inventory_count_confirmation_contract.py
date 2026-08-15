@@ -33,6 +33,7 @@ class TestInventoryCountConfirmationContract(FrappeTestCase):
 
     def test_stock_reconciliation_remains_the_standard_authority(self) -> None:
         meta = frappe.get_meta("Stock Reconciliation")
-        self.assertIsNotNone(meta.get_field("docstatus"))
+        # ``docstatus`` is a Frappe system column, not a DocField.
+        self.assertTrue(frappe.db.has_column("Stock Reconciliation", "docstatus"))
         self.assertIsNotNone(meta.get_field("company"))
         self.assertIsNotNone(meta.get_field("items"))

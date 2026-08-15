@@ -37,6 +37,12 @@ DEMO_MATCHA_QTY_PER_ORDER = 18
 DEMO_STRAWBERRY_QTY_PER_ORDER = 40
 DEMO_MILK_QTY_PER_ORDER = 180
 DEMO_CUP_QTY_PER_ORDER = 1
+DEMO_INGREDIENT_VALUATION_RATES = {
+    DEMO_MATCHA_ITEM: "0.10",
+    DEMO_STRAWBERRY_ITEM: "0.02",
+    DEMO_MILK_ITEM: "0.005",
+    DEMO_CUP_ITEM: "0.50",
+}
 SMOKE_ACCEPTANCE_MINIMUM_ORDERS = 500
 SMOKE_ACCEPTANCE_STOCK_HEADROOM_MULTIPLIER = 2
 SMOKE_ACCEPTANCE_MATCHA_TARGET_QTY = (
@@ -71,6 +77,8 @@ SMOKE_SIZE_REGULAR_CODE = "SMOKE-FB-SIZE-REGULAR"
 SMOKE_SIZE_LARGE_CODE = "SMOKE-FB-SIZE-LARGE"
 SMOKE_MOCK_PRINTER_HOST_ENV = "KOPOS_SMOKE_MOCK_PRINTER_HOST"
 SMOKE_MOCK_PRINTER_PORT_ENV = "KOPOS_SMOKE_MOCK_PRINTER_PORT"
+SMOKE_INVENTORY_ACCEPTANCE_ENV = "KOPOS_CAMPAIGN_INVENTORY_ACCEPTANCE"
+SMOKE_INVENTORY_EVALUATION_ENV = "KOPOS_CAMPAIGN_INVENTORY_EVALUATION"
 SMOKE_MOCK_PRINTER_DEFAULT_HOST = "127.0.0.1"
 SMOKE_MOCK_PRINTER_DEFAULT_PORT = 19100
 SUPPORT_REDACTED_VALUE = "[redacted]"
@@ -114,6 +122,46 @@ def setup_refund_smoke_data(
     return _ensure_smoke_base_data(
         include_inventory_regression=bool(cint(include_inventory_regression))
     )
+
+
+def _full_smoke_inventory_regression_requested(
+    requested: int | str | bool | None,
+) -> bool:
+    """Resolve inventory seeding without changing historical smoke defaults.
+
+    An explicit caller value always wins.  When the caller omits the value, an
+    included-inventory release campaign may opt into the existing inventory
+    regression fixture through its environment contract.  The evaluation
+    value is paired with acceptance so a partial or misspelled campaign
+    configuration fails closed instead of publishing an unevaluated fixture.
+    """
+
+    if requested is not None:
+        return bool(cint(requested))
+
+    raw_acceptance = os.environ.get(SMOKE_INVENTORY_ACCEPTANCE_ENV)
+    if raw_acceptance in (None, ""):
+        return False
+    normalized_acceptance = raw_acceptance.strip().lower()
+    if normalized_acceptance in {"0", "false", "no", "off"}:
+        return False
+    if normalized_acceptance not in {"1", "true", "yes", "on"}:
+        frappe.throw(
+            f"{SMOKE_INVENTORY_ACCEPTANCE_ENV} must be true or false",
+            frappe.ValidationError,
+        )
+
+    inventory_evaluation = os.environ.get(
+        SMOKE_INVENTORY_EVALUATION_ENV,
+        "",
+    ).strip()
+    if inventory_evaluation != "included_evaluated":
+        frappe.throw(
+            f"{SMOKE_INVENTORY_EVALUATION_ENV} must be included_evaluated when "
+            f"{SMOKE_INVENTORY_ACCEPTANCE_ENV}=true",
+            frappe.ValidationError,
+        )
+    return True
 
 
 def _prepare_smoke_test_site() -> None:
@@ -373,7 +421,7 @@ def set_demo_ingredient_quantities(
                             "uom": stock_uom,
                             "stock_uom": stock_uom,
                             "conversion_factor": 1,
-                            "basic_rate": 1,
+                            "basic_rate": DEMO_INGREDIENT_VALUATION_RATES[item_code],
                         }
                     ],
                 }
@@ -396,7 +444,7 @@ def set_demo_ingredient_quantities(
                             "uom": stock_uom,
                             "stock_uom": stock_uom,
                             "conversion_factor": 1,
-                            "basic_rate": 1,
+                            "basic_rate": DEMO_INGREDIENT_VALUATION_RATES[item_code],
                         }
                     ],
                 }
@@ -1607,7 +1655,7 @@ def _ensure_stock_item() -> str:
                 "stock_uom": uom,
                 "is_sales_item": 0,
                 "is_stock_item": is_stock,
-                "standard_rate": 1,
+                "standard_rate": DEMO_INGREDIENT_VALUATION_RATES[item_code],
                 "custom_kopos_availability_mode": "auto",
                 "custom_kopos_track_stock": 1,
                 "custom_kopos_min_qty": 1,
@@ -1872,7 +1920,7 @@ def _ensure_item_group() -> str:
 
 def setup_full_smoke_json(
     erpnext_url: str | None = None,
-    include_inventory_regression: int | str | bool = False,
+    include_inventory_regression: int | str | bool | None = None,
 ) -> dict[str, Any]:
     return setup_full_smoke_data(
         erpnext_url=erpnext_url,
@@ -2320,6 +2368,38 @@ def _ensure_promotion_snapshot(pos_profile: str) -> dict[str, Any]:
     return publish_promotion_snapshot(pos_profile=pos_profile)
 
 
+def _ensure_demo_promotion_economics(
+    promotion: str,
+    pos_profile: str,
+) -> dict[str, str]:
+    """Run the production economics gate before publishing the smoke promotion."""
+
+    from kopos_connector.api.inventory import get_promotion_economics
+
+    result = get_promotion_economics(
+        payload={
+            "promotion": promotion,
+            "pos_profile": pos_profile,
+        }
+    )
+    if result.get("status") != "ok" or result.get("publication_status") != "Ready":
+        reason = cstr(result.get("reason") or "promotion economics is not ready")
+        frappe.throw(
+            f"Inventory smoke promotion economics is not ready: {reason}",
+            frappe.ValidationError,
+        )
+    economics_hash = cstr(result.get("economics_hash")).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", economics_hash):
+        frappe.throw(
+            "Inventory smoke promotion economics returned an invalid evidence hash",
+            frappe.ValidationError,
+        )
+    return {
+        "status": "Ready",
+        "economics_hash": economics_hash,
+    }
+
+
 def _build_demo_promotion_values(pos_profile: str) -> dict[str, Any]:
     return {
         "promotion_name": DEMO_PROMOTION_NAME,
@@ -2510,9 +2590,11 @@ def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
 
 def setup_full_smoke_data(
     erpnext_url: str | None = None,
-    include_inventory_regression: int | str | bool = False,
+    include_inventory_regression: int | str | bool | None = None,
 ) -> dict[str, Any]:
-    inventory_regression = bool(cint(include_inventory_regression))
+    inventory_regression = _full_smoke_inventory_regression_requested(
+        include_inventory_regression
+    )
     base = setup_refund_smoke_data(
         include_inventory_regression=inventory_regression
     )
@@ -2549,6 +2631,8 @@ def setup_full_smoke_data(
     if inventory_regression:
         set_demo_ingredient_quantities()
     promotion_name = _ensure_demo_promotion(base["pos_profile"])
+    if inventory_regression:
+        _ensure_demo_promotion_economics(promotion_name, base["pos_profile"])
     promotion_snapshot = _ensure_promotion_snapshot(base["pos_profile"])
 
     frappe.db.commit()

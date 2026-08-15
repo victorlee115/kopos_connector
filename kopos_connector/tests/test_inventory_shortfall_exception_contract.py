@@ -3,8 +3,6 @@ from __future__ import annotations
 import ast
 from decimal import Decimal
 from pathlib import Path
-import sys
-import types
 import unittest
 
 
@@ -31,19 +29,18 @@ class TestInventoryShortfallExceptionContract(unittest.TestCase):
         self.assertEqual(forbidden_calls, [])
 
     def test_shortfall_diagnostic_uses_finite_decimal_and_skips_bad_input(self) -> None:
-        fake_frappe = types.ModuleType("frappe")
-        fake_frappe.db = types.SimpleNamespace(
+        from types import SimpleNamespace
+
+        from kopos_connector.kopos.services.inventory import warning_service
+
+        fake_frappe = SimpleNamespace()
+        fake_frappe.db = SimpleNamespace(
             get_value=lambda _doctype, _filters, _fieldname: "1.00",
         )
         fake_frappe.log_error = lambda *args, **kwargs: None
-        previous = sys.modules.get("frappe")
-        sys.modules["frappe"] = fake_frappe
+        previous = warning_service.frappe
+        warning_service.frappe = fake_frappe
         try:
-            sys.modules.pop(
-                "kopos_connector.kopos.services.inventory.warning_service", None
-            )
-            from kopos_connector.kopos.services.inventory import warning_service
-
             shortfalls = warning_service.detect_stock_shortfall(
                 [
                     {
@@ -65,13 +62,7 @@ class TestInventoryShortfallExceptionContract(unittest.TestCase):
             self.assertEqual(shortfalls[0]["required_qty"], Decimal("1.25"))
             self.assertEqual(shortfalls[0]["available_qty"], Decimal("1.00"))
         finally:
-            sys.modules.pop(
-                "kopos_connector.kopos.services.inventory.warning_service", None
-            )
-            if previous is not None:
-                sys.modules["frappe"] = previous
-            else:
-                sys.modules.pop("frappe", None)
+            warning_service.frappe = previous
 
 
 if __name__ == "__main__":

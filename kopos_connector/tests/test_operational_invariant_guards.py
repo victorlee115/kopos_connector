@@ -12,6 +12,7 @@ install_fake_frappe_modules()
 
 import frappe
 
+from kopos_connector import hooks
 from kopos_connector.api import devices, fb_orders
 
 
@@ -24,18 +25,16 @@ FORBIDDEN_ACTIVE_LEGACY_TERMS = {
     "pos_opening_entry",
     "pos_closing_entry",
 }
+AVAILABILITY_STOCK_DOC_EVENTS = {
+    doctype: {
+        "on_submit": "kopos_connector.kopos.services.inventory_autopilot.availability_events.on_stock_document_submit"
+    }
+    for doctype in ("Purchase Receipt", "Stock Entry", "Stock Reconciliation")
+}
 
 
 def test_operational_doctypes_have_one_controller_owned_lifecycle() -> None:
-    hooks_tree = ast.parse((CONNECTOR_ROOT / "hooks.py").read_text())
-    assignments = {
-        target.id
-        for node in hooks_tree.body
-        if isinstance(node, ast.Assign)
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    }
-    assert "doc_events" not in assignments
+    assert hooks.doc_events == AVAILABILITY_STOCK_DOC_EVENTS
 
     content = (CONNECTOR_ROOT / "api/fb_returns.py").read_text()
     assert "def on_submit_" not in content

@@ -26,7 +26,7 @@ BASE_PROFILE_CONFIG = {
 }
 
 
-def test_pos_profile_extension_is_registered_without_doc_event_lifecycle() -> None:
+def test_pos_profile_extension_and_fixed_stock_events_have_separate_lifecycles() -> None:
     assert hooks.extend_doctype_class == {
         "Journal Entry": [
             "kopos_connector.extensions.journal_entry.KoPOSJournalEntryIntegrityMixin"
@@ -38,7 +38,12 @@ def test_pos_profile_extension_is_registered_without_doc_event_lifecycle() -> No
             "kopos_connector.extensions.sales_invoice.KoPOSSalesInvoiceIntegrityMixin"
         ],
     }
-    assert not hasattr(hooks, "doc_events")
+    assert hooks.doc_events == {
+        doctype: {
+            "on_submit": "kopos_connector.kopos.services.inventory_autopilot.availability_events.on_stock_document_submit"
+        }
+        for doctype in ("Purchase Receipt", "Stock Entry", "Stock Reconciliation")
+    }
     assert pos_profile.SERIALIZED_POS_PROFILE_FIELDS == (
         "company",
         "warehouse",

@@ -33,7 +33,16 @@ class TestEdgeSnapshotContract(FrappeTestCase):
         }.items():
             meta = frappe.get_meta(doctype)
             for fieldname in fields:
-                self.assertIsNotNone(meta.get_field(fieldname), f"{doctype}.{fieldname}")
+                if fieldname == "name":
+                    # ``name`` is a Frappe system column, not a DocField.
+                    self.assertTrue(
+                        frappe.db.has_column(doctype, fieldname),
+                        f"{doctype}.{fieldname}",
+                    )
+                else:
+                    self.assertIsNotNone(
+                        meta.get_field(fieldname), f"{doctype}.{fieldname}"
+                    )
 
         # The edge response is an operational surface.  These values may be
         # read privately by ERP planning, but must never be serialized to a

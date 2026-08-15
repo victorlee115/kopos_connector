@@ -102,6 +102,11 @@ class TestInventoryDraftPurchaseOrderContract(FrappeTestCase):
         )
         quotation.insert(ignore_permissions=True)
         quotation.submit()
+        # Submission can normalize standard ERPNext fields in the database.
+        # Hash and assert against that persisted authority, not the stale
+        # pre-submit Python object.
+        quotation = frappe.get_doc("Supplier Quotation", quotation.name)
+        material_request = frappe.get_doc("Material Request", material_request.name)
 
         plan = {
             "name": f"INV-PO-PLAN-{suffix}",

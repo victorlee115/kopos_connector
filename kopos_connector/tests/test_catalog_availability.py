@@ -252,6 +252,7 @@ def test_build_catalog_payload_includes_stock_warning_in_items(
             "modifier_group_ids": [],
             "recipe_id": None,
             "recipe_version": None,
+            "recipe_hash": None,
         }
     ]
     assert payload["metadata"] == {
@@ -914,9 +915,11 @@ def test_get_items_keeps_plain_menu_when_recipe_subsystem_fails(
             "stock_warning": None,
             "is_active": 1,
             "is_prep_item": 0,
+            "inventory_excluded": 0,
             "modifier_group_ids": [],
             "recipe_id": None,
             "recipe_version": None,
+            "recipe_hash": None,
         }
     ]
 
