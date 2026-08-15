@@ -17,6 +17,7 @@ from kopos_connector.kopos.services.inventory_autopilot.edge_snapshot import (
     _attach_runout,
     _safe_holds,
     _safe_task,
+    attach_bounded_tasks,
     build_edge_inventory_snapshot,
     normalize_edge_query,
 )
@@ -59,6 +60,72 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         self.assertNotIn("value", task)
         self.assertNotIn("rate", task["lines"][0])
         self.assertNotIn("amount", task["lines"][0])
+
+    def test_edge_tasks_preserve_preparation_alert_authority_and_dedicated_count(self) -> None:
+        snapshot = {"tasks": []}
+        result = attach_bounded_tasks(
+            snapshot,
+            {
+                "tasks": [{
+                    "kind": "preparation",
+                    "document": "BOM-COLD-FOAM",
+                    "bom_no": "BOM-COLD-FOAM",
+                    "preparation_alert": True,
+                    "preparation_fingerprint": "alert-fingerprint",
+                    "batch_qty": Decimal("12"),
+                    "min_ready_qty": Decimal("4"),
+                    "trigger_qty": Decimal("3"),
+                    "current_qty": Decimal("2"),
+                    "lead_minutes": 20,
+                    "rate": Decimal("99.00"),
+                }],
+                "count_task": {
+                    "name": "COUNT-0001",
+                    "revision": 3,
+                    "warehouse": "Outlet - J",
+                    "assignee": "staff@example.com",
+                    "stock_watermark": "2026-08-15T02:00:00+08:00",
+                    "lines": [{
+                        "item_id": "MILK",
+                        "item_name": "Milk",
+                        "uom": "L",
+                        "stock_uom": "L",
+                        "purchase_uom": "Carton",
+                        "conversion_factor": Decimal("12"),
+                        "expected_quantity": Decimal("10"),
+                    }],
+                },
+            },
+        )
+
+        preparation = result["tasks"][0]
+        self.assertEqual(preparation["preparation_alert"], True)
+        self.assertEqual(preparation["preparation_fingerprint"], "alert-fingerprint")
+        self.assertEqual(preparation["batch_qty"], "12")
+        self.assertEqual(preparation["current_qty"], "2")
+        self.assertNotIn("rate", preparation)
+        self.assertEqual(result["count_task"]["name"], "COUNT-0001")
+        self.assertEqual(result["count_task"]["lines"][0]["conversion_factor"], "12")
+        self.assertNotIn("expected_quantity", result["count_task"]["lines"][0])
+
+    def test_edge_tasks_derive_count_task_for_older_task_reader(self) -> None:
+        result = attach_bounded_tasks(
+            {"tasks": []},
+            {
+                "tasks": [{
+                    "kind": "count",
+                    "document": "COUNT-0002",
+                    "revision": 4,
+                    "warehouse": "Outlet - J",
+                    "assignee": "staff@example.com",
+                    "stock_watermark": "watermark",
+                    "lines": [{"item_id": "MILK", "uom": "L", "stock_uom": "L", "purchase_uom": "Carton", "conversion_factor": "12"}],
+                }],
+            },
+        )
+
+        self.assertEqual(result["count_task"]["name"], "COUNT-0002")
+        self.assertEqual(result["count_task"]["lines"][0]["purchase_uom"], "Carton")
 
     def test_runout_is_null_until_target_is_reliable(self) -> None:
         target = {
@@ -126,6 +193,29 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         self.assertEqual(fallback["sync_mode"], "full")
         self.assertEqual(fallback["inventory_snapshot"]["status"], "unavailable")
         self.assertEqual(fallback["inventory_snapshot"]["tasks"], [])
+
+    def test_inventory_task_reader_returns_count_task_alongside_task_list(self) -> None:
+        count_task = {
+            "name": "COUNT-0001",
+            "revision": 2,
+            "warehouse": "Outlet - J",
+            "assignee": "staff@example.com",
+            "stock_watermark": "watermark",
+            "lines": [{"item_id": "MILK", "uom": "L"}],
+        }
+        with patch.object(inventory, "require_device_context", return_value=object()), patch.object(
+            inventory,
+            "resolve_catalog_pos_profile",
+            return_value={"company": "JiJi", "warehouse": "Outlet - J"},
+        ), patch.object(inventory, "_preparation_tasks_visible_to_device", return_value=False), patch.object(
+            inventory,
+            "_get_count_task",
+            return_value={"status": "ok", "task": count_task},
+        ):
+            result = inventory._get_inventory_tasks(device_id="DEVICE-1")
+
+        self.assertEqual(result["count_task"], count_task)
+        self.assertEqual(result["tasks"][0]["kind"], "count")
 
     def test_snapshot_is_bounded_and_contains_operational_values_only(self) -> None:
         with (

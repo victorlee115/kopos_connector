@@ -19,6 +19,7 @@ def upsert_inventory_exception(
     item: str | None = None,
     source_doctype: str | None = None,
     source_name: str | None = None,
+    responsible_owner: str | None = None,
 ) -> str:
     identity = _exception_identity(
         reason_code=reason_code,
@@ -49,13 +50,13 @@ def upsert_inventory_exception(
         count = cint(frappe.db.get_value("FB Inventory Exception", existing, "occurrence_count"))
         values["occurrence_count"] = max(1, count) + 1
         frappe.db.set_value("FB Inventory Exception", existing, values, update_modified=False)
-        _ensure_todo(existing, values)
+        _ensure_todo(existing, values, responsible_owner=responsible_owner)
         return cstr(existing)
     values["first_seen"] = now
     values["occurrence_count"] = 1
     document = frappe.get_doc({"doctype": "FB Inventory Exception", **values})
     document.insert(ignore_permissions=True)
-    _ensure_todo(document.name, values)
+    _ensure_todo(document.name, values, responsible_owner=responsible_owner)
     return cstr(document.name)
 
 
@@ -132,7 +133,12 @@ def _exception_fingerprint(identity: dict[str, str | None]) -> str:
     ).hexdigest()
 
 
-def _ensure_todo(exception_name: str, values: dict[str, Any]) -> None:
+def _ensure_todo(
+    exception_name: str,
+    values: dict[str, Any],
+    *,
+    responsible_owner: str | None = None,
+) -> None:
     if not frappe.db.exists("DocType", "ToDo"):
         return
     if frappe.db.exists(
@@ -140,12 +146,39 @@ def _ensure_todo(exception_name: str, values: dict[str, Any]) -> None:
         {"reference_type": "FB Inventory Exception", "reference_name": exception_name, "status": "Open"},
     ):
         return
+    owner = _resolve_todo_owner(values, responsible_owner=responsible_owner)
     todo = frappe.get_doc({
         "doctype": "ToDo",
         "description": f"Inventory exception: {values['summary']} — {values['next_action']}",
         "reference_type": "FB Inventory Exception",
         "reference_name": exception_name,
-        "owner": cstr(getattr(frappe.session, "user", None)).strip() or "Administrator",
+        "owner": owner,
         "status": "Open",
     })
     todo.insert(ignore_permissions=True)
+
+
+def _resolve_todo_owner(values: dict[str, Any], *, responsible_owner: str | None) -> str:
+    """Use explicit or source-document ownership before the session fallback.
+
+    Workers often run without a meaningful interactive session.  Callers that
+    know the accountable person can provide ``responsible_owner``; otherwise
+    an existing source document's real owner is the only safe configured
+    authority.  The session user remains a compatibility fallback for manual
+    actions, and Administrator is used only when Frappe supplies no session
+    identity at all.
+    """
+
+    explicit_owner = cstr(responsible_owner).strip()
+    if explicit_owner:
+        return explicit_owner
+    source_doctype = cstr(values.get("source_doctype")).strip()
+    source_name = cstr(values.get("source_name")).strip()
+    if source_doctype and source_name:
+        try:
+            source_owner = cstr(frappe.db.get_value(source_doctype, source_name, "owner")).strip()
+        except Exception:
+            source_owner = ""
+        if source_owner:
+            return source_owner
+    return cstr(getattr(frappe.session, "user", None)).strip() or "Administrator"

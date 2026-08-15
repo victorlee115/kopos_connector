@@ -254,6 +254,7 @@ def build_edge_inventory_snapshot(
             "modifier_options": len(modifier_rows) > result_limit,
         },
         "tasks": [],
+        "count_task": None,
     }
 
 
@@ -276,6 +277,35 @@ def attach_bounded_tasks(
         in {"count", "preparation", "receiving", "transfer_dispatch", "transfer_receipt"}
     ]
     snapshot["tasks_truncated"] = len(raw_tasks) > max_tasks
+    raw_count_task = task_response.get("count_task") if isinstance(task_response, Mapping) else None
+    if isinstance(raw_count_task, Mapping):
+        snapshot["count_task"] = _safe_count_task(
+            raw_count_task,
+            max_lines=max_lines_per_task,
+        )
+    else:
+        # Keep the edge contract compatible with older task readers while the
+        # server and clients roll out together.  The count task is duplicated
+        # in ``tasks`` for the task list, but the dedicated field is the
+        # authority consumed by the count screen and offline cache.
+        count_task = next(
+            (
+                task for task in snapshot["tasks"]
+                if isinstance(task, Mapping) and task.get("kind") == "count"
+            ),
+            None,
+        )
+        snapshot["count_task"] = _safe_count_task(
+            {
+                "name": count_task.get("document"),
+                "revision": count_task.get("revision"),
+                "warehouse": count_task.get("warehouse"),
+                "assignee": count_task.get("assignee"),
+                "stock_watermark": count_task.get("stock_watermark"),
+                "lines": count_task.get("lines", []),
+            },
+            max_lines=max_lines_per_task,
+        ) if count_task else None
     return snapshot
 
 
@@ -283,7 +313,8 @@ def _safe_task(task: Mapping[str, Any], *, max_lines: int) -> dict[str, Any]:
     allowed = {
         "kind", "document", "title", "revision", "stock_watermark", "assignee", "warehouse", "status", "docstatus",
         "item_code", "item_name", "qty", "produced_qty", "bom_no",
-        "preparation_instructions", "blocked_reason",
+        "preparation_instructions", "blocked_reason", "preparation_alert", "preparation_fingerprint",
+        "batch_qty", "min_ready_qty", "trigger_qty", "current_qty", "lead_minutes",
     }
     result = {key: _safe_value(task.get(key)) for key in allowed if key in task}
     lines = task.get("lines")
@@ -302,12 +333,62 @@ def _safe_task(task: Mapping[str, Any], *, max_lines: int) -> dict[str, Any]:
     return result
 
 
+def _safe_count_task(task: Mapping[str, Any], *, max_lines: int) -> dict[str, Any]:
+    """Bound the dedicated count assignment without exposing expected stock."""
+
+    allowed = {"name", "revision", "warehouse", "assignee", "stock_watermark"}
+    result = {key: _safe_value(task.get(key)) for key in allowed if key in task}
+    lines = task.get("lines")
+    if isinstance(lines, list):
+        result["lines"] = [
+            _safe_count_task_line(line)
+            for line in lines[:max_lines]
+            if isinstance(line, Mapping)
+        ]
+        if len(lines) > max_lines:
+            result["lines_truncated"] = True
+    else:
+        result["lines"] = []
+    review = task.get("review")
+    if isinstance(review, Mapping):
+        review_result = {
+            key: _safe_value(review.get(key))
+            for key in {"observation_id", "status"}
+            if key in review
+        }
+        review_lines = review.get("lines")
+        if isinstance(review_lines, list):
+            review_result["lines"] = [
+                _safe_count_review_line(line)
+                for line in review_lines[:max_lines]
+                if isinstance(line, Mapping)
+            ]
+        result["review"] = review_result
+    return result
+
+
+def _safe_count_task_line(line: Mapping[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "item_id", "item_name", "uom", "stock_uom", "purchase_uom", "conversion_factor",
+    }
+    return {key: _safe_value(line.get(key)) for key in allowed if key in line}
+
+
+def _safe_count_review_line(line: Mapping[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "item_id", "item_name", "uom", "counted_quantity", "variance_percent",
+        "stock_uom", "purchase_uom", "conversion_factor", "full_packs",
+        "loose_quantity", "total_quantity",
+    }
+    return {key: _safe_value(line.get(key)) for key in allowed if key in line}
+
+
 def _safe_task_line(line: Mapping[str, Any]) -> dict[str, Any]:
     allowed = {
         "item_id", "item_code", "item_name", "qty", "remaining_qty", "requested_qty", "dispatched_qty", "received_qty",
         "stock_qty", "stock_dispatched_qty", "stock_received_qty",
         "uom", "warehouse", "source_warehouse", "destination_warehouse", "transit_warehouse",
-        "stock_uom", "conversion_factor", "purchase_order_item", "material_request_item",
+        "stock_uom", "purchase_uom", "conversion_factor", "purchase_order_item", "material_request_item",
     }
     return {key: _safe_value(line.get(key)) for key in allowed if key in line}
 

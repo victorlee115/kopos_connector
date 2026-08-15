@@ -451,6 +451,12 @@ def activate_inventory_cutover(
         getattr(frappe, "conf", None),
         automation_identity_ready=automation_identity_is_configured(company=company, warehouse=warehouse),
         purchase_review_owner=purchase_review_owner(company=company, warehouse=warehouse),
+        # Cutover leaves the outlet in Review First. Monitoring, unattended
+        # document identity, and Draft PO review ownership are checked when
+        # their later capability is enabled, not when core stock work starts.
+        require_monitor_destination=False,
+        require_automation_identity=False,
+        require_purchase_review_owner=False,
     )
     if owner_failures:
         _throw_cutover_block(owner_failures[0])
@@ -463,7 +469,7 @@ def activate_inventory_cutover(
     # connector migration and therefore always consumes the health result.
     if frappe.db.exists("DocType", "FB Projection Log"):
         health = get_autopilot_health(warehouse=warehouse)
-        if health_blocks_rollout(health):
+        if health_blocks_rollout(health, include_draft_purchase_order=False):
             reasons = critical_health_reasons(health) or ("draft_purchase_order_outbound_configuration",)
             _throw_cutover_block(f"health_critical:{reasons[0]}")
 
@@ -2141,17 +2147,20 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
     )
 
     count_response = _get_count_task(device_id=device_id)
-    count_task = count_response.get("task")
-    if count_task:
+    # ``_get_count_task`` already returns the device-safe count response. Keep
+    # that object as the dedicated edge field so the count screen does not
+    # have to reconstruct frozen UOM authority from the generic task list.
+    safe_count_task = count_response.get("task")
+    if isinstance(safe_count_task, dict) and safe_count_task:
         tasks.append({
             "kind": "count",
-            "document": cstr(count_task.get("name")),
+            "document": cstr(safe_count_task.get("name")),
             "title": "Assigned stock count",
-            "revision": count_task.get("revision"),
-            "stock_watermark": count_task.get("stock_watermark"),
-            "assignee": cstr(count_task.get("assignee")),
+            "revision": safe_count_task.get("revision"),
+            "stock_watermark": safe_count_task.get("stock_watermark"),
+            "assignee": cstr(safe_count_task.get("assignee")),
             "warehouse": warehouse,
-            "lines": count_task.get("lines", []),
+            "lines": safe_count_task.get("lines", []),
         })
 
     if preparation_visible and frappe.db.exists("DocType", "Work Order"):
@@ -2407,7 +2416,13 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
                     **({"blocked_reason": route_blocked_reason} if route_blocked_reason else {}),
                 })
 
-    return {"status": "ok", "warehouse": warehouse, "tasks": tasks[:100], "generated_at": _iso_with_offset(now_datetime())}
+    return {
+        "status": "ok",
+        "warehouse": warehouse,
+        "tasks": tasks[:100],
+        "count_task": safe_count_task,
+        "generated_at": _iso_with_offset(now_datetime()),
+    }
 
 
 @frappe.whitelist(methods=["GET", "POST"])

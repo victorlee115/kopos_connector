@@ -167,6 +167,18 @@ class InventoryCutoverTests(TestCase):
             (),
         )
 
+        self.assertEqual(
+            monitoring_owner_failures(
+                {},
+                automation_identity_ready=False,
+                purchase_review_owner=None,
+                require_monitor_destination=False,
+                require_automation_identity=False,
+                require_purchase_review_owner=False,
+            ),
+            (),
+        )
+
     def test_activation_is_server_owned_review_first_and_idempotent(self) -> None:
         policy = SimpleNamespace(
             name="FB-POLICY-JIJI-OUTLET",
@@ -194,7 +206,7 @@ class InventoryCutoverTests(TestCase):
             inventory, "outlet_erp_role_failures", return_value=()
         ), patch.object(
             inventory, "monitoring_owner_failures", return_value=()
-        ), patch.object(
+        ) as monitoring_owner_check, patch.object(
             inventory, "automation_identity_is_configured", return_value=True
         ), patch.object(
             inventory, "purchase_review_owner", return_value="director@example.com"
@@ -210,6 +222,9 @@ class InventoryCutoverTests(TestCase):
         self.assertTrue(policy.cutover_at)
         self.assertEqual(policy.opening_stock_reconciliation, "MAT-RECON-1")
         policy.save.assert_called_once_with(ignore_permissions=True)
+        self.assertFalse(monitoring_owner_check.call_args.kwargs["require_monitor_destination"])
+        self.assertFalse(monitoring_owner_check.call_args.kwargs["require_automation_identity"])
+        self.assertFalse(monitoring_owner_check.call_args.kwargs["require_purchase_review_owner"])
 
         existing = SimpleNamespace(
             name=policy.name,

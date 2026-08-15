@@ -5,23 +5,43 @@ from __future__ import annotations
 from typing import Any
 
 
-def critical_health_reasons(payload: dict[str, Any]) -> tuple[str, ...]:
+_DRAFT_PURCHASE_ORDER_HEALTH_REASON = "draft_purchase_order_outbound_configuration"
+
+
+def critical_health_reasons(
+    payload: dict[str, Any],
+    *,
+    include_draft_purchase_order: bool = True,
+) -> tuple[str, ...]:
     """Return the fail-closed reasons that must stop outlet expansion."""
 
     exceptions = payload.get("exceptions")
     if not isinstance(exceptions, dict):
         return ()
-    return tuple(sorted({
+    reasons = {
         str(value).strip()
         for value in exceptions.get("critical_reasons", [])
         if str(value).strip()
-    }))
+    }
+    if not include_draft_purchase_order:
+        reasons.discard(_DRAFT_PURCHASE_ORDER_HEALTH_REASON)
+    return tuple(sorted(reasons))
 
 
-def health_blocks_rollout(payload: dict[str, Any]) -> bool:
+def health_blocks_rollout(
+    payload: dict[str, Any],
+    *,
+    include_draft_purchase_order: bool = True,
+) -> bool:
     """Keep cutover/next-outlet rollout closed while health is critical."""
 
-    return bool(critical_health_reasons(payload)) or payload.get("draft_purchase_order_safety") == "unsafe"
+    return bool(critical_health_reasons(
+        payload,
+        include_draft_purchase_order=include_draft_purchase_order,
+    )) or (
+        include_draft_purchase_order
+        and payload.get("draft_purchase_order_safety") == "unsafe"
+    )
 
 
 def classify_health(payload: dict[str, Any]) -> dict[str, Any]:

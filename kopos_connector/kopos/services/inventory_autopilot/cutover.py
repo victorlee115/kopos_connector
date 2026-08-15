@@ -110,15 +110,24 @@ def monitoring_owner_failures(
     *,
     automation_identity_ready: bool,
     purchase_review_owner: str | None,
+    require_monitor_destination: bool = True,
+    require_automation_identity: bool = True,
+    require_purchase_review_owner: bool = True,
 ) -> tuple[str, ...]:
-    """Require a discoverable watchdog destination and accountable owners."""
+    """Check configured owners for the capability being enabled.
+
+    Core outlet cutover only records the identity and leaves the policy in
+    ``Review First``.  Its caller can therefore inspect these prerequisites
+    without blocking core inventory activation; Material Request and Draft PO
+    gates pass the corresponding ``require_*`` flags when they are enabled.
+    """
 
     failures: list[str] = []
-    if not any(_config_value(config, key) for key in MONITOR_DESTINATION_KEYS):
+    if require_monitor_destination and not any(_config_value(config, key) for key in MONITOR_DESTINATION_KEYS):
         failures.append("monitor_destination_not_configured")
-    if not automation_identity_ready:
+    if require_automation_identity and not automation_identity_ready:
         failures.append("inventory_automation_user_not_configured")
-    if not _text(purchase_review_owner):
+    if require_purchase_review_owner and not _text(purchase_review_owner):
         failures.append("inventory_purchase_review_owner_not_configured")
     return tuple(failures)
 

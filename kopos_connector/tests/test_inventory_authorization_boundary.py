@@ -21,6 +21,9 @@ from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
     resolve_staff_access_for_device,
     staff_identity_issue,
 )
+from kopos_connector.kopos.services.inventory_autopilot.staff_role_contract import (
+    SENSITIVE_BUSINESS_DOCTYPES,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +42,18 @@ def test_inventory_records_have_no_generic_device_resource_permissions() -> None
     assert paths
     for path in paths:
         assert all(permission.get("role") != DEVICE_ROLE for permission in _permissions(path)), path
+
+
+def test_sensitive_role_boundary_includes_authoritative_inventory_records() -> None:
+    assert {
+        "FB Availability Hold",
+        "FB Inventory Availability Rule",
+        "FB Inventory Count Observation",
+        "FB Inventory Count Task",
+        "FB Inventory Exception",
+        "FB Inventory Plan",
+        "FB Inventory Policy",
+    }.issubset(SENSITIVE_BUSINESS_DOCTYPES)
 
 
 def test_device_role_permissions_are_limited_to_audited_live_read_paths() -> None:
