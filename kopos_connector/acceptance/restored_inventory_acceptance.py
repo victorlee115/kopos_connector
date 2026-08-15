@@ -265,6 +265,51 @@ def _discover_expense_account(company: str) -> str:
     return _required_text(_value(row, "name"), "acceptance expense account")
 
 
+def _discover_opening_difference_account(company: str) -> str:
+    """Resolve an existing balance-sheet account for an opening stock entry.
+
+    ERPNext requires the Difference Account on an opening Stock Reconciliation
+    to be an Asset or Liability account.  It is deliberately not interchangeable
+    with the Expense account used by the inventory policy and later stock issue
+    entries.  Only an unambiguous existing Temporary account is accepted first;
+    a Stock account is the narrow fallback.  If neither authority is unique,
+    stop rather than silently assigning an arbitrary production account.
+    """
+
+    runtime_frappe = _require_frappe()
+    rows = runtime_frappe.get_all(
+        "Account",
+        filters={
+            "company": company,
+            "root_type": ["in", ["Asset", "Liability"]],
+            "is_group": 0,
+            "disabled": 0,
+        },
+        fields=["name", "account_type"],
+        order_by="name asc",
+        limit_page_length=0,
+    )
+    for account_type in ("Temporary", "Stock"):
+        matches = [
+            _required_text(_value(row, "name"), "opening difference account")
+            for row in rows or []
+            if _text(_value(row, "account_type")) == account_type
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            _fail(
+                f"restored database has multiple enabled {account_type} accounts "
+                f"for {company}; opening Difference Account is ambiguous"
+            )
+    _fail(
+        f"restored database has no unique enabled Temporary or Stock account for "
+        f"{company}; configure an opening Difference Account before running the "
+        "acceptance proof"
+    )
+    raise AssertionError("frappe.throw must raise")
+
+
 def _discover_mode_of_payment() -> str:
     runtime_frappe = _require_frappe()
     rows = runtime_frappe.get_all(
@@ -459,7 +504,13 @@ def _ensure_recipe(
 
 
 def _ensure_opening_reconciliation(
-    *, company: str, warehouse: str, ingredient_item: str, uom: str, expense_account: str
+    *,
+    company: str,
+    warehouse: str,
+    ingredient_item: str,
+    uom: str,
+    expense_account: str,
+    difference_account: str,
 ) -> Any:
     runtime_frappe = _require_frappe()
     existing_name = runtime_frappe.db.exists("Stock Reconciliation", OPENING_NAME)
@@ -478,7 +529,7 @@ def _ensure_opening_reconciliation(
     reconciliation.posting_date = runtime_frappe.utils.nowdate()
     reconciliation.posting_time = runtime_frappe.utils.now_datetime().time()
     _set_if_present(reconciliation, "expense_account", expense_account)
-    _set_if_present(reconciliation, "difference_account", expense_account)
+    _set_if_present(reconciliation, "difference_account", difference_account)
     _set_if_present(reconciliation, "remarks", f"{AUTHORITY_PREFIX} opening stock")
     _set_if_present(reconciliation, "cost_center", _discover_cost_center(company))
     reconciliation.append(
@@ -966,6 +1017,7 @@ def run_v1(
     uom = _discover_uom()
     item_group = _discover_item_group()
     expense_account = _discover_expense_account(company["name"])
+    opening_difference_account = _discover_opening_difference_account(company["name"])
     ingredient = _ensure_item(
         item_code=ITEM_INGREDIENT,
         item_group=item_group,
@@ -992,6 +1044,7 @@ def run_v1(
         ingredient_item=ingredient.name,
         uom=uom,
         expense_account=expense_account,
+        difference_account=opening_difference_account,
     )
     policy = _ensure_policy(
         company=company["name"],
