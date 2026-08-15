@@ -402,7 +402,7 @@ def create_draft_purchase_order(
             "qty": item.qty,
             "rate": item.rate,
             "uom": item.uom,
-            "schedule_date": item.schedule_date or getattr(material_request_doc, "schedule_date", None) or quotation_doc.transaction_date,
+            "schedule_date": getattr(item, "schedule_date", None) or getattr(material_request_doc, "schedule_date", None) or quotation_doc.transaction_date,
             "warehouse": item.warehouse,
             "supplier_quotation": quotation,
             "supplier_quotation_item": item.name,
