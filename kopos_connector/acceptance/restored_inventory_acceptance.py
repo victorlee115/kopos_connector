@@ -573,7 +573,6 @@ def _ensure_opening_reconciliation(
             "warehouse": warehouse,
             "qty": 10,
             "stock_uom": uom,
-            "uom": uom,
             "valuation_rate": 1,
         },
     )
