@@ -20,6 +20,7 @@ from kopos_connector.kopos.services.inventory_autopilot.document_coordinator imp
     _find_open_material_request_intent,
     _plan_line_uoms,
     _plan_quantity,
+    _validate_material_request_quotation_authority,
     create_and_submit_material_request,
 )
 from kopos_connector.kopos.services.inventory_autopilot.replenishment import ReplenishmentLine
@@ -32,6 +33,49 @@ ERP_ROOT = Path(__file__).resolve().parents[1]
 
 
 class InventoryDecimalAuthorityTests(unittest.TestCase):
+    def test_supplier_quotation_requires_one_exact_reference_per_request_row(self):
+        request = SimpleNamespace(
+            name="MAT-ROW-AUTHORITY",
+            items=[
+                SimpleNamespace(
+                    name="MRI-1",
+                    item_code="MILK",
+                    warehouse="Outlet",
+                    uom="Litre",
+                    qty=Decimal("1"),
+                    conversion_factor=Decimal("1"),
+                ),
+                SimpleNamespace(
+                    name="MRI-2",
+                    item_code="MILK",
+                    warehouse="Outlet",
+                    uom="Litre",
+                    qty=Decimal("1"),
+                    conversion_factor=Decimal("1"),
+                ),
+            ],
+        )
+
+        def quotation_row(request_item: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                material_request=request.name,
+                material_request_item=request_item,
+                item_code="MILK",
+                warehouse="Outlet",
+                uom="Litre",
+                qty=Decimal("1"),
+                conversion_factor=Decimal("1"),
+            )
+
+        quotation = SimpleNamespace(items=[quotation_row("MRI-1"), quotation_row("MRI-2")])
+        self.assertIsNone(_validate_material_request_quotation_authority(request, quotation))
+
+        quotation.items[1].material_request_item = "MRI-1"
+        self.assertEqual(
+            _validate_material_request_quotation_authority(request, quotation),
+            "supplier_quotation_does_not_exactly_match_material_request",
+        )
+
     def test_authoritative_doctypes_have_hidden_decimal_text_fields(self):
         expected = {
             "fb_recipe": {"yield_qty_decimal", "default_serving_qty_decimal"},

@@ -158,6 +158,15 @@ class TestInventoryDraftPurchaseOrderContract(FrappeTestCase):
         self.assertEqual(purchase_order.items[0].item_code, item_code)
         self.assertEqual(purchase_order.items[0].material_request, material_request.name)
         self.assertEqual(
+            purchase_order.items[0].material_request_item,
+            material_request.items[0].name,
+        )
+        self.assertEqual(purchase_order.items[0].supplier_quotation, quotation.name)
+        self.assertEqual(
+            purchase_order.items[0].supplier_quotation_item,
+            quotation.items[0].name,
+        )
+        self.assertEqual(
             {doctype: frappe.db.count(doctype) for doctype in before_outbound},
             before_outbound,
         )

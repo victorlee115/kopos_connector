@@ -385,6 +385,8 @@ def create_draft_purchase_order(
             "uom": item.uom,
             "schedule_date": item.schedule_date or getattr(material_request_doc, "schedule_date", None) or quotation_doc.transaction_date,
             "warehouse": item.warehouse,
+            "supplier_quotation": quotation,
+            "supplier_quotation_item": item.name,
         }
         for fieldname in (
             "conversion_factor",
@@ -842,7 +844,7 @@ def _current_matching_quotations(quotation: Any) -> list[str]:
 
 def _validate_material_request_quotation_authority(material_request: Any, quotation: Any) -> str | None:
     requested = {
-        (
+        cstr(item.name): (
             cstr(item.item_code),
             cstr(item.warehouse),
             cstr(getattr(item, "uom", "")),
@@ -851,16 +853,25 @@ def _validate_material_request_quotation_authority(material_request: Any, quotat
         )
         for item in getattr(material_request, "items", []) or []
     }
-    quoted = {
-        (
+    quoted_rows = list(getattr(quotation, "items", []) or [])
+    if len(quoted_rows) != len(requested):
+        return "supplier_quotation_does_not_exactly_match_material_request"
+    quoted: dict[str, tuple[str, str, str, Decimal, Decimal]] = {}
+    for item in quoted_rows:
+        if cstr(getattr(item, "material_request", "")) != cstr(material_request.name):
+            return "supplier_quotation_does_not_reference_material_request"
+        request_item = cstr(getattr(item, "material_request_item", ""))
+        if not request_item or request_item in quoted:
+            return "supplier_quotation_does_not_exactly_match_material_request"
+        quoted[request_item] = (
             cstr(item.item_code),
             cstr(item.warehouse),
             cstr(getattr(item, "uom", "")),
             _decimal(item.qty),
             _decimal(getattr(item, "conversion_factor", 1)),
         )
-        for item in getattr(quotation, "items", []) or []
-    }
+    if set(quoted) != set(requested):
+        return "supplier_quotation_does_not_reference_material_request"
     if requested != quoted:
         return "supplier_quotation_does_not_exactly_match_material_request"
     return None
