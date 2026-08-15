@@ -97,6 +97,7 @@ def build_catalog_payload(
         modifier_options=modifier_options,
         known_version=known_overlay_version,
     )
+    _cache_inventory_overlay_identity(device_id, inventory_overlay)
     validate_catalog_snapshot(snapshot)
     catalog_version = build_catalog_version(snapshot)
     timestamp = _iso_with_offset(now_datetime())
@@ -128,6 +129,45 @@ def build_catalog_payload(
     )
 
     return payload
+
+
+def _cache_inventory_overlay_identity(
+    device_id: str | None, overlay: Mapping[str, Any]
+) -> None:
+    """Publish the latest generated overlay identity for the health read model.
+
+    Health polling must not rebuild a complete catalog for every device. The
+    catalog request already computed the authoritative device-specific overlay,
+    so keep only its small identity in Redis. A missing identity is deliberately
+    treated as unacknowledged by health until a device receives a catalog.
+    Cache failure is optional and must never break commercial catalog delivery.
+    """
+
+    identifier = cstr(device_id).strip()
+    version = cstr(overlay.get("version")).strip()
+    overlay_hash = cstr(overlay.get("overlay_hash") or version).strip()
+    if not identifier or not version or not overlay_hash:
+        return
+    try:
+        cache = frappe.cache()
+        setter = getattr(cache, "set_value", None)
+        if callable(setter):
+            setter(
+                f"kopos:inventory-autopilot:overlay:{identifier}",
+                json.dumps(
+                    {
+                        "version": version,
+                        "overlay_hash": overlay_hash,
+                        "valid_until": overlay.get("valid_until"),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ),
+                expires_in_sec=2 * 60 * 60,
+            )
+    except Exception as error:
+        _log_catalog_warning("Inventory overlay identity cache unavailable: %s", error)
 
 
 def _without_optional_recipe_fields(items: list[ERPRecord]) -> list[ERPRecord]:

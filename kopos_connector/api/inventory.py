@@ -1431,7 +1431,13 @@ def _scheduler_health() -> dict[str, Any]:
 
 
 def _device_overlay_current(row: dict[str, Any]) -> bool:
-    """Compare the device acknowledgement with the current profile overlay."""
+    """Compare a device acknowledgement with the cached generated overlay.
+
+    Rebuilding the full catalog here made the manager health route depend on
+    every catalog query and could keep a monitor request loading indefinitely.
+    Catalog generation publishes this identity to Redis; missing or expired
+    cache data fails closed as unacknowledged and never blocks health polling.
+    """
 
     device_name = cstr(row.get("name")).strip()
     acknowledged_version = cstr(row.get("inventory_overlay_version")).strip()
@@ -1439,13 +1445,29 @@ def _device_overlay_current(row: dict[str, Any]) -> bool:
     if not device_name or not acknowledged_version or not acknowledged_hash:
         return False
     try:
-        payload = build_catalog_payload(device_id=device_name)
-        overlay = payload.get("inventory_overlay")
-        current_version = cstr(overlay.get("version")) if isinstance(overlay, dict) else ""
-        return bool(current_version) and current_version == acknowledged_version == acknowledged_hash
+        getter = getattr(frappe.cache(), "get_value", None)
+        if not callable(getter):
+            return False
+        raw_identity = getter(f"kopos:inventory-autopilot:overlay:{device_name}")
+        if isinstance(raw_identity, bytes):
+            raw_identity = raw_identity.decode("utf-8")
+        if isinstance(raw_identity, str):
+            identity = json.loads(raw_identity)
+        elif isinstance(raw_identity, dict):
+            identity = raw_identity
+        else:
+            return False
+        if not isinstance(identity, dict):
+            return False
+        valid_until = identity.get("valid_until")
+        if valid_until and get_datetime(valid_until) < now_datetime():
+            return False
+        current_version = cstr(identity.get("version")).strip()
+        current_hash = cstr(identity.get("overlay_hash") or current_version).strip()
+        return bool(current_version and current_hash) and current_version == acknowledged_version and current_hash == acknowledged_hash
     except Exception:
-        # Health must remain a sanitized read model. A catalog failure is an
-        # unacknowledged overlay, not an API traceback or a false green state.
+        # Health must remain a sanitized read model. Cache corruption or expiry
+        # is an unacknowledged overlay, not an API traceback or false green.
         return False
 
 
