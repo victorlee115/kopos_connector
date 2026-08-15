@@ -511,6 +511,8 @@ class TestRestoredInventoryAcceptance(unittest.TestCase):
 
     def test_harness_has_a_separate_contained_producer_and_read_only_catalog_binding(self) -> None:
         script = Path(__file__).parents[3] / "JiJiPOS" / "scripts" / "erp-test.sh"
+        if not script.is_file():
+            self.skipTest("workspace ERP harness is not packaged in the connector wheel")
         text = script.read_text(encoding="utf-8")
         self.assertIn("restored-inventory-acceptance) cmd_restored_inventory_acceptance", text)
         self.assertIn("from kopos_connector.acceptance.restored_inventory_acceptance import read_v1", text)
