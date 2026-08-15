@@ -1089,3 +1089,10 @@ def test_inventory_overlay_failure_keeps_the_complete_commercial_catalog(
     assert payload["items"][0]["id"] == "LATTE"
     assert payload["inventory_overlay"]["status"] == "unavailable"
     assert payload["inventory_overlay"]["items"] == []
+    assert payload["inventory_overlay"]["reasons"] == [
+        {
+            "code": "inventory_overlay_unavailable",
+            "label": "Stock availability is temporarily unavailable; selling continues",
+            "source": "stock",
+        }
+    ]

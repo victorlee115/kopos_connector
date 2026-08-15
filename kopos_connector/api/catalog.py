@@ -274,7 +274,7 @@ def _unavailable_inventory_overlay() -> ERPRecord:
             {
                 "code": "inventory_overlay_unavailable",
                 "label": "Stock availability is temporarily unavailable; selling continues",
-                "source": "inventory",
+                "source": "stock",
             }
         ],
     }
