@@ -32,11 +32,14 @@ def create_and_submit_material_request(
     plan_hash: str,
     policy_hash: str,
     transit_warehouse: str | None = None,
+    warehouse: str | None = None,
 ) -> dict[str, Any]:
     plan, failed = _execution_plan(company=company, plan_hash=plan_hash, policy_hash=policy_hash)
+    exception_warehouse = cstr((plan or {}).get("warehouse")).strip() or cstr(warehouse).strip()
     if not plan:
         return _blocked_plan_action(
             company=company,
+            warehouse=exception_warehouse,
             reason="material_request_plan_gate_failed",
             summary="Inventory replenishment was not created because its saved plan is no longer safe",
             failed=failed,
@@ -45,6 +48,7 @@ def create_and_submit_material_request(
     if not _plan_lines_match(plan, purpose=purpose, lines=rows):
         return _blocked_plan_action(
             company=company,
+            warehouse=exception_warehouse,
             reason="material_request_plan_mismatch",
             summary="Inventory replenishment was not created because the requested lines differ from the saved plan",
             failed=("input_hash_match",),
@@ -53,6 +57,7 @@ def create_and_submit_material_request(
     if not allowed:
         return _blocked_plan_action(
             company=company,
+            warehouse=exception_warehouse,
             reason="material_request_plan_gate_failed",
             summary="Inventory replenishment was not created because a saved safety gate failed",
             failed=failed,
@@ -62,6 +67,7 @@ def create_and_submit_material_request(
     if not _has_inventory_fingerprint_field("Material Request"):
         return _blocked_plan_action(
             company=company,
+            warehouse=exception_warehouse,
             reason="material_request_idempotency_field_missing",
             summary="Inventory replenishment is paused until its idempotency field is installed",
             failed=("input_hash_match",),
@@ -73,6 +79,7 @@ def create_and_submit_material_request(
         if not normalized_transit:
             return _blocked_plan_action(
                 company=company,
+                warehouse=exception_warehouse,
                 reason="material_request_transit_route_missing",
                 summary="The transfer request was not created because its transit warehouse is not configured",
                 failed=("source_current",),
@@ -80,6 +87,7 @@ def create_and_submit_material_request(
         if not frappe.get_meta("Material Request").has_field("custom_kopos_transit_warehouse"):
             return _blocked_plan_action(
                 company=company,
+                warehouse=exception_warehouse,
                 reason="material_request_transit_route_field_missing",
                 summary="The transfer request was not created because its protected transit-route field is missing",
                 failed=("input_hash_match",),
@@ -97,6 +105,7 @@ def create_and_submit_material_request(
         ):
             return _blocked_plan_action(
                 company=company,
+                warehouse=exception_warehouse,
                 reason="material_request_transit_route_invalid",
                 summary="The transfer request was not created because its transit warehouse belongs to another company",
                 failed=("source_current",),
@@ -107,6 +116,7 @@ def create_and_submit_material_request(
             if not source or not destination or source == destination:
                 return _blocked_plan_action(
                     company=company,
+                    warehouse=exception_warehouse,
                     reason="material_request_transfer_route_missing",
                     summary="The transfer request was not created because every line needs a distinct approved source and destination warehouse",
                     failed=("source_current",),
@@ -116,6 +126,7 @@ def create_and_submit_material_request(
             ).strip() != company:
                 return _blocked_plan_action(
                     company=company,
+                    warehouse=exception_warehouse,
                     reason="material_request_transfer_route_invalid",
                     summary="The transfer request was not created because its source or destination warehouse belongs to another company",
                     failed=("source_current",),
@@ -144,6 +155,7 @@ def create_and_submit_material_request(
     if open_intent:
         return _blocked_plan_action(
             company=company,
+            warehouse=exception_warehouse,
             reason="material_request_open_intent",
             summary="Inventory replenishment was not created because an equivalent open Material Request already exists",
             failed=("intent_not_open",),
@@ -164,6 +176,7 @@ def create_and_submit_material_request(
         if exact_quantity is None:
             return _blocked_plan_action(
                 company=company,
+                warehouse=exception_warehouse,
                 reason="material_request_quantity_invalid",
                 summary="Inventory replenishment was not created because a plan quantity is not a positive Decimal",
                 failed=("input_hash_match",),
@@ -173,6 +186,7 @@ def create_and_submit_material_request(
         if not authority:
             return _blocked_plan_action(
                 company=company,
+                warehouse=exception_warehouse,
                 reason="material_request_uom_authority_missing",
                 summary="Inventory replenishment was not created because its saved plan UOM cannot be resolved",
                 failed=("recipe_uom_complete",),
@@ -213,6 +227,7 @@ def create_and_submit_material_request(
     except AutomationIdentityError as error:
         return _blocked_plan_action(
             company=company,
+            warehouse=exception_warehouse,
             reason="inventory_automation_identity",
             summary="Inventory replenishment is paused because its dedicated automation user is not safe to use",
             failed=("automation_identity",),
@@ -323,7 +338,9 @@ def create_draft_purchase_order(
     plan_hash: str,
     policy_hash: str,
     quotation_hash: str,
+    warehouse: str | None = None,
 ) -> dict[str, Any]:
+    fallback_warehouse = cstr(warehouse).strip()
     safe, reason = outbound_configuration_safe()
     if not safe:
         exception = upsert_inventory_exception(
@@ -332,12 +349,15 @@ def create_draft_purchase_order(
             next_action=reason,
             severity="Critical",
             company=company,
+            warehouse=fallback_warehouse,
         )
         return {"status": "blocked", "exception": exception}
     plan, failed = _execution_plan(company=company, plan_hash=plan_hash, policy_hash=policy_hash)
+    exception_warehouse = cstr((plan or {}).get("warehouse")).strip() or fallback_warehouse
     if not plan:
         return _blocked_plan_action(
             company=company,
+            warehouse=exception_warehouse,
             reason="draft_purchase_order_plan_gate_failed",
             summary="Draft Purchase Order automation is paused because its saved plan is no longer safe",
             failed=failed,
@@ -378,6 +398,7 @@ def create_draft_purchase_order(
     if not review_owner:
         return _blocked_plan_action(
             company=company,
+            warehouse=exception_warehouse,
             reason="draft_purchase_order_review_owner_missing",
             summary="Draft Purchase Order automation is paused because no enabled Company Director is assigned to review it",
             failed=("automation_identity",),
@@ -437,6 +458,7 @@ def create_draft_purchase_order(
     except AutomationIdentityError:
         return _blocked_plan_action(
             company=company,
+            warehouse=exception_warehouse,
             reason="inventory_automation_identity",
             summary="Draft Purchase Order automation is paused because its dedicated automation user is not safe to use",
             failed=("automation_identity",),
@@ -448,13 +470,19 @@ def create_draft_purchase_order(
 
 
 def create_eligible_draft_purchase_order(
-    *, company: str, material_request: str, plan_hash: str, policy_hash: str
+    *,
+    company: str,
+    material_request: str,
+    plan_hash: str,
+    policy_hash: str,
+    warehouse: str | None = None,
 ) -> dict[str, Any]:
     """Create a Draft PO only when exactly one submitted quote is authoritative."""
 
     if not material_request or not frappe.db.exists("Material Request", material_request):
         return _blocked_plan_action(
             company=company,
+            warehouse=cstr(warehouse).strip(),
             reason="draft_purchase_order_material_request_missing",
             summary="Draft Purchase Order automation is waiting for its submitted Purchase Material Request",
             failed=("input_hash_match",),
@@ -463,6 +491,7 @@ def create_eligible_draft_purchase_order(
     if request.docstatus != 1 or cstr(getattr(request, "material_request_type", "")).strip() != "Purchase":
         return _blocked_plan_action(
             company=company,
+            warehouse=cstr(warehouse).strip(),
             reason="draft_purchase_order_material_request_invalid",
             summary="Draft Purchase Order automation is waiting for a submitted Purchase Material Request",
             failed=("input_hash_match",),
@@ -488,6 +517,7 @@ def create_eligible_draft_purchase_order(
     if len(candidates) != 1:
         return _blocked_plan_action(
             company=company,
+            warehouse=cstr(warehouse).strip(),
             reason="draft_purchase_order_quotation_authority",
             summary="Draft Purchase Order automation needs exactly one current submitted Supplier Quotation",
             failed=("source_current",),
@@ -502,6 +532,7 @@ def create_eligible_draft_purchase_order(
         plan_hash=plan_hash,
         policy_hash=policy_hash,
         quotation_hash=quotation_snapshot_hash(quotation),
+        warehouse=warehouse,
     )
 
 
@@ -602,6 +633,7 @@ def _execution_plan(*, company: str, plan_hash: str, policy_hash: str) -> tuple[
 def _blocked_plan_action(
     *,
     company: str,
+    warehouse: str | None = None,
     reason: str,
     summary: str,
     failed: tuple[str, ...],
@@ -614,6 +646,7 @@ def _blocked_plan_action(
         next_action=f"Resolve: {', '.join(failed)}",
         severity="Warning",
         company=company,
+        warehouse=cstr(warehouse).strip() or None,
         source_doctype=source_doctype,
         source_name=source_name,
     )

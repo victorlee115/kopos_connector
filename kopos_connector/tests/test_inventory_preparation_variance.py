@@ -113,6 +113,9 @@ class InventoryPreparationVarianceTests(TestCase):
         self.assertEqual(alerts[0]["status"], "alert")
         self.assertIn("setup is incomplete", alerts[0]["blocked_reason"])
         self.assertFalse(alerts[0].get("bom_no"))
+        self.assertTrue(alerts[0]["fingerprint"])
+        self.assertEqual(alerts[0]["revision"], f"setup:{alerts[0]['fingerprint']}")
+        self.assertEqual(len(alerts[0]["revision"]), len("setup:") + 64)
 
 
 if __name__ == "__main__":

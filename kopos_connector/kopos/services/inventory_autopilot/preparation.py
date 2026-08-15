@@ -333,6 +333,14 @@ def _preparation_alerts_for_policy(
         # feed as normal preparation alerts.  The task deliberately has no
         # BOM/work-order identity, so the client can explain the setup gap but
         # cannot start a physical operation from it.
+        setup_fingerprint = _fingerprint(
+            company,
+            warehouse,
+            "setup:" + "|".join(variance_failures),
+            Decimal("0"),
+            Decimal("0"),
+            "setup",
+        )
         return [{
             "status": "alert",
             "kind": "preparation",
@@ -350,15 +358,12 @@ def _preparation_alerts_for_policy(
                 "Ask a Company Director to complete the batch preparation setup."
             ),
             "reason": "|".join(variance_failures),
-            "revision": "",
-            "fingerprint": _fingerprint(
-                company,
-                warehouse,
-                "setup:" + "|".join(variance_failures),
-                Decimal("0"),
-                Decimal("0"),
-                "setup",
-            ),
+            # POS requires every guided task to carry a non-empty source
+            # revision, even when this task is deliberately non-actionable.
+            # Bind the setup notice to the same stable fingerprint used for
+            # the preparation alert so it can be cached and safely refreshed.
+            "revision": "setup:" + setup_fingerprint,
+            "fingerprint": setup_fingerprint,
         }]
     rows = frappe.get_all(
         "BOM",

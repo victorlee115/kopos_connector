@@ -462,6 +462,7 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
                 lines=action_lines,
                 plan_hash=input_hash,
                 policy_hash=policy_hash,
+                warehouse=warehouse,
                 transit_warehouse=(
                     cstr(policy.get("transit_warehouse")).strip()
                     if action == "Transfer"
@@ -481,6 +482,7 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
                     material_request=material_request,
                     plan_hash=input_hash,
                     policy_hash=policy_hash,
+                    warehouse=warehouse,
                 ))
     return {
         "status": result.get("status"),

@@ -288,7 +288,7 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
             "blocked_reason": "Batch preparation setup is incomplete.",
             "preparation_instructions": "Ask a Company Director to complete setup.",
             "fingerprint": "setup-fingerprint",
-            "revision": "",
+            "revision": "setup:setup-fingerprint",
         }
         work_order_meta = SimpleNamespace(has_field=lambda field: field == "custom_kopos_preparation_fingerprint")
         with patch.object(inventory, "require_device_context", return_value=SimpleNamespace(name="DEVICE-1")), patch.object(
@@ -310,6 +310,7 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         self.assertEqual(result["tasks"][0]["title"], "Batch preparation setup needed")
         self.assertEqual(result["tasks"][0]["document"], "Setup required")
         self.assertIn("setup is incomplete", result["tasks"][0]["blocked_reason"])
+        self.assertTrue(result["tasks"][0]["revision"])
 
     def test_snapshot_is_bounded_and_contains_operational_values_only(self) -> None:
         with (

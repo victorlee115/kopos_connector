@@ -165,7 +165,7 @@ class InventoryTransferContractTests(TestCase):
             ),
         ), patch.object(
             document_coordinator, "upsert_inventory_exception", return_value="EX-1"
-        ):
+        ) as upsert:
             result = document_coordinator.create_and_submit_material_request(
                 company="Cafe Co",
                 purpose="Transfer",
@@ -177,6 +177,7 @@ class InventoryTransferContractTests(TestCase):
             )
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["exception"], "EX-1")
+        self.assertEqual(upsert.call_args.kwargs["warehouse"], "Destination")
 
     def test_dispatch_and_receipt_use_the_approved_two_stage_route(self) -> None:
         material_request = SimpleNamespace(

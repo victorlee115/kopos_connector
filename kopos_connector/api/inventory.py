@@ -40,6 +40,7 @@ from kopos_connector.kopos.services.inventory_autopilot.legacy_migration import 
 )
 from kopos_connector.kopos.services.inventory_autopilot.exceptions import (
     configured_inventory_exception_owner,
+    resolve_inventory_exception,
     upsert_inventory_exception,
 )
 from kopos_connector.kopos.services.inventory_autopilot.document_coordinator import (
@@ -103,6 +104,23 @@ from kopos_connector.utils.manager_approval import (
 ACTIVE_PROJECTION_STATES = frozenset({"Pending", "Processing", "Failed", "Dead Letter"})
 OPEN_COUNT_TASK_STATUSES = frozenset({"Assigned", "Claimed", "In Progress", "Submitted", "Review"})
 OPEN_PLAN_STATUSES = frozenset({"Review First", "Ready", "Blocked"})
+
+
+def _resolve_count_director_review_exception(
+    *,
+    company: str,
+    warehouse: str,
+    observation_id: str,
+) -> None:
+    """Resolve only the exception opened for this exact count observation."""
+
+    resolve_inventory_exception(
+        reason_code="inventory_count_director_review",
+        company=company,
+        warehouse=warehouse,
+        source_doctype="FB Inventory Count Observation",
+        source_name=observation_id,
+    )
 
 
 @frappe.whitelist(methods=["GET"])
@@ -2803,13 +2821,27 @@ def create_count_reconciliation_after_director_review(*, payload: str | dict[str
     observation = frappe.db.get_value(
         "FB Inventory Count Observation",
         {"observation_id": observation_id},
-        ["name", "task_id", "warehouse", "stock_watermark", "observed_at", "lines_json", "status", "reconciliation"],
+        ["name", "company", "task_id", "warehouse", "stock_watermark", "observed_at", "lines_json", "status", "reconciliation"],
         as_dict=True,
     )
     if not observation:
         frappe.throw(_("The count observation does not exist"), frappe.ValidationError)
+    task = None
+    company = cstr(observation.get("company")).strip()
     existing_reconciliation = cstr(observation.get("reconciliation")).strip()
     if existing_reconciliation:
+        # Keep replay independent of the task row where possible.  The
+        # observation already carries the company used to open the exception;
+        # older rows may need the task as a compatibility fallback.
+        if not company:
+            task = frappe.get_doc("FB Inventory Count Task", cstr(observation.get("task_id")))
+            company = cstr(getattr(task, "company", None)).strip()
+        _resolve_count_director_review_exception(
+            company=company,
+            warehouse=cstr(observation.get("warehouse")).strip(),
+            observation_id=observation_id,
+        )
+        frappe.db.commit()
         return {
             "status": "replayed",
             "observation_id": observation_id,
@@ -2817,6 +2849,8 @@ def create_count_reconciliation_after_director_review(*, payload: str | dict[str
         }
     if cstr(observation.get("status")).strip() != "Review":
         frappe.throw(_("This count does not require a director variance review"), frappe.ValidationError)
+    task = frappe.get_doc("FB Inventory Count Task", cstr(observation.get("task_id")))
+    company = company or cstr(getattr(task, "company", None)).strip()
     warehouse = cstr(observation.get("warehouse")).strip()
     current_watermark = _stock_ledger_watermark(warehouse)
     if current_watermark and current_watermark != cstr(observation.get("stock_watermark")).strip():
@@ -2828,16 +2862,22 @@ def create_count_reconciliation_after_director_review(*, payload: str | dict[str
             summary="A director-reviewed count was preserved but stock moved before reconciliation",
             next_action="Create a new blind count after the stock ledger is stable",
             severity="Warning",
+            company=company,
             warehouse=warehouse,
             source_doctype="FB Inventory Count Observation",
             source_name=observation_id,
         )
         frappe.db.commit()
         return {"status": "conflict", "observation_id": observation_id, "exception": exception}
-    task = frappe.get_doc("FB Inventory Count Task", cstr(observation.get("task_id")))
     reconciliation_name = "KOPOS-COUNT-" + hashlib.sha256(observation_id.encode("utf-8")).hexdigest()[:24]
     if frappe.db.exists("Stock Reconciliation", reconciliation_name):
         frappe.db.set_value("FB Inventory Count Observation", observation["name"], "reconciliation", reconciliation_name, update_modified=False)
+        frappe.db.commit()
+        _resolve_count_director_review_exception(
+            company=company,
+            warehouse=warehouse,
+            observation_id=observation_id,
+        )
         frappe.db.commit()
         return {"status": "replayed", "observation_id": observation_id, "reconciliation": reconciliation_name}
     try:
@@ -2879,6 +2919,12 @@ def create_count_reconciliation_after_director_review(*, payload: str | dict[str
     if available:
         frappe.db.set_value("FB Inventory Count Observation", observation["name"], available, update_modified=False)
     frappe.db.set_value("FB Inventory Count Task", task.name, "status", "Review", update_modified=False)
+    frappe.db.commit()
+    _resolve_count_director_review_exception(
+        company=company,
+        warehouse=warehouse,
+        observation_id=observation_id,
+    )
     frappe.db.commit()
     return {"status": "reviewed", "observation_id": observation_id, "reconciliation": reconciliation.name}
 
