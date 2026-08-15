@@ -167,3 +167,97 @@ def test_planning_health_marker_is_warehouse_scoped():
 
     assert first.startswith("kopos:inventory-autopilot:health:last_plan:")
     assert first != second
+
+
+def test_supplier_configuration_uses_standard_item_purchase_authority():
+    values = {
+        "stock_uom": "Gram",
+        "purchase_uom": "Bag",
+        "min_order_qty": "1500",
+        "lead_time_days": "3",
+    }
+    with patch.object(planning_module.frappe.db, "exists", return_value=True), patch.object(
+        planning_module.frappe,
+        "get_all",
+        side_effect=[
+            [{"supplier": "SUPPLIER-A", "custom_kopos_supplier_pack_size": "999"}],
+            [{"conversion_factor": "500"}],
+        ],
+    ):
+        result = planning_module._supplier_configuration("COFFEE", item_values=values)
+
+    assert result == {
+        "source_current": True,
+        "lead_time_days": Decimal("3"),
+        "supplier_pack": Decimal("500"),
+        "supplier_minimum": Decimal("1500"),
+        "purchase_conversion_factor": Decimal("500"),
+    }
+
+
+def test_purchase_uom_conversion_is_exact_and_fail_closed():
+    assert planning_module._purchase_uom_conversion(
+        item="MILK", stock_uom="Litre", purchase_uom="Litre"
+    ) == Decimal("1")
+    with patch.object(planning_module.frappe.db, "exists", return_value=True), patch.object(
+        planning_module.frappe,
+        "get_all",
+        return_value=[{"conversion_factor": "12"}, {"conversion_factor": "12"}],
+    ):
+        assert planning_module._purchase_uom_conversion(
+            item="MILK", stock_uom="Each", purchase_uom="Carton"
+        ) is None
+
+
+def test_purchase_plan_keeps_stock_truth_and_standard_purchase_uom():
+    line = planning_module.ReplenishmentLine(
+        "COFFEE", "Outlet", Decimal("1500"), "shortfall"
+    )
+    planned = planning_module._planned_document_line(
+        line=line,
+        item_data={
+            "action": "Purchase",
+            "config": {
+                "stock_uom": "Gram",
+                "purchase_uom": "Bag",
+                "purchase_conversion_factor": Decimal("500"),
+            },
+        },
+    )
+    assert planned["quantity_decimal"] == "3"
+    assert planned["uom"] == "Bag"
+    assert planned["stock_quantity_decimal"] == "1500"
+    assert planned["stock_uom"] == "Gram"
+    assert planned["conversion_factor_decimal"] == "500"
+
+
+def test_transfer_source_cannot_be_the_destination():
+    result = planning_module._transfer_source_configuration(
+        item="MILK",
+        source_warehouse="Outlet",
+        destination_warehouse="Outlet",
+        company="Cafe Co",
+        max_source_age=30,
+    )
+    assert result["source_current"] is False
+    assert result["source_available"] is None
+
+
+def test_transfer_route_requires_one_explicit_standard_reorder_row():
+    meta = type("Meta", (), {"has_field": lambda self, field: field == "custom_kopos_source_warehouse"})()
+    with patch.object(planning_module.frappe.db, "exists", return_value=True), patch.object(
+        planning_module.frappe, "get_meta", return_value=meta
+    ), patch.object(
+        planning_module.frappe,
+        "get_all",
+        return_value=[{
+            "name": "REORDER-1",
+            "material_request_type": "Transfer",
+            "custom_kopos_source_warehouse": "Central Kitchen",
+        }],
+    ):
+        assert planning_module._replenishment_route(item="MILK", warehouse="Outlet") == {
+            "action": "Transfer",
+            "source_warehouse": "Central Kitchen",
+            "route_current": True,
+        }

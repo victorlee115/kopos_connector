@@ -100,14 +100,18 @@ class InventoryTransferContractTests(TestCase):
             document_coordinator, "_has_inventory_fingerprint_field", return_value=True
         ), patch.object(document_coordinator, "_find_by_fingerprint", return_value=None), patch.object(
             document_coordinator, "_find_open_material_request_intent", return_value=None
-        ), patch.object(
-            document_coordinator, "_plan_line_uoms", return_value={("MILK", "Destination", "Source", Decimal("5")): "Litre"}
         ), patch.object(document_coordinator, "_record_plan_document"), patch.object(
             document_coordinator.frappe, "new_doc", return_value=document
         ), patch.object(
             document_coordinator.frappe, "get_meta", return_value=SimpleNamespace(has_field=lambda _field: True)
         ), patch.object(
-            document_coordinator.frappe.db, "get_value", side_effect=lambda _doctype, name, _field: "Cafe Co"
+            document_coordinator.frappe.db,
+            "get_value",
+            side_effect=lambda _doctype, _name, field, **_kwargs: (
+                {"company": "Cafe Co", "is_group": 0, "disabled": 0}
+                if isinstance(field, list)
+                else "Cafe Co"
+            ),
         ), patch.object(
             document_coordinator, "inventory_automation_identity", return_value=nullcontext("AUTO")
         ):
@@ -122,12 +126,15 @@ class InventoryTransferContractTests(TestCase):
             )
 
         self.assertEqual(result["status"], "created")
+        self.assertEqual(document.material_request_type, "Material Transfer")
         self.assertEqual(document.items, [{
             "item_code": "MILK",
             "qty": Decimal("5"),
             "warehouse": "Destination",
             "schedule_date": "2026-08-16",
             "uom": "Litre",
+            "stock_uom": "Litre",
+            "conversion_factor": Decimal("1"),
             "from_warehouse": "Source",
         }])
 
@@ -148,7 +155,15 @@ class InventoryTransferContractTests(TestCase):
             document_coordinator, "_find_open_material_request_intent", return_value=None
         ), patch.object(
             document_coordinator.frappe, "get_meta", return_value=SimpleNamespace(has_field=lambda _field: True)
-        ), patch.object(document_coordinator.frappe.db, "get_value", return_value="Cafe Co"), patch.object(
+        ), patch.object(
+            document_coordinator.frappe.db,
+            "get_value",
+            side_effect=lambda _doctype, _name, field, **_kwargs: (
+                {"company": "Cafe Co", "is_group": 0, "disabled": 0}
+                if isinstance(field, list)
+                else "Cafe Co"
+            ),
+        ), patch.object(
             document_coordinator, "upsert_inventory_exception", return_value="EX-1"
         ):
             result = document_coordinator.create_and_submit_material_request(

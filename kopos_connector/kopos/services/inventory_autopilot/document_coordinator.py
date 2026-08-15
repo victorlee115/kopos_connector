@@ -66,8 +66,10 @@ def create_and_submit_material_request(
             summary="Inventory replenishment is paused until its idempotency field is installed",
             failed=("input_hash_match",),
         )
+    action = _plan_action_for_purpose(purpose)
+    material_request_type = _erp_material_request_type(purpose)
     normalized_transit = cstr(transit_warehouse).strip()
-    if _plan_action_for_purpose(purpose) == "Transfer":
+    if action == "Transfer":
         if not normalized_transit:
             return _blocked_plan_action(
                 company=company,
@@ -82,7 +84,17 @@ def create_and_submit_material_request(
                 summary="The transfer request was not created because its protected transit-route field is missing",
                 failed=("input_hash_match",),
             )
-        if cstr(frappe.db.get_value("Warehouse", normalized_transit, "company")).strip() != company:
+        transit = frappe.db.get_value(
+            "Warehouse",
+            normalized_transit,
+            ["company", "is_group", "disabled"],
+            as_dict=True,
+        ) or {}
+        if (
+            cstr(transit.get("company")).strip() != company
+            or bool(transit.get("is_group"))
+            or bool(transit.get("disabled"))
+        ):
             return _blocked_plan_action(
                 company=company,
                 reason="material_request_transit_route_invalid",
@@ -114,7 +126,7 @@ def create_and_submit_material_request(
     # second intent for the same replenishment.
     fingerprint = _fingerprint(
         company,
-        _plan_action_for_purpose(purpose),
+        action,
         required_date,
         normalized_transit,
         _canonical_replenishment_lines(rows),
@@ -125,7 +137,7 @@ def create_and_submit_material_request(
         return {"status": "duplicate", "material_request": existing}
     open_intent = _find_open_material_request_intent(
         company=company,
-        purpose=purpose,
+        purpose=material_request_type,
         required_date=required_date,
         rows=rows,
     )
@@ -140,13 +152,13 @@ def create_and_submit_material_request(
         )
     document = frappe.new_doc("Material Request")
     document.company = company
-    document.material_request_type = purpose
+    document.material_request_type = material_request_type
     document.transaction_date = now_datetime().date()
     document.schedule_date = required_date
     _set_if_present(document, "custom_kopos_inventory_fingerprint", fingerprint)
     if normalized_transit:
         _set_if_present(document, "custom_kopos_transit_warehouse", normalized_transit)
-    planned_uoms = _plan_line_uoms(plan, purpose=purpose, lines=rows)
+    planned_authorities = _plan_line_authorities(plan, purpose=purpose, lines=rows)
     for row in rows:
         exact_quantity = _plan_quantity(row)
         if exact_quantity is None:
@@ -157,8 +169,8 @@ def create_and_submit_material_request(
                 failed=("input_hash_match",),
             )
         uom_key = _plan_line_key(row, quantity=exact_quantity)
-        uom = planned_uoms.get(uom_key)
-        if not uom:
+        authority = planned_authorities.get(uom_key)
+        if not authority:
             return _blocked_plan_action(
                 company=company,
                 reason="material_request_uom_authority_missing",
@@ -174,9 +186,11 @@ def create_and_submit_material_request(
             "qty": exact_quantity,
             "warehouse": row.warehouse,
             "schedule_date": required_date,
-            "uom": uom,
+            "uom": authority["uom"],
+            "stock_uom": authority["stock_uom"],
+            "conversion_factor": authority["conversion_factor"],
         }
-        if _plan_action_for_purpose(purpose) == "Transfer":
+        if action == "Transfer":
             item_payload["from_warehouse"] = cstr(row.source_warehouse).strip()
         document.append("items", item_payload)
     try:
@@ -184,7 +198,7 @@ def create_and_submit_material_request(
             company=company,
             warehouse=cstr(plan.get("warehouse")).strip(),
             create_doctypes=("Material Request",),
-            submit_doctypes=("Material Request",) if purpose not in {"Transfer", "Material Transfer"} else (),
+            submit_doctypes=("Material Request",) if action != "Transfer" else (),
         ):
             try:
                 document.insert()
@@ -194,7 +208,7 @@ def create_and_submit_material_request(
                     _record_plan_document(plan, {"doctype": "Material Request", "name": existing})
                     return {"status": "duplicate", "material_request": existing, "fingerprint": fingerprint}
                 raise
-            if purpose not in {"Transfer", "Material Transfer"}:
+            if action != "Transfer":
                 document.submit()
     except AutomationIdentityError as error:
         return _blocked_plan_action(
@@ -278,6 +292,11 @@ def persist_inventory_plan(
             "quantity": str(exact_quantity),
             "quantity_decimal": _plain_decimal(exact_quantity),
             "uom": cstr(line.get("uom") or "Nos"),
+            "stock_quantity_decimal": cstr(
+                line.get("stock_quantity_decimal") or _plain_decimal(exact_quantity)
+            ),
+            "stock_uom": cstr(line.get("stock_uom") or line.get("uom") or "Nos"),
+            "conversion_factor_decimal": cstr(line.get("conversion_factor_decimal") or "1"),
             "reason": cstr(line.get("reason") or "Review replenishment plan"),
         })
     document.insert(ignore_permissions=True)
@@ -624,24 +643,42 @@ def _plan_lines_match(plan: dict[str, Any], *, purpose: str, lines: tuple[Replen
 def _plan_line_uoms(
     plan: dict[str, Any], *, purpose: str, lines: tuple[ReplenishmentLine, ...]
 ) -> dict[tuple[str, str, str, Decimal], str]:
-    uoms: dict[tuple[str, str, str, Decimal], str] = {}
+    return {
+        key: value["uom"]
+        for key, value in _plan_line_authorities(plan, purpose=purpose, lines=lines).items()
+    }
+
+
+def _plan_line_authorities(
+    plan: dict[str, Any], *, purpose: str, lines: tuple[ReplenishmentLine, ...]
+) -> dict[tuple[str, str, str, Decimal], dict[str, Any]]:
+    authorities: dict[tuple[str, str, str, Decimal], dict[str, Any]] = {}
     for row in plan.get("lines") or []:
         if _plan_action_for_purpose(cstr(row.get("action"))) != _plan_action_for_purpose(purpose):
             continue
         key = _plan_line_key(row)
         if key[-1] is None:
             continue
-        uoms[key] = cstr(row.get("uom")).strip() or cstr(
+        uom = cstr(row.get("uom")).strip() or cstr(
             frappe.db.get_value("Item", key[0], "stock_uom")
         ).strip()
+        stock_uom = cstr(row.get("stock_uom")).strip() or uom
+        conversion = _decimal(row.get("conversion_factor_decimal") or "1")
+        if not uom or not stock_uom or conversion is None or conversion <= 0:
+            continue
+        authorities[key] = {
+            "uom": uom,
+            "stock_uom": stock_uom,
+            "conversion_factor": conversion,
+        }
     missing = [
         row.item
         for row in lines
-        if _plan_line_key(row) not in uoms
+        if _plan_line_key(row) not in authorities
     ]
     if missing:
         raise ValueError("saved plan does not contain a UOM for " + ", ".join(sorted(set(missing))))
-    return uoms
+    return authorities
 
 
 def _plan_line_key(
@@ -687,6 +724,18 @@ def _canonical_replenishment_lines(lines: Iterable[ReplenishmentLine]) -> tuple[
             "warehouse": cstr(row.warehouse).strip(),
             "source_warehouse": cstr(row.source_warehouse).strip(),
             "quantity_decimal": _plain_decimal(quantity) if quantity is not None else None,
+            "uom": cstr(row.uom).strip(),
+            "stock_uom": cstr(row.stock_uom).strip(),
+            "conversion_factor_decimal": (
+                _plain_decimal(row.conversion_factor)
+                if row.conversion_factor is not None
+                else None
+            ),
+            "stock_quantity_decimal": (
+                _plain_decimal(row.stock_quantity)
+                if row.stock_quantity is not None
+                else None
+            ),
         })
     return tuple(sorted(canonical, key=lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"))))
 
@@ -708,7 +757,11 @@ def _find_open_material_request_intent(
     requested_date = _as_date(required_date)
     candidates = frappe.get_all(
         "Material Request",
-        filters={"company": company, "material_request_type": purpose, "docstatus": ["in", [0, 1]]},
+        filters={
+            "company": company,
+            "material_request_type": _erp_material_request_type(purpose),
+            "docstatus": ["in", [0, 1]],
+        },
         fields=["name", "schedule_date", "status"],
         limit_page_length=500,
     )
@@ -780,6 +833,13 @@ def _plan_action_for_purpose(value: str) -> str:
     if normalized == "manufacture":
         return "Manufacture"
     return "Purchase"
+
+
+def _erp_material_request_type(value: str) -> str:
+    """Return the standard ERPNext Material Request option for an action."""
+
+    action = _plan_action_for_purpose(value)
+    return "Material Transfer" if action == "Transfer" else action
 
 
 def _has_inventory_fingerprint_field(doctype: str) -> bool:
@@ -929,6 +989,9 @@ def _canonical_plan_lines(lines: Iterable[dict[str, Any]]) -> tuple[dict[str, An
             "source_warehouse": cstr(row.get("source_warehouse")).strip(),
             "quantity_decimal": _plain_decimal(quantity) if quantity is not None else None,
             "uom": cstr(row.get("uom")).strip(),
+            "stock_quantity_decimal": cstr(row.get("stock_quantity_decimal")).strip(),
+            "stock_uom": cstr(row.get("stock_uom")).strip(),
+            "conversion_factor_decimal": cstr(row.get("conversion_factor_decimal")).strip(),
         })
     return tuple(sorted(canonical, key=lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"))))
 

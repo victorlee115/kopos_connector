@@ -11,6 +11,9 @@
   {"fieldname":"quantity","fieldtype":"Float","label":"Proposed Quantity","reqd":1},
   {"fieldname":"quantity_decimal","fieldtype":"Data","label":"Exact Proposed Quantity (Decimal)","read_only":1,"hidden":1,"no_copy":1,"description":"Canonical decimal text used for plan identity and document execution. Historical plan lines may leave this blank."},
   {"fieldname":"uom","fieldtype":"Link","label":"UOM","options":"UOM","reqd":1},
+  {"fieldname":"stock_quantity_decimal","fieldtype":"Data","label":"Exact Stock Quantity (Decimal)","read_only":1,"hidden":1,"no_copy":1,"description":"Stock-UOM quantity used for demand, valuation, and ceilings. Purchase quantity may use the Purchase UOM."},
+  {"fieldname":"stock_uom","fieldtype":"Link","label":"Stock UOM","options":"UOM","read_only":1},
+  {"fieldname":"conversion_factor_decimal","fieldtype":"Data","label":"Exact UOM Conversion (Decimal)","read_only":1,"hidden":1,"no_copy":1,"description":"Exact stock units represented by one proposed document UOM."},
   {"fieldname":"reason","fieldtype":"Small Text","label":"Plain-English Reason"}
  ],
  "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]

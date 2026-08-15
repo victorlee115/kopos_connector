@@ -92,7 +92,11 @@ class InventoryDecimalAuthorityTests(unittest.TestCase):
                 "stock_conversion_factor_decimal",
                 "scale_percent_decimal",
             },
-            "fb_inventory_plan_line": {"quantity_decimal"},
+            "fb_inventory_plan_line": {
+                "quantity_decimal",
+                "stock_quantity_decimal",
+                "conversion_factor_decimal",
+            },
         }
         for doctype, fieldnames in expected.items():
             payload = json.loads(

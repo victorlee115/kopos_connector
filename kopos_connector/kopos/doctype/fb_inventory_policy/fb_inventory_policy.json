@@ -11,6 +11,7 @@
     "field_order": [
         "company",
         "warehouse",
+        "transit_warehouse",
         "automation_state",
         "inventory_contract_version",
         "cutover_token",
@@ -32,6 +33,7 @@
     "fields": [
         {"fieldname": "company", "fieldtype": "Link", "label": "Company", "options": "Company", "reqd": 1},
         {"fieldname": "warehouse", "fieldtype": "Link", "label": "Warehouse", "options": "Warehouse", "reqd": 1},
+        {"fieldname": "transit_warehouse", "fieldtype": "Link", "label": "Inter-outlet Transit Warehouse", "options": "Warehouse", "description": "Required only when this outlet may receive an Autopilot Draft transfer request. The source is configured on the Item's standard Reorder row."},
         {"default": "Review First", "fieldname": "automation_state", "fieldtype": "Select", "label": "Automation State", "options": "Review First\nActive\nPaused", "reqd": 1},
         {"default": "inventory-autopilot-v1", "fieldname": "inventory_contract_version", "fieldtype": "Data", "label": "Inventory Contract Version", "read_only": 1, "reqd": 1},
         {"fieldname": "cutover_token", "fieldtype": "Data", "label": "Cutover Token", "read_only": 1, "unique": 1},

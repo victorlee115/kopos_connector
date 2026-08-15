@@ -130,6 +130,19 @@ def create_fb_custom_fields():
                 "translatable": 0,
             },
         ],
+        "Item Reorder": [
+            {
+                "fieldname": "custom_kopos_source_warehouse",
+                "label": "KoPOS Transfer Source Warehouse",
+                "description": "For a Transfer reorder row, the exact outlet warehouse allowed to supply this destination. JiJi never guesses a source.",
+                "fieldtype": "Link",
+                "options": "Warehouse",
+                "insert_after": "warehouse_group",
+                "depends_on": "eval:doc.material_request_type == 'Transfer'",
+                "mandatory_depends_on": "eval:doc.material_request_type == 'Transfer'",
+                "translatable": 0,
+            },
+        ],
         "BOM": [
             {
                 "fieldname": "custom_kopos_autoprep_enabled",
@@ -951,6 +964,7 @@ def remove_fb_custom_fields():
         ("Stock Entry", "custom_fb_reason_code"),
         ("Material Request", "custom_kopos_inventory_fingerprint"),
         ("Material Request", "custom_kopos_transit_warehouse"),
+        ("Item Reorder", "custom_kopos_source_warehouse"),
         ("Purchase Order", "custom_kopos_inventory_fingerprint"),
         ("Purchase Order", "custom_kopos_material_request"),
         ("Purchase Order", "custom_kopos_plan_hash"),

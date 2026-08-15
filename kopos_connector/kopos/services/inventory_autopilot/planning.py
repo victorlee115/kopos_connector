@@ -67,6 +67,7 @@ def generate_inventory_plans() -> list[dict[str, Any]]:
             "name",
             "company",
             "warehouse",
+            "transit_warehouse",
             "automation_state",
             "inventory_contract_version",
             "cutover_token",
@@ -166,6 +167,7 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
     policy_hash = _hash({
         "company": company,
         "warehouse": warehouse,
+        "transit_warehouse": cstr(policy.get("transit_warehouse")).strip(),
         "automation_state": cstr(policy.get("automation_state")),
         "inventory_contract_version": cstr(policy.get("inventory_contract_version")),
         "cutover_token": token,
@@ -173,6 +175,7 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
         "permitted_actions": cstr(policy.get("permitted_actions")),
         "quantity_ceiling": cstr(policy.get("quantity_ceiling")),
         "value_ceiling": cstr(policy.get("value_ceiling")),
+        "max_source_age_minutes": cstr(policy.get("max_source_age_minutes")),
     })
     if not company or not warehouse or not token or not cutover_at:
         return _persist_blocked_plan(
@@ -228,7 +231,13 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
     replenishment_inputs: list[ReplenishmentInput] = []
     proposed_actions: list[dict[str, Any]] = []
     for item, actuals in series.items():
-        config = _item_configuration(item=item, warehouse=warehouse, company=company, cutover_at=cutover_at)
+        config = _item_configuration(
+            item=item,
+            warehouse=warehouse,
+            company=company,
+            cutover_at=cutover_at,
+            max_source_age=int(policy.get("max_source_age_minutes") or 30),
+        )
         result = evaluate_forecast(
             actuals,
             operating_days=[True] * len(operating_days),
@@ -262,6 +271,7 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
         item_data.append({
             "item": item,
             "action": cstr(config.get("replenishment_action") or "Purchase"),
+            "source_warehouse": cstr(config.get("source_warehouse")).strip() or None,
             "actual_days": len(actuals),
             "forecast": str(forecast_quantity) if forecast_quantity is not None else None,
             "forecast_state": result.state,
@@ -286,7 +296,11 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
             continue
         lead_days = config.get("lead_time_days")
         action = cstr(config.get("replenishment_action") or "Purchase")
-        minimum_horizon = Decimal("1") if action == "Purchase" else (Decimal("1") / Decimal("24"))
+        minimum_horizon = (
+            Decimal("1") / Decimal("24")
+            if action == "Manufacture"
+            else Decimal("1")
+        )
         safety_stock = config.get("safety_stock") or Decimal("0")
         replenishment_inputs.append(
             ReplenishmentInput(
@@ -298,8 +312,8 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
                 open_supply=config["open_supply"],
                 forecast_through_lead_time=forecast_quantity * max(minimum_horizon, lead_days or Decimal("0")),
                 safety_stock=safety_stock,
-                supplier_pack=config["supplier_pack"],
-                supplier_minimum=config["supplier_minimum"],
+                supplier_pack=(Decimal("0") if action == "Transfer" else config["supplier_pack"]),
+                supplier_minimum=(Decimal("0") if action == "Transfer" else config["supplier_minimum"]),
                 shelf_life_cap=config.get("shelf_life_cap"),
             )
         )
@@ -316,42 +330,64 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
     if not all(shelf_life_allows_replenishment(value) for value in replenishment_inputs):
         all_shelf_life_safe = False
         gates["shelf_life_cap"] = False
-    raw_lines = build_replenishment_plan(replenishment_inputs)
-    quantity_ceiling = _decimal(policy.get("quantity_ceiling"))
-    total_quantity = sum((line.quantity for line in raw_lines), Decimal("0"))
-    allowed_actions = _permitted_actions(policy.get("permitted_actions"))
-    if not allowed_actions:
-        gates["quantity_ceiling"] = False
     item_data_by_item = {
         cstr(row.get("item")).strip(): row
         for row in item_data
         if cstr(row.get("item")).strip()
     }
-    lines = tuple(
-        {
-            "item": line.item,
-            "action": cstr(item_data_by_item.get(line.item, {}).get("action") or "Purchase"),
-            "warehouse": line.warehouse,
-            "source_warehouse": cstr(item_data_by_item.get(line.item, {}).get("source_warehouse")).strip() or None,
-            "quantity": str(line.quantity),
-            "quantity_decimal": str(line.quantity),
-            "uom": _stock_uom(line.item),
-            "reason": line.reason,
-        }
+    raw_lines = build_replenishment_plan(replenishment_inputs)
+    for line in raw_lines:
+        config = item_data_by_item.get(line.item, {}).get("config") or {}
+        if cstr(item_data_by_item.get(line.item, {}).get("action")) == "Transfer":
+            source_available = _decimal(config.get("source_available"))
+            if source_available is None or source_available < line.quantity:
+                all_source_current = False
+                gates["source_current"] = False
+    quantity_ceiling = _decimal(policy.get("quantity_ceiling"))
+    total_quantity = sum((line.quantity for line in raw_lines), Decimal("0"))
+    allowed_actions = _permitted_actions(policy.get("permitted_actions"))
+    proposed_action_names = {
+        cstr(item_data_by_item.get(line.item, {}).get("action") or "Purchase")
         for line in raw_lines
-        if cstr(item_data_by_item.get(line.item, {}).get("action") or "Purchase") in allowed_actions
+    }
+    actions_permitted = bool(allowed_actions) and proposed_action_names.issubset(allowed_actions)
+    lines = tuple(
+        _planned_document_line(
+            line=line,
+            item_data=item_data_by_item.get(line.item, {}),
+        )
+        for line in raw_lines
     )
     request_lines_by_action = {
         action: tuple(
-            ReplenishmentLine(line["item"], line["warehouse"], Decimal(line["quantity"]), line["reason"])
+            ReplenishmentLine(
+                line["item"],
+                line["warehouse"],
+                Decimal(line["quantity"]),
+                line["reason"],
+                cstr(line.get("source_warehouse")).strip() or None,
+                cstr(line.get("uom")).strip() or None,
+                cstr(line.get("stock_uom")).strip() or None,
+                _decimal(line.get("conversion_factor_decimal")),
+                _decimal(line.get("stock_quantity_decimal")),
+            )
             for line in lines
             if cstr(line.get("action")) == action
         )
-        for action in ("Purchase", "Manufacture")
+        for action in ("Purchase", "Manufacture", "Transfer")
     }
     request_lines = tuple(line for group in request_lines_by_action.values() for line in group)
     value_ceiling = _decimal(policy.get("value_ceiling"))
-    estimated_value = _estimate_replenishment_value(request_lines)
+    valuation_lines = tuple(
+        ReplenishmentLine(
+            cstr(line.get("item")),
+            cstr(line.get("warehouse")),
+            _decimal(line.get("stock_quantity_decimal")) or Decimal("0"),
+            cstr(line.get("reason")),
+        )
+        for line in lines
+    )
+    estimated_value = _estimate_replenishment_value(valuation_lines)
     gates.update(
         automation_ceiling_gates(
             quantity_ceiling=quantity_ceiling,
@@ -360,6 +396,10 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
             proposed_value=estimated_value,
         )
     )
+    if not actions_permitted:
+        # Keep the complete proposal visible, but block every unattended
+        # action when any line is outside the director-approved policy.
+        gates["quantity_ceiling"] = False
     if request_lines:
         gates["intent_not_open"] = all(
             not has_open_material_request_intent(
@@ -422,6 +462,11 @@ def _generate_for_policy(policy: dict[str, Any]) -> dict[str, Any]:
                 lines=action_lines,
                 plan_hash=input_hash,
                 policy_hash=policy_hash,
+                transit_warehouse=(
+                    cstr(policy.get("transit_warehouse")).strip()
+                    if action == "Transfer"
+                    else None
+                ),
             )
             created_documents.append(mr_result)
             material_request = cstr(mr_result.get("material_request")).strip()
@@ -617,12 +662,26 @@ def _tracked_component_items(*, company: str) -> tuple[str, ...]:
     return tuple(cstr(row.get("item")).strip() for row in rows if cstr(row.get("item")).strip())
 
 
-def _item_configuration(*, item: str, warehouse: str, company: str, cutover_at: Any) -> dict[str, Any]:
+def _item_configuration(
+    *,
+    item: str,
+    warehouse: str,
+    company: str,
+    cutover_at: Any,
+    max_source_age: int,
+) -> dict[str, Any]:
     meta = frappe.get_meta("Item")
-    fields = ["name", "stock_uom", "is_stock_item"]
+    fields = [
+        "name",
+        "stock_uom",
+        "purchase_uom",
+        "min_order_qty",
+        "lead_time_days",
+        "is_stock_item",
+    ]
     if meta.has_field("custom_fb_item_role"):
         fields.append("custom_fb_item_role")
-    for fieldname in ("shelf_life_in_days", "custom_kopos_shelf_life_days", "custom_kopos_supplier_pack_size"):
+    for fieldname in ("shelf_life_in_days", "custom_kopos_shelf_life_days"):
         if meta.has_field(fieldname):
             fields.append(fieldname)
     values = frappe.db.get_value("Item", item, fields, as_dict=True) or {}
@@ -635,7 +694,19 @@ def _item_configuration(*, item: str, warehouse: str, company: str, cutover_at: 
     bin_values = bin_values or {}
     item_role = cstr(values.get("custom_fb_item_role")).strip()
     prepared = _prepared_component_configuration(item=item, company=company) if item_role == "Prep Item" else None
-    supplier = prepared or _supplier_configuration(item)
+    route = _replenishment_route(item=item, warehouse=warehouse)
+    action = "Manufacture" if prepared else cstr(route.get("action") or "Purchase")
+    supplier = prepared or (
+        _transfer_source_configuration(
+            item=item,
+            source_warehouse=cstr(route.get("source_warehouse")).strip(),
+            destination_warehouse=warehouse,
+            company=company,
+            max_source_age=max_source_age,
+        )
+        if action == "Transfer"
+        else _supplier_configuration(item, item_values=values)
+    )
     unposted_consumption = _unposted_resolved_consumption(
         item=item,
         warehouse=warehouse,
@@ -644,7 +715,12 @@ def _item_configuration(*, item: str, warehouse: str, company: str, cutover_at: 
     current_stock = _decimal(bin_values.get("actual_qty")) or Decimal("0")
     reservations = _decimal(bin_values.get("reserved_qty")) or Decimal("0")
     open_supply = (_decimal(bin_values.get("ordered_qty")) or Decimal("0")) + (_decimal(bin_values.get("indented_qty")) or Decimal("0"))
-    source_current = bool(bin_fields) and supplier["source_current"] and unposted_consumption is not None
+    source_current = (
+        bool(bin_fields)
+        and bool(route.get("route_current"))
+        and supplier["source_current"]
+        and unposted_consumption is not None
+    )
     shelf_life_cap = None
     safety_stock = _configured_safety_stock(item=item, warehouse=warehouse)
     return {
@@ -657,11 +733,17 @@ def _item_configuration(*, item: str, warehouse: str, company: str, cutover_at: 
         "lead_time_days": supplier["lead_time_days"],
         "supplier_pack": supplier["supplier_pack"],
         "supplier_minimum": supplier["supplier_minimum"],
+        "purchase_uom": cstr(values.get("purchase_uom")).strip() or None,
+        "purchase_conversion_factor": (
+            supplier.get("purchase_conversion_factor") if action == "Purchase" else Decimal("1")
+        ),
         "shelf_life_days": int(shelf_life_days) if shelf_life_days is not None else None,
         "shelf_life_cap": shelf_life_cap,
         "safety_stock": safety_stock,
         "stock_uom": stock_uom,
-        "replenishment_action": "Manufacture" if prepared else "Purchase",
+        "replenishment_action": action,
+        "source_warehouse": cstr(route.get("source_warehouse")).strip() or None,
+        "source_available": supplier.get("source_available"),
     }
 
 
@@ -719,27 +801,181 @@ def _unposted_resolved_consumption(*, item: str, warehouse: str, cutover_at: Any
     return _decimal(rows[0].get("quantity") if rows else "0")
 
 
-def _supplier_configuration(item: str) -> dict[str, Any]:
+def _supplier_configuration(
+    item: str,
+    *,
+    item_values: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not frappe.db.exists("DocType", "Item Supplier"):
-        return {"source_current": False, "lead_time_days": None, "supplier_pack": Decimal("0"), "supplier_minimum": Decimal("0")}
-    meta = frappe.get_meta("Item Supplier")
-    fields = ["parent", "supplier"]
-    pack_field = next((name for name in ("custom_kopos_supplier_pack_size", "supplier_pack_size", "pack_size") if meta.has_field(name)), None)
-    minimum_field = next((name for name in ("custom_kopos_supplier_minimum_qty", "min_order_qty", "supplier_minimum_qty") if meta.has_field(name)), None)
-    lead_field = next((name for name in ("lead_time_days", "custom_kopos_lead_time_days") if meta.has_field(name)), None)
-    for fieldname in (pack_field, minimum_field, lead_field):
-        if fieldname:
-            fields.append(fieldname)
-    rows = frappe.get_all("Item Supplier", filters={"parent": item, "parenttype": "Item"}, fields=fields, limit_page_length=1)
-    row = rows[0] if rows else {}
-    pack = _decimal(row.get(pack_field)) if pack_field else None
-    minimum = _decimal(row.get(minimum_field)) if minimum_field else Decimal("0")
-    lead = _decimal(row.get(lead_field)) if lead_field else None
+        return {
+            "source_current": False,
+            "lead_time_days": None,
+            "supplier_pack": Decimal("0"),
+            "supplier_minimum": Decimal("0"),
+            "purchase_conversion_factor": None,
+        }
+    rows = frappe.get_all(
+        "Item Supplier",
+        filters={"parent": item, "parenttype": "Item"},
+        fields=["supplier"],
+        limit_page_length=2,
+    )
+    values = item_values or frappe.db.get_value(
+        "Item",
+        item,
+        ["stock_uom", "purchase_uom", "min_order_qty", "lead_time_days"],
+        as_dict=True,
+    ) or {}
+    stock_uom = cstr(values.get("stock_uom")).strip()
+    purchase_uom = cstr(values.get("purchase_uom")).strip()
+    pack = _purchase_uom_conversion(
+        item=item,
+        stock_uom=stock_uom,
+        purchase_uom=purchase_uom,
+    )
+    minimum = _decimal(values.get("min_order_qty"))
+    lead = _decimal(values.get("lead_time_days"))
     return {
-        "source_current": bool(row.get("supplier")) and pack is not None and pack > 0 and lead is not None and lead >= 0,
+        "source_current": bool(rows and rows[0].get("supplier"))
+        and pack is not None
+        and pack > 0
+        and minimum is not None
+        and minimum >= 0
+        and lead is not None
+        and lead >= 0,
         "lead_time_days": lead,
         "supplier_pack": pack or Decimal("0"),
         "supplier_minimum": minimum or Decimal("0"),
+        "purchase_conversion_factor": pack,
+    }
+
+
+def _purchase_uom_conversion(
+    *,
+    item: str,
+    stock_uom: str,
+    purchase_uom: str,
+) -> Decimal | None:
+    """Return the one standard purchase-pack conversion in stock UOM."""
+
+    if not item or not stock_uom or not purchase_uom:
+        return None
+    if purchase_uom == stock_uom:
+        return Decimal("1")
+    if not frappe.db.exists("DocType", "UOM Conversion Detail"):
+        return None
+    rows = frappe.get_all(
+        "UOM Conversion Detail",
+        filters={
+            "parent": item,
+            "parenttype": "Item",
+            "uom": purchase_uom,
+        },
+        fields=["conversion_factor"],
+        limit_page_length=2,
+    )
+    if len(rows) != 1:
+        return None
+    factor = _decimal(rows[0].get("conversion_factor"))
+    return factor if factor is not None and factor > 0 else None
+
+
+def _replenishment_route(*, item: str, warehouse: str) -> dict[str, Any]:
+    """Use one explicit standard Item Reorder row; never infer a source."""
+
+    if not frappe.db.exists("DocType", "Item Reorder"):
+        return {"action": "Purchase", "source_warehouse": None, "route_current": True}
+    meta = frappe.get_meta("Item Reorder")
+    fields = ["name", "material_request_type"]
+    if meta.has_field("custom_kopos_source_warehouse"):
+        fields.append("custom_kopos_source_warehouse")
+    rows = frappe.get_all(
+        "Item Reorder",
+        filters={"parent": item, "parenttype": "Item", "warehouse": warehouse},
+        fields=fields,
+        limit_page_length=2,
+    )
+    if not rows:
+        return {"action": "Purchase", "source_warehouse": None, "route_current": True}
+    if len(rows) != 1:
+        return {"action": "Transfer", "source_warehouse": None, "route_current": False}
+    action = cstr(rows[0].get("material_request_type") or "Purchase").strip().title()
+    if action in {"Transfer", "Material Transfer"}:
+        source = cstr(rows[0].get("custom_kopos_source_warehouse")).strip()
+        return {"action": "Transfer", "source_warehouse": source or None, "route_current": bool(source)}
+    return {
+        "action": action if action in {"Purchase", "Manufacture"} else "Purchase",
+        "source_warehouse": None,
+        "route_current": True,
+    }
+
+
+def _transfer_source_configuration(
+    *,
+    item: str,
+    source_warehouse: str,
+    destination_warehouse: str,
+    company: str,
+    max_source_age: int,
+) -> dict[str, Any]:
+    """Fail closed unless the explicit source can cover the requested stock."""
+
+    blocked = {
+        "source_current": False,
+        "lead_time_days": Decimal("0"),
+        "supplier_pack": Decimal("0"),
+        "supplier_minimum": Decimal("0"),
+        "source_available": None,
+    }
+    if not source_warehouse or source_warehouse == destination_warehouse:
+        return blocked
+    source = frappe.db.get_value(
+        "Warehouse",
+        source_warehouse,
+        ["company", "is_group", "disabled"],
+        as_dict=True,
+    ) or {}
+    if (
+        cstr(source.get("company")).strip() != company
+        or _truthy(source.get("is_group"))
+        or _truthy(source.get("disabled"))
+    ):
+        return blocked
+    policy = frappe.db.get_value(
+        "FB Inventory Policy",
+        {"company": company, "warehouse": source_warehouse},
+        ["cutover_at", "automation_state"],
+        as_dict=True,
+    ) or {}
+    source_cutover = policy.get("cutover_at")
+    if not source_cutover or cstr(policy.get("automation_state")).strip() not in {"Review First", "Active"}:
+        return blocked
+    bin_values = frappe.db.get_value(
+        "Bin",
+        {"item_code": item, "warehouse": source_warehouse},
+        ["actual_qty", "reserved_qty"],
+        as_dict=True,
+    ) or {}
+    actual = _decimal(bin_values.get("actual_qty"))
+    reserved = _decimal(bin_values.get("reserved_qty"))
+    unposted = _unposted_resolved_consumption(
+        item=item,
+        warehouse=source_warehouse,
+        cutover_at=source_cutover,
+    )
+    safety_stock = _configured_safety_stock(item=item, warehouse=source_warehouse)
+    if any(value is None for value in (actual, reserved, unposted, safety_stock)):
+        return blocked
+    available = actual - reserved - unposted - safety_stock
+    current = (
+        _devices_current(source_warehouse, max_source_age)
+        and _no_unresolved_count(source_warehouse)
+        and _projection_backlog_clear(source_warehouse)
+    )
+    return {
+        **blocked,
+        "source_current": current and available >= 0,
+        "source_available": max(available, Decimal("0")),
     }
 
 
@@ -935,6 +1171,41 @@ def _permitted_actions(value: Any) -> set[str]:
     return {part.strip().title() for part in raw.replace(",", "\n").splitlines() if part.strip()}
 
 
+def _planned_document_line(
+    *,
+    line: ReplenishmentLine,
+    item_data: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep stock-demand truth while expressing Purchase work in Purchase UOM."""
+
+    action = cstr(item_data.get("action") or "Purchase")
+    config = item_data.get("config") or {}
+    stock_uom = cstr(config.get("stock_uom") or _stock_uom(line.item)).strip()
+    document_uom = stock_uom
+    conversion = Decimal("1")
+    document_quantity = line.quantity
+    if action == "Purchase":
+        purchase_uom = cstr(config.get("purchase_uom")).strip()
+        purchase_conversion = _decimal(config.get("purchase_conversion_factor"))
+        if purchase_uom and purchase_conversion is not None and purchase_conversion > 0:
+            document_uom = purchase_uom
+            conversion = purchase_conversion
+            document_quantity = line.quantity / conversion
+    return {
+        "item": line.item,
+        "action": action,
+        "warehouse": line.warehouse,
+        "source_warehouse": cstr(item_data.get("source_warehouse")).strip() or None,
+        "quantity": _plain_decimal(document_quantity),
+        "quantity_decimal": _plain_decimal(document_quantity),
+        "uom": document_uom,
+        "stock_quantity_decimal": _plain_decimal(line.quantity),
+        "stock_uom": stock_uom,
+        "conversion_factor_decimal": _plain_decimal(conversion),
+        "reason": line.reason,
+    }
+
+
 def _stock_uom(item: str) -> str:
     return cstr(frappe.db.get_value("Item", item, "stock_uom")).strip() or "Nos"
 
@@ -992,6 +1263,11 @@ def _decimal(value: Any, *, allow_zero: bool = True) -> Decimal | None:
     if not result.is_finite() or result < 0 or (not allow_zero and result <= 0):
         return None
     return result
+
+
+def _plain_decimal(value: Decimal) -> str:
+    normalized = value.normalize()
+    return format(normalized, "f") if normalized != 0 else "0"
 
 
 def _truthy(value: Any) -> bool:

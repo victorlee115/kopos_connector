@@ -29,6 +29,10 @@ class ReplenishmentLine:
     # Transfer lines must retain the explicitly approved source warehouse.
     # Purchase and Manufacture lines leave this unset.
     source_warehouse: str | None = None
+    uom: str | None = None
+    stock_uom: str | None = None
+    conversion_factor: Decimal | None = None
+    stock_quantity: Decimal | None = None
 
 
 REQUIRED_AUTOMATION_GATES = (
