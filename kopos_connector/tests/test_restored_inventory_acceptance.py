@@ -103,7 +103,6 @@ class TestRestoredInventoryAcceptance(unittest.TestCase):
                 warehouse="Main - CERC",
                 ingredient_item="INV-ACCEPT-INGREDIENT",
                 uom="Nos",
-                expense_account="Inventory Expense - CERC",
                 difference_account="Temporary Opening - CERC",
             )
 

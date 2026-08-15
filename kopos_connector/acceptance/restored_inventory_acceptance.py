@@ -509,7 +509,6 @@ def _ensure_opening_reconciliation(
     warehouse: str,
     ingredient_item: str,
     uom: str,
-    expense_account: str,
     difference_account: str,
 ) -> Any:
     runtime_frappe = _require_frappe()
@@ -1047,7 +1046,6 @@ def run_v1(
         warehouse=warehouse,
         ingredient_item=ingredient.name,
         uom=uom,
-        expense_account=expense_account,
         difference_account=opening_difference_account,
     )
     policy = _ensure_policy(
