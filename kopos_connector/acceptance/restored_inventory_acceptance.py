@@ -11,8 +11,9 @@ Stock Ledger, and GL paths.  It never changes a pre-existing business record.
 The fixture is intentionally small: one stock ingredient, one non-stock
 sellable, one published FB Recipe, one opening Stock Reconciliation, one
 cutover policy, and one submitted FB Order.  Re-running the command reuses the
-same authorities and the same order identity.  Existing standard documents are
-never deleted or cancelled by the producer.
+same authorities and the same order identity.  Existing business documents are
+never deleted or cancelled by the producer.  A partial standard document that
+is proven to belong to this contained fixture may be repaired or replaced.
 """
 
 from __future__ import annotations
@@ -44,6 +45,9 @@ ITEM_SELLABLE = f"{AUTHORITY_PREFIX}SELLABLE"
 RECIPE_CODE = f"{AUTHORITY_PREFIX}RECIPE"
 POLICY_NAME = f"{AUTHORITY_PREFIX}POLICY"
 OPENING_NAME = f"{AUTHORITY_PREFIX}OPENING"
+OPENING_REMARKS = f"{AUTHORITY_PREFIX} opening stock"
+OPENING_QUANTITY = Decimal("10")
+OPENING_VALUATION_RATE = Decimal("1")
 SHIFT_CODE = f"{AUTHORITY_PREFIX}SHIFT"
 SHIFT_NAME = f"{AUTHORITY_PREFIX}SHIFT"
 DEVICE_ID = f"{AUTHORITY_PREFIX}DEVICE"
@@ -374,10 +378,22 @@ def _historical_fingerprint() -> dict[str, list[tuple[str, str]]]:
         "Stock Reconciliation",
     ):
         table = f"tab{doctype}"
+        where = "name NOT LIKE %s"
+        parameters: list[Any] = [f"{AUTHORITY_PREFIX}%"]
+        if doctype == "Stock Reconciliation":
+            # Standard ERPNext autoname takes precedence over an assigned
+            # ``name``.  The exact marker, rather than a hoped-for prefix, is
+            # therefore the fixture authority for this standard document.
+            where += " AND COALESCE(remarks, '') != %s"
+            parameters.append(OPENING_REMARKS)
+        elif doctype == "Stock Entry":
+            # The projected Material Issue is also a standard autonamed
+            # document.  Its immutable fixture order link identifies it.
+            where += " AND COALESCE(custom_fb_order, '') != %s"
+            parameters.append(ORDER_ID)
         rows = runtime_frappe.db.sql(
-            f"SELECT name, modified FROM `{table}` "
-            "WHERE name NOT LIKE %s ORDER BY name ASC",
-            (f"{AUTHORITY_PREFIX}%",),
+            f"SELECT name, modified FROM `{table}` WHERE {where} ORDER BY name ASC",
+            tuple(parameters),
             as_dict=True,
         )
         result[doctype] = [
@@ -543,17 +559,131 @@ def _ensure_opening_reconciliation(
     difference_account: str,
 ) -> Any:
     runtime_frappe = _require_frappe()
-    existing_name = runtime_frappe.db.exists("Stock Reconciliation", OPENING_NAME)
-    if existing_name:
-        reconciliation = runtime_frappe.get_doc("Stock Reconciliation", existing_name)
-        if int(getattr(reconciliation, "docstatus", 0) or 0) == 0:
-            reconciliation.submit()
-        if int(getattr(reconciliation, "docstatus", 0) or 0) != 1:
-            _fail(f"Acceptance opening Stock Reconciliation {existing_name} is not submitted")
-        return reconciliation
+    rows = runtime_frappe.get_all(
+        "Stock Reconciliation",
+        filters={"company": company, "remarks": OPENING_REMARKS},
+        fields=["name"],
+        order_by="creation asc, name asc",
+        limit_page_length=0,
+    )
+    candidate_names = {
+        _required_text(_value(row, "name"), "acceptance opening reconciliation name")
+        for row in rows or []
+    }
+    # Recover an older fixture only if Frappe really retained the requested
+    # name.  A collision at that name is loaded and rejected by the exact
+    # fixture validator below rather than silently treated as authority.
+    named_candidate = runtime_frappe.db.exists("Stock Reconciliation", OPENING_NAME)
+    if named_candidate:
+        candidate_names.add(_text(named_candidate))
 
-    reconciliation = runtime_frappe.new_doc("Stock Reconciliation")
-    reconciliation.name = OPENING_NAME
+    candidates = [
+        runtime_frappe.get_doc("Stock Reconciliation", name)
+        for name in sorted(candidate_names)
+    ]
+    for candidate in candidates:
+        _validate_opening_fixture(
+            candidate,
+            company=company,
+            warehouse=warehouse,
+            ingredient_item=ingredient_item,
+            uom=uom,
+            allow_incomplete=int(getattr(candidate, "docstatus", 0) or 0) == 0,
+        )
+
+    submitted = [
+        candidate
+        for candidate in candidates
+        if int(getattr(candidate, "docstatus", 0) or 0) == 1
+    ]
+    valid_submitted = [
+        candidate
+        for candidate in submitted
+        if _opening_has_expected_stock_movement(
+            candidate,
+            warehouse=warehouse,
+            ingredient_item=ingredient_item,
+        )
+    ]
+    if len(valid_submitted) > 1:
+        _fail(
+            "Multiple submitted opening Stock Reconciliations contain the exact "
+            "acceptance fixture movement; the producer will not guess an authority"
+        )
+    if valid_submitted:
+        return valid_submitted[0]
+
+    # A submitted fixture without its exact stock-ledger movement is a partial
+    # prior acceptance run.  Cancellation is deliberately limited to documents
+    # that passed the marker, company, purpose, item, warehouse, UOM, quantity,
+    # and valuation checks above.
+    for candidate in submitted:
+        candidate.cancel()
+        if int(getattr(candidate, "docstatus", 0) or 0) != 2:
+            _fail(
+                f"Acceptance opening Stock Reconciliation {candidate.name} did not cancel"
+            )
+
+    drafts = [
+        candidate
+        for candidate in candidates
+        if int(getattr(candidate, "docstatus", 0) or 0) == 0
+    ]
+    if len(drafts) > 1:
+        _fail(
+            "Multiple Draft opening Stock Reconciliations use the acceptance "
+            "fixture marker; the producer will not guess which draft to repair"
+        )
+    if drafts:
+        reconciliation = drafts[0]
+        _prepare_opening_reconciliation(
+            reconciliation,
+            company=company,
+            warehouse=warehouse,
+            ingredient_item=ingredient_item,
+            uom=uom,
+            difference_account=difference_account,
+        )
+        reconciliation.save(ignore_permissions=True)
+    else:
+        reconciliation = runtime_frappe.new_doc("Stock Reconciliation")
+        _prepare_opening_reconciliation(
+            reconciliation,
+            company=company,
+            warehouse=warehouse,
+            ingredient_item=ingredient_item,
+            uom=uom,
+            difference_account=difference_account,
+        )
+        # Do not assign ``OPENING_NAME``: ERPNext's Stock Reconciliation
+        # autoname is authoritative.  Recovery uses the exact marker instead.
+        reconciliation.insert(ignore_permissions=True)
+
+    reconciliation.submit()
+    if int(getattr(reconciliation, "docstatus", 0) or 0) != 1:
+        _fail("Acceptance opening Stock Reconciliation did not submit")
+    if not _opening_has_expected_stock_movement(
+        reconciliation,
+        warehouse=warehouse,
+        ingredient_item=ingredient_item,
+    ):
+        _fail(
+            f"Acceptance opening Stock Reconciliation {reconciliation.name} has "
+            "no exact positive stock-ledger movement"
+        )
+    return reconciliation
+
+
+def _prepare_opening_reconciliation(
+    reconciliation: Any,
+    *,
+    company: str,
+    warehouse: str,
+    ingredient_item: str,
+    uom: str,
+    difference_account: str,
+) -> None:
+    runtime_frappe = _require_frappe()
     reconciliation.company = company
     reconciliation.purpose = "Opening Stock"
     reconciliation.posting_date = runtime_frappe.utils.nowdate()
@@ -564,23 +694,118 @@ def _ensure_opening_reconciliation(
     # Asset/Liability account.  Keep the policy's Expense account separate for
     # later inventory postings; it must not be assigned to this opening entry.
     _set_if_present(reconciliation, "expense_account", difference_account)
-    _set_if_present(reconciliation, "remarks", f"{AUTHORITY_PREFIX} opening stock")
+    _set_if_present(reconciliation, "remarks", OPENING_REMARKS)
     _set_if_present(reconciliation, "cost_center", _discover_cost_center(company))
-    reconciliation.append(
-        "items",
-        {
+    items = list(getattr(reconciliation, "items", None) or [])
+    if items:
+        item = items[0]
+        item.item_code = ingredient_item
+        item.warehouse = warehouse
+        item.qty = OPENING_QUANTITY
+        item.stock_uom = uom
+        item.valuation_rate = OPENING_VALUATION_RATE
+    else:
+        reconciliation.append(
+            "items",
+            {
+                "item_code": ingredient_item,
+                "warehouse": warehouse,
+                "qty": OPENING_QUANTITY,
+                "stock_uom": uom,
+                "valuation_rate": OPENING_VALUATION_RATE,
+            },
+        )
+
+
+def _validate_opening_fixture(
+    reconciliation: Any,
+    *,
+    company: str,
+    warehouse: str,
+    ingredient_item: str,
+    uom: str,
+    allow_incomplete: bool,
+) -> None:
+    name = _required_text(
+        getattr(reconciliation, "name", None), "acceptance opening reconciliation name"
+    )
+    for fieldname, expected in (
+        ("company", company),
+        ("purpose", "Opening Stock"),
+        ("remarks", OPENING_REMARKS),
+    ):
+        actual = _text(getattr(reconciliation, fieldname, None))
+        if actual != expected:
+            _fail(
+                f"Stock Reconciliation {name} is not the acceptance fixture: "
+                f"{fieldname} does not match"
+            )
+    items = list(getattr(reconciliation, "items", None) or [])
+    if len(items) > 1 or (not items and not allow_incomplete):
+        _fail(
+            f"Stock Reconciliation {name} is not the acceptance fixture: "
+            "it must contain exactly one item"
+        )
+    if not items:
+        return
+    item = items[0]
+    for fieldname, expected in (
+        ("item_code", ingredient_item),
+        ("warehouse", warehouse),
+        ("stock_uom", uom),
+    ):
+        actual = _text(getattr(item, fieldname, None))
+        if actual != expected and not (allow_incomplete and not actual):
+            _fail(
+                f"Stock Reconciliation {name} is not the acceptance fixture: "
+                f"item {fieldname} does not match"
+            )
+    for fieldname, expected in (
+        ("qty", OPENING_QUANTITY),
+        ("valuation_rate", OPENING_VALUATION_RATE),
+    ):
+        actual = getattr(item, fieldname, None)
+        if allow_incomplete and actual in (None, ""):
+            continue
+        if _proof_decimal(actual, f"Stock Reconciliation {name} item {fieldname}") != expected:
+            _fail(
+                f"Stock Reconciliation {name} is not the acceptance fixture: "
+                f"item {fieldname} does not match"
+            )
+
+
+def _opening_has_expected_stock_movement(
+    reconciliation: Any, *, warehouse: str, ingredient_item: str
+) -> bool:
+    runtime_frappe = _require_frappe()
+    name = _required_text(
+        getattr(reconciliation, "name", None), "acceptance opening reconciliation name"
+    )
+    rows = runtime_frappe.get_all(
+        "Stock Ledger Entry",
+        filters={
+            "voucher_type": "Stock Reconciliation",
+            "voucher_no": name,
             "item_code": ingredient_item,
             "warehouse": warehouse,
-            "qty": 10,
-            "stock_uom": uom,
-            "valuation_rate": 1,
+            "is_cancelled": 0,
         },
+        fields=["actual_qty"],
+        order_by="creation asc, name asc",
+        limit_page_length=0,
     )
-    reconciliation.insert(ignore_permissions=True)
-    reconciliation.submit()
-    if int(getattr(reconciliation, "docstatus", 0) or 0) != 1:
-        _fail("Acceptance opening Stock Reconciliation did not submit")
-    return reconciliation
+    if not rows:
+        return False
+    movement = sum(
+        (
+            _proof_decimal(
+                _value(row, "actual_qty"), f"Stock Ledger Entry for {name}"
+            )
+            for row in rows
+        ),
+        Decimal("0"),
+    )
+    return movement == OPENING_QUANTITY
 
 
 def _discover_cost_center(company: str) -> str | None:
@@ -597,8 +822,12 @@ def _ensure_policy(
 ) -> Any:
     runtime_frappe = _require_frappe()
     cutover_at = runtime_frappe.utils.now_datetime() - timedelta(minutes=5)
+    # The standard Stock Reconciliation name is intentionally not part of the
+    # cutover identity: ERPNext owns that autoname and an exact partial fixture
+    # may need to be replaced.  Existing contained policies retain their token
+    # so a failed projection rerun cannot acquire a second projection identity.
     cutover_token = hashlib.sha256(
-        f"{AUTHORITY_PREFIX}|{company}|{warehouse}|{opening_name}".encode("utf-8")
+        f"{AUTHORITY_PREFIX}|{company}|{warehouse}|{OPENING_NAME}".encode("utf-8")
     ).hexdigest()
     existing_name = runtime_frappe.db.exists("FB Inventory Policy", POLICY_NAME)
     policy_rows = runtime_frappe.get_all(
@@ -616,18 +845,20 @@ def _ensure_policy(
     if policy_rows:
         row = policy_rows[0]
         row_name = _text(_value(row, "name"))
-        row_token = _text(_value(row, "cutover_token"))
         row_opening = _text(_value(row, "opening_stock_reconciliation"))
-        if row_token == cutover_token or row_opening == opening_name:
-            if existing_name and _text(existing_name) != row_name:
-                _fail("Acceptance policy lookup returned conflicting names")
-            existing_name = row_name
-        else:
+        if row_name != POLICY_NAME:
             _fail(
                 f"Company {company} and warehouse {warehouse} already have "
                 f"non-acceptance FB Inventory Policy {row_name}; the proof will "
                 "not modify it"
             )
+        if existing_name and _text(existing_name) != row_name:
+            _fail("Acceptance policy lookup returned conflicting names")
+        if row_opening:
+            _validate_policy_opening_reference(
+                row_opening, company=company, warehouse=warehouse
+            )
+        existing_name = row_name
     if existing_name:
         policy = runtime_frappe.get_doc("FB Inventory Policy", existing_name)
         if (
@@ -636,8 +867,16 @@ def _ensure_policy(
         ):
             _fail("Acceptance policy name belongs to another company or warehouse")
         previous_token = _text(getattr(policy, "cutover_token", None))
-        if previous_token and previous_token != cutover_token:
-            _fail("Acceptance policy cutover identity changed between reruns")
+        if previous_token:
+            _required_sha256(previous_token, "Acceptance policy cutover token")
+            cutover_token = previous_token
+        for fieldname, expected in (
+            ("inventory_contract_version", "inventory-autopilot-v1"),
+            ("permitted_actions", "stock_projection"),
+        ):
+            actual = _text(getattr(policy, fieldname, None))
+            if actual and actual != expected:
+                _fail(f"Acceptance policy {fieldname} changed between reruns")
     else:
         # ``FB Inventory Policy`` uses a format autoname.  A document returned
         # by ``get_doc({...})`` with a name is treated as an existing document
@@ -664,6 +903,32 @@ def _ensure_policy(
     if _text(getattr(policy, "automation_state", None)) != "Active":
         _fail("Acceptance inventory policy did not become Active")
     return policy
+
+
+def _validate_policy_opening_reference(
+    opening_name: str, *, company: str, warehouse: str
+) -> None:
+    """Prove an existing acceptance policy points only at our exact fixture."""
+
+    runtime_frappe = _require_frappe()
+    if not runtime_frappe.db.exists("Stock Reconciliation", opening_name):
+        _fail(
+            f"Acceptance policy opening Stock Reconciliation {opening_name} was not found"
+        )
+    opening = runtime_frappe.get_doc("Stock Reconciliation", opening_name)
+    if (
+        _text(getattr(opening, "company", None)) != company
+        or _text(getattr(opening, "purpose", None)) != "Opening Stock"
+        or _text(getattr(opening, "remarks", None)) != OPENING_REMARKS
+    ):
+        _fail("Acceptance policy opening reference belongs to a non-fixture document")
+    items = list(getattr(opening, "items", None) or [])
+    if (
+        len(items) != 1
+        or _text(getattr(items[0], "item_code", None)) != ITEM_INGREDIENT
+        or _text(getattr(items[0], "warehouse", None)) != warehouse
+    ):
+        _fail("Acceptance policy opening reference has non-fixture stock rows")
 
 
 def _ensure_shift(*, company: str, warehouse: str, staff_id: str) -> Any:
