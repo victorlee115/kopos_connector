@@ -8,7 +8,7 @@ from kopos_connector.utils.pin import hash_pin, is_supported_pin_hash
 
 
 class KoPOSStaffAccess(Document):
-    """Central POS access record; the PIN verifier is never stored here."""
+    """Central POS access record; only a one-way PIN verifier is stored."""
 
     def validate(self) -> None:
         if cstr(self.access_level).strip() not in {"Staff", "Manager"}:

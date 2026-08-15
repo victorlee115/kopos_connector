@@ -21,7 +21,7 @@ from kopos_connector.api.catalog import get_default_pos_profile, resolve_catalog
 from kopos_connector.api.catalog import build_catalog_payload
 from kopos_connector.kopos.services.inventory_autopilot.holds import (
     create_hold,
-    release_hold,
+    manager_override_automation_hold,
 )
 from kopos_connector.kopos.services.inventory_autopilot.legacy_migration import (
     discover_legacy_values,
@@ -37,6 +37,7 @@ from kopos_connector.kopos.services.inventory_autopilot.document_coordinator imp
 )
 from kopos_connector.kopos.services.inventory_autopilot.replenishment import ReplenishmentLine
 from kopos_connector.kopos.services.inventory_autopilot.promotion_economics import calculate_promotion_economics, PromotionEconomicsError
+from kopos_connector.kopos.services.inventory_autopilot.menu_authoring import csv_template, validate_recipe_csv
 from kopos_connector.kopos.services.inventory_autopilot.recipe_compiler import (
     RecipeCompilerError,
     compile_recipe_components,
@@ -48,7 +49,7 @@ from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
 from kopos_connector.utils.manager_approval import verify_manager_approval_token
 
 
-@frappe.whitelist(methods=["GET", "POST"])
+@frappe.whitelist(methods=["GET"])
 def get_autopilot_health(warehouse: str | None = None) -> dict[str, Any]:
     """Return sanitized, warehouse-scoped operational health.
 
@@ -249,6 +250,29 @@ def get_menu_authoring_summary() -> dict[str, Any]:
         "active_promotions": int(promotion_count or 0),
         "unclassified_items": unclassified_items,
         "ready": missing == 0 and unclassified_items == 0 and bool(recipe_rows),
+    }
+
+
+@frappe.whitelist(methods=["GET"])
+def get_menu_recipe_csv_template() -> dict[str, str]:
+    """Return the fixed director recipe template without exposing cost data."""
+
+    _require_company_director("Menu recipe template")
+    return {"filename": "jiji-recipe-components-template.csv", "content": csv_template()}
+
+
+@frappe.whitelist(methods=["POST"])
+def validate_menu_recipe_csv(*, csv_text: str) -> dict[str, Any]:
+    """Dry-run a director spreadsheet and return row-level commissioning errors."""
+
+    _require_company_director("Menu recipe CSV validation")
+    result = validate_recipe_csv(csv_text)
+    return {
+        "schema_version": "jiji-menu-recipe-csv-v1",
+        "valid": bool(result.get("valid")),
+        "recipe_count": len(result.get("recipes") or []),
+        "errors": result.get("errors") or [],
+        "recipes": result.get("recipes") or [],
     }
 
 
@@ -481,9 +505,10 @@ def get_count_task(*, device_id: str, task_id: str | None = None) -> dict[str, A
         for row in resolve_staff_access_for_device(device)
         if cstr(row.get("user")).strip()
     })
+    if not assigned_users:
+        return {"status": "ok", "task": None}
     filters: dict[str, Any] = {"warehouse": cstr(profile.get("warehouse")), "status": "Assigned"}
-    if assigned_users:
-        filters["assignee"] = ["in", assigned_users]
+    filters["assignee"] = ["in", assigned_users]
     if task_id:
         filters["name"] = cstr(task_id).strip()
     if not frappe.db.exists("DocType", "FB Inventory Count Task"):
@@ -764,8 +789,11 @@ def create_availability_hold(
     target_id: str,
     reason_code: str,
     reason_label: str,
+    staff_user: str | None = None,
+    employee: str | None = None,
 ) -> dict[str, Any]:
     device = require_device_context(device_id=device_id)
+    access = _require_device_staff(device, staff_user, manager=True)
     with lock_device_for_operational_mutation(device_id=device_id):
         profile = resolve_catalog_pos_profile(device_id=device_id) or {}
         hold_name = create_hold(
@@ -776,7 +804,7 @@ def create_availability_hold(
             source="manual",
             reason_code=cstr(reason_code).strip(),
             reason_label=cstr(reason_label).strip(),
-            actor=cstr(getattr(device, "api_user", None)).strip() or frappe.session.user,
+            actor=cstr(access.get("user")).strip(),
             pos_profile=cstr(profile.get("name")),
         )
         frappe.db.commit()
@@ -784,17 +812,26 @@ def create_availability_hold(
 
 
 @frappe.whitelist(methods=["POST"])
-def release_availability_hold(*, device_id: str, hold_id: str, reason: str | None = None) -> dict[str, Any]:
-    require_device_context(device_id=device_id)
+def release_availability_hold(*, device_id: str, hold_id: str, reason: str | None = None, staff_user: str | None = None) -> dict[str, Any]:
+    device = require_device_context(device_id=device_id)
+    access = _require_device_staff(device, staff_user, manager=True)
     hold_source = cstr(frappe.db.get_value("FB Availability Hold", hold_id, "source")).strip()
     if hold_source != "automation":
         frappe.throw(_("POS can release only an automation stock hold; manual, safety, quality and equipment holds require a director"), frappe.PermissionError)
     if not cstr(reason).strip():
         frappe.throw(_("A manager reason is required to release an automation stock hold"), frappe.ValidationError)
+    hold = frappe.get_doc("FB Availability Hold", hold_id)
+    profile = resolve_catalog_pos_profile(device_id=device_id) or {}
+    if cstr(hold.warehouse).strip() != cstr(profile.get("warehouse")).strip() or cstr(hold.company).strip() != cstr(profile.get("company")).strip():
+        frappe.throw(_("This hold is outside the device outlet"), frappe.PermissionError)
     with lock_device_for_operational_mutation(device_id=device_id):
-        name = release_hold(hold_id)
+        name = manager_override_automation_hold(
+            hold_id,
+            actor=cstr(access.get("user")).strip(),
+            reason=cstr(reason).strip(),
+        )
         frappe.db.commit()
-    return {"status": "accepted", "hold_id": name}
+    return {"status": "accepted", "hold_id": name, "override_minutes": 30}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -892,7 +929,7 @@ def submit_count_observation(*, device_id: str, payload: str | dict[str, Any]) -
             if existing_hash and existing_hash != observation_hash:
                 frappe.throw(_("Count observation ID was reused with different content"), frappe.ValidationError)
             return {"status": "replayed", "observation_id": observation_id, "reconciliation": cstr(existing_observation[2]) or None}
-        _validate_count_assignment(device, value, warehouse)
+        actor_access = _validate_count_assignment(device, value, warehouse)
         watermark_rows = frappe.db.sql(
             "SELECT MAX(modified) FROM `tabStock Ledger Entry` WHERE warehouse = %s",
             (warehouse,),
@@ -908,6 +945,8 @@ def submit_count_observation(*, device_id: str, payload: str | dict[str, Any]) -
             observation_doc.task_revision = value["task_revision"]
             observation_doc.warehouse = warehouse
             observation_doc.actor_id = value["actor_id"]
+            if frappe.get_meta("FB Inventory Count Observation").has_field("employee"):
+                observation_doc.employee = cstr(actor_access.get("employee")).strip()
             observation_doc.stock_watermark = value["stock_watermark"]
             observation_doc.observed_at = value["observed_at"]
             observation_doc.lines_json = json.dumps(value["lines"], sort_keys=True, separators=(",", ":"))
@@ -1079,7 +1118,7 @@ def _parse_count_payload(payload: str | dict[str, Any]) -> dict[str, Any]:
     return value
 
 
-def _validate_count_assignment(device: Any, value: dict[str, Any], warehouse: str) -> None:
+def _validate_count_assignment(device: Any, value: dict[str, Any], warehouse: str) -> dict[str, Any]:
     if not frappe.db.exists("DocType", "FB Inventory Count Task"):
         frappe.throw(_("Inventory count tasks are not installed"), frappe.ValidationError)
     task = frappe.get_doc("FB Inventory Count Task", value["task_id"])
@@ -1096,7 +1135,7 @@ def _validate_count_assignment(device: Any, value: dict[str, Any], warehouse: st
         cstr(getattr(device, "api_user", None)).strip(),
         cstr(getattr(frappe.session, "user", None)).strip(),
     })
-    if cstr(task.assignee).strip() not in allowed_actors or cstr(value["actor_id"]).strip() not in allowed_actors:
+    if cstr(task.assignee).strip() not in allowed_actors or cstr(value["actor_id"]).strip() != cstr(task.assignee).strip():
         frappe.throw(_("Inventory count actor is not the assigned user"), frappe.PermissionError)
     expected_lines = {
         (cstr(line.item_id).strip(), cstr(line.uom).strip())
@@ -1108,6 +1147,10 @@ def _validate_count_assignment(device: Any, value: dict[str, Any], warehouse: st
     ]
     if len(observed_lines) != len(set(observed_lines)) or set(observed_lines) != expected_lines:
         frappe.throw(_("Inventory count lines do not match the assigned task"), frappe.ValidationError)
+    return next(
+        (row for row in resolve_staff_access_for_device(device) if cstr(row.get("user")).strip() == cstr(value["actor_id"]).strip()),
+        {"user": value["actor_id"], "employee": ""},
+    )
 
 
 def _parse_json_object(payload: str | dict[str, Any], label: str) -> dict[str, Any]:
@@ -1455,6 +1498,18 @@ def _validate_guided_task_actor(device: Any, value: dict[str, Any], task_type: s
                 _("A manager must sign in before confirming this stock movement"),
                 frappe.PermissionError,
             )
+
+
+def _require_device_staff(device: Any, staff_user: str | None, *, manager: bool = False) -> dict[str, Any]:
+    user = cstr(staff_user).strip()
+    if not user:
+        frappe.throw(_("Inventory command requires the signed-in staff user"), frappe.ValidationError)
+    access = find_staff_access_for_device(device, user)
+    if access is None:
+        frappe.throw(_("Signed-in staff user is not active on this outlet tablet"), frappe.PermissionError)
+    if manager and access.get("access_level") != "Manager":
+        frappe.throw(_("A manager must sign in before changing availability"), frappe.PermissionError)
+    return access
 
 
 def _set_document_value(document: Any, fieldname: str, value: Any) -> None:

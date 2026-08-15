@@ -14,13 +14,15 @@ class KoPOSInventoryAutopilotPage {
 				parent: this.page.body.find("[data-warehouse]")[0],
 				df: {
 					fieldtype: "Link",
+					fieldname: "warehouse",
 					options: "Warehouse",
 					label: __("Warehouse"),
-					description: __("Use an outlet warehouse; this page never changes stock."),
+					description: __("Choose an outlet warehouse; this page only reads health."),
 					reqd: 1,
 				},
 			});
 		this.warehouseControl.refresh();
+		this.page.body.find("[data-warehouse] .tooltip-content").remove();
 		this.warehouseControl.$input.on("change awesomplete-selectcomplete", () => this.updateWarehouseHelp());
 		this.updateWarehouseHelp();
 		this.page.set_primary_action(__("Refresh health"), () => this.refresh());
@@ -38,7 +40,14 @@ class KoPOSInventoryAutopilotPage {
 					<div class="col-sm-7"><p data-warehouse-help class="text-muted mb-0">${__("Select a warehouse to load its health and next safe action. Refresh health only reads state; it never changes stock.")}</p></div>
 				</div>
 				<div class="row kopos-autopilot-cards">
-					${["Needs you", "Today", "Stock", "Counts", "Plans & buying", "Settings"].map((title) => `<div class="col-sm-6 col-lg-4"><div class="card h-100"><div class="card-body d-flex flex-column"><h4>${__(title)}</h4><p class="text-muted">${__("Open the linked standard ERPNext records and resolve the next safe action.")}</p><div data-card="${title}" class="mb-3">${__("Choose a warehouse first")}</div><button class="btn btn-sm btn-default mt-auto align-self-start" type="button" data-open-card="${title}">${__("Open records")}</button></div></div></div>`).join("")}
+					${[
+						["Needs you", "Critical exceptions that need a director or manager."],
+						["Today", "Scheduler, projection and availability work completed today."],
+						["Stock", "Latest device and overlay truth for this warehouse."],
+						["Counts", "Assigned counts and reconciliations waiting for review."],
+						["Plans & buying", "Forecasts, material requests and draft purchase orders."],
+						["Settings", "Automation state and safety limits for this warehouse."],
+					].map(([title, description]) => `<div class="col-sm-6 col-lg-4"><div class="card h-100"><div class="card-body d-flex flex-column"><h4>${__(title)}</h4><p class="text-muted">${__(description)}</p><div data-card="${title}" class="mb-3">${__("Choose a warehouse first")}</div><button class="btn btn-sm btn-default mt-auto align-self-start" type="button" data-open-card="${title}">${__("Open records")}</button></div></div></div>`).join("")}
 				</div>
 			</div>`);
 	}

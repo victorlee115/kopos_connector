@@ -17,6 +17,8 @@ class JiJiMenuRecipesPage {
 		this.page.body.find("[data-menu-create]").on("click", (event) => {
 			this.createAction($(event.currentTarget).attr("data-menu-create"));
 		});
+		this.page.body.find("[data-csv-template]").on("click", () => this.downloadTemplate());
+		this.page.body.find("[data-csv-validate]").on("click", () => this.validateCsv());
 		this.refresh();
 	}
 
@@ -32,6 +34,12 @@ class JiJiMenuRecipesPage {
 		$(this.page.body).html(`
 			<div class="jiji-menu-page">
 				<div class="alert alert-info"><strong>${__("Director workflow")}</strong><br>${__("Complete the required fields, save drafts, review the checklist, then publish selected records. Published recipes are immutable; corrections create a new version.")}</div>
+				<div class="card mb-4"><div class="card-body">
+					<div class="d-flex flex-wrap justify-content-between align-items-start mb-2"><div><h4 class="mb-1">${__("Quick recipe preflight")}</h4><p class="text-muted mb-0">${__("Paste the fixed spreadsheet template here to catch row errors before entering standard FB Recipe forms. This is a dry run; it never creates or changes a document.")}</p></div><div class="small text-muted" data-csv-status>${__("No file checked")}</div></div>
+					<textarea class="form-control mb-2" rows="4" data-csv-input placeholder="${__("recipe_code,recipe_name,sellable_item,company,recipe_type,...")}"></textarea>
+					<div class="d-flex flex-wrap gap-2"><button class="btn btn-sm btn-default" type="button" data-csv-template>${__("Download template")}</button><button class="btn btn-sm btn-primary" type="button" data-csv-validate>${__("Check rows")}</button></div>
+					<pre class="small bg-light p-2 mt-3 mb-0 d-none" data-csv-results></pre>
+				</div></div>
 				<div class="row">${cards.map(([title, copy, action]) => `
 					<div class="col-sm-6 col-lg-4 mb-3"><div class="card h-100"><div class="card-body d-flex flex-column">
 						<h4>${__(title)}</h4><p class="text-muted">${__(copy)}</p>
@@ -84,5 +92,44 @@ class JiJiMenuRecipesPage {
 			promotion: "KoPOS Promotion",
 		};
 		if (doctypes[action]) frappe.new_doc(doctypes[action]);
+	}
+
+	downloadTemplate() {
+		frappe.call({
+			method: "kopos_connector.api.inventory.get_menu_recipe_csv_template",
+			type: "GET",
+			callback: (response) => {
+				const template = response.message || {};
+				const blob = new Blob([template.content || ""], { type: "text/csv;charset=utf-8" });
+				const link = document.createElement("a");
+				link.href = URL.createObjectURL(blob);
+				link.download = template.filename || "jiji-recipe-components-template.csv";
+				link.click();
+				URL.revokeObjectURL(link.href);
+				this.page.body.find("[data-csv-status]").text(__("Template downloaded"));
+			},
+		});
+	}
+
+	validateCsv() {
+		const csvText = this.page.body.find("[data-csv-input]").val() || "";
+		if (!String(csvText).trim()) {
+			this.page.body.find("[data-csv-status]").text(__("Paste CSV rows first"));
+			return;
+		}
+		frappe.call({
+			method: "kopos_connector.api.inventory.validate_menu_recipe_csv",
+			type: "POST",
+			args: { csv_text: csvText },
+			callback: (response) => {
+				const result = response.message || {};
+				const errors = result.errors || [];
+				const output = errors.length
+					? errors.map((error) => `${__("Row")} ${error.row}: ${error.message}`).join("\n")
+					: __(`${result.recipe_count || 0} recipe(s) passed the dry run. Open standard FB Recipe forms to review and save drafts.`);
+				this.page.body.find("[data-csv-results]").removeClass("d-none").text(output);
+				this.page.body.find("[data-csv-status]").text(result.valid ? __("Rows look complete") : `${errors.length} ${__("row issue(s)")}`);
+			},
+		});
 	}
 }

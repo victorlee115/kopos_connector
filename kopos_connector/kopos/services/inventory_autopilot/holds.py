@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -34,6 +35,10 @@ def create_hold(
     )
     existing = frappe.db.get_value("FB Availability Hold", {"idempotency_key": key}, "name")
     if existing:
+        existing_doc = frappe.get_doc("FB Availability Hold", existing)
+        if cstr(existing_doc.status).strip() == "Active" and existing_doc.expires_at and get_datetime(existing_doc.expires_at) <= now_datetime():
+            existing_doc.expires_at = None
+            existing_doc.save(ignore_permissions=True)
         return cstr(existing)
     document = frappe.get_doc(
         {
@@ -69,15 +74,53 @@ def release_hold(hold_name: str, *, actor: str | None = None) -> str:
     return name
 
 
+def manager_override_automation_hold(hold_name: str, *, actor: str, reason: str, minutes: int = 30) -> str:
+    """Temporarily let a manager sell through an automation hold.
+
+    The hold stays as the durable authority and expires back into the normal
+    automation calculation. It is not marked Released, so a later reliable
+    zero-capacity run can safely re-apply it.
+    """
+
+    name = cstr(hold_name).strip()
+    if minutes != 30:
+        raise ValueError("manager override duration is fixed at 30 minutes")
+    if not cstr(reason).strip():
+        frappe.throw("A manager override reason is required", frappe.ValidationError)
+    document = frappe.get_doc("FB Availability Hold", name)
+    if cstr(document.source).strip() != "automation" or cstr(document.status).strip() != "Active":
+        frappe.throw("Only an active automation stock hold can receive a manager override", frappe.ValidationError)
+    document.expires_at = now_datetime() + timedelta(minutes=minutes)
+    document.actor = cstr(actor).strip() or document.actor
+    if frappe.get_meta("FB Availability Hold").has_field("manager_override_reason"):
+        document.manager_override_reason = cstr(reason).strip()
+    if frappe.get_meta("FB Availability Hold").has_field("manager_override_at"):
+        document.manager_override_at = now_datetime()
+    document.save(ignore_permissions=True)
+    return name
+
+
 def active_holds(*, target_type: str, target_id: str, warehouse: str) -> list[dict[str, Any]]:
     rows = frappe.get_all(
         "FB Availability Hold",
         filters={"target_type": target_type, "target_id": target_id, "warehouse": warehouse, "status": "Active"},
-        fields=["name", "source", "reason_code", "reason_label", "expires_at", "active_from"],
+        fields=["name", "source", "reason_code", "reason_label", "expires_at", "active_from", "manager_override_at"],
         order_by="active_from asc",
     )
     now = now_datetime()
-    return [row for row in rows if not row.get("expires_at") or get_datetime(row["expires_at"]) > now]
+    active: list[dict[str, Any]] = []
+    for row in rows:
+        expires_at = get_datetime(row["expires_at"]) if row.get("expires_at") else None
+        override_at = get_datetime(row["manager_override_at"]) if row.get("manager_override_at") else None
+        if override_at and expires_at and expires_at > now:
+            # A manager override is a temporary selling window, not a release.
+            continue
+        if override_at:
+            active.append(row)
+            continue
+        if not expires_at or expires_at > now:
+            active.append(row)
+    return active
 
 
 def restore_automation_holds() -> int:
