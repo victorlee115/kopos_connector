@@ -173,6 +173,55 @@ def create_fb_custom_fields():
                 "translatable": 0,
             },
         ],
+        "Material Request": [
+            {
+                "fieldname": "custom_kopos_inventory_fingerprint",
+                "label": "KoPOS Inventory Fingerprint",
+                "fieldtype": "Data",
+                "unique": 1,
+                "read_only": 1,
+                "no_copy": 1,
+            },
+        ],
+        "Purchase Order": [
+            {
+                "fieldname": "custom_kopos_inventory_fingerprint",
+                "label": "KoPOS Inventory Fingerprint",
+                "fieldtype": "Data",
+                "unique": 1,
+                "read_only": 1,
+                "no_copy": 1,
+            },
+            {
+                "fieldname": "custom_kopos_material_request",
+                "label": "KoPOS Material Request",
+                "fieldtype": "Link",
+                "options": "Material Request",
+                "read_only": 1,
+                "no_copy": 1,
+            },
+            {
+                "fieldname": "custom_kopos_plan_hash",
+                "label": "KoPOS Plan Hash",
+                "fieldtype": "Data",
+                "read_only": 1,
+                "no_copy": 1,
+            },
+            {
+                "fieldname": "custom_kopos_policy_hash",
+                "label": "KoPOS Policy Hash",
+                "fieldtype": "Data",
+                "read_only": 1,
+                "no_copy": 1,
+            },
+            {
+                "fieldname": "custom_kopos_quotation_hash",
+                "label": "KoPOS Quotation Hash",
+                "fieldtype": "Data",
+                "read_only": 1,
+                "no_copy": 1,
+            },
+        ],
         "Sales Invoice Item": [
             {
                 "fieldname": "custom_fb_order_line_ref",
@@ -502,6 +551,15 @@ def create_fb_custom_fields():
         ],
         "Stock Entry": [
             {
+                "fieldname": "custom_kopos_inventory_command_id",
+                "label": "KoPOS Inventory Command ID",
+                "fieldtype": "Data",
+                "read_only": 1,
+                "hidden": 1,
+                "no_copy": 1,
+                "unique": 1,
+            },
+            {
                 "fieldname": "custom_fb_projection_id",
                 "label": "F&B Projection ID",
                 "fieldtype": "Data",
@@ -555,6 +613,28 @@ def create_fb_custom_fields():
                 "insert_after": "custom_fb_shift",
                 "read_only": 1,
                 "translatable": 0,
+            },
+        ],
+        "Work Order": [
+            {
+                "fieldname": "custom_kopos_inventory_command_id",
+                "label": "KoPOS Inventory Command ID",
+                "fieldtype": "Data",
+                "read_only": 1,
+                "hidden": 1,
+                "no_copy": 1,
+                "unique": 1,
+            },
+        ],
+        "Purchase Receipt": [
+            {
+                "fieldname": "custom_kopos_inventory_command_id",
+                "label": "KoPOS Inventory Command ID",
+                "fieldtype": "Data",
+                "read_only": 1,
+                "hidden": 1,
+                "no_copy": 1,
+                "unique": 1,
             },
         ],
     }
@@ -612,11 +692,20 @@ def remove_fb_custom_fields():
         ("Journal Entry", "custom_kopos_qr_provider_evidence_file"),
         ("Journal Entry", "custom_kopos_qr_provider_evidence_sha256"),
         ("Stock Entry", "custom_fb_projection_id"),
+        ("Stock Entry", "custom_kopos_inventory_command_id"),
         ("Stock Entry", "custom_fb_order"),
         ("Stock Entry", "custom_fb_resolved_sale"),
         ("Stock Entry", "custom_fb_event_project"),
         ("Stock Entry", "custom_fb_shift"),
         ("Stock Entry", "custom_fb_reason_code"),
+        ("Material Request", "custom_kopos_inventory_fingerprint"),
+        ("Purchase Order", "custom_kopos_inventory_fingerprint"),
+        ("Purchase Order", "custom_kopos_material_request"),
+        ("Purchase Order", "custom_kopos_plan_hash"),
+        ("Purchase Order", "custom_kopos_policy_hash"),
+        ("Purchase Order", "custom_kopos_quotation_hash"),
+        ("Work Order", "custom_kopos_inventory_command_id"),
+        ("Purchase Receipt", "custom_kopos_inventory_command_id"),
     ]
 
     for doctype, fieldname in fields_to_remove:

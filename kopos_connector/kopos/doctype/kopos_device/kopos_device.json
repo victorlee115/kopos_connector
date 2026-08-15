@@ -29,6 +29,21 @@
   "app_min_version",
   "last_seen_at",
   "last_sync_at",
+  "inventory_report_schema_version",
+  "inventory_report_revision",
+  "inventory_observed_at",
+  "inventory_report_received_at",
+  "inventory_config_version",
+  "inventory_overlay_version",
+  "inventory_overlay_hash",
+  "inventory_sales_pending",
+  "inventory_sales_syncing",
+  "inventory_sales_failed",
+  "inventory_sales_dead_letter",
+  "inventory_oldest_unsaved_sale_at",
+  "inventory_commands_pending",
+  "inventory_commands_failed",
+  "inventory_report_payload_hash",
   "section_break_printers",
   "printers",
   "section_break_users",
@@ -161,6 +176,96 @@
    "fieldname": "last_sync_at",
    "fieldtype": "Datetime",
    "label": "Last Sync At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_report_schema_version",
+   "fieldtype": "Data",
+   "label": "Inventory Report Schema Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_report_revision",
+   "fieldtype": "Int",
+   "label": "Inventory Report Revision",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_observed_at",
+   "fieldtype": "Datetime",
+   "label": "Inventory Observed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_report_received_at",
+   "fieldtype": "Datetime",
+   "label": "Inventory Report Received At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_config_version",
+   "fieldtype": "Int",
+   "label": "Inventory Config Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_overlay_version",
+   "fieldtype": "Data",
+   "label": "Applied Inventory Overlay Version",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_overlay_hash",
+   "fieldtype": "Data",
+   "label": "Applied Inventory Overlay Hash",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_sales_pending",
+   "fieldtype": "Int",
+   "label": "Sales Outbox Pending",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_sales_syncing",
+   "fieldtype": "Int",
+   "label": "Sales Outbox Syncing",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_sales_failed",
+   "fieldtype": "Int",
+   "label": "Sales Outbox Failed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_sales_dead_letter",
+   "fieldtype": "Int",
+   "label": "Sales Outbox Dead Letter",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_oldest_unsaved_sale_at",
+   "fieldtype": "Datetime",
+   "label": "Oldest Unsaved Sale At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_commands_pending",
+   "fieldtype": "Int",
+   "label": "Inventory Commands Pending",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_commands_failed",
+   "fieldtype": "Int",
+   "label": "Inventory Commands Failed",
+   "read_only": 1
+  },
+  {
+   "fieldname": "inventory_report_payload_hash",
+   "fieldtype": "Data",
+   "label": "Inventory Report Payload Hash",
    "read_only": 1
   },
   {

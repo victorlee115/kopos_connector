@@ -10,6 +10,7 @@ frappe_utils = import_module("frappe.utils")
 
 cint = frappe_utils.cint
 get_datetime = frappe_utils.get_datetime
+cstr = frappe_utils.cstr
 
 from kopos_connector.kopos.services.recipe.modifier_bounds import (
     ModifierBoundsError,
@@ -83,6 +84,10 @@ class FBRecipe(Document):
             )
 
     def validate_effective_dates(self) -> None:
+        if self.effective_from or self.effective_to:
+            configured_zone = cstr(frappe.db.get_single_value("System Settings", "time_zone")).strip()
+            if configured_zone != "Asia/Kuala_Lumpur":
+                frappe.throw("Recipe effective times require System Settings time zone Asia/Kuala_Lumpur")
         if self.effective_from and self.effective_to:
             effective_from = get_datetime(self.effective_from)
             effective_to = get_datetime(self.effective_to)

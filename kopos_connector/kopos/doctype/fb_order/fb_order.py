@@ -33,6 +33,10 @@ from kopos_connector.kopos.services.projection.log_service import (
     create_projection_log,
     update_projection_state,
 )
+from kopos_connector.kopos.services.inventory_autopilot.projection_worker import (
+    enqueue_inventory_projection,
+)
+from kopos_connector.utils.diagnostics import log_sanitized_error
 
 
 def create_ingredient_stock_entry(*args: Any, **kwargs: Any) -> Any:
@@ -520,8 +524,8 @@ class FBOrder(BaseDocument):
             )
 
         # Inventory is intentionally outside the cashier-critical transaction.
-        # The current inventory implementation is not invoked here; a future
-        # owner-approved projection worker may consume the immutable sale later.
+        # The post-commit worker consumes the immutable sale later; failures are
+        # recorded as inventory exceptions and never change checkout success.
         self.ingredient_stock_entry = None
         self.stock_status = "Pending"
 
@@ -531,6 +535,15 @@ class FBOrder(BaseDocument):
         self.db_set("stock_status", self.stock_status, update_modified=False)
         if self.sales_invoice:
             self.db_set("sales_invoice", self.sales_invoice, update_modified=False)
+        try:
+            enqueue_inventory_projection(self.name)
+        except Exception as error:
+            # Queue outage must not roll back or delay the commercial sale. The
+            # recovery scheduler will discover the submitted order later.
+            log_sanitized_error(
+                f"Inventory projection enqueue failed for FB Order {self.name}",
+                error,
+            )
         try:
             self.update_shift_expected_cash()
             update_projection_state(

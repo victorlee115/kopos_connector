@@ -42,7 +42,9 @@ requires_erpnext_version = ">=16.0.0,<17.0.0"
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 
-doctype_js = {}
+doctype_js = {
+    "KoPOS Promotion": "public/js/kopos_promotion.js",
+}
 
 # Home Pages
 # ----------
@@ -127,6 +129,11 @@ scheduler_events = {
         "kopos_connector.kopos.services.accounting.automatic_qr_finalization_service.recover_paid_automatic_qr_sales",
         "kopos_connector.kopos.services.projection.retry_service.retry_projection_failures",
     ],
+    "cron": {
+        "*/5 * * * *": [
+            "kopos_connector.kopos.services.inventory_autopilot.projection_worker.recover_inventory_projections",
+        ],
+    },
 }
 
 # Testing

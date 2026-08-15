@@ -4,6 +4,15 @@
 import frappe
 
 
+PROTECTED_LEGACY_FIELDS = frozenset(
+    {
+        "Item-custom_kopos_availability_mode",
+        "Item-custom_kopos_track_stock",
+        "Item-custom_kopos_min_qty",
+    }
+)
+
+
 def before_uninstall():
     """
     Pre-uninstall cleanup
@@ -11,8 +20,11 @@ def before_uninstall():
     """
     try:
         # Remove custom fields
-        remove_custom_fields()
-        frappe.logger().info("KoPOS Connector: Custom fields removed successfully")
+        retained = remove_custom_fields()
+        frappe.logger().warning(
+            "KoPOS Connector: uninstall retained migration evidence fields: %s",
+            ", ".join(sorted(retained)) or "none",
+        )
     except Exception as e:
         frappe.log_error(
             title="KoPOS Connector: Failed to remove custom fields during uninstall",
@@ -20,14 +32,11 @@ def before_uninstall():
         )
 
 
-def remove_custom_fields():
+def remove_custom_fields() -> set[str]:
     """Remove all custom fields created by KoPOS Connector"""
     custom_field_names = [
         # Item fields
         "Item-kopos_availability_section",
-        "Item-custom_kopos_availability_mode",
-        "Item-custom_kopos_track_stock",
-        "Item-custom_kopos_min_qty",
         "Item-custom_kopos_is_prep_item",
         "Item-kopos_modifiers_section",
         "Item-custom_kopos_modifier_groups",
@@ -79,6 +88,7 @@ def remove_custom_fields():
         "Sales Invoice Item-custom_kopos_promotion_allocation",
     ]
 
+    retained_fields = set(PROTECTED_LEGACY_FIELDS)
     for field_name in custom_field_names:
         try:
             frappe.delete_doc("Custom Field", field_name, ignore_missing=True)
@@ -86,3 +96,4 @@ def remove_custom_fields():
             pass  # Field might not exist
 
     frappe.db.commit()
+    return retained_fields

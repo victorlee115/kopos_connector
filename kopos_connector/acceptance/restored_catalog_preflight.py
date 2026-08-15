@@ -68,12 +68,25 @@ def _canonical_json(value: Any) -> str:
 
 
 def _catalog_content(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Exclude the request timestamp while retaining all catalog content."""
-    return {
+    """Exclude request/overlay timestamps while retaining catalog content.
+
+    The overlay deliberately reports when its evidence was generated and when
+    it expires. Those operational timestamps are expected to move between two
+    otherwise identical reads; versioned content and target decisions must not.
+    """
+    content = {
         key: value
         for key, value in payload.items()
         if key != "timestamp"
     }
+    overlay = content.get("inventory_overlay")
+    if isinstance(overlay, Mapping):
+        content["inventory_overlay"] = {
+            key: value
+            for key, value in overlay.items()
+            if key not in {"generated_at", "valid_until"}
+        }
+    return content
 
 
 def _validate_full_payload(

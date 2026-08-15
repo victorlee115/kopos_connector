@@ -1,0 +1,23 @@
+{
+ "doctype": "DocType",
+ "name": "FB Inventory Count Observation",
+ "module": "KoPOS",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "autoname": "field:observation_id",
+ "field_order": ["observation_id", "payload_hash", "task_id", "task_revision", "warehouse", "actor_id", "stock_watermark", "observed_at", "lines_json", "status", "reconciliation"],
+ "fields": [
+  {"fieldname":"observation_id","fieldtype":"Data","label":"Observation ID","reqd":1,"unique":1,"read_only":1},
+  {"fieldname":"payload_hash","fieldtype":"Data","label":"Payload Hash","reqd":1,"read_only":1},
+  {"fieldname":"task_id","fieldtype":"Data","label":"Task ID","reqd":1,"read_only":1},
+  {"fieldname":"task_revision","fieldtype":"Int","label":"Task Revision","reqd":1,"read_only":1},
+  {"fieldname":"warehouse","fieldtype":"Link","label":"Warehouse","options":"Warehouse","reqd":1,"read_only":1},
+  {"fieldname":"actor_id","fieldtype":"Link","label":"Actor","options":"User","reqd":1,"read_only":1},
+  {"fieldname":"stock_watermark","fieldtype":"Data","label":"Stock Ledger Watermark","reqd":1,"read_only":1},
+  {"fieldname":"observed_at","fieldtype":"Datetime","label":"Observed At","reqd":1,"read_only":1},
+  {"fieldname":"lines_json","fieldtype":"Long Text","label":"Observed Lines","reqd":1,"read_only":1},
+  {"fieldname":"status","fieldtype":"Select","label":"Status","options":"Accepted\nConflict\nReplayed","default":"Accepted","reqd":1},
+  {"fieldname":"reconciliation","fieldtype":"Link","label":"Draft Reconciliation","options":"Stock Reconciliation","read_only":1}
+ ],
+ "permissions": [{"role":"Company Director","read":1,"write":1,"create":1},{"role":"KoPOS Device API","read":1,"write":1,"create":1}]
+}

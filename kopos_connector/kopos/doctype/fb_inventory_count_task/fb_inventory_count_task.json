@@ -1,0 +1,20 @@
+{
+ "doctype": "DocType",
+ "name": "FB Inventory Count Task",
+ "module": "KoPOS",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "autoname": "format:INV-COUNT-{YYYY}-{#####}",
+ "is_submittable": 0,
+ "field_order": ["company", "warehouse", "assignee", "revision", "stock_watermark", "status", "lines"],
+ "fields": [
+  {"fieldname":"company","fieldtype":"Link","label":"Company","options":"Company","reqd":1},
+  {"fieldname":"warehouse","fieldtype":"Link","label":"Warehouse","options":"Warehouse","reqd":1},
+  {"fieldname":"assignee","fieldtype":"Link","label":"Assignee","options":"User","reqd":1},
+  {"fieldname":"revision","fieldtype":"Int","label":"Revision","reqd":1},
+  {"fieldname":"stock_watermark","fieldtype":"Data","label":"Stock Ledger Watermark","reqd":1},
+  {"fieldname":"status","fieldtype":"Select","label":"Status","options":"Assigned\nSubmitted\nReviewed\nCancelled","default":"Assigned","reqd":1},
+  {"fieldname":"lines","fieldtype":"Table","label":"Items","options":"FB Inventory Count Task Line"}
+ ],
+ "permissions": [{"role":"Company Director","read":1,"write":1,"create":1},{"role":"KoPOS Device API","read":1}]
+}

@@ -20,7 +20,11 @@ from kopos_connector.utils.diagnostics import (
 )
 
 
-def create_ingredient_stock_entry(fb_order: Any, resolved_sales: Any) -> str | None:
+def create_ingredient_stock_entry(
+    fb_order: Any,
+    resolved_sales: Any,
+    expense_account: str | None = None,
+) -> str | None:
     order_doc = _coerce_doc("FB Order", fb_order)
     if not order_doc:
         return None
@@ -87,8 +91,11 @@ def create_ingredient_stock_entry(fb_order: Any, resolved_sales: Any) -> str | N
                 _value(order_doc, "event_project"),
             )
 
+            detail_meta = frappe.get_meta("Stock Entry Detail")
             for item_row in grouped_items:
-                stock_entry.append("items", item_row)
+                detail = stock_entry.append("items", item_row)
+                if expense_account and detail_meta.has_field("expense_account"):
+                    detail.expense_account = expense_account
 
             stock_entry.insert(ignore_permissions=True)
             stock_entry.submit()
