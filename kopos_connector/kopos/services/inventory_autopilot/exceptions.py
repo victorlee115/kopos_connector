@@ -147,6 +147,12 @@ def _ensure_todo(
     ):
         return
     owner = _resolve_todo_owner(values, responsible_owner=responsible_owner)
+    if not owner:
+        # The exception is intentionally retained as the durable state.  A
+        # missing configured owner is surfaced by health/cutover preflight;
+        # silently assigning it to the worker session or Administrator would
+        # make accountability look complete when it is not.
+        return
     todo = frappe.get_doc({
         "doctype": "ToDo",
         "description": f"Inventory exception: {values['summary']} — {values['next_action']}",
@@ -158,27 +164,55 @@ def _ensure_todo(
     todo.insert(ignore_permissions=True)
 
 
-def _resolve_todo_owner(values: dict[str, Any], *, responsible_owner: str | None) -> str:
-    """Use explicit or source-document ownership before the session fallback.
-
-    Workers often run without a meaningful interactive session.  Callers that
-    know the accountable person can provide ``responsible_owner``; otherwise
-    an existing source document's real owner is the only safe configured
-    authority.  The session user remains a compatibility fallback for manual
-    actions, and Administrator is used only when Frappe supplies no session
-    identity at all.
-    """
+def _resolve_todo_owner(values: dict[str, Any], *, responsible_owner: str | None) -> str | None:
+    """Resolve an explicitly configured owner without session fallbacks."""
 
     explicit_owner = cstr(responsible_owner).strip()
     if explicit_owner:
-        return explicit_owner
-    source_doctype = cstr(values.get("source_doctype")).strip()
-    source_name = cstr(values.get("source_name")).strip()
-    if source_doctype and source_name:
-        try:
-            source_owner = cstr(frappe.db.get_value(source_doctype, source_name, "owner")).strip()
-        except Exception:
-            source_owner = ""
-        if source_owner:
-            return source_owner
-    return cstr(getattr(frappe.session, "user", None)).strip() or "Administrator"
+        return None if explicit_owner in {"Administrator", "Guest"} else explicit_owner
+    return configured_inventory_exception_owner(
+        company=cstr(values.get("company")).strip() or None,
+        warehouse=cstr(values.get("warehouse")).strip() or None,
+        policy_name=(
+            cstr(values.get("source_name")).strip()
+            if cstr(values.get("source_doctype")).strip() == "FB Inventory Policy"
+            else None
+        ),
+    )
+
+
+def configured_inventory_exception_owner(
+    *, company: str | None = None, warehouse: str | None = None, policy_name: str | None = None
+) -> str | None:
+    """Return the enabled Company Director configured for this policy.
+
+    A policy name is preferred for policy-originated exceptions.  Otherwise
+    both company and warehouse are required so multiple outlet policies can
+    never be guessed from one another.
+    """
+
+    if not frappe.db.exists("DocType", "FB Inventory Policy"):
+        return None
+    try:
+        meta = frappe.get_meta("FB Inventory Policy")
+        if not meta.has_field("inventory_exception_owner"):
+            return None
+        filters: dict[str, str] = {}
+        if cstr(policy_name).strip():
+            filters["name"] = cstr(policy_name).strip()
+        elif cstr(company).strip() and cstr(warehouse).strip():
+            filters = {"company": cstr(company).strip(), "warehouse": cstr(warehouse).strip()}
+        else:
+            return None
+        owner = cstr(
+            frappe.db.get_value("FB Inventory Policy", filters, "inventory_exception_owner")
+        ).strip()
+        if not owner or owner in {"Administrator", "Guest"}:
+            return None
+        if not bool(frappe.db.get_value("User", owner, "enabled")):
+            return None
+        if "Company Director" not in set(frappe.get_roles(owner)):
+            return None
+        return owner
+    except Exception:
+        return None

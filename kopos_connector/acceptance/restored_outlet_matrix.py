@@ -1413,15 +1413,18 @@ def _monitoring(ctx: dict[str, Any]) -> dict[str, Any]:
 
 def _operational_owners(ctx: dict[str, Any]) -> dict[str, Any]:
     roles = _rows(ctx, "Has Role", ("parent", "role", "parenttype"), "operationalOwners")
-    policies = _rows(ctx, "FB Inventory Policy", ("automation_user", "purchase_review_owner"), "operationalOwners")
+    policies = _rows(ctx, "FB Inventory Policy", ("automation_user", "inventory_exception_owner", "purchase_review_owner"), "operationalOwners")
     role_counts = _count_values(roles, "role")
     director_count = role_counts.get("Company Director", 0)
     review_owner_count = sum(bool(_text(_value(row, "purchase_review_owner"))) for row in policies)
+    exception_owner_count = sum(bool(_text(_value(row, "inventory_exception_owner"))) for row in policies)
     reasons: list[str] = []
     if director_count == 0:
         reasons.append("company_director_role_not_observed")
     if policies and review_owner_count < len(policies):
         reasons.append("purchase_review_owner_mapping_incomplete")
+    if policies and exception_owner_count < len(policies):
+        reasons.append("inventory_exception_owner_mapping_incomplete")
     return _category(
         len(roles) + len(policies),
         ctx["fixtureCounts"].get("Has Role", 0) + ctx["fixtureCounts"].get("FB Inventory Policy", 0),
@@ -1432,6 +1435,7 @@ def _operational_owners(ctx: dict[str, Any]) -> dict[str, Any]:
         companyDirectorRoleAssignmentCount=director_count,
         inventoryPolicyCount=len(policies),
         purchaseReviewOwnerConfiguredCount=review_owner_count,
+        inventoryExceptionOwnerConfiguredCount=exception_owner_count,
         ownerIdentitiesExposed=False,
     )
 

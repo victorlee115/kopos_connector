@@ -108,6 +108,12 @@ class FBInventoryPolicy(Document):
                 frappe.throw("Draft PO Review Owner must be an enabled user", frappe.ValidationError)
             if "Company Director" not in set(frappe.get_roles(review_owner)):
                 frappe.throw("Draft PO Review Owner must hold Company Director", frappe.ValidationError)
+        exception_owner = cstr(getattr(self, "inventory_exception_owner", None)).strip()
+        if exception_owner:
+            if exception_owner in {"Administrator", "Guest"} or not frappe.db.get_value("User", exception_owner, "enabled"):
+                frappe.throw("Inventory Exception Owner must be an enabled non-system user", frappe.ValidationError)
+            if "Company Director" not in set(frappe.get_roles(exception_owner)):
+                frappe.throw("Inventory Exception Owner must hold Company Director", frappe.ValidationError)
 
         before = self.get_doc_before_save()
         previous_token = cstr(getattr(before, "cutover_token", None)).strip() if before else ""

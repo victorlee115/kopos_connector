@@ -28,6 +28,7 @@
         "expense_account",
         "cogs_account",
         "automation_user",
+        "inventory_exception_owner",
         "purchase_review_owner"
     ],
     "fields": [
@@ -50,6 +51,7 @@
         {"fieldname": "expense_account", "fieldtype": "Link", "label": "Expense / COGS Account", "options": "Account"},
         {"fieldname": "cogs_account", "fieldtype": "Link", "label": "COGS Account", "options": "Account"},
         {"fieldname": "automation_user", "fieldtype": "Link", "label": "Automation User", "options": "User", "description": "Dedicated least-privilege user used to create unattended Material Requests and Draft Purchase Orders."},
+        {"fieldname": "inventory_exception_owner", "fieldtype": "Link", "label": "Inventory Exception Owner", "options": "User", "description": "Enabled Company Director who receives ToDos for inventory exceptions at this outlet. Configure explicitly; JiJi never falls back to the session user or Administrator."},
         {"fieldname": "purchase_review_owner", "fieldtype": "Link", "label": "Draft PO Review Owner", "options": "User", "description": "Company Director who receives the review task for JiJi-created Draft Purchase Orders."}
     ],
     "index_web_pages_for_search": 1,

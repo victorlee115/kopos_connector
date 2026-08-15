@@ -36,7 +36,7 @@ class InventoryExceptionTests(TestCase):
 
         self.assertEqual(todo_payload["owner"], "director@example.com")
 
-    def test_todo_uses_source_document_owner_before_session_fallback(self):
+    def test_todo_uses_configured_policy_owner_without_session_fallback(self):
         todo_payload: dict[str, object] = {}
         todo = SimpleNamespace(insert=lambda **_kwargs: None)
 
@@ -45,27 +45,48 @@ class InventoryExceptionTests(TestCase):
             return todo
 
         database = SimpleNamespace(
-            exists=lambda doctype, filters=None: doctype == "DocType" and filters == "ToDo",
-            get_value=lambda doctype, name, fieldname: (
+            exists=lambda doctype, name=None: doctype == "DocType" and name in {"ToDo", "FB Inventory Policy"},
+            get_value=lambda doctype, filters, fieldname, **_kwargs: (
                 "director@example.com"
-                if (doctype, name, fieldname) == ("FB Inventory Policy", "POLICY-1", "owner")
-                else None
+                if (doctype, fieldname) == ("FB Inventory Policy", "inventory_exception_owner")
+                else (1 if (doctype, fieldname) == ("User", "enabled") else None)
             ),
         )
         with patch.object(exceptions.frappe, "db", database), patch.object(
             exceptions.frappe, "get_doc", side_effect=get_doc
-        ), patch.object(exceptions.frappe.session, "user", "Administrator"):
+        ), patch.object(exceptions.frappe, "get_roles", return_value=["Company Director"]), patch.object(
+            exceptions.frappe.session, "user", "Administrator"
+        ):
             exceptions._ensure_todo(
                 "INV-EX-1",
                 {
                     "summary": "Needs review",
                     "next_action": "Ask the director",
-                    "source_doctype": "FB Inventory Policy",
-                    "source_name": "POLICY-1",
+                    "company": "JiJi",
+                    "warehouse": "Outlet - KL",
                 },
             )
 
         self.assertEqual(todo_payload["owner"], "director@example.com")
+
+    def test_todo_is_not_assigned_to_session_or_administrator_when_owner_missing(self):
+        todo = SimpleNamespace(insert=lambda **_kwargs: self.fail("unexpected ToDo"))
+        database = SimpleNamespace(
+            exists=lambda doctype, name=None: doctype == "DocType" and name in {"ToDo", "FB Inventory Policy"},
+            get_value=lambda *args, **kwargs: None,
+        )
+        with patch.object(exceptions.frappe, "db", database), patch.object(
+            exceptions.frappe, "get_doc", return_value=todo
+        ), patch.object(exceptions.frappe.session, "user", "Administrator"):
+            exceptions._ensure_todo(
+                "INV-EX-2",
+                {
+                    "summary": "Needs setup",
+                    "next_action": "Configure the owner",
+                    "company": "JiJi",
+                    "warehouse": "Outlet - KL",
+                },
+            )
 
     def test_resolve_closes_exact_record_and_todo(self):
         writes: list[tuple] = []

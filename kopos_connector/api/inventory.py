@@ -38,7 +38,10 @@ from kopos_connector.kopos.services.inventory_autopilot.legacy_migration import 
     execute_legacy_migration,
     legacy_input_digest,
 )
-from kopos_connector.kopos.services.inventory_autopilot.exceptions import upsert_inventory_exception
+from kopos_connector.kopos.services.inventory_autopilot.exceptions import (
+    configured_inventory_exception_owner,
+    upsert_inventory_exception,
+)
 from kopos_connector.kopos.services.inventory_autopilot.document_coordinator import (
     outbound_configuration_safe,
 )
@@ -268,11 +271,33 @@ def get_autopilot_health(warehouse: str | None = None) -> dict[str, Any]:
     if runtime_artifact.get("status") != "verified":
         critical_reasons.append("inventory_runtime_artifact_identity_unavailable")
     counts = _health_count_summary(resolved_warehouse, now=now)
+    count_director_reviews = _health_count_director_reviews(resolved_warehouse, now=now)
     plans = _health_plan_summary(resolved_warehouse, now=now)
     if counts.get("status") != "ok":
         critical_reasons.append("inventory_count_health_unavailable")
+    if count_director_reviews.get("status") == "unavailable":
+        critical_reasons.append("inventory_count_director_review_unavailable")
     if plans.get("status") != "ok":
         critical_reasons.append("inventory_plan_health_unavailable")
+    exception_owner = configured_inventory_exception_owner(
+        policy_name=cstr(policy.get("name")).strip() if policy else None,
+        company=cstr(policy.get("company")).strip() if policy else None,
+        warehouse=resolved_warehouse,
+    )
+    exception_routing = {
+        "status": "configured" if exception_owner else ("missing" if policy else "policy_missing"),
+        "message": (
+            "Inventory exceptions are routed to the configured Company Director."
+            if exception_owner
+            else (
+                "Create an outlet Inventory Policy before activating inventory."
+                if not policy
+                else "Set an enabled Company Director as Inventory Exception Owner on this outlet policy."
+            )
+        ),
+    }
+    if policy and not exception_owner:
+        critical_reasons.append("inventory_exception_owner_not_configured")
     availability_at = _health_marker("last_availability", warehouse=resolved_warehouse)
     plan_at = _health_marker("last_plan", warehouse=resolved_warehouse)
     po_safe, po_reason = outbound_configuration_safe()
@@ -303,7 +328,9 @@ def get_autopilot_health(warehouse: str | None = None) -> dict[str, Any]:
             "unacknowledged_devices": unacknowledged_overlays,
         },
         "counts": counts,
+        "count_director_reviews": count_director_reviews,
         "planning": plans,
+        "exception_routing": exception_routing,
         "exceptions": {
             "open_critical": len(critical_exceptions),
             "critical_reasons": sorted(set(critical_reasons)),
@@ -354,7 +381,6 @@ def activate_inventory_cutover(
     warehouse = cstr(getattr(policy_doc, "warehouse", None)).strip()
     if not company or not warehouse:
         frappe.throw(_("Inventory Policy needs a company and warehouse before cutover"), frappe.ValidationError)
-
     requested_reconciliation = cstr(opening_stock_reconciliation).strip()
     stored_token = cstr(getattr(policy_doc, "cutover_token", None)).strip()
     stored_reconciliation = cstr(getattr(policy_doc, "opening_stock_reconciliation", None)).strip()
@@ -371,6 +397,13 @@ def activate_inventory_cutover(
         return _cutover_identity_response(policy_doc, status="already_active")
     if cstr(getattr(policy_doc, "cutover_at", None)).strip():
         frappe.throw(_("Inventory Policy has a cutover time but no cutover token"), frappe.ValidationError)
+
+    if not configured_inventory_exception_owner(
+        company=company,
+        warehouse=warehouse,
+        policy_name=policy_name,
+    ):
+        _throw_cutover_block("inventory_exception_owner_not_configured")
 
     reconciliation_name = requested_reconciliation or stored_reconciliation
     if not reconciliation_name:
@@ -1976,7 +2009,15 @@ def get_edge_snapshot(
         task_response = _get_inventory_tasks(device_id=device_id)
     except Exception as error:
         log_sanitized_error("KoPOS edge inventory task read failed", error)
-        task_response = {"tasks": []}
+        task_response = {
+            "tasks_status": "unavailable",
+            "tasks_error_label": (
+                "Assigned inventory tasks are temporarily unavailable. "
+                "Refresh the tablet or ask a manager."
+            ),
+            "tasks": [],
+            "count_task": None,
+        }
     inventory_snapshot = attach_bounded_tasks(inventory_snapshot, task_response)
     payload["inventory_snapshot"] = inventory_snapshot
     if cstr(inventory_snapshot.get("status")).strip() == "ok":
@@ -2197,12 +2238,19 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
                 continue
             if cstr(alert.get("bom_no")).strip() in active_work_order_boms:
                 continue
+            blocked_reason = cstr(alert.get("blocked_reason")).strip() or None
+            item_name = cstr(alert.get("item_name") or alert.get("item_code")).strip()
+            title = cstr(alert.get("title")).strip() or (
+                "Batch preparation setup needed"
+                if blocked_reason and not cstr(alert.get("bom_no")).strip()
+                else "Prepare {0}".format(item_name)
+            )
             tasks.append({
                 "kind": "preparation",
                 "document": cstr(alert.get("document")),
-                "title": "Prepare {0}".format(cstr(alert.get("item_name") or alert.get("item_code"))),
+                "title": title,
                 "item_code": cstr(alert.get("item_code")),
-                "item_name": cstr(alert.get("item_name") or alert.get("item_code")),
+                "item_name": item_name,
                 "qty": alert.get("qty"),
                 "bom_no": cstr(alert.get("bom_no")),
                 "warehouse": warehouse,
@@ -2215,7 +2263,7 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
                 "current_qty": alert.get("current_qty"),
                 "lead_minutes": alert.get("lead_minutes"),
                 "preparation_instructions": cstr(alert.get("preparation_instructions")),
-                "blocked_reason": cstr(alert.get("blocked_reason")) or None,
+                "blocked_reason": blocked_reason,
                 "revision": cstr(alert.get("revision")),
             })
         for row in work_orders:
@@ -2743,6 +2791,15 @@ def create_count_reconciliation_after_director_review(*, payload: str | dict[str
     reason = cstr(value.get("reason")).strip()
     if not observation_id or not reason:
         frappe.throw(_("Count variance review requires observation_id and reason"), frappe.ValidationError)
+    if len(reason) > 2_000:
+        frappe.throw(_("Count variance review reason is too long"), frappe.ValidationError)
+    # Serialize competing clicks before reading the immutable observation. The
+    # deterministic Stock Reconciliation name remains the final replay guard,
+    # while this row lock prevents two directors from both inserting it.
+    frappe.db.sql(
+        "SELECT name FROM `tabFB Inventory Count Observation` WHERE observation_id = %s FOR UPDATE",
+        (observation_id,),
+    )
     observation = frappe.db.get_value(
         "FB Inventory Count Observation",
         {"observation_id": observation_id},
@@ -5193,10 +5250,15 @@ def _validate_guided_source_revision(value: dict[str, Any], document: Any, label
 
 
 def _get_policy(warehouse: str) -> dict[str, Any] | None:
+    fields = ["name", "company", "automation_state", "max_source_age_minutes"]
+    if frappe.db.exists("DocType", "FB Inventory Policy"):
+        meta = frappe.get_meta("FB Inventory Policy")
+        if meta.has_field("inventory_exception_owner"):
+            fields.append("inventory_exception_owner")
     names = frappe.get_all(
         "FB Inventory Policy",
         filters={"warehouse": warehouse},
-        fields=["name", "automation_state", "max_source_age_minutes"],
+        fields=fields,
         limit_page_length=1,
     )
     return names[0] if names else None
@@ -5392,6 +5454,108 @@ def _health_count_summary(warehouse: str, *, now: Any) -> dict[str, Any]:
         "by_status": by_status,
         "oldest_age_minutes": _age_minutes(oldest, now),
     }
+
+
+def _health_count_director_reviews(warehouse: str, *, now: Any) -> dict[str, Any]:
+    """Return safe count observations waiting for director review.
+
+    The manager page needs enough evidence to make one informed decision, but
+    not the hidden valuation or monetary ceiling that caused the review.
+    ``lines_json`` is immutable observation evidence; this helper only derives
+    the operational pack breakdown and signed variance percentage for display.
+    """
+
+    if not frappe.db.exists("DocType", "FB Inventory Count Observation"):
+        return {"status": "not_installed", "open": 0, "items": []}
+    try:
+        meta = frappe.get_meta("FB Inventory Count Observation")
+        required = {
+            "observation_id", "warehouse", "status", "lines_json", "reconciliation",
+            "variance_requires_director",
+        }
+        if not required.issubset({field.fieldname for field in meta.fields}):
+            return {"status": "unavailable", "open": 0, "items": []}
+        fields = [
+            "name", "observation_id", "task_id", "task_revision", "warehouse",
+            "observed_at", "lines_json", "status", "reconciliation", "variance_percent",
+            "variance_requires_director",
+        ]
+        rows = frappe.get_all(
+            "FB Inventory Count Observation",
+            filters={
+                "warehouse": warehouse,
+                "status": "Review",
+                "variance_requires_director": 1,
+            },
+            fields=fields,
+            order_by="observed_at asc",
+            limit_page_length=50,
+        )
+    except Exception as error:
+        log_sanitized_error("Inventory health director count review lookup failed", error)
+        return {"status": "unavailable", "open": 0, "items": []}
+
+    reviews: list[dict[str, Any]] = []
+    for row in rows or []:
+        if cstr(row.get("reconciliation")).strip():
+            continue
+        try:
+            raw_lines = json.loads(cstr(row.get("lines_json")))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(raw_lines, list) or not raw_lines:
+            continue
+        safe_lines: list[dict[str, Any]] = []
+        for line in raw_lines[:100]:
+            if not isinstance(line, dict):
+                continue
+            item_id = cstr(line.get("item_id")).strip()
+            total = _safe_count_quantity(line.get("total_quantity") or line.get("quantity"))
+            if not item_id or total is None:
+                continue
+            try:
+                line_variance = _count_line_variance_percent(
+                    warehouse=warehouse,
+                    item_id=item_id,
+                    counted_quantity=total,
+                )
+            except Exception:
+                line_variance = None
+            safe_line: dict[str, Any] = {
+                "item_id": item_id,
+                "item_name": cstr(line.get("item_name")).strip() or item_id,
+                "uom": cstr(line.get("stock_uom") or line.get("uom") or "Nos").strip(),
+                "total_quantity": total,
+                "variance_percent": line_variance,
+            }
+            if all(
+                line.get(fieldname) not in (None, "")
+                for fieldname in ("full_packs", "loose_quantity", "purchase_uom", "conversion_factor")
+            ):
+                safe_line.update({
+                    "purchase_uom": cstr(line.get("purchase_uom")),
+                    "conversion_factor": cstr(line.get("conversion_factor")),
+                    "full_packs": _safe_count_quantity(line.get("full_packs")),
+                    "loose_quantity": _safe_count_quantity(line.get("loose_quantity")),
+                })
+            safe_lines.append(safe_line)
+        if not safe_lines:
+            continue
+        try:
+            observed_at = get_datetime(row.get("observed_at")) if row.get("observed_at") else None
+        except (TypeError, ValueError, OverflowError):
+            observed_at = None
+        reviews.append({
+            "observation_id": cstr(row.get("observation_id")),
+            "task_id": cstr(row.get("task_id")),
+            "task_revision": row.get("task_revision"),
+            "observed_at": _iso_with_offset(observed_at) if observed_at else None,
+            "age_minutes": _age_minutes(observed_at, now),
+            "variance_percent": cstr(row.get("variance_percent")) or None,
+            "threshold_reason": "Configured count-variance rules require director review.",
+            "lines": safe_lines,
+        })
+    return {"status": "ok", "open": len(reviews), "items": reviews}
 
 
 def _health_plan_summary(warehouse: str, *, now: Any) -> dict[str, Any]:

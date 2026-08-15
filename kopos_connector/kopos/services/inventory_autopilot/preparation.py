@@ -329,7 +329,37 @@ def _preparation_alerts_for_policy(
                     source_doctype="FB Inventory Policy",
                     source_name=cstr(policy.get("name")),
                 )
-        return [{"status": "blocked", "reason": failure} for failure in variance_failures]
+        # Keep configuration failures visible in the same bounded POS task
+        # feed as normal preparation alerts.  The task deliberately has no
+        # BOM/work-order identity, so the client can explain the setup gap but
+        # cannot start a physical operation from it.
+        return [{
+            "status": "alert",
+            "kind": "preparation",
+            "preparation_alert": True,
+            "title": "Batch preparation setup needed",
+            "document": "Setup required",
+            "item_name": "Batch preparation setup needed",
+            "warehouse": warehouse,
+            "blocked_reason": (
+                "Batch preparation setup is incomplete. A Company Director "
+                "must set a valid BOM or outlet variance ceiling before "
+                "another batch can be prepared."
+            ),
+            "preparation_instructions": (
+                "Ask a Company Director to complete the batch preparation setup."
+            ),
+            "reason": "|".join(variance_failures),
+            "revision": "",
+            "fingerprint": _fingerprint(
+                company,
+                warehouse,
+                "setup:" + "|".join(variance_failures),
+                Decimal("0"),
+                Decimal("0"),
+                "setup",
+            ),
+        }]
     rows = frappe.get_all(
         "BOM",
         filters={

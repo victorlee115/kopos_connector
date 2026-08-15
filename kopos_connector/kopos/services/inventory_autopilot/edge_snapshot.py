@@ -255,6 +255,7 @@ def build_edge_inventory_snapshot(
         },
         "tasks": [],
         "count_task": None,
+        "tasks_status": "ok",
     }
 
 
@@ -267,6 +268,29 @@ def attach_bounded_tasks(
 ) -> dict[str, Any]:
     """Attach only the fixed, operational task vocabulary to a snapshot."""
 
+    raw_status = cstr(
+        task_response.get("tasks_status") or task_response.get("status")
+        if isinstance(task_response, Mapping)
+        else ""
+    ).strip().lower()
+    if raw_status == "unavailable":
+        # A task read failure must never make the commercial/catalog snapshot
+        # fail.  It also must not leak a partially read assignment: clients
+        # retain their own same-binding last-known-good task data and show the
+        # sanitized explanation below.
+        snapshot["tasks"] = []
+        snapshot["tasks_truncated"] = False
+        snapshot["count_task"] = None
+        snapshot["tasks_status"] = "unavailable"
+        error_label = cstr(
+            task_response.get("tasks_error_label") if isinstance(task_response, Mapping) else ""
+        ).strip()
+        if error_label:
+            snapshot["tasks_error_label"] = error_label[:240]
+        else:
+            snapshot.pop("tasks_error_label", None)
+        return snapshot
+
     raw_tasks = task_response.get("tasks", []) if isinstance(task_response, Mapping) else []
     if not isinstance(raw_tasks, list):
         raw_tasks = []
@@ -277,6 +301,8 @@ def attach_bounded_tasks(
         in {"count", "preparation", "receiving", "transfer_dispatch", "transfer_receipt"}
     ]
     snapshot["tasks_truncated"] = len(raw_tasks) > max_tasks
+    snapshot["tasks_status"] = "ok"
+    snapshot.pop("tasks_error_label", None)
     raw_count_task = task_response.get("count_task") if isinstance(task_response, Mapping) else None
     if isinstance(raw_count_task, Mapping):
         snapshot["count_task"] = _safe_count_task(

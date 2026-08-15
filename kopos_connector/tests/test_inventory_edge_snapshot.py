@@ -4,6 +4,7 @@ import inspect
 import unittest
 from datetime import datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
@@ -99,6 +100,7 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         )
 
         preparation = result["tasks"][0]
+        self.assertEqual(result["tasks_status"], "ok")
         self.assertEqual(preparation["preparation_alert"], True)
         self.assertEqual(preparation["preparation_fingerprint"], "alert-fingerprint")
         self.assertEqual(preparation["batch_qty"], "12")
@@ -126,6 +128,63 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
 
         self.assertEqual(result["count_task"]["name"], "COUNT-0002")
         self.assertEqual(result["count_task"]["lines"][0]["purchase_uom"], "Carton")
+
+    def test_edge_tasks_unavailable_keeps_commercial_snapshot_and_clears_partial_tasks(self) -> None:
+        result = attach_bounded_tasks(
+            {
+                "status": "ok",
+                "tasks": [{"kind": "count", "document": "STALE"}],
+                "count_task": {"name": "STALE"},
+            },
+            {
+                "tasks_status": "unavailable",
+                "tasks_error_label": "Assigned inventory tasks are temporarily unavailable. Refresh the tablet or ask a manager.",
+                "tasks": [{"kind": "count", "document": "SHOULD-NOT-LEAK"}],
+                "count_task": {"name": "SHOULD-NOT-LEAK"},
+            },
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["tasks_status"], "unavailable")
+        self.assertEqual(result["tasks"], [])
+        self.assertIsNone(result["count_task"])
+        self.assertIn("temporarily unavailable", result["tasks_error_label"])
+
+    def test_health_count_review_projection_exposes_operational_breakdown_only(self) -> None:
+        fields = [
+            "observation_id", "warehouse", "status", "lines_json", "reconciliation",
+            "variance_requires_director",
+        ]
+        row = {
+            "name": "OBS-1",
+            "observation_id": "OBS-1",
+            "task_id": "TASK-1",
+            "task_revision": 2,
+            "warehouse": "Outlet - J",
+            "observed_at": "2026-08-16T10:00:00+08:00",
+            "lines_json": '[{"item_id":"MILK","item_name":"Milk","stock_uom":"L","purchase_uom":"Carton","conversion_factor":"12","full_packs":"1","loose_quantity":"2","total_quantity":"14"}]',
+            "status": "Review",
+            "reconciliation": "",
+            "variance_percent": "16.67",
+            "variance_requires_director": 1,
+        }
+        meta = SimpleNamespace(fields=[SimpleNamespace(fieldname=name) for name in fields])
+        with patch.object(inventory.frappe.db, "exists", return_value=True), patch.object(
+            inventory.frappe, "get_meta", return_value=meta
+        ), patch.object(inventory.frappe, "get_all", return_value=[row]), patch.object(
+            inventory, "_count_line_variance_percent", return_value="16.67"
+        ):
+            result = inventory._health_count_director_reviews(
+                "Outlet - J",
+                now=datetime(2026, 8, 16, 3, 0),
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["open"], 1)
+        self.assertEqual(result["items"][0]["lines"][0]["full_packs"], "1")
+        self.assertEqual(result["items"][0]["lines"][0]["loose_quantity"], "2")
+        self.assertNotIn("variance_value", result["items"][0])
+        self.assertNotIn("count_variance_value_ceiling", result["items"][0])
 
     def test_runout_is_null_until_target_is_reliable(self) -> None:
         target = {
@@ -193,6 +252,8 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         self.assertEqual(fallback["sync_mode"], "full")
         self.assertEqual(fallback["inventory_snapshot"]["status"], "unavailable")
         self.assertEqual(fallback["inventory_snapshot"]["tasks"], [])
+        self.assertEqual(fallback["inventory_snapshot"]["tasks_status"], "unavailable")
+        self.assertIsNone(fallback["inventory_snapshot"]["count_task"])
 
     def test_inventory_task_reader_returns_count_task_alongside_task_list(self) -> None:
         count_task = {
@@ -216,6 +277,39 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
 
         self.assertEqual(result["count_task"], count_task)
         self.assertEqual(result["tasks"][0]["kind"], "count")
+
+    def test_inventory_task_reader_keeps_blocked_preparation_setup_visible(self) -> None:
+        blocked_alert = {
+            "kind": "preparation",
+            "status": "alert",
+            "title": "Batch preparation setup needed",
+            "document": "Setup required",
+            "item_name": "Batch preparation setup needed",
+            "blocked_reason": "Batch preparation setup is incomplete.",
+            "preparation_instructions": "Ask a Company Director to complete setup.",
+            "fingerprint": "setup-fingerprint",
+            "revision": "",
+        }
+        work_order_meta = SimpleNamespace(has_field=lambda field: field == "custom_kopos_preparation_fingerprint")
+        with patch.object(inventory, "require_device_context", return_value=SimpleNamespace(name="DEVICE-1")), patch.object(
+            inventory, "resolve_catalog_pos_profile", return_value={"company": "JiJi", "warehouse": "Outlet - J"}
+        ), patch.object(inventory, "_preparation_tasks_visible_to_device", return_value=True), patch.object(
+            inventory, "_get_count_task", return_value={"task": None}
+        ), patch.object(inventory, "derived_preparation_alerts", return_value=[blocked_alert]), patch.object(
+            inventory.frappe.db,
+            "exists",
+            side_effect=lambda doctype, name=None, *args, **kwargs: (
+                doctype == "Work Order" or (doctype == "DocType" and name == "Work Order")
+            ),
+        ), patch.object(inventory.frappe, "get_meta", return_value=work_order_meta), patch.object(
+            inventory.frappe, "get_all", return_value=[]
+        ):
+            result = inventory._get_inventory_tasks(device_id="DEVICE-1")
+
+        self.assertEqual(len(result["tasks"]), 1)
+        self.assertEqual(result["tasks"][0]["title"], "Batch preparation setup needed")
+        self.assertEqual(result["tasks"][0]["document"], "Setup required")
+        self.assertIn("setup is incomplete", result["tasks"][0]["blocked_reason"])
 
     def test_snapshot_is_bounded_and_contains_operational_values_only(self) -> None:
         with (

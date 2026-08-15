@@ -210,6 +210,8 @@ class InventoryCutoverTests(TestCase):
             inventory, "automation_identity_is_configured", return_value=True
         ), patch.object(
             inventory, "purchase_review_owner", return_value="director@example.com"
+        ), patch.object(
+            inventory, "configured_inventory_exception_owner", return_value="director@example.com"
         ):
             result = inventory.activate_inventory_cutover(
                 policy=policy.name,

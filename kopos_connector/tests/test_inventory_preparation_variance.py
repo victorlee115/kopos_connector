@@ -77,6 +77,43 @@ class InventoryPreparationVarianceTests(TestCase):
         self.assertEqual(upsert.call_args.kwargs["reason_code"], "batch_preparation_variance")
         self.assertEqual(upsert.call_args.kwargs["source_name"], "MAT-0001")
 
+    def test_missing_variance_setup_is_a_visible_non_actionable_preparation_task(self) -> None:
+        bom_fields = [
+            "custom_kopos_autoprep_enabled",
+            "custom_kopos_batch_qty",
+            "custom_kopos_min_ready_qty",
+            "custom_kopos_preparation_lead_minutes",
+        ]
+        bom_meta = type("Meta", (), {
+            "fields": [type("Field", (), {"fieldname": field})() for field in bom_fields],
+            "has_field": lambda self, field: field in bom_fields,
+        })()
+        work_order_meta = type("Meta", (), {
+            "fields": [type("Field", (), {"fieldname": "custom_kopos_preparation_fingerprint"})()],
+            "has_field": lambda self, field: field == "custom_kopos_preparation_fingerprint",
+        })()
+        with patch.object(preparation.frappe, "get_meta", side_effect=[bom_meta, work_order_meta]), patch.object(
+            preparation.frappe.db, "exists", return_value=True
+        ), patch.object(
+            preparation, "preparation_variance_preflight", return_value=("batch_preparation_variance_threshold_invalid:BOM-COLD-FOAM",)
+        ):
+            alerts = preparation._preparation_alerts_for_policy(
+                {
+                    "name": "FB-POLICY-JIJI-OUTLET",
+                    "company": "JiJi",
+                    "warehouse": "Outlet - KL",
+                    "cutover_at": "2026-08-16 10:00:00",
+                    "cutover_token": "cutover",
+                },
+                record_exceptions=False,
+            )
+
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["kind"], "preparation")
+        self.assertEqual(alerts[0]["status"], "alert")
+        self.assertIn("setup is incomplete", alerts[0]["blocked_reason"])
+        self.assertFalse(alerts[0].get("bom_no"))
+
 
 if __name__ == "__main__":
     import unittest

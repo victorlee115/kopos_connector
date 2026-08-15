@@ -35,6 +35,10 @@ class JiJiStockAutopilotPage {
 			event.preventDefault();
 			this.openException($(event.currentTarget).attr("data-exception-route"));
 		});
+		this.page.body.on("click", "[data-count-review]", (event) => {
+			event.preventDefault();
+			this.reviewCount($(event.currentTarget).attr("data-count-review"));
+		});
 	}
 
 	render() {
@@ -49,6 +53,7 @@ class JiJiStockAutopilotPage {
 				</div>
 				<div data-overall class="mb-4"></div>
 				<div data-sections class="row"></div>
+				<div data-count-reviews class="mt-2"></div>
 				<div data-exceptions class="mt-4"></div>
 			</div>`);
 		this.updateWarehouseHelp();
@@ -105,9 +110,11 @@ class JiJiStockAutopilotPage {
 		const devices = health.devices || {};
 		const scheduler = health.scheduler || {};
 		const runtime = health.runtime_artifact || {};
+		const countReviews = health.count_director_reviews || {};
+		const exceptionRouting = health.exception_routing || {};
 		const stockReportAge = this.oldestDeviceReportAge(devices, health.as_of);
-		const overallCritical = critical > 0 || (exceptions.critical_reasons || []).length > 0 || health.draft_purchase_order_safety === "unsafe";
-		const overallWarning = warningCount > 0 || Number(devices.stale || 0) > 0 || Number(devices.dirty || 0) > 0;
+		const overallCritical = critical > 0 || (exceptions.critical_reasons || []).length > 0 || health.draft_purchase_order_safety === "unsafe" || ["missing", "policy_missing"].includes(exceptionRouting.status);
+		const overallWarning = warningCount > 0 || Number(devices.stale || 0) > 0 || Number(devices.dirty || 0) > 0 || Number(countReviews.open || 0) > 0;
 		this.page.set_indicator(
 			overallCritical ? __("Action needed") : overallWarning ? __("Review needed") : __("All clear"),
 			overallCritical ? "red" : overallWarning ? "orange" : "green",
@@ -123,10 +130,10 @@ class JiJiStockAutopilotPage {
 				title: __("Needs you"),
 				icon: "⚠",
 				status: overallCritical ? "critical" : overallWarning ? "warning" : "ok",
-				value: critical ? __("{0} critical exception(s)", [critical]) : __("No critical exceptions"),
-				detail: this.firstExceptionDetail(exceptions),
-				action: __("Open exceptions"),
-				route: "needs",
+				value: ["missing", "policy_missing"].includes(exceptionRouting.status) ? (exceptionRouting.status === "policy_missing" ? __("Inventory policy is not configured") : __("Exception owner is not configured")) : critical ? __("{0} critical exception(s)", [critical]) : Number(countReviews.open || 0) ? __("{0} count review(s)", [Number(countReviews.open || 0)]) : __("No critical exceptions"),
+				detail: ["missing", "policy_missing"].includes(exceptionRouting.status) ? exceptionRouting.message : Number(countReviews.open || 0) ? __("Review the counted quantities, then create each draft reconciliation.") : this.firstExceptionDetail(exceptions),
+				action: ["missing", "policy_missing"].includes(exceptionRouting.status) ? __("Open inventory policy") : __("Open exceptions"),
+				route: ["missing", "policy_missing"].includes(exceptionRouting.status) ? "settings" : "needs",
 			},
 			{
 				key: "today",
@@ -180,7 +187,68 @@ class JiJiStockAutopilotPage {
 			},
 		];
 		this.page.body.find("[data-sections]").html(sections.map((section) => this.sectionHtml(section)).join(""));
+		this.renderCountReviews(countReviews);
 		this.renderExceptions(exceptions.top || []);
+	}
+
+	renderCountReviews(summary) {
+		const target = this.page.body.find("[data-count-reviews]");
+		if (!summary || summary.status === "not_installed") {
+			target.empty();
+			return;
+		}
+		if (summary.status === "unavailable") {
+			target.html(`<div class="alert alert-warning">${this.statusBadge("warning", __("Count reviews are temporarily unavailable. Refresh and try again."))}</div>`);
+			return;
+		}
+		if (!Number(summary.open || 0)) {
+			target.empty();
+			return;
+		}
+		const cards = (Array.isArray(summary.items) ? summary.items : []).map((review) => {
+			const lines = (Array.isArray(review.lines) ? review.lines : []).map((line) => {
+				const packs = line.full_packs != null && line.loose_quantity != null
+					? `${this.escape(line.full_packs)} ${this.escape(line.purchase_uom || __("packs"))} + ${this.escape(line.loose_quantity)} ${this.escape(line.uom)}`
+					: `${this.escape(line.total_quantity)} ${this.escape(line.uom)}`;
+				const variance = line.variance_percent == null ? __("variance unavailable") : `${this.escape(line.variance_percent)}%`;
+				return `<tr><td>${this.escape(line.item_name || line.item_id)}</td><td>${packs}</td><td>${variance}</td></tr>`;
+			}).join("");
+			const reviewId = this.escapeAttribute(review.observation_id);
+			return `<div class="card border-warning mb-3"><div class="card-body">
+				<div class="d-flex justify-content-between align-items-start gap-2"><div><div class="mb-1">${this.statusBadge("warning", __("Director review required"))}</div>
+				<h4 class="mb-1">${this.escape(review.observation_id)}</h4><p class="text-muted small mb-2">${this.escape(review.threshold_reason || __("Configured count-variance rules require director review."))}</p></div>
+				<button type="button" class="btn btn-sm btn-primary" data-count-review="${reviewId}">${__("Review and create draft")}</button></div>
+				<table class="table table-sm mb-0"><thead><tr><th>${__("Item")}</th><th>${__("Count entered")}</th><th>${__("Variance")}</th></tr></thead><tbody>${lines}</tbody></table>
+				<div class="text-muted small mt-2">${review.age_minutes == null ? __("Observed time unavailable") : __("Observed {0} ago", [this.ageMinutesPhrase(review.age_minutes)])}</div>
+			</div></div>`;
+		}).join("");
+		target.html(`<h3>${__("Count reviews needing your decision")}</h3><p class="text-muted">${__("Check the physical quantities below. JiJi will create a normal Draft Stock Reconciliation; it will not submit it.")}</p>${cards}`);
+	}
+
+	reviewCount(observationId) {
+		const id = String(observationId || "");
+		const summary = this.health?.count_director_reviews || {};
+		const review = (Array.isArray(summary.items) ? summary.items : []).find((item) => String(item.observation_id || "") === id);
+		if (!review) {
+			frappe.msgprint({ title: __("Count review is no longer available"), message: __("Refresh the page and check the current count task.") });
+			return;
+		}
+		frappe.prompt([
+			{ fieldname: "reason", fieldtype: "Small Text", label: __("Review note"), description: __("Record why you are accepting this physical observation. Do not enter a monetary value."), reqd: 1, default: __("Physical quantities reviewed; create the draft reconciliation.") },
+		], (values) => {
+			frappe.call({
+				method: "kopos_connector.api.inventory.create_count_reconciliation_after_director_review",
+				type: "POST",
+				args: { payload: JSON.stringify({ observation_id: id, reason: values.reason }) },
+				callback: (response) => {
+					const result = response.message || {};
+					const message = result.status === "replayed" ? __("The draft reconciliation already exists; nothing was duplicated.") : __("Draft Stock Reconciliation created. Review and submit it in the standard ERPNext form.");
+					frappe.show_alert({ message, indicator: "green" });
+					this.refresh();
+				},
+				error: () => frappe.msgprint({ title: __("Count review not completed"), message: __("No document was changed. Refresh and check the stock watermark before trying again.") }),
+			});
+		}, __("Review count observation"), __("Create draft reconciliation"));
 	}
 
 	sectionHtml(section) {
