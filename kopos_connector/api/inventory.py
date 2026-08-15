@@ -41,6 +41,10 @@ from kopos_connector.kopos.services.inventory_autopilot.recipe_compiler import (
     RecipeCompilerError,
     compile_recipe_components,
 )
+from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
+    find_staff_access_for_device,
+    resolve_staff_access_for_device,
+)
 from kopos_connector.utils.manager_approval import verify_manager_approval_token
 
 
@@ -473,17 +477,9 @@ def get_count_task(*, device_id: str, task_id: str | None = None) -> dict[str, A
     device = require_device_context(device_id=device_id)
     profile = resolve_catalog_pos_profile(device_id=device_id) or {}
     assigned_users = sorted({
-        user
-        for user in (
-            cstr(getattr(device, "api_user", None)).strip(),
-            cstr(getattr(frappe.session, "user", None)).strip(),
-            *[
-                cstr(getattr(row, "user", None)).strip()
-                for row in (getattr(device, "device_users", None) or [])
-                if cint(getattr(row, "active", 0))
-            ],
-        )
-        if user
+        cstr(row.get("user")).strip()
+        for row in resolve_staff_access_for_device(device)
+        if cstr(row.get("user")).strip()
     })
     filters: dict[str, Any] = {"warehouse": cstr(profile.get("warehouse")), "status": "Assigned"}
     if assigned_users:
@@ -1092,14 +1088,14 @@ def _validate_count_assignment(device: Any, value: dict[str, Any], warehouse: st
     if cint(task.revision) != value["task_revision"] or cstr(task.warehouse).strip() != warehouse:
         frappe.throw(_("Inventory count assignment revision or warehouse is stale"), frappe.ValidationError)
     allowed_actors = {
+        cstr(row.get("user")).strip()
+        for row in resolve_staff_access_for_device(device)
+        if cstr(row.get("user")).strip()
+    }
+    allowed_actors.update({
         cstr(getattr(device, "api_user", None)).strip(),
         cstr(getattr(frappe.session, "user", None)).strip(),
-        *{
-            cstr(getattr(row, "user", None)).strip()
-            for row in (getattr(device, "device_users", None) or [])
-            if cint(getattr(row, "active", 0))
-        },
-    }
+    })
     if cstr(task.assignee).strip() not in allowed_actors or cstr(value["actor_id"]).strip() not in allowed_actors:
         frappe.throw(_("Inventory count actor is not the assigned user"), frappe.PermissionError)
     expected_lines = {
@@ -1450,15 +1446,11 @@ def _validate_guided_task_actor(device: Any, value: dict[str, Any], task_type: s
     staff_id = cstr(value.get("staff_user") or value.get("staff_id")).strip()
     if not staff_id:
         frappe.throw(_("Guided task requires the signed-in staff user"), frappe.ValidationError)
-    active_by_user = {
-        cstr(getattr(row, "user", None)).strip(): row
-        for row in (getattr(device, "device_users", None) or [])
-        if cint(getattr(row, "active", 0)) and cstr(getattr(row, "user", None)).strip()
-    }
-    if staff_id not in active_by_user:
+    access = find_staff_access_for_device(device, staff_id)
+    if access is None:
         frappe.throw(_("Signed-in staff user is not active on this outlet tablet"), frappe.PermissionError)
     if task_type in {"submit_purchase_receipt", "submit_transfer_dispatch", "submit_transfer_receipt"}:
-        if not cint(getattr(active_by_user[staff_id], "can_manager_override", 0)):
+        if access.get("access_level") != "Manager":
             frappe.throw(
                 _("A manager must sign in before confirming this stock movement"),
                 frappe.PermissionError,

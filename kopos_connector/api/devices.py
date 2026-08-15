@@ -16,6 +16,9 @@ from kopos_connector.services.static_qr_commissioning import (
 )
 from kopos_connector.utils.diagnostics import log_sanitized_error
 from kopos_connector.utils.pin import is_supported_pin_hash
+from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
+    resolve_staff_access_for_device,
+)
 
 
 KOPOS_DEVICE_API_ROLE = "KoPOS Device API"
@@ -544,24 +547,29 @@ def serialize_device_config(
             frappe.ValidationError,
         )
 
-    active_device_users = [
+    legacy_device_users = [
         row
         for row in (device_doc.device_users or [])
         if cstr(getattr(row, "user", None)).strip()
         and cint(getattr(row, "active", 0))
     ]
-    if not active_device_users:
+    profile_doc = frappe.get_doc("POS Profile", device_doc.pos_profile)
+    active_users = resolve_staff_access_for_device(
+        device_doc,
+        profile_doc=profile_doc,
+        legacy_rows=legacy_device_users,
+    )
+    if not active_users:
         frappe.throw(
-            _("KoPOS Device {0} must have at least one active device user").format(
+            _("KoPOS Device {0} must have at least one active central or legacy staff access record").format(
                 cstr(getattr(device_doc, "device_id", None)).strip()
             ),
             frappe.ValidationError,
         )
 
-    active_users_with_pin_hashes = []
-    for row in active_device_users:
-        user_id = cstr(getattr(row, "user", None)).strip()
-        pin_hash = cstr(getattr(row, "pin_hash", None)).strip()
+    for row in active_users:
+        user_id = cstr(row.get("user")).strip()
+        pin_hash = cstr(row.get("pin_hash")).strip()
         if not is_supported_pin_hash(pin_hash):
             frappe.throw(
                 _(
@@ -570,9 +578,6 @@ def serialize_device_config(
                 ).format(user_id),
                 frappe.ValidationError,
             )
-        active_users_with_pin_hashes.append((row, pin_hash))
-
-    profile_doc = frappe.get_doc("POS Profile", device_doc.pos_profile)
     company = cstr(getattr(profile_doc, "company", None)).strip() or None
     warehouse = cstr(getattr(profile_doc, "warehouse", None)).strip() or None
     currency = cstr(getattr(profile_doc, "currency", None)).strip() or None
@@ -691,19 +696,20 @@ def serialize_device_config(
         ],
         "users": [
             {
-                "id": cstr(row.user).strip(),
-                "display_name": cstr(row.display_name).strip()
-                or cstr(row.user).strip(),
-                "pin_hash": pin_hash,
-                "active": bool(cint(row.active)),
-                "can_manager_override": bool(cint(row.can_manager_override)),
-                "can_refund": bool(cint(row.can_refund)),
-                "can_void": bool(cint(row.can_void)),
-                "can_open_shift": bool(cint(row.can_open_shift)),
-                "can_close_shift": bool(cint(row.can_close_shift)),
-                "default_cashier": bool(cint(row.default_cashier)),
+                "id": cstr(row.get("user")).strip(),
+                "display_name": cstr(row.get("display_name")).strip() or cstr(row.get("user")).strip(),
+                "employee": cstr(row.get("employee")).strip() or None,
+                "access_level": cstr(row.get("access_level")).strip() or "Staff",
+                "pin_hash": cstr(row.get("pin_hash")).strip(),
+                "active": bool(row.get("active")),
+                "can_manager_override": bool(row.get("can_manager_override")),
+                "can_refund": bool(row.get("can_refund")),
+                "can_void": bool(row.get("can_void")),
+                "can_open_shift": bool(row.get("can_open_shift")),
+                "can_close_shift": bool(row.get("can_close_shift")),
+                "default_cashier": bool(row.get("default_cashier")),
             }
-            for row, pin_hash in active_users_with_pin_hashes
+            for row in active_users
         ],
         "demo_mode": False,
         "erpnext_url": frappe.utils.get_url().rstrip("/"),
