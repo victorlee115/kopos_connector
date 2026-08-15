@@ -50,6 +50,7 @@ ALLOWED_DEVICE_API_PATHS = frozenset(
         "/api/method/kopos_connector.api.fb_orders.retry_failed_projections",
         "/api/method/kopos_connector.api.get_edge_snapshot",
         "/api/method/kopos_connector.api.get_count_task",
+        "/api/method/kopos_connector.api.get_inventory_tasks",
         "/api/method/kopos_connector.api.create_availability_hold",
         "/api/method/kopos_connector.api.release_availability_hold",
         "/api/method/kopos_connector.api.report_device_inventory_state",

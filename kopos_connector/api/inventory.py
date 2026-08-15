@@ -510,6 +510,162 @@ def get_count_task(*, device_id: str, task_id: str | None = None) -> dict[str, A
     return {"status": "ok", "task": task}
 
 
+@frappe.whitelist(methods=["GET"])
+def get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
+    """Return a small, safe queue of work assigned to this outlet.
+
+    The tablet should not make staff remember ERP document numbers.  This read
+    model exposes identifiers, quantities, and instructions only; rates,
+    valuation, supplier terms, and other financial fields never cross the
+    device boundary.  Standard ERPNext documents remain the authorities.
+    """
+
+    device = require_device_context(device_id=device_id)
+    profile = resolve_catalog_pos_profile(device_id=device_id) or {}
+    warehouse = cstr(profile.get("warehouse")).strip()
+    company = cstr(profile.get("company")).strip()
+    if not warehouse:
+        frappe.throw(_("This device has no assigned inventory warehouse"), frappe.ValidationError)
+    tasks: list[dict[str, Any]] = []
+
+    count_response = get_count_task(device_id=device_id)
+    count_task = count_response.get("task")
+    if count_task:
+        tasks.append({
+            "kind": "count",
+            "document": cstr(count_task.get("name")),
+            "title": "Assigned stock count",
+            "revision": count_task.get("revision"),
+            "warehouse": warehouse,
+            "lines": count_task.get("lines", []),
+        })
+
+    if frappe.db.exists("DocType", "Work Order"):
+        work_orders = frappe.get_all(
+            "Work Order",
+            filters={
+                "company": company,
+                "fg_warehouse": warehouse,
+                "docstatus": ["in", [0, 1]],
+                "status": ["not in", ["Completed", "Stopped", "Cancelled"]],
+            },
+            fields=["name", "production_item", "item_name", "qty", "produced_qty", "bom_no", "fg_warehouse", "status"],
+            order_by="modified asc",
+            limit_page_length=20,
+        )
+        for row in work_orders:
+            tasks.append({
+                "kind": "preparation",
+                "document": cstr(row.get("name")),
+                "title": "Prepare {0}".format(cstr(row.get("item_name") or row.get("production_item"))),
+                "item_code": cstr(row.get("production_item")),
+                "item_name": cstr(row.get("item_name")),
+                "qty": row.get("qty"),
+                "produced_qty": row.get("produced_qty"),
+                "bom_no": cstr(row.get("bom_no")),
+                "warehouse": warehouse,
+                "status": cstr(row.get("status")),
+            })
+
+    if frappe.db.exists("DocType", "Purchase Order") and frappe.db.exists("DocType", "Purchase Order Item"):
+        purchase_orders = frappe.get_all(
+            "Purchase Order",
+            filters={"company": company, "docstatus": 1},
+            fields=["name", "supplier", "transaction_date", "modified"],
+            order_by="modified asc",
+            limit_page_length=50,
+        )
+        for order in purchase_orders:
+            rows = frappe.get_all(
+                "Purchase Order Item",
+                filters={"parent": order["name"], "warehouse": warehouse},
+                fields=["name", "item_code", "item_name", "qty", "received_qty", "warehouse"],
+                order_by="idx asc",
+                limit_page_length=200,
+            )
+            lines = [
+                {
+                    "purchase_order_item": cstr(row.get("name")),
+                    "item_code": cstr(row.get("item_code")),
+                    "item_name": cstr(row.get("item_name")),
+                    "qty": row.get("qty"),
+                    "received_qty": row.get("received_qty"),
+                    "warehouse": warehouse,
+                }
+                for row in rows
+                if Decimal(str(row.get("qty") or 0)) > Decimal(str(row.get("received_qty") or 0))
+            ]
+            if lines:
+                tasks.append({
+                    "kind": "receiving",
+                    "document": cstr(order.get("name")),
+                    "title": "Receive supplier delivery",
+                    "supplier": cstr(order.get("supplier")),
+                    "warehouse": warehouse,
+                    "lines": lines,
+                })
+
+    if frappe.db.exists("DocType", "Material Request") and frappe.db.exists("DocType", "Material Request Item"):
+        requests = frappe.get_all(
+            "Material Request",
+            filters={"company": company, "docstatus": 1, "material_request_type": "Material Transfer"},
+            fields=["name", "transaction_date", "modified"],
+            order_by="modified asc",
+            limit_page_length=50,
+        )
+        for request in requests:
+            rows = frappe.get_all(
+                "Material Request Item",
+                filters={"parent": request["name"]},
+                fields=["name", "item_code", "item_name", "qty", "transferred_qty", "warehouse", "target_warehouse"],
+                order_by="idx asc",
+                limit_page_length=200,
+            )
+            dispatch_lines = [
+                {
+                    "item_code": cstr(row.get("item_code")),
+                    "item_name": cstr(row.get("item_name")),
+                    "qty": row.get("qty"),
+                    "transferred_qty": row.get("transferred_qty"),
+                    "source_warehouse": warehouse,
+                    "destination_warehouse": cstr(row.get("target_warehouse")),
+                }
+                for row in rows
+                if cstr(row.get("warehouse")).strip() == warehouse
+                and Decimal(str(row.get("qty") or 0)) > Decimal(str(row.get("transferred_qty") or 0))
+            ]
+            receipt_lines = [
+                {
+                    "item_code": cstr(row.get("item_code")),
+                    "item_name": cstr(row.get("item_name")),
+                    "qty": row.get("qty"),
+                    "transferred_qty": row.get("transferred_qty"),
+                    "destination_warehouse": warehouse,
+                }
+                for row in rows
+                if cstr(row.get("target_warehouse")).strip() == warehouse
+                and Decimal(str(row.get("qty") or 0)) > Decimal(str(row.get("transferred_qty") or 0))
+            ]
+            if dispatch_lines:
+                tasks.append({
+                    "kind": "transfer_dispatch",
+                    "document": cstr(request.get("name")),
+                    "title": "Send approved outlet transfer",
+                    "warehouse": warehouse,
+                    "lines": dispatch_lines,
+                })
+            if receipt_lines:
+                tasks.append({
+                    "kind": "transfer_receipt",
+                    "document": cstr(request.get("name")),
+                    "title": "Receive approved outlet transfer",
+                    "warehouse": warehouse,
+                    "lines": receipt_lines,
+                })
+
+    return {"status": "ok", "warehouse": warehouse, "tasks": tasks[:100], "generated_at": _iso_with_offset(now_datetime())}
+
+
 @frappe.whitelist(methods=["GET", "POST"])
 def preflight_legacy_inventory_values(
     *, company: str | None = None, warehouse: str | None = None, apply: bool = False, input_digest: str | None = None
