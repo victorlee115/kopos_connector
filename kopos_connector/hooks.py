@@ -134,6 +134,9 @@ scheduler_events = {
             "kopos_connector.kopos.services.inventory_autopilot.projection_worker.recover_inventory_projections",
             "kopos_connector.kopos.services.inventory_autopilot.preparation.schedule_preparation_tasks",
         ],
+        "0 * * * *": [
+            "kopos_connector.kopos.services.inventory_autopilot.planning.generate_inventory_plans",
+        ],
     },
 }
 
