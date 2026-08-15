@@ -987,6 +987,9 @@ def _items(ctx: dict[str, Any]) -> tuple[dict[str, Any], list[Any]]:
         "disabled",
         "item_group",
         "stock_uom",
+        "purchase_uom",
+        "min_order_qty",
+        "lead_time_days",
         "has_batch_no",
         "has_expiry_date",
         "custom_kopos_inventory_classification",
@@ -995,8 +998,6 @@ def _items(ctx: dict[str, Any]) -> tuple[dict[str, Any], list[Any]]:
         "custom_kopos_min_qty",
         "shelf_life_in_days",
         "custom_kopos_shelf_life_days",
-        "custom_kopos_supplier_pack_size",
-        "custom_kopos_supplier_minimum_qty",
     )
     rows = _rows(ctx, "Item", fields, "items")
     classifications = Counter()
@@ -1025,12 +1026,16 @@ def _items(ctx: dict[str, Any]) -> tuple[dict[str, Any], list[Any]]:
                 bool(_text(_value(row, "shelf_life_in_days")) or _text(_value(row, "custom_kopos_shelf_life_days")))
                 for row in rows
             ),
-            supplierPackConfiguredCount=sum(
-                bool(_text(_value(row, "custom_kopos_supplier_pack_size")))
+            purchaseUomConfiguredCount=sum(
+                bool(_text(_value(row, "purchase_uom")))
                 for row in rows
             ),
-            supplierMinimumConfiguredCount=sum(
-                bool(_text(_value(row, "custom_kopos_supplier_minimum_qty")))
+            minimumOrderQuantityConfiguredCount=sum(
+                _positive_decimal(_value(row, "min_order_qty"))
+                for row in rows
+            ),
+            leadTimeConfiguredCount=sum(
+                _positive_decimal(_value(row, "lead_time_days"))
                 for row in rows
             ),
             classificationCounts=dict(sorted(classifications.items())),
@@ -1189,7 +1194,10 @@ def _suppliers_and_quotations(ctx: dict[str, Any]) -> tuple[dict[str, Any], dict
     item_suppliers = _rows(
         ctx,
         "Item Supplier",
-        ("parent", "supplier", "lead_time_days", "custom_kopos_lead_time_days", "supplier_part_no"),
+        # Item Supplier is only the standard supplier allow-list for an Item.
+        # Purchase UOM, minimum quantity, and lead time belong to the standard
+        # Item and UOM authorities above; they are not supplier-row fields.
+        ("parent", "supplier", "supplier_part_no"),
         "suppliers",
     )
     quotations = _rows(
@@ -1204,17 +1212,11 @@ def _suppliers_and_quotations(ctx: dict[str, Any]) -> tuple[dict[str, Any], dict
         ("parent", "item_code", "qty", "uom", "rate"),
         "quotations",
     )
-    lead_time_count = sum(
-        bool(_text(_value(row, "lead_time_days")) or _text(_value(row, "custom_kopos_lead_time_days")))
-        for row in item_suppliers
-    )
     reasons: list[str] = []
     if not suppliers:
         reasons.append("no_supplier_authority")
     if suppliers and not item_suppliers:
-        reasons.append("item_supplier_mapping_not_observed")
-    if item_suppliers and lead_time_count < len(item_suppliers):
-        reasons.append("supplier_lead_time_incomplete")
+        reasons.append("item_supplier_allow_list_not_observed")
     supplier_category = _category(
         len(suppliers) + len(item_suppliers),
         sum(ctx["fixtureCounts"].get(key, 0) for key in ("Supplier", "Item Supplier")),
@@ -1222,8 +1224,7 @@ def _suppliers_and_quotations(ctx: dict[str, Any]) -> tuple[dict[str, Any], dict
         configured=bool(suppliers),
         ready=bool(suppliers and item_suppliers) and not reasons,
         supplierCount=len(suppliers),
-        itemSupplierMappingCount=len(item_suppliers),
-        supplierLeadTimeConfiguredCount=lead_time_count,
+        itemSupplierAllowListCount=len(item_suppliers),
         supplierGroupIdentityCounts=_count_identity_values(suppliers, "supplier_group"),
     )
     quotation_reasons: list[str] = []

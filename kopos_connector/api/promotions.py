@@ -199,7 +199,7 @@ def get_promotion_snapshot_payload(
     pos_profile: str | None = None,
     current_version: str | None = None,
     device_id: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     profile_name = resolve_snapshot_pos_profile(pos_profile, device_id=device_id)
     latest = get_latest_published_snapshot(profile_name)
 
@@ -220,10 +220,10 @@ def get_promotion_snapshot_payload(
         )
         return payload
 
-    payload = build_snapshot_payload(profile_name)
-    payload["source"] = "live"
-    payload["is_current"] = False
-    return payload
+    # Promotion snapshots are the immutable authority consumed by POS.  A
+    # live calculation here would let an unpublished or stale promotion leak
+    # into checkout, so callers must handle the explicit unavailable state.
+    return None
 
 
 def publish_promotion_snapshot(

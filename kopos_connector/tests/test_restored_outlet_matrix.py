@@ -9,6 +9,9 @@ from kopos_connector.acceptance.restored_outlet_matrix import (
     CONTRACT_ID,
     EVIDENCE_LEVEL,
     REQUIRED_CATEGORIES,
+    _items,
+    _suppliers_and_quotations,
+    _uoms,
     run_v1,
     validate_outlet_matrix_report,
 )
@@ -87,6 +90,111 @@ class TestRestoredOutletMatrix(unittest.TestCase):
         for forbidden in (".insert(", ".save(", "db.set_value", "db.commit", "enqueue"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
+
+    def test_items_report_standard_replenishment_authorities(self) -> None:
+        from kopos_connector.acceptance import restored_outlet_matrix as matrix
+
+        ctx = {"fixtureCounts": {}}
+        item_rows = [
+            {
+                "name": "ING-MILK",
+                "is_stock_item": 1,
+                "is_sales_item": 0,
+                "is_purchase_item": 1,
+                "disabled": 0,
+                "item_group": "Ingredients",
+                "stock_uom": "Litre",
+                "purchase_uom": "Carton",
+                "min_order_qty": "2",
+                "lead_time_days": "3",
+                "custom_kopos_inventory_classification": "Purchased stock Item",
+                # These fields deliberately model legacy/ad-hoc data.  The
+                # matrix must not request or report them as authority.
+                "custom_kopos_supplier_pack_size": "99",
+                "custom_kopos_supplier_minimum_qty": "99",
+            }
+        ]
+        with patch.object(matrix, "_rows", return_value=item_rows) as read_rows:
+            category, returned_rows = _items(ctx)
+
+        self.assertEqual(returned_rows, item_rows)
+        self.assertEqual(category["purchaseUomConfiguredCount"], 1)
+        self.assertEqual(category["minimumOrderQuantityConfiguredCount"], 1)
+        self.assertEqual(category["leadTimeConfiguredCount"], 1)
+        self.assertNotIn("supplierPackConfiguredCount", category)
+        self.assertNotIn("supplierMinimumConfiguredCount", category)
+        requested_fields = read_rows.call_args.args[2]
+        self.assertIn("purchase_uom", requested_fields)
+        self.assertIn("min_order_qty", requested_fields)
+        self.assertIn("lead_time_days", requested_fields)
+        self.assertNotIn("custom_kopos_supplier_pack_size", requested_fields)
+        self.assertNotIn("custom_kopos_supplier_minimum_qty", requested_fields)
+
+    def test_item_supplier_rows_are_only_an_allow_list(self) -> None:
+        from kopos_connector.acceptance import restored_outlet_matrix as matrix
+
+        ctx = {"fixtureCounts": {}}
+        rows_by_doctype = {
+            "Supplier": [{"name": "SUP-MILK", "supplier_group": "Local"}],
+            "Item Supplier": [
+                {
+                    "parent": "ING-MILK",
+                    "supplier": "SUP-MILK",
+                    "supplier_part_no": "MILK-01",
+                    # Legacy/ad-hoc values must not become authority.
+                    "lead_time_days": "99",
+                    "custom_kopos_lead_time_days": "99",
+                }
+            ],
+            "Supplier Quotation": [],
+            "Supplier Quotation Item": [],
+        }
+
+        def read_rows(_ctx, doctype, fields, _category, **_kwargs):
+            if doctype == "Item Supplier":
+                self.assertEqual(
+                    fields,
+                    ("parent", "supplier", "supplier_part_no"),
+                )
+            return rows_by_doctype[doctype]
+
+        with patch.object(matrix, "_rows", side_effect=read_rows):
+            supplier_category, _quotation_category = _suppliers_and_quotations(ctx)
+
+        self.assertEqual(supplier_category["itemSupplierAllowListCount"], 1)
+        self.assertNotIn("supplierLeadTimeConfiguredCount", supplier_category)
+        self.assertNotIn("supplierPackConfiguredCount", supplier_category)
+        self.assertNotIn("supplierMinimumConfiguredCount", supplier_category)
+
+    def test_uom_report_reads_standard_item_conversion_detail(self) -> None:
+        from kopos_connector.acceptance import restored_outlet_matrix as matrix
+
+        ctx = {"fixtureCounts": {}}
+        rows_by_doctype = {
+            "UOM": [{"name": "Litre", "enabled": 1}],
+            "UOM Conversion Detail": [
+                {
+                    "parent": "ING-MILK",
+                    "uom": "Carton",
+                    "conversion_factor": "12",
+                }
+            ],
+            "FB Recipe Component": [],
+        }
+
+        def read_rows(_ctx, doctype, fields, _category, **_kwargs):
+            if doctype == "UOM Conversion Detail":
+                self.assertEqual(
+                    fields,
+                    ("parent", "uom", "conversion_factor"),
+                )
+            return rows_by_doctype[doctype]
+
+        with patch.object(matrix, "_rows", side_effect=read_rows):
+            category = _uoms(ctx)
+
+        self.assertEqual(category["itemUomConversionRowCount"], 1)
+        self.assertEqual(category["uomCount"], 1)
 
     def test_fixture_prefix_is_explicit_in_contract(self) -> None:
         fixture = _report()["fixtureExclusion"]
