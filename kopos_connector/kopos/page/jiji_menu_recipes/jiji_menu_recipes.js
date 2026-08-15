@@ -14,6 +14,9 @@ class JiJiMenuRecipesPage {
 		this.page.body.find("[data-menu-action]").on("click", (event) => {
 			this.openAction($(event.currentTarget).attr("data-menu-action"));
 		});
+		this.page.body.find("[data-menu-create]").on("click", (event) => {
+			this.createAction($(event.currentTarget).attr("data-menu-create"));
+		});
 		this.refresh();
 	}
 
@@ -33,7 +36,10 @@ class JiJiMenuRecipesPage {
 					<div class="col-sm-6 col-lg-4 mb-3"><div class="card h-100"><div class="card-body d-flex flex-column">
 						<h4>${__(title)}</h4><p class="text-muted">${__(copy)}</p>
 						<div class="small text-muted mb-3" data-check="${action}">${__("Checking…")}</div>
-						<button class="btn btn-sm btn-default mt-auto align-self-start" type="button" data-menu-action="${action}">${action === "validate" ? __("Open validation") : __("Open")}</button>
+						<div class="mt-auto d-flex flex-wrap gap-2">
+							${action === "validate" ? "" : `<button class="btn btn-sm btn-primary" type="button" data-menu-create="${action}">${__("Add new")}</button>`}
+							<button class="btn btn-sm btn-default" type="button" data-menu-action="${action}">${action === "validate" ? __("Open validation") : __("Review list")}</button>
+						</div>
 					</div></div></div>`).join("")}</div>
 				<div class="alert alert-warning mt-2">${__("Costs and margins are visible only to Company Directors. Outlet staff and managers use POS guided tasks and do not receive financial inventory values.")}</div>
 			</div>`);
@@ -45,12 +51,12 @@ class JiJiMenuRecipesPage {
 			type: "GET",
 			callback: (response) => {
 				const summary = response.message || {};
-				$('[data-check="item"]').text(`${summary.items_ready || 0} ${__("Items ready")} · ${summary.items_missing_recipe || 0} ${__("missing recipe")} · ${summary.unclassified_items || 0} ${__("unclassified")}`);
-				$('[data-check="recipe"]').text(`${summary.published_recipes || 0} ${__("published")} · ${summary.draft_recipes || 0} ${__("draft")}`);
-				$('[data-check="bom"]').text(`${summary.boms || 0} ${__("standard BOMs")}`);
-				$('[data-check="modifier"]').text(`${summary.modifier_groups || 0} ${__("modifier groups")}`);
-				$('[data-check="promotion"]').text(`${summary.active_promotions || 0} ${__("active promotions")}`);
-				$('[data-check="validate"]').text(summary.ready ? __("Ready to publish selected records") : __("Resolve missing required evidence first"));
+				this.page.body.find('[data-check="item"]').text(`${summary.items_ready || 0} ${__("Items ready")} · ${summary.items_missing_recipe || 0} ${__("missing recipe")} · ${summary.unclassified_items || 0} ${__("unclassified")}`);
+				this.page.body.find('[data-check="recipe"]').text(`${summary.published_recipes || 0} ${__("published")} · ${summary.draft_recipes || 0} ${__("draft")}`);
+				this.page.body.find('[data-check="bom"]').text(`${summary.boms || 0} ${__("standard BOMs")}`);
+				this.page.body.find('[data-check="modifier"]').text(`${summary.modifier_groups || 0} ${__("modifier groups")}`);
+				this.page.body.find('[data-check="promotion"]').text(`${summary.active_promotions || 0} ${__("active promotions")}`);
+				this.page.body.find('[data-check="validate"]').text(summary.ready ? __("Ready to publish selected records") : __("Resolve missing required evidence first"));
 				this.page.set_indicator(summary.ready ? __("Ready") : __("Needs review"), summary.ready ? "green" : "orange");
 			},
 			error: () => this.page.set_indicator(__("Needs attention"), "red"),
@@ -63,9 +69,20 @@ class JiJiMenuRecipesPage {
 			recipe: ["List", "FB Recipe"],
 			bom: ["List", "BOM"],
 			modifier: ["List", "FB Modifier Group"],
-			promotion: ["List", "Promotion"],
+			promotion: ["List", "KoPOS Promotion"],
 			validate: ["List", "FB Inventory Exception"],
 		};
 		if (routes[action]) frappe.set_route(...routes[action]);
+	}
+
+	createAction(action) {
+		const doctypes = {
+			item: "Item",
+			recipe: "FB Recipe",
+			bom: "BOM",
+			modifier: "FB Modifier Group",
+			promotion: "KoPOS Promotion",
+		};
+		if (doctypes[action]) frappe.new_doc(doctypes[action]);
 	}
 }
