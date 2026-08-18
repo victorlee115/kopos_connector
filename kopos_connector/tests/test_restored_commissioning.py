@@ -80,3 +80,20 @@ if __name__ == "__main__":
     import unittest
 
     unittest.main()
+
+
+class PlanningFailsClosedTests(TestCase):
+    """Planning must create nothing while its evidence gates are unmet."""
+
+    def test_forecast_state_is_not_ready_without_history(self) -> None:
+        from kopos_connector.kopos.services.inventory_autopilot import planning
+
+        self.assertEqual(planning.overall_forecast_state([]), "Not ready")
+
+    def test_only_the_two_approved_forecast_models_exist(self) -> None:
+        from kopos_connector.kopos.services.inventory_autopilot import forecast
+
+        self.assertEqual(
+            tuple(forecast.MODEL_ORDER),
+            ("same_weekday_seasonal_naive", "trailing_open_day_median"),
+        )
