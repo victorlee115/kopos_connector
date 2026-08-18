@@ -172,9 +172,22 @@ def install_fake_frappe_modules() -> None:
     class PermissionError(Exception):
         pass
 
+    existing_duplicate_error = getattr(frappe_module, "DuplicateEntryError", None)
+    if isinstance(existing_duplicate_error, type) and issubclass(
+        existing_duplicate_error, Exception
+    ):
+        DuplicateEntryError = existing_duplicate_error
+    else:
+        # Real frappe raises this when a unique field collides, and the
+        # inventory document coordinator depends on catching it to resolve a
+        # lost insert race instead of creating a second document.
+        class DuplicateEntryError(Exception):
+            pass
+
     setattr(frappe_module, "_", lambda value: value)
     setattr(frappe_module, "ValidationError", ValidationError)
     setattr(frappe_module, "PermissionError", PermissionError)
+    setattr(frappe_module, "DuplicateEntryError", DuplicateEntryError)
     setattr(frappe_module, "whitelist", lambda *args, **kwargs: (lambda fn: fn))
     setattr(frappe_module, "sendmail", lambda *args, **kwargs: None)
     setattr(frappe_module, "delete_doc", lambda *args, **kwargs: None)
