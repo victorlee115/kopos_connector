@@ -90,7 +90,11 @@ class _OpeningDocument:
 
     def submit(self) -> None:
         self.docstatus = 1
-        self.runtime.stock_ledger_rows[self.name] = [{"actual_qty": "10"}]
+        # ERPNext sets the reconciled balance and leaves the delta at zero when
+        # there was no prior stock, so the fake mirrors that exact shape.
+        self.runtime.stock_ledger_rows[self.name] = [
+            {"actual_qty": "0", "qty_after_transaction": "10"}
+        ]
 
     def cancel(self) -> None:
         self.docstatus = 2
@@ -127,14 +131,35 @@ class _OpeningFrappe(_FakeFrappe):
     def get_all(
         self, doctype: str, *_args: object, **kwargs: object
     ) -> list[dict[str, str]]:
+        if doctype == "Stock Reconciliation Item":
+            # The fixture is recovered through its own ingredient row, so the
+            # fake resolves parents the same way the database would.
+            filters = kwargs.get("filters")
+            assert isinstance(filters, dict)
+            return [
+                {"parent": name}
+                for name, document in self.documents.items()
+                if any(
+                    getattr(row, "item_code", None) == filters.get("item_code")
+                    for row in (document.items or [])
+                )
+            ]
         if doctype == "Stock Reconciliation":
             filters = kwargs.get("filters")
             assert isinstance(filters, dict)
+            name_filter = filters.get("name")
+            allowed = (
+                set(name_filter[1])
+                if isinstance(name_filter, list) and name_filter[0] == "in"
+                else None
+            )
+            marker = filters.get("remarks")
             return [
                 {"name": name}
                 for name, document in self.documents.items()
                 if document.company == filters.get("company")
-                and document.remarks == filters.get("remarks")
+                and (allowed is None or name in allowed)
+                and (marker is None or document.remarks == marker)
             ]
         if doctype == "Stock Ledger Entry":
             filters = kwargs.get("filters")
@@ -264,7 +289,9 @@ class TestRestoredInventoryAcceptance(unittest.TestCase):
             items=[_opening_item()],
         )
         fake.documents[existing.name] = existing
-        fake.stock_ledger_rows[existing.name] = [{"actual_qty": "10.000"}]
+        fake.stock_ledger_rows[existing.name] = [
+            {"actual_qty": "0", "qty_after_transaction": "10.000"}
+        ]
 
         with patch.object(acceptance, "frappe", fake):
             first = acceptance._ensure_opening_reconciliation(
@@ -312,6 +339,53 @@ class TestRestoredInventoryAcceptance(unittest.TestCase):
         self.assertEqual(draft.items[0].item_code, acceptance.ITEM_INGREDIENT)
         self.assertEqual(fake.new_doc_calls, 0)
 
+    def test_opening_movement_reads_the_reconciled_balance_not_the_delta(self) -> None:
+        """ERPNext sets an opening balance; it does not move a delta.
+
+        A real opening Stock Reconciliation posts ``actual_qty`` of zero and
+        carries the reconciled quantity in ``qty_after_transaction``.  Asserting
+        the delta would reject every valid opening fixture and cancel/replace it
+        on every run, so the balance is the authority.
+        """
+
+        fake = _OpeningFrappe()
+        reconciliation = _OpeningDocument(
+            fake, name="MAT-RECO-2026-00001", docstatus=1, items=[_opening_item()]
+        )
+        fake.documents[reconciliation.name] = reconciliation
+
+        with patch.object(acceptance, "frappe", fake):
+            fake.stock_ledger_rows[reconciliation.name] = [
+                {"actual_qty": "0", "qty_after_transaction": "10"}
+            ]
+            self.assertTrue(
+                acceptance._opening_has_expected_stock_movement(
+                    reconciliation,
+                    warehouse="Main - CERC",
+                    ingredient_item=acceptance.ITEM_INGREDIENT,
+                )
+            )
+
+            fake.stock_ledger_rows[reconciliation.name] = [
+                {"actual_qty": "0", "qty_after_transaction": "0"}
+            ]
+            self.assertFalse(
+                acceptance._opening_has_expected_stock_movement(
+                    reconciliation,
+                    warehouse="Main - CERC",
+                    ingredient_item=acceptance.ITEM_INGREDIENT,
+                )
+            )
+
+            fake.stock_ledger_rows[reconciliation.name] = []
+            self.assertFalse(
+                acceptance._opening_has_expected_stock_movement(
+                    reconciliation,
+                    warehouse="Main - CERC",
+                    ingredient_item=acceptance.ITEM_INGREDIENT,
+                )
+            )
+
     def test_opening_reconciliation_replaces_exact_zero_movement_fixture(self) -> None:
         fake = _OpeningFrappe()
         partial = _OpeningDocument(
@@ -321,7 +395,9 @@ class TestRestoredInventoryAcceptance(unittest.TestCase):
             items=[_opening_item()],
         )
         fake.documents[partial.name] = partial
-        fake.stock_ledger_rows[partial.name] = [{"actual_qty": "0"}]
+        fake.stock_ledger_rows[partial.name] = [
+            {"actual_qty": "0", "qty_after_transaction": "0"}
+        ]
 
         with patch.object(acceptance, "frappe", fake):
             replacement = acceptance._ensure_opening_reconciliation(

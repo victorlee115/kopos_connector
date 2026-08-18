@@ -563,23 +563,56 @@ def _ensure_opening_reconciliation(
     difference_account: str,
 ) -> Any:
     runtime_frappe = _require_frappe()
-    # Recover the fixture by its exact marker when the schema carries one.
-    # Without ``remarks`` the assigned name below is the only authority, and
-    # the exact fixture validator still rejects an unrelated collision.
-    opening_filters: dict[str, Any] = {"company": company}
-    if _meta_has("Stock Reconciliation", "remarks"):
-        opening_filters["remarks"] = OPENING_REMARKS
-    rows = runtime_frappe.get_all(
-        "Stock Reconciliation",
-        filters=opening_filters,
-        fields=["name"],
-        order_by="creation asc, name asc",
+    # Identify the fixture by its own prefixed ingredient row rather than by a
+    # marker field.  ``remarks`` does not exist on Stock Reconciliation in every
+    # ERPNext version, and filtering on company alone would drag unrelated
+    # production reconciliations into the exact-fixture validator below.  A
+    # child-row lookup needs no custom field and no schema mutation.
+    parent_rows = runtime_frappe.get_all(
+        "Stock Reconciliation Item",
+        filters={"item_code": ingredient_item, "parenttype": "Stock Reconciliation"},
+        fields=["parent"],
         limit_page_length=0,
+    )
+    parent_names = sorted(
+        {
+            _text(_value(row, "parent"))
+            for row in parent_rows or []
+            if _text(_value(row, "parent"))
+        }
+    )
+    rows = (
+        runtime_frappe.get_all(
+            "Stock Reconciliation",
+            filters={"company": company, "name": ["in", parent_names]},
+            fields=["name"],
+            order_by="creation asc, name asc",
+            limit_page_length=0,
+        )
+        if parent_names
+        else []
     )
     candidate_names = {
         _required_text(_value(row, "name"), "acceptance opening reconciliation name")
         for row in rows or []
     }
+    # Where the schema does carry the marker, also recover by it: an incomplete
+    # draft has no ingredient row yet, so the child-row lookup above cannot see
+    # it.  Both signals are unioned rather than replaced.
+    if _meta_has("Stock Reconciliation", "remarks"):
+        marker_rows = runtime_frappe.get_all(
+            "Stock Reconciliation",
+            filters={"company": company, "remarks": OPENING_REMARKS},
+            fields=["name"],
+            order_by="creation asc, name asc",
+            limit_page_length=0,
+        )
+        candidate_names |= {
+            _required_text(
+                _value(row, "name"), "acceptance opening reconciliation name"
+            )
+            for row in marker_rows or []
+        }
     # Recover an older fixture only if Frappe really retained the requested
     # name.  A collision at that name is loaded and rejected by the exact
     # fixture validator below rather than silently treated as authority.
@@ -786,6 +819,15 @@ def _validate_opening_fixture(
 def _opening_has_expected_stock_movement(
     reconciliation: Any, *, warehouse: str, ingredient_item: str
 ) -> bool:
+    """Prove the opening reconciliation established the exact usable balance.
+
+    ERPNext posts a Stock Reconciliation by *setting* the balance rather than
+    moving a delta: the ledger row carries the reconciled quantity in
+    ``qty_after_transaction`` and leaves ``actual_qty`` at zero when there was
+    no prior stock.  Summing ``actual_qty`` therefore proves nothing about an
+    opening entry, so the resulting balance is the authority here.
+    """
+
     runtime_frappe = _require_frappe()
     name = _required_text(
         getattr(reconciliation, "name", None), "acceptance opening reconciliation name"
@@ -799,22 +841,17 @@ def _opening_has_expected_stock_movement(
             "warehouse": warehouse,
             "is_cancelled": 0,
         },
-        fields=["actual_qty"],
+        fields=["actual_qty", "qty_after_transaction"],
         order_by="creation asc, name asc",
         limit_page_length=0,
     )
     if not rows:
         return False
-    movement = sum(
-        (
-            _proof_decimal(
-                _value(row, "actual_qty"), f"Stock Ledger Entry for {name}"
-            )
-            for row in rows
-        ),
-        Decimal("0"),
+    balance = _proof_decimal(
+        _value(rows[-1], "qty_after_transaction"),
+        f"Stock Ledger Entry for {name}",
     )
-    return movement == OPENING_QUANTITY
+    return balance == OPENING_QUANTITY
 
 
 def _discover_cost_center(company: str) -> str | None:
