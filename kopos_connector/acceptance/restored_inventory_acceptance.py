@@ -1016,6 +1016,41 @@ def _validate_policy_opening_reference(
         _fail("Acceptance policy opening reference has non-fixture stock rows")
 
 
+def _ensure_device(*, company: str) -> str:
+    """Create the fixture's own KoPOS Device so its order is self-consistent.
+
+    The shift and order both record ``DEVICE_ID``.  Without a matching device
+    the restored commercial-recovery producer cannot project the fixture's
+    Sales Invoice and reports it as an unresolved commercial failure, which
+    reads as a defect in the restored data rather than a missing fixture.
+    """
+
+    runtime_frappe = _require_frappe()
+    if runtime_frappe.db.exists("KoPOS Device", DEVICE_ID):
+        return DEVICE_ID
+    profile = runtime_frappe.db.get_value(
+        "POS Profile", {"company": company, "disabled": 0}, "name"
+    ) or runtime_frappe.db.get_value("POS Profile", {"company": company}, "name")
+    if not profile:
+        _fail("Restored company has no POS Profile to bind the acceptance device to")
+    device = runtime_frappe.get_doc(
+        {
+            "doctype": "KoPOS Device",
+            "device_id": DEVICE_ID,
+            "device_name": "Inventory Acceptance Device",
+            "pos_profile": profile,
+            # Deliberately disabled.  The fixture needs the device to exist so
+            # its order resolves, not to be operable, and an enabled device
+            # would require central staff access or an active legacy device
+            # user -- authority this acceptance must never invent in restored
+            # production data.  Device lookup does not filter on enabled.
+            "enabled": 0,
+        }
+    )
+    device.insert(ignore_permissions=True)
+    return device.name
+
+
 def _ensure_shift(*, company: str, warehouse: str, staff_id: str) -> Any:
     runtime_frappe = _require_frappe()
     existing_name = runtime_frappe.db.get_value(
@@ -1684,6 +1719,7 @@ def run_v1(
         opening_name=opening.name,
         expense_account=expense_account,
     )
+    _ensure_device(company=company["name"])
     shift = _ensure_shift(
         company=company["name"],
         warehouse=warehouse,
