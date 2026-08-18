@@ -1341,9 +1341,28 @@ def _health(ctx: dict[str, Any], device_category: Mapping[str, Any]) -> dict[str
     logs = _rows(
         ctx,
         "FB Projection Log",
-        ("projection_type", "state", "retry_count", "created_at", "last_attempt_at", "target_doctype", "target_name"),
+        ("projection_type", "state", "retry_count", "created_at", "last_attempt_at", "target_doctype", "target_name", "source_name"),
         "health",
     )
+    # A projection log is autonamed and carries none of the fields the generic
+    # fixture marker inspects, so an acceptance fixture's own log would be
+    # counted as a production projection failure and hold health.ready false on
+    # a site that is actually clean.  Resolve the fixture through its source
+    # order instead.
+    fixture_orders = {
+        _text(_value(row, "name"))
+        for row in _rows(
+            ctx,
+            "FB Order",
+            ("external_idempotency_key",),
+            "health",
+            filters={"external_idempotency_key": ["like", "INV-ACCEPT-%"]},
+        )
+    }
+    if fixture_orders:
+        logs = [
+            row for row in logs if _text(_value(row, "source_name")) not in fixture_orders
+        ]
     exceptions = _rows(ctx, "FB Inventory Exception", ("severity", "status", "first_seen", "last_seen"), "health")
     state_counts = _count_values(logs, "state")
     projection_type_counts = _count_values(logs, "projection_type")
