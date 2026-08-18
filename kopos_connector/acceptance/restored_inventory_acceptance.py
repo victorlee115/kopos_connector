@@ -384,8 +384,12 @@ def _historical_fingerprint() -> dict[str, list[tuple[str, str]]]:
             # Standard ERPNext autoname takes precedence over an assigned
             # ``name``.  The exact marker, rather than a hoped-for prefix, is
             # therefore the fixture authority for this standard document.
-            where += " AND COALESCE(remarks, '') != %s"
-            parameters.append(OPENING_REMARKS)
+            # ``remarks`` is optional on this standard doctype -- the fixture
+            # writer already treats it that way -- so only filter on it where
+            # the installed schema actually provides it.
+            if _meta_has("Stock Reconciliation", "remarks"):
+                where += " AND COALESCE(remarks, '') != %s"
+                parameters.append(OPENING_REMARKS)
         elif doctype == "Stock Entry":
             # The projected Material Issue is also a standard autonamed
             # document.  Its immutable fixture order link identifies it.
@@ -559,9 +563,15 @@ def _ensure_opening_reconciliation(
     difference_account: str,
 ) -> Any:
     runtime_frappe = _require_frappe()
+    # Recover the fixture by its exact marker when the schema carries one.
+    # Without ``remarks`` the assigned name below is the only authority, and
+    # the exact fixture validator still rejects an unrelated collision.
+    opening_filters: dict[str, Any] = {"company": company}
+    if _meta_has("Stock Reconciliation", "remarks"):
+        opening_filters["remarks"] = OPENING_REMARKS
     rows = runtime_frappe.get_all(
         "Stock Reconciliation",
-        filters={"company": company, "remarks": OPENING_REMARKS},
+        filters=opening_filters,
         fields=["name"],
         order_by="creation asc, name asc",
         limit_page_length=0,
@@ -729,11 +739,10 @@ def _validate_opening_fixture(
     name = _required_text(
         getattr(reconciliation, "name", None), "acceptance opening reconciliation name"
     )
-    for fieldname, expected in (
-        ("company", company),
-        ("purpose", "Opening Stock"),
-        ("remarks", OPENING_REMARKS),
-    ):
+    expected_fields = [("company", company), ("purpose", "Opening Stock")]
+    if _meta_has("Stock Reconciliation", "remarks"):
+        expected_fields.append(("remarks", OPENING_REMARKS))
+    for fieldname, expected in expected_fields:
         actual = _text(getattr(reconciliation, fieldname, None))
         if actual != expected:
             _fail(
@@ -916,10 +925,14 @@ def _validate_policy_opening_reference(
             f"Acceptance policy opening Stock Reconciliation {opening_name} was not found"
         )
     opening = runtime_frappe.get_doc("Stock Reconciliation", opening_name)
+    marker_mismatch = (
+        _meta_has("Stock Reconciliation", "remarks")
+        and _text(getattr(opening, "remarks", None)) != OPENING_REMARKS
+    )
     if (
         _text(getattr(opening, "company", None)) != company
         or _text(getattr(opening, "purpose", None)) != "Opening Stock"
-        or _text(getattr(opening, "remarks", None)) != OPENING_REMARKS
+        or marker_mismatch
     ):
         _fail("Acceptance policy opening reference belongs to a non-fixture document")
     items = list(getattr(opening, "items", None) or [])
