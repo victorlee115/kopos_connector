@@ -24,6 +24,7 @@ EXPECTED_PATCHES = (
     "kopos_connector.patches.backfill_privileged_request_fingerprints",
     "kopos_connector.patches.backfill_shift_request_fingerprints",
     "kopos_connector.patches.migrate_branch_scoped_maybank_qr",
+    "kopos_connector.patches.retire_pre_cutover_stock_issue_projections",
 )
 EXPECTED_ACCEPTANCE_MODULES = (
     "kopos_connector.acceptance.maybank_uat_accounting",

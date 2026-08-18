@@ -362,6 +362,17 @@ def _is_post_cutover_order(order: Any, policy: Any | None) -> bool:
     return bool(sale_time and cutover_time and sale_time >= cutover_time)
 
 
+def order_is_pre_cutover(order: Any) -> bool:
+    """Public form of the worker's cutover rule for migrations and reports.
+
+    Historical rows must be classified by exactly the same comparison the
+    worker uses, so callers outside this module reuse it rather than
+    reimplementing the policy lookup and timezone normalization.
+    """
+
+    return not _is_post_cutover_order(order, _policy_for_order(order))
+
+
 def _as_kuala_lumpur_naive_datetime(value: Any) -> datetime | None:
     """Normalize ERP timestamps without making malformed history projectable."""
 
