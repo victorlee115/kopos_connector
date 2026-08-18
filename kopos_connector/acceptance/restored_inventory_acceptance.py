@@ -382,11 +382,17 @@ def _historical_fingerprint() -> dict[str, list[tuple[str, str]]]:
         parameters: list[Any] = [f"{AUTHORITY_PREFIX}%"]
         if doctype == "Stock Reconciliation":
             # Standard ERPNext autoname takes precedence over an assigned
-            # ``name``.  The exact marker, rather than a hoped-for prefix, is
-            # therefore the fixture authority for this standard document.
-            # ``remarks`` is optional on this standard doctype -- the fixture
-            # writer already treats it that way -- so only filter on it where
-            # the installed schema actually provides it.
+            # ``name``, so the fixture must be excluded by content rather than
+            # by prefix or it counts as pre-existing history and every run
+            # reports that it edited the past.  Its own prefixed ingredient row
+            # identifies it on any schema; ``remarks`` is an additional signal
+            # only where the installed schema provides that optional field.
+            where += (
+                " AND name NOT IN ("
+                "SELECT parent FROM `tabStock Reconciliation Item`"
+                " WHERE parenttype = 'Stock Reconciliation' AND item_code LIKE %s)"
+            )
+            parameters.append(f"{AUTHORITY_PREFIX}%")
             if _meta_has("Stock Reconciliation", "remarks"):
                 where += " AND COALESCE(remarks, '') != %s"
                 parameters.append(OPENING_REMARKS)
@@ -395,6 +401,19 @@ def _historical_fingerprint() -> dict[str, list[tuple[str, str]]]:
             # document.  Its immutable fixture order link identifies it.
             where += " AND COALESCE(custom_fb_order, '') != %s"
             parameters.append(ORDER_ID)
+        elif doctype == "FB Order":
+            # The fixture order is autonamed too, so the prefix filter above
+            # never excludes it.  Its immutable idempotency key does.
+            where += " AND COALESCE(external_idempotency_key, '') != %s"
+            parameters.append(ORDER_IDEMPOTENCY)
+        elif doctype == "FB Resolved Sale":
+            # Resolved sales are autonamed and belong to the fixture order.
+            where += (
+                " AND COALESCE(fb_order, '') NOT IN ("
+                "SELECT name FROM `tabFB Order`"
+                " WHERE COALESCE(external_idempotency_key, '') = %s)"
+            )
+            parameters.append(ORDER_IDEMPOTENCY)
         rows = runtime_frappe.db.sql(
             f"SELECT name, modified FROM `{table}` WHERE {where} ORDER BY name ASC",
             tuple(parameters),
