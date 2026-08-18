@@ -729,8 +729,17 @@ def _prepare_opening_reconciliation(
     runtime_frappe = _require_frappe()
     reconciliation.company = company
     reconciliation.purpose = "Opening Stock"
-    reconciliation.posting_date = runtime_frappe.utils.nowdate()
-    reconciliation.posting_time = runtime_frappe.utils.now_datetime().time()
+    # Opening stock must exist before the acceptance sale consumes it.  Posting
+    # at "now" puts both inside the same second, and the projected Material
+    # Issue truncates its posting time to whole seconds, so ERPNext cannot order
+    # them and the issue is scored against an empty warehouse.  Backdate the
+    # opening the way the other fixtures are backdated, which also matches the
+    # documented cutover sequence: opening reconciliation, then cutover token.
+    # ``set_posting_time`` is required or ERPNext overwrites both fields.
+    opening_posted_at = runtime_frappe.utils.now_datetime() - timedelta(minutes=6)
+    _set_if_present(reconciliation, "set_posting_time", 1)
+    reconciliation.posting_date = opening_posted_at.date()
+    reconciliation.posting_time = opening_posted_at.time()
     # ERPNext v16 has no ``difference_account`` field on Stock Reconciliation.
     # Its ``expense_account`` field is also the Difference Account for an
     # opening reconciliation, and validation requires that value to be an
