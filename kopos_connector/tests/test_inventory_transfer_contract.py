@@ -258,6 +258,182 @@ class InventoryTransferContractTests(TestCase):
         self.assertEqual(receipt_entry.items[0]["t_warehouse"], "Destination")
 
 
+class InventoryTransferShortfallTests(TestCase):
+    """Dispatching or receiving less than approved must stay open, not silently close."""
+
+    def _material_request(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            name="MAT-TRANSFER-1",
+            modified="2026-08-15 10:00:00",
+            company="Cafe Co",
+            docstatus=1,
+            material_request_type="Material Transfer",
+            custom_kopos_transit_warehouse="Transit",
+            items=[SimpleNamespace(
+                name="MAT-ITEM-1",
+                item_code="MILK",
+                from_warehouse="Source",
+                warehouse="Destination",
+                qty=Decimal("10"),
+                uom="Pack",
+                stock_uom="Each",
+                conversion_factor=Decimal("12"),
+                stock_qty=Decimal("120"),
+            )],
+        )
+
+    def _run(
+        self,
+        *,
+        dispatch: bool,
+        warehouse: str,
+        progress: tuple[Decimal, Decimal],
+        qty: str,
+        entry_name: str,
+    ) -> tuple[_StockEntry, list[dict[str, object]]]:
+        value = {
+            "company": "Cafe Co",
+            "warehouse": warehouse,
+            "material_request": "MAT-TRANSFER-1",
+            "source_document": "MAT-TRANSFER-1",
+            "source_revision": "2026-08-15T10:00:00+08:00",
+            "lines": [{
+                "item_code": "MILK",
+                "material_request_item": "MAT-ITEM-1",
+                "qty": qty,
+                "uom": "Pack",
+                "stock_uom": "Each",
+                "conversion_factor": "12",
+                "batch_no": "BATCH-1",
+            }],
+        }
+        entry = _StockEntry(entry_name)
+        raised: list[dict[str, object]] = []
+
+        def exists(doctype: str, _name: object = None, **_kwargs: object) -> bool:
+            return doctype in {"Material Request", "DocType", "Stock Entry", "Stock Entry Detail"}
+
+        with patch.object(inventory_api, "frappe") as fake_frappe, patch.object(
+            inventory_api, "_transfer_route_tracking_installed", return_value=True
+        ), patch.object(
+            inventory_api, "_material_request_stock_quantity", return_value=Decimal("10")
+        ), patch.object(
+            inventory_api, "_transfer_route_progress", return_value=progress
+        ), patch.object(inventory_api, "_require_transfer_batch_metadata"), patch.object(
+            inventory_api, "_apply_guided_task_audit"
+        ), patch.object(inventory_api, "_set_document_value"), patch.object(
+            inventory_api,
+            "upsert_inventory_exception",
+            side_effect=lambda **kwargs: raised.append(kwargs) or "EX-SHORT",
+        ):
+            fake_frappe.db.exists.side_effect = exists
+            fake_frappe.db.get_value.return_value = "Cafe Co"
+            fake_frappe.get_meta.return_value = SimpleNamespace(has_field=lambda _field: True)
+            fake_frappe.get_doc.return_value = self._material_request()
+            fake_frappe.new_doc.return_value = entry
+            fake_frappe.ValidationError = frappe.ValidationError
+            fake_frappe.PermissionError = frappe.PermissionError
+            fake_frappe._ = lambda value: value
+            fake_frappe.throw.side_effect = lambda message, exc=None: (_ for _ in ()).throw((exc or frappe.ValidationError)(message))
+            inventory_api._create_transfer_entry(value, f"CMD-{entry_name}", dispatch=dispatch)
+        return entry, raised
+
+    def test_short_dispatch_moves_only_the_picked_stock_and_opens_one_exception(self) -> None:
+        entry, raised = self._run(
+            dispatch=True,
+            warehouse="Source",
+            progress=(Decimal("0"), Decimal("0")),
+            qty="4",
+            entry_name="SE-SHORT-DISPATCH",
+        )
+
+        # Only the picked packs reach transit; the balance stays on the request.
+        self.assertEqual(entry.items[0]["transfer_qty"], Decimal("48"))
+        self.assertEqual(entry.items[0]["t_warehouse"], "Transit")
+        # A dispatch must not link the standard Material Request, or ERPNext
+        # would treat stock sitting in transit as already delivered.
+        self.assertNotIn("material_request", entry.items[0])
+
+        self.assertEqual(len(raised), 1)
+        self.assertEqual(raised[0]["reason_code"], "inventory_transfer_short_pick")
+        self.assertEqual(raised[0]["item"], "MILK")
+        self.assertEqual(raised[0]["source_name"], "MAT-TRANSFER-1")
+        self.assertEqual(raised[0]["warehouse"], "Source")
+        self.assertIn("72", raised[0]["summary"])
+
+    def test_full_dispatch_opens_no_shortfall_exception(self) -> None:
+        entry, raised = self._run(
+            dispatch=True,
+            warehouse="Source",
+            progress=(Decimal("0"), Decimal("0")),
+            qty="10",
+            entry_name="SE-FULL-DISPATCH",
+        )
+
+        self.assertEqual(entry.items[0]["transfer_qty"], Decimal("120"))
+        self.assertEqual(raised, [])
+
+    def test_partial_receipt_leaves_the_remainder_in_transit(self) -> None:
+        entry, raised = self._run(
+            dispatch=False,
+            warehouse="Destination",
+            progress=(Decimal("120"), Decimal("0")),
+            qty="6",
+            entry_name="SE-PARTIAL-RECEIPT",
+        )
+
+        # 72 of the 120 dispatched units stay in transit until a later receipt.
+        self.assertEqual(entry.items[0]["transfer_qty"], Decimal("72"))
+        self.assertEqual(entry.items[0]["s_warehouse"], "Transit")
+        self.assertEqual(entry.items[0]["t_warehouse"], "Destination")
+        self.assertEqual(entry.items[0]["material_request"], "MAT-TRANSFER-1")
+
+        # Phase 7 requires missing stock left in transit to be investigated,
+        # not silently absorbed by the open route balance.
+        self.assertEqual(len(raised), 1)
+        self.assertEqual(raised[0]["reason_code"], "inventory_transfer_receipt_shortfall")
+        self.assertEqual(raised[0]["item"], "MILK")
+        self.assertEqual(raised[0]["warehouse"], "Destination")
+        self.assertEqual(raised[0]["source_name"], "MAT-TRANSFER-1")
+        self.assertIn("48", raised[0]["summary"])
+
+    def test_dispatch_beyond_the_approved_quantity_is_refused(self) -> None:
+        with self.assertRaises(frappe.ValidationError) as error:
+            self._run(
+                dispatch=True,
+                warehouse="Source",
+                progress=(Decimal("0"), Decimal("0")),
+                qty="11",
+                entry_name="SE-OVER-DISPATCH",
+            )
+        self.assertIn("exceeds the amount currently approved", str(error.exception))
+
+    def test_receipt_beyond_the_dispatched_quantity_is_refused(self) -> None:
+        with self.assertRaises(frappe.ValidationError) as error:
+            self._run(
+                dispatch=False,
+                warehouse="Destination",
+                progress=(Decimal("48"), Decimal("0")),
+                qty="5",
+                entry_name="SE-OVER-RECEIPT",
+            )
+        self.assertIn("exceeds the amount currently approved", str(error.exception))
+
+    def test_a_second_dispatch_is_bounded_by_the_remaining_route(self) -> None:
+        """Replaying the first pick must not dispatch the same stock twice."""
+
+        entry, raised = self._run(
+            dispatch=True,
+            warehouse="Source",
+            progress=(Decimal("48"), Decimal("0")),
+            qty="6",
+            entry_name="SE-SECOND-DISPATCH",
+        )
+
+        self.assertEqual(entry.items[0]["transfer_qty"], Decimal("72"))
+        self.assertEqual(raised, [])
+
+
 if __name__ == "__main__":
     import unittest
 

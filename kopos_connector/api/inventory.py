@@ -4894,7 +4894,7 @@ def _create_transfer_entry(value: dict[str, Any], command_id: str, *, dispatch: 
             if detail_meta.has_field("material_request_item"):
                 item_payload["material_request_item"] = request_item_name
         document.append("items", item_payload)
-        if dispatch and line_stock_quantity < remaining_qty:
+        if line_stock_quantity < remaining_qty:
             short_picks.append({
                 "item": item_code,
                 "requested": requested_qty,
@@ -4905,13 +4905,24 @@ def _create_transfer_entry(value: dict[str, Any], command_id: str, *, dispatch: 
     document.flags.ignore_permissions = True
     document.submit()
     for short_pick in short_picks:
-        upsert_inventory_exception(
-            reason_code="inventory_transfer_short_pick",
-            summary=(
+        # A short dispatch leaves stock at source; a short receipt leaves it in
+        # transit, which is the missing/damaged case that needs investigating.
+        if dispatch:
+            summary = (
                 f"{short_pick['item']} was partially dispatched to transit; "
                 f"{short_pick['remaining']} remains on the approved transfer"
-            ),
-            next_action="A Company Director reviews the remaining quantity or revises the submitted Material Request",
+            )
+            next_action = "A Company Director reviews the remaining quantity or revises the submitted Material Request"
+        else:
+            summary = (
+                f"{short_pick['item']} arrived short at the destination; "
+                f"{short_pick['remaining']} remains unaccounted for in transit"
+            )
+            next_action = "Manager checks the delivery and quarantine; a Company Director investigates the stock still in transit"
+        upsert_inventory_exception(
+            reason_code="inventory_transfer_short_pick" if dispatch else "inventory_transfer_receipt_shortfall",
+            summary=summary,
+            next_action=next_action,
             severity="Warning",
             company=company,
             warehouse=outlet_warehouse,
