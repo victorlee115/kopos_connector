@@ -398,9 +398,16 @@ def _historical_fingerprint() -> dict[str, list[tuple[str, str]]]:
                 parameters.append(OPENING_REMARKS)
         elif doctype == "Stock Entry":
             # The projected Material Issue is also a standard autonamed
-            # document.  Its immutable fixture order link identifies it.
-            where += " AND COALESCE(custom_fb_order, '') != %s"
-            parameters.append(ORDER_ID)
+            # document.  Its fixture order link holds the FB Order *document
+            # name*, which ERPNext assigned -- not ORDER_ID, which is the
+            # order's business identifier -- so resolve the fixture order by
+            # its immutable idempotency key.
+            where += (
+                " AND COALESCE(custom_fb_order, '') NOT IN ("
+                "SELECT name FROM `tabFB Order`"
+                " WHERE COALESCE(external_idempotency_key, '') = %s)"
+            )
+            parameters.append(ORDER_IDEMPOTENCY)
         elif doctype == "FB Order":
             # The fixture order is autonamed too, so the prefix filter above
             # never excludes it.  Its immutable idempotency key does.
