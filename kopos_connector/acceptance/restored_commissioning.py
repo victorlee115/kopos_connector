@@ -17,8 +17,11 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
+from importlib import metadata
+
 from kopos_connector.acceptance.restored_inventory_acceptance import (
     AUTHORITY_PREFIX,
+    _required_sha256,
     _discover_company,
     _discover_item_group,
     _discover_warehouse,
@@ -316,10 +319,25 @@ def _commission_recipe(*, company: str, item_group: str) -> str:
     return recipe.name
 
 
-def run_v1() -> dict[str, Any]:
-    """Commission the hypothetical master and prove it is inventory-ready."""
+def run_v1(
+    restored_backup_sha256: str,
+    erp_artifact_sha256: str,
+    expected_connector_version: str,
+) -> dict[str, Any]:
+    """Commission the hypothetical master and prove it is inventory-ready.
+
+    Bound to the exact candidate the way every other restored-data producer is:
+    an unbound commissioning result could otherwise float free of the artifact
+    that produced it.
+    """
 
     runtime_frappe = _require_frappe()
+    backup_sha256 = _required_sha256(restored_backup_sha256, "restored_backup_sha256")
+    artifact_sha256 = _required_sha256(erp_artifact_sha256, "erp_artifact_sha256")
+    expected_version = _required_text(expected_connector_version, "expected_connector_version")
+    installed_version = metadata.version("kopos_connector")
+    if installed_version != expected_version:
+        _fail("Installed connector version does not match the candidate binding")
     company = _discover_company()
     warehouse = _discover_warehouse(company["name"])
     item_group = _discover_item_group()
@@ -350,6 +368,9 @@ def run_v1() -> dict[str, Any]:
         "contractId": CONTRACT_ID,
         "producer": PRODUCER,
         "evidenceLevel": "restored_production_data",
+        "connectorVersion": installed_version,
+        "erpArtifactSha256": artifact_sha256,
+        "restoredBackupSha256": backup_sha256,
         "authorityPrefix": AUTHORITY_PREFIX,
         "commissionedIngredients": sorted(ingredient_names),
         "preparedComponent": PREPARED_ITEM,

@@ -90,9 +90,15 @@ def test_mixed_suites_keep_only_optional_behavior_behind_inventory_marker() -> N
             "test_existing_smoke_recipe_components_are_idempotent_when_correct",
         },
         "kopos_connector/tests/test_fb_order_stock_policy.py": {
-            "test_detect_and_log_stock_shortfall",
-            "test_before_submit_rejects_shortfall_when_negative_stock_policy_is_disabled",
-            "test_before_submit_rejects_serialised_shortfall_even_when_negative_stock_is_enabled",
+            # Both renamed by the same locked-rule change: a shortfall now
+            # opens an inventory exception instead of logging, and it no longer
+            # blocks submission when negative stock is disallowed.
+            "test_detect_and_record_stock_shortfall_exception",
+            "test_shortfall_does_not_block_when_negative_stock_policy_is_disabled",
+            # Renamed when the locked rule changed: a serialised shortfall no
+            # longer blocks submission, but it stays an optional inventory
+            # regression rather than a default-selection commercial boundary.
+            "test_serialised_shortfall_does_not_block_commercial_registration",
             "test_prepared_sale_reuses_only_the_frozen_resolved_snapshot",
             "test_prepared_sale_rejects_a_changed_resolution_hash",
             "test_prepared_sale_rejects_persisted_recipe_identity_edits",
