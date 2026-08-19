@@ -9,6 +9,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -69,6 +70,25 @@ def _resolve_device_user(device_doc: Any, staff_id: str) -> Any:
     staff_id = cstr(staff_id).strip()
     if not staff_id:
         frappe.throw(_("staff_id is required"), frappe.ValidationError)
+
+    # Central access becomes the runtime authority as soon as the outlet has
+    # been migrated.  Legacy child rows remain available for compatibility,
+    # but must not continue granting or revoking shift access independently.
+    from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
+        central_staff_access_exists_for_device,
+        find_staff_access_for_device,
+    )
+
+    if central_staff_access_exists_for_device(device_doc):
+        access = find_staff_access_for_device(device_doc, staff_id)
+        if access is None:
+            frappe.throw(
+                _("User {0} is not assigned through central POS staff access").format(
+                    staff_id
+                ),
+                frappe.ValidationError,
+            )
+        return SimpleNamespace(**access)
 
     for row in device_doc.device_users or []:
         if cstr(row.user).strip() == staff_id:

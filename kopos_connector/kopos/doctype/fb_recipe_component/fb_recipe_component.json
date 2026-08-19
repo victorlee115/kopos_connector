@@ -11,10 +11,14 @@
         "item",
         "component_type",
         "qty",
+        "qty_decimal",
         "uom",
         "column_break_1",
         "stock_qty",
+        "stock_qty_decimal",
         "stock_uom",
+        "stock_conversion_factor",
+        "stock_conversion_factor_decimal",
         "is_optional",
         "is_substitutable",
         "substitution_key",
@@ -22,6 +26,7 @@
         "affects_stock",
         "affects_cogs",
         "loss_factor_pct",
+        "loss_factor_pct_decimal",
         "sort_order",
         "remarks"
     ],
@@ -50,6 +55,15 @@
             "reqd": 1
         },
         {
+            "fieldname": "qty_decimal",
+            "fieldtype": "Data",
+            "label": "Exact Qty (Decimal)",
+            "read_only": 1,
+            "hidden": 1,
+            "no_copy": 1,
+            "description": "Canonical decimal text used for recipe hashing and inventory compilation. Historical rows may leave this blank."
+        },
+        {
             "fieldname": "uom",
             "fieldtype": "Link",
             "label": "UOM",
@@ -66,10 +80,35 @@
             "label": "Stock Qty"
         },
         {
+            "fieldname": "stock_qty_decimal",
+            "fieldtype": "Data",
+            "label": "Exact Stock Qty (Decimal)",
+            "read_only": 1,
+            "hidden": 1,
+            "no_copy": 1,
+            "description": "Canonical stock-UOM decimal text used for recipe hashing and inventory compilation. Historical rows may leave this blank."
+        },
+        {
             "fieldname": "stock_uom",
             "fieldtype": "Link",
             "label": "Stock UOM",
             "options": "UOM"
+        },
+        {
+            "fieldname": "stock_conversion_factor",
+            "fieldtype": "Float",
+            "label": "Stock Conversion Factor",
+            "read_only": 1,
+            "description": "Frozen entered-UOM to stock-UOM conversion used for this published recipe."
+        },
+        {
+            "fieldname": "stock_conversion_factor_decimal",
+            "fieldtype": "Data",
+            "label": "Exact Stock Conversion (Decimal)",
+            "read_only": 1,
+            "hidden": 1,
+            "no_copy": 1,
+            "description": "Canonical conversion text used for recipe hashing and inventory compilation. Historical rows may leave this blank."
         },
         {
             "default": "0",
@@ -110,6 +149,15 @@
             "fieldname": "loss_factor_pct",
             "fieldtype": "Percent",
             "label": "Loss Factor %"
+        },
+        {
+            "fieldname": "loss_factor_pct_decimal",
+            "fieldtype": "Data",
+            "label": "Exact Loss Factor % (Decimal)",
+            "read_only": 1,
+            "hidden": 1,
+            "no_copy": 1,
+            "description": "Canonical normal-loss percentage used for recipe hashing and inventory compilation. Historical rows may leave this blank."
         },
         {
             "fieldname": "sort_order",

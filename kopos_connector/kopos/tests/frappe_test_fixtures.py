@@ -17,6 +17,7 @@ from kopos_connector.smoke import (
 
 
 TEST_PREFIX = "KOPOS-BROAD-TEST"
+TEST_MODIFIER_GROUP_CODE = "KOPOS-BROAD-TEST-RESOLVER-MODIFIERS"
 
 
 def ensure_canonical_test_base(
@@ -179,9 +180,12 @@ def ensure_persisted_test_modifier(
 ) -> str:
     """Create an immutable persisted modifier used by integration-level tests."""
 
-    base = ensure_canonical_test_base(include_inventory_regression=True)
-    recipe = frappe.get_doc("FB Recipe", base["recipe"])
-    modifier_group = recipe.allowed_modifier_groups[0].modifier_group
+    # The smoke menu recipe is a real, frozen inventory snapshot.  Resolver
+    # contract tests exercise historical dynamic modifier resolution, so their
+    # synthetic modifiers must not be added to the group that a tablet may
+    # already have received in that frozen snapshot.  A dedicated, unreferenced
+    # test group keeps the test honest without weakening production immutability.
+    modifier_group = _ensure_resolver_test_modifier_group()
     expected = {
         "modifier_code": code,
         "modifier_name": code.replace("-", " ").title(),
@@ -218,3 +222,27 @@ def ensure_persisted_test_modifier(
     doc = frappe.get_doc({"doctype": "FB Modifier", **expected})
     doc.insert(ignore_permissions=True)
     return doc.name
+
+
+def _ensure_resolver_test_modifier_group() -> str:
+    existing = frappe.db.get_value(
+        "FB Modifier Group", {"group_code": TEST_MODIFIER_GROUP_CODE}, "name"
+    )
+    if existing:
+        return str(existing)
+
+    group = frappe.get_doc(
+        {
+            "doctype": "FB Modifier Group",
+            "group_code": TEST_MODIFIER_GROUP_CODE,
+            "group_name": "Resolver Test Modifiers",
+            "selection_type": "Multiple",
+            "is_required": 0,
+            "min_selection": 0,
+            "max_selection": 5,
+            "display_order": 9999,
+            "active": 1,
+        }
+    )
+    group.insert(ignore_permissions=True)
+    return str(group.name)

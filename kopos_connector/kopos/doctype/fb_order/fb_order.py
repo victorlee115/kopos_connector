@@ -35,6 +35,21 @@ from kopos_connector.kopos.services.projection.log_service import (
 )
 
 
+def enqueue_inventory_projection(order_name: str) -> Any:
+    """Load inventory projection only after the commercial order commits.
+
+    Keeping this import behind the worker boundary means checkout tests and
+    deployments without the optional inventory modules can still register and
+    submit an FB Order.  The real caller remains the post-submit hook below.
+    """
+
+    service = import_module(
+        "kopos_connector.kopos.services.inventory_autopilot.projection_worker"
+    )
+    return service.enqueue_inventory_projection(order_name)
+from kopos_connector.utils.diagnostics import log_sanitized_error
+
+
 def create_ingredient_stock_entry(*args: Any, **kwargs: Any) -> Any:
     """Load the optional inventory adapter only when its projection runs."""
 
@@ -52,6 +67,11 @@ def detect_stock_shortfall(*args: Any, **kwargs: Any) -> Any:
 def log_stock_shortfall(*args: Any, **kwargs: Any) -> Any:
     service = import_module("kopos_connector.kopos.services.inventory.warning_service")
     return service.log_stock_shortfall(*args, **kwargs)
+
+
+def record_stock_shortfall_exceptions(*args: Any, **kwargs: Any) -> Any:
+    service = import_module("kopos_connector.kopos.services.inventory.warning_service")
+    return service.record_stock_shortfall_exceptions(*args, **kwargs)
 
 
 def require_advisory_shortfall_policy(*args: Any, **kwargs: Any) -> Any:
@@ -96,8 +116,10 @@ RESOLVED_COMPONENT_FIELDS = (
     "item",
     "source_type",
     "qty",
+    "qty_decimal",
     "uom",
     "stock_qty",
+    "stock_qty_decimal",
     "stock_uom",
     "warehouse",
     "source_reference",
@@ -118,15 +140,52 @@ def _optional_text(value: Any) -> str | None:
     return text or None
 
 
+def _canonical_decimal(value: Any, fieldname: str) -> Decimal:
+    """Read a resolved quantity without passing through binary ``float``.
+
+    Frappe v16 has no ``Decimal`` DocField type.  The legacy ``Float`` columns
+    therefore remain readable for historical rows, while new inventory rows
+    also persist the canonical decimal text in the companion ``*_decimal``
+    fields.  Hashing and equality always use this Decimal value.
+    """
+
+    if isinstance(value, bool) or value in (None, ""):
+        return Decimal("0")
+    try:
+        result = Decimal(str(value).strip())
+    except (InvalidOperation, TypeError, ValueError, AttributeError) as error:
+        raise ValueError(f"{fieldname} must be a finite decimal") from error
+    if not result.is_finite():
+        raise ValueError(f"{fieldname} must be a finite decimal")
+    return result.normalize()
+
+
+def _decimal_text(value: Any, fieldname: str) -> str:
+    """Serialize a Decimal as non-exponential, stable text for a Data field."""
+
+    result = _canonical_decimal(value, fieldname)
+    return format(result, "f") if result else "0"
+
+
+def _resolved_quantity(component: Any, fieldname: str) -> Decimal:
+    """Return the exact persisted quantity, falling back only for history."""
+
+    exact_field = f"{fieldname}_decimal"
+    exact_value = _record_value(component, exact_field)
+    if exact_value not in (None, ""):
+        return _canonical_decimal(exact_value, exact_field)
+    return _canonical_decimal(_record_value(component, fieldname), fieldname)
+
+
 def _canonical_resolved_component(component: Any) -> dict[str, Any]:
     """Strip Frappe child-row metadata from one immutable recipe snapshot."""
 
     return {
         "item": cstr(_record_value(component, "item")).strip(),
         "source_type": cstr(_record_value(component, "source_type")).strip(),
-        "qty": flt(_record_value(component, "qty")),
+        "qty": _resolved_quantity(component, "qty"),
         "uom": cstr(_record_value(component, "uom")).strip(),
-        "stock_qty": flt(_record_value(component, "stock_qty")),
+        "stock_qty": _resolved_quantity(component, "stock_qty"),
         "stock_uom": _optional_text(_record_value(component, "stock_uom")),
         "warehouse": _optional_text(_record_value(component, "warehouse")),
         "source_reference": _optional_text(
@@ -148,10 +207,12 @@ def _resolution_hash(
     recipe_version: Any,
     selected_modifiers: list[dict[str, Any]],
     resolved_components: list[dict[str, Any]],
+    recipe_hash: str = "",
 ) -> str:
     payload = {
         "recipe": recipe,
         "recipe_version": recipe_version,
+        "recipe_hash": recipe_hash,
         "selected_modifiers": selected_modifiers,
         "resolved_components": resolved_components,
     }
@@ -203,6 +264,7 @@ PREPARED_LINE_IMMUTABLE_FIELDS = (
     "line_total",
     "recipe",
     "recipe_version",
+    "recipe_hash",
     "is_recipe_managed",
     "promotion_allocations_json",
     "remarks",
@@ -240,6 +302,8 @@ def _prepared_immutable_value(record: Any, fieldname: str) -> Any:
         # Frappe persists an unset Int child field as zero. Prepared commercial
         # lines deliberately exclude optional recipe/inventory resolution, so
         # the pre-insert None and post-insert 0 are the same absent value.
+        return ""
+    if fieldname == "recipe_hash" and value in (None, ""):
         return ""
     if fieldname in PREPARED_SALE_MONEY_FIELDS:
         return _money_sen(_optional_money_value(value), fieldname)
@@ -520,8 +584,8 @@ class FBOrder(BaseDocument):
             )
 
         # Inventory is intentionally outside the cashier-critical transaction.
-        # The current inventory implementation is not invoked here; a future
-        # owner-approved projection worker may consume the immutable sale later.
+        # The post-commit worker consumes the immutable sale later; failures are
+        # recorded as inventory exceptions and never change checkout success.
         self.ingredient_stock_entry = None
         self.stock_status = "Pending"
 
@@ -531,6 +595,15 @@ class FBOrder(BaseDocument):
         self.db_set("stock_status", self.stock_status, update_modified=False)
         if self.sales_invoice:
             self.db_set("sales_invoice", self.sales_invoice, update_modified=False)
+        try:
+            enqueue_inventory_projection(self.name)
+        except Exception as error:
+            # Queue outage must not roll back or delay the commercial sale. The
+            # recovery scheduler will discover the submitted order later.
+            log_sanitized_error(
+                f"Inventory projection enqueue failed for FB Order {self.name}",
+                error,
+            )
         try:
             self.update_shift_expected_cash()
             update_projection_state(
@@ -593,17 +666,16 @@ class FBOrder(BaseDocument):
                     "booth_warehouse",
                     None,
                 )
-                qty = flt(
-                    getattr(component, "stock_qty", None)
-                    or getattr(component, "qty", None)
-                    or 0
-                )
+                try:
+                    qty = _resolved_quantity(component, "stock_qty")
+                except ValueError:
+                    qty = Decimal("0")
                 stock_uom = getattr(component, "stock_uom", None) or getattr(
                     component,
                     "uom",
                     None,
                 )
-                if not item or not warehouse or not stock_uom or not isfinite(qty) or qty <= 0:
+                if not item or not warehouse or not stock_uom or not qty.is_finite() or qty <= 0:
                     frappe.throw(
                         "Stock-affecting resolved component requires item, warehouse, stock UOM, and positive stock quantity",
                         frappe.ValidationError,
@@ -648,6 +720,7 @@ class FBOrder(BaseDocument):
                 "booth_warehouse": cstr(self.booth_warehouse),
                 "recipe": cstr(line.recipe),
                 "recipe_version": cstr(line.recipe_version),
+                "recipe_hash": cstr(getattr(line, "recipe_hash", None)),
             }
             for fieldname, expected_value in expected_identity.items():
                 if cstr(getattr(resolved_sale, fieldname, None)) != expected_value:
@@ -729,6 +802,7 @@ class FBOrder(BaseDocument):
                 recipe_version=getattr(resolved_sale, "recipe_version", None),
                 selected_modifiers=selected_modifier_hash_rows,
                 resolved_components=resolved_components,
+                recipe_hash=cstr(getattr(resolved_sale, "recipe_hash", None)),
             )
             if persisted_resolution_hash != recomputed_resolution_hash:
                 frappe.throw(
@@ -1535,10 +1609,28 @@ class FBOrder(BaseDocument):
                 )
                 components.append(normalized_component)
 
-        shortfalls = detect_stock_shortfall(components)
+        try:
+            shortfalls = detect_stock_shortfall(components)
+        except Exception as error:
+            log_sanitized_error(
+                f"Inventory shortfall check failed for FB Order {self.name}",
+                error,
+            )
+            return
         if shortfalls:
-            require_advisory_shortfall_policy(shortfalls)
-            log_stock_shortfall(self, shortfalls, timestamp=now_datetime())
+            try:
+                record_stock_shortfall_exceptions(
+                    self,
+                    shortfalls,
+                    timestamp=now_datetime(),
+                )
+            except Exception as error:
+                # This diagnostic is optional and must never become a
+                # commercial order-registration gate.
+                log_sanitized_error(
+                    f"Inventory shortfall exception recording failed for FB Order {self.name}",
+                    error,
+                )
 
     def create_resolved_sales(self, line_resolutions: list[dict[str, Any]]):
         for line_resolution in line_resolutions:
@@ -1561,6 +1653,7 @@ class FBOrder(BaseDocument):
                 recipe_doc=recipe_doc,
                 selected_modifiers=selected_modifiers,
                 resolved_components=resolved_components,
+                recipe_hash=cstr(getattr(line, "recipe_hash", None)),
             )
             if existing_resolved_sale:
                 existing = frappe.get_doc(
@@ -1575,6 +1668,7 @@ class FBOrder(BaseDocument):
                     "booth_warehouse": cstr(self.booth_warehouse),
                     "recipe": cstr(recipe_doc.name),
                     "recipe_version": cstr(recipe_doc.version_no),
+                    "recipe_hash": cstr(getattr(line, "recipe_hash", None)),
                     "resolution_hash": resolution_hash,
                 }
                 for fieldname, expected_value in expected_identity.items():
@@ -1614,6 +1708,7 @@ class FBOrder(BaseDocument):
             resolved_sale.booth_warehouse = self.booth_warehouse
             resolved_sale.recipe = recipe_doc.name
             resolved_sale.recipe_version = recipe_doc.version_no
+            resolved_sale.recipe_hash = cstr(getattr(line, "recipe_hash", None))
             resolved_sale.status = (
                 "Prepared"
                 if cstr(
@@ -1640,6 +1735,13 @@ class FBOrder(BaseDocument):
                 )
 
             for component in resolved_components:
+                component = dict(component)
+                component["qty_decimal"] = _decimal_text(
+                    component.get("qty"), "resolved component qty"
+                )
+                component["stock_qty_decimal"] = _decimal_text(
+                    component.get("stock_qty"), "resolved component stock_qty"
+                )
                 resolved_sale.append("resolved_components", component)
 
             resolved_sale.insert(ignore_permissions=True)
@@ -1653,6 +1755,7 @@ class FBOrder(BaseDocument):
         recipe_doc: DocumentLike,
         selected_modifiers: list[dict[str, Any]],
         resolved_components: list[dict[str, Any]],
+        recipe_hash: str = "",
     ) -> str:
         return _resolution_hash(
             recipe=recipe_doc.name,
@@ -1669,6 +1772,7 @@ class FBOrder(BaseDocument):
                 for entry in selected_modifiers
             ],
             resolved_components=_canonical_resolved_components(resolved_components),
+            recipe_hash=recipe_hash,
         )
 
     def run_projection_service(

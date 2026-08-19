@@ -48,6 +48,22 @@ ALLOWED_DEVICE_API_PATHS = frozenset(
         "/api/method/kopos_connector.api.fetch_manual_qr_reconciliation_status",
         "/api/method/kopos_connector.api.fb_orders.get_order_status",
         "/api/method/kopos_connector.api.fb_orders.retry_failed_projections",
+        "/api/method/kopos_connector.api.get_edge_snapshot",
+        "/api/method/kopos_connector.api.claim_count_task",
+        "/api/method/kopos_connector.api.create_availability_hold",
+        "/api/method/kopos_connector.api.release_availability_hold",
+        "/api/method/kopos_connector.api.report_device_inventory_state",
+        "/api/method/kopos_connector.api.submit_count_observation",
+        "/api/method/kopos_connector.api.confirm_count_reconciliation",
+        "/api/method/kopos_connector.api.accept_preparation_task",
+        "/api/method/kopos_connector.api.start_preparation_task",
+        "/api/method/kopos_connector.api.complete_preparation_task",
+        "/api/method/kopos_connector.api.submit_purchase_receipt",
+        "/api/method/kopos_connector.api.submit_transfer_dispatch",
+        "/api/method/kopos_connector.api.submit_transfer_receipt",
+        # A device API user must always be able to end its own browser session.
+        # This is deliberately an exit-only Frappe core method, not Desk access.
+        "/api/v2/method/logout",
     }
 )
 
@@ -103,6 +119,19 @@ DEVICE_API_HTTP_METHODS.update(
         "/api/method/kopos_connector.api.fb_orders.retry_failed_projections": frozenset(
             {"POST"}
         ),
+        "/api/method/kopos_connector.api.create_availability_hold": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.release_availability_hold": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.report_device_inventory_state": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.submit_count_observation": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.claim_count_task": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.confirm_count_reconciliation": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.accept_preparation_task": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.start_preparation_task": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.complete_preparation_task": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.submit_purchase_receipt": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.submit_transfer_dispatch": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.submit_transfer_receipt": frozenset({"POST"}),
+        "/api/v2/method/logout": frozenset({"POST"}),
     }
 )
 

@@ -467,6 +467,9 @@ class TestCatalogFBSource(unittest.TestCase):
                     "name": "Iced",
                     "price_adjustment": 0.5,
                     "price_adjustment_sen": 50,
+                    "target_item": None,
+                    "new_item": None,
+                    "affects_stock": 0,
                     "is_default": 0,
                     "is_active": 1,
                     "display_order": 1,
@@ -492,6 +495,7 @@ class TestCatalogFBSource(unittest.TestCase):
                         "effective_from": None,
                         "effective_to": None,
                         "version_no": 1,
+                        "canonical_hash": "d" * 64,
                         "modified": "2026-03-13 18:00:00",
                     }
                 ]
@@ -619,6 +623,7 @@ class TestCatalogFBSource(unittest.TestCase):
                 "effective_from": None,
                 "effective_to": None,
                 "version_no": 3,
+                "canonical_hash": "a" * 64,
                 "modified": "2026-07-12 00:00:00",
             }
         ]
@@ -630,7 +635,13 @@ class TestCatalogFBSource(unittest.TestCase):
 
         self.assertEqual(
             result,
-            {"ITEM-1": {"recipe_id": "RECIPE-ITEM-1-V3", "recipe_version": 3}},
+            {
+                "ITEM-1": {
+                    "recipe_id": "RECIPE-ITEM-1-V3",
+                    "recipe_version": 3,
+                    "recipe_hash": "a" * 64,
+                }
+            },
         )
 
     @pytest.mark.inventory_regression
@@ -675,6 +686,7 @@ class TestCatalogFBSource(unittest.TestCase):
                 "effective_from": None,
                 "effective_to": None,
                 "version_no": 3,
+                "canonical_hash": "b" * 64,
                 "modified": "2026-08-01 00:00:00",
             },
             {
@@ -683,6 +695,7 @@ class TestCatalogFBSource(unittest.TestCase):
                 "effective_from": None,
                 "effective_to": None,
                 "version_no": 2,
+                "canonical_hash": "c" * 64,
                 "modified": "2026-07-01 00:00:00",
             },
         ]
@@ -692,7 +705,13 @@ class TestCatalogFBSource(unittest.TestCase):
                 [{"id": "ITEM-1", "custom_fb_recipe_required": 1}],
                 company="JiJi",
             ),
-            {"ITEM-1": {"recipe_id": "RECIPE-V3", "recipe_version": 3}},
+            {
+                "ITEM-1": {
+                    "recipe_id": "RECIPE-V3",
+                    "recipe_version": 3,
+                    "recipe_hash": "b" * 64,
+                }
+            },
         )
 
 
@@ -934,6 +953,7 @@ class TestCatalogApiElevation(unittest.TestCase):
             since=None,
             device_id="device-1",
             known_version=None,
+            known_overlay_version=None,
         )
         self.assertEqual(events, ["enter", "exit"])
 

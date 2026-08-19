@@ -44,7 +44,10 @@ class TestTargetPreflightRuntime(FrappeTestCase):
     def test_reviewed_schema_indexes_and_scheduler_match_the_real_site(self) -> None:
         schema = _schema_check()
         indexes = _index_check()
-        scheduler = _scheduler_check()
+        # Restored production-derived data is intentionally run with the
+        # scheduler paused.  Keep validating every job row and cron timing
+        # without weakening the default production preflight rejection.
+        scheduler = _scheduler_check(allow_paused_scheduler=True)
 
         self.assertTrue(schema["passed"])
         self.assertEqual(schema["missing"], [])

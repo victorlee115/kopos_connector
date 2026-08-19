@@ -40,12 +40,35 @@ from .device_safe_reset import (
     resolve_device_safe_reset_request as resolve_device_safe_reset_request_payload,
 )
 from .order_history import get_order_history_payload
-from .promotions import get_promotion_snapshot_payload
+from .promotions import (
+    get_promotion_snapshot_payload,
+    require_company_director_for_promotion_publication,
+)
 from .provisioning import (
     create_device_provisioning_qr as create_device_provisioning_qr_payload,
     create_pos_provisioning as create_pos_provisioning_payload,
     get_device_config as get_device_config_payload,
     redeem_pos_provisioning as redeem_pos_provisioning_payload,
+)
+from .inventory import (
+    accept_preparation_task,
+    approve_promotion_economics_override,
+    create_availability_hold,
+    complete_preparation_task,
+    activate_inventory_cutover,
+    claim_count_task,
+    confirm_count_reconciliation,
+    create_count_reconciliation_after_director_review,
+    get_autopilot_health,
+    get_edge_snapshot,
+    preflight_legacy_inventory_values,
+    release_availability_hold,
+    report_device_inventory_state,
+    start_preparation_task,
+    submit_purchase_receipt,
+    submit_count_observation,
+    submit_transfer_dispatch,
+    submit_transfer_receipt,
 )
 
 
@@ -176,11 +199,12 @@ def ping() -> None:
     _write_response({"message": "KoPOS ERPNext API ready"})
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["GET"])
 def get_catalog(
     since: str | None = None,
     device_id: str | None = None,
     known_version: str | None = None,
+    known_overlay_version: str | None = None,
 ) -> None:
     """Public KoPOS endpoint for catalog sync."""
     try:
@@ -193,6 +217,7 @@ def get_catalog(
                     since=since,
                     device_id=device_id,
                     known_version=known_version,
+                    known_overlay_version=known_overlay_version,
                 )
             )
     except Exception as error:
@@ -848,7 +873,7 @@ def publish_promotion_snapshot(
     """Publish an immutable KoPOS promotion snapshot for a POS profile."""
     from .promotions import publish_promotion_snapshot as publish
 
-    require_system_manager()
+    require_company_director_for_promotion_publication()
     _write_response(publish(pos_profile=pos_profile, device_id=device_id))
 
 
@@ -1711,6 +1736,46 @@ def _resolve_manager_approval_scope(payload: dict[str, Any]) -> dict[str, Any]:
 
         scope = build_refund_approval_scope(_to_public_fb_return_payload(payload))
         validate_requested_scope(payload, scope)
+    elif action == "inventory_count_reconciliation":
+        device_id = frappe.utils.cstr(payload.get("device_id")).strip()
+        staff_id = frappe.utils.cstr(payload.get("staff_id")).strip()
+        task_id = frappe.utils.cstr(payload.get("shift_id")).strip()
+        observation_id = frappe.utils.cstr(payload.get("resource_id")).strip()
+        idempotency_key = frappe.utils.cstr(payload.get("idempotency_key")).strip()
+        context_value = payload.get("context")
+        context = dict(context_value) if isinstance(context_value, Mapping) else None
+        if not device_id or not staff_id or not task_id or not observation_id:
+            frappe.throw(
+                _("device_id, staff_id, shift_id and resource_id are required for count approval"),
+                frappe.ValidationError,
+            )
+        if not idempotency_key:
+            frappe.throw(_("idempotency_key is required for count approval"), frappe.ValidationError)
+        if context is None or set(context) != {"task_id", "task_revision", "observation_id", "warehouse"}:
+            frappe.throw(_("Count approval context is incomplete"), frappe.ValidationError)
+        if frappe.utils.cstr(context.get("task_id")).strip() != task_id:
+            frappe.throw(_("Count approval task does not match its context"), frappe.ValidationError)
+        if frappe.utils.cstr(context.get("observation_id")).strip() != observation_id:
+            frappe.throw(_("Count approval observation does not match its context"), frappe.ValidationError)
+        if isinstance(context.get("task_revision"), bool) or not isinstance(context.get("task_revision"), int) or context["task_revision"] < 1:
+            frappe.throw(_("Count approval task revision is invalid"), frappe.ValidationError)
+        if not frappe.utils.cstr(context.get("warehouse")).strip():
+            frappe.throw(_("Count approval warehouse is required"), frappe.ValidationError)
+        require_device_operational_scope(
+            device_id,
+            warehouse=frappe.utils.cstr(context.get("warehouse")).strip(),
+        )
+        amount_sen = parse_integer_sen(payload.get("amount_sen", 0))
+        if amount_sen != 0:
+            frappe.throw(_("Count approval cannot carry a financial amount"), frappe.ValidationError)
+        scope = {
+            "device_id": device_id,
+            "staff_id": staff_id,
+            "shift_id": task_id,
+            "resource_id": observation_id,
+            "amount_sen": 0,
+            "context_hash": canonical_context_hash(context),
+        }
     else:
         device_id = frappe.utils.cstr(payload.get("device_id")).strip()
         staff_id = frappe.utils.cstr(payload.get("staff_id")).strip()
@@ -2258,8 +2323,18 @@ __all__ = [
     "get_payment_readiness",
     "get_qr_setup_preview",
     "apply_qr_configuration",
+    "create_availability_hold",
+    "accept_preparation_task",
+    "activate_inventory_cutover",
+    "approve_promotion_economics_override",
+    "complete_preparation_task",
+    "create_count_reconciliation_after_director_review",
     "get_catalog",
+    "get_autopilot_health",
+    "claim_count_task",
+    "confirm_count_reconciliation",
     "get_device_config",
+    "get_edge_snapshot",
     "get_item_modifiers",
     "get_order_history",
     "get_promotion_review_queue",
@@ -2271,6 +2346,7 @@ __all__ = [
     "prepare_automatic_qr_sale",
     "process_refund",
     "publish_promotion_snapshot",
+    "preflight_legacy_inventory_values",
     "redeem_pos_provisioning",
     "register_device_credential_recovery",
     "request_device_safe_reset",
@@ -2279,9 +2355,16 @@ __all__ = [
     "resolve_duplicate_automatic_qr_refund",
     "resolve_maybank_qr_generation",
     "resolve_secondary_static_qr_claim",
+    "release_availability_hold",
+    "report_device_inventory_state",
+    "start_preparation_task",
+    "submit_purchase_receipt",
     "review_promotion_reconciliation",
     "simulate_maybank_qr_payment",
     "submit_order",
+    "submit_count_observation",
+    "submit_transfer_dispatch",
+    "submit_transfer_receipt",
     "upload_manual_qr_receipt",
     "void_order",
 ]

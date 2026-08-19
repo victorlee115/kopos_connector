@@ -1,0 +1,24 @@
+{
+ "doctype": "DocType",
+ "name": "FB Inventory Count Task",
+ "module": "KoPOS",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "autoname": "format:INV-COUNT-{YYYY}-{#####}",
+ "is_submittable": 0,
+ "field_order": ["company", "warehouse", "stock_group", "schedule_frequency", "schedule_period", "schedule_key", "assignee", "revision", "stock_watermark", "status", "lines"],
+ "fields": [
+  {"fieldname":"company","fieldtype":"Link","label":"Company","options":"Company","reqd":1},
+  {"fieldname":"warehouse","fieldtype":"Link","label":"Warehouse","options":"Warehouse","reqd":1},
+  {"fieldname":"stock_group","fieldtype":"Link","label":"Stock Group","options":"Item Group","read_only":1},
+  {"fieldname":"schedule_frequency","fieldtype":"Select","label":"Schedule Frequency","options":"\nDaily\nSelected Weekdays\nWeekly\nOff","read_only":1,"hidden":1},
+  {"fieldname":"schedule_period","fieldtype":"Data","label":"Schedule Period","read_only":1,"hidden":1},
+  {"fieldname":"schedule_key","fieldtype":"Data","label":"Schedule Key","read_only":1,"hidden":1,"unique":1,"no_copy":1},
+  {"fieldname":"assignee","fieldtype":"Link","label":"Assignee","options":"User"},
+  {"fieldname":"revision","fieldtype":"Int","label":"Revision","reqd":1},
+  {"fieldname":"stock_watermark","fieldtype":"Data","label":"Stock Ledger Watermark","reqd":1},
+  {"fieldname":"status","fieldtype":"Select","label":"Status","options":"Assigned\nClaimed\nIn Progress\nSubmitted\nReview\nReviewed\nCancelled","default":"Assigned","reqd":1},
+  {"fieldname":"lines","fieldtype":"Table","label":"Items","options":"FB Inventory Count Task Line"}
+ ],
+ "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]
+}

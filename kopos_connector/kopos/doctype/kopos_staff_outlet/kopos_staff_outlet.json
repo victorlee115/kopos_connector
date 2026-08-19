@@ -1,0 +1,12 @@
+{
+ "doctype": "DocType",
+ "name": "KoPOS Staff Outlet",
+ "module": "KoPOS",
+ "istable": 1,
+ "fields": [
+  {"fieldname":"company","fieldtype":"Link","label":"Company","options":"Company","reqd":1},
+  {"fieldname":"outlet","fieldtype":"Data","label":"Outlet","reqd":1},
+  {"fieldname":"warehouse","fieldtype":"Link","label":"Warehouse","options":"Warehouse","reqd":1}
+ ],
+ "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]
+}

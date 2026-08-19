@@ -395,6 +395,16 @@ class TestFBSchemaContract(unittest.TestCase):
             }.issubset(names)
         )
 
+    @pytest.mark.inventory_regression
+    def test_fb_resolved_component_preserves_exact_decimal_text_for_inventory(self):
+        doc = load_doctype("fb_resolved_component")
+        fields = {field["fieldname"]: field for field in doc["fields"]}
+        for fieldname in ("qty_decimal", "stock_qty_decimal"):
+            self.assertIn(fieldname, fields)
+            self.assertEqual(fields[fieldname]["fieldtype"], "Data")
+            self.assertEqual(fields[fieldname].get("hidden"), 1)
+            self.assertEqual(fields[fieldname].get("read_only"), 1)
+
     def test_fb_projection_log_schema(self):
         doc = load_doctype("fb_projection_log")
         names = fieldnames(doc)

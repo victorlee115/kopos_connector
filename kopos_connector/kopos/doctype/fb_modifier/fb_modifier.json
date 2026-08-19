@@ -23,8 +23,10 @@
         "target_item",
         "new_item",
         "qty_delta",
+        "qty_delta_decimal",
         "qty_uom",
         "scale_percent",
+        "scale_percent_decimal",
         "instruction_section",
         "instruction_text",
         "effects_section",
@@ -119,6 +121,15 @@
             "label": "Qty Delta"
         },
         {
+            "fieldname": "qty_delta_decimal",
+            "fieldtype": "Data",
+            "label": "Exact Qty Delta (Decimal)",
+            "read_only": 1,
+            "hidden": 1,
+            "no_copy": 1,
+            "description": "Canonical decimal text used when freezing modifier effects. Historical modifiers may leave this blank."
+        },
+        {
             "fieldname": "qty_uom",
             "fieldtype": "Link",
             "label": "Qty UOM",
@@ -128,6 +139,15 @@
             "fieldname": "scale_percent",
             "fieldtype": "Percent",
             "label": "Scale Percent"
+        },
+        {
+            "fieldname": "scale_percent_decimal",
+            "fieldtype": "Data",
+            "label": "Exact Scale Percent (Decimal)",
+            "read_only": 1,
+            "hidden": 1,
+            "no_copy": 1,
+            "description": "Canonical decimal text used when freezing modifier effects. Historical modifiers may leave this blank."
         },
         {
             "fieldname": "instruction_section",
@@ -184,7 +204,7 @@
             "print": 1,
             "read": 1,
             "report": 1,
-            "role": "KoPOS Manager",
+            "role": "Company Director",
             "share": 1,
             "write": 1
         }

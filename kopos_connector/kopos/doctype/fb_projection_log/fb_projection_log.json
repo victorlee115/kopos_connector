@@ -120,7 +120,7 @@
             "fieldtype": "Select",
             "in_list_view": 1,
             "label": "State",
-            "options": "Pending\nSucceeded\nFailed\nReversed",
+            "options": "Pending\nProcessing\nSucceeded\nFailed\nDead Letter\nReversed\nNot Evaluated",
             "reqd": 1,
             "search_index": 1
         },

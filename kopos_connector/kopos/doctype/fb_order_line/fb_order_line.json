@@ -23,6 +23,7 @@
         "recipe_section",
         "recipe",
         "recipe_version",
+        "recipe_hash",
         "is_recipe_managed",
         "tracking_section",
         "refunded_qty",
@@ -126,6 +127,13 @@
             "fieldname": "recipe_version",
             "fieldtype": "Int",
             "label": "Recipe Version"
+        },
+        {
+            "fieldname": "recipe_hash",
+            "fieldtype": "Data",
+            "label": "Sale-time Recipe Hash",
+            "read_only": 1,
+            "hidden": 1
         },
         {
             "default": "0",

@@ -41,7 +41,17 @@
   "min_amount",
   "eligible_items",
   "eligible_item_groups",
-  "eligible_pos_profiles"
+  "eligible_pos_profiles",
+  "economics_section",
+  "economics_status",
+  "economics_source_hash",
+  "economics_checked_at",
+  "economics_checked_by",
+  "economics_block_reason",
+  "economics_override_reason",
+  "economics_override_by",
+  "economics_override_at",
+  "economics_override_hash"
  ],
  "fields": [
   {
@@ -245,6 +255,74 @@
    "fieldtype": "Table",
    "label": "Eligible POS Profiles",
    "options": "KoPOS Promotion POS Profile"
+  },
+  {
+   "fieldname": "economics_section",
+   "fieldtype": "Section Break",
+   "label": "COGS and Margin Review"
+  },
+  {
+   "fieldname": "economics_status",
+   "fieldtype": "Select",
+   "default": "Not checked",
+   "in_list_view": 1,
+   "label": "Economics Status",
+   "options": "Not checked\nReady\nBlocked\nOverride approved",
+   "read_only": 1
+  },
+  {
+   "fieldname": "economics_source_hash",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Economics Source Hash",
+   "read_only": 1
+  },
+  {
+   "fieldname": "economics_checked_at",
+   "fieldtype": "Datetime",
+   "label": "Economics Checked At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "economics_checked_by",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Economics Checked By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "economics_block_reason",
+   "fieldtype": "Small Text",
+   "label": "Economics Block Reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "economics_override_reason",
+   "fieldtype": "Small Text",
+   "label": "One-time Override Reason",
+   "read_only": 1
+  },
+  {
+   "fieldname": "economics_override_by",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "Override Approved By",
+   "options": "User",
+   "read_only": 1
+  },
+  {
+   "fieldname": "economics_override_at",
+   "fieldtype": "Datetime",
+   "label": "Override Approved At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "economics_override_hash",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "Override Economics Hash",
+   "read_only": 1
   }
  ],
  "links": [],
@@ -253,6 +331,10 @@
  "name": "KoPOS Promotion",
  "owner": "Administrator",
  "permissions": [
+  {
+   "read": 1,
+   "role": "KoPOS Device API"
+  },
   {
    "create": 1,
    "delete": 1,
@@ -273,13 +355,9 @@
    "print": 1,
    "read": 1,
    "report": 1,
-   "role": "Item Manager",
+   "role": "Company Director",
    "share": 1,
    "write": 1
-  },
-  {
-   "read": 1,
-   "role": "POS User"
   }
  ],
  "sort_field": "priority",

@@ -326,9 +326,14 @@ class PosProvisioningTests(unittest.TestCase):
                     "stock_warning": None,
                     "is_active": 1,
                     "is_prep_item": 0,
+                    # Emitted since inventory came into scope: it tells the
+                    # tablet an Item is a deliberate inventory exclusion, and
+                    # carries no financial value.
+                    "inventory_excluded": 0,
                     "modifier_group_ids": [],
                     "recipe_id": None,
                     "recipe_version": None,
+                    "recipe_hash": None,
                 }
             ],
         )

@@ -1,11 +1,6 @@
 import frappe
 from frappe.model.document import Document
 
-from kopos_connector.kopos.services.operations.refill_service import (
-    fulfill_refill_request,
-)
-
-
 class FBBoothRefillRequest(Document):
     def validate(self):
         if not self.request_id:
@@ -20,8 +15,11 @@ class FBBoothRefillRequest(Document):
             frappe.throw("FB Booth Refill Request requires at least one line")
 
     def on_submit(self):
-        fulfilled_stock_entry = fulfill_refill_request(self)
-        self.db_set(
-            "fulfilled_stock_entry", fulfilled_stock_entry, update_modified=False
+        # Historical rows remain readable, but this custom document can no
+        # longer move stock. Older tablets use ``process_refill`` which creates
+        # one Draft standard Material Request for director review; current
+        # tablets execute only the two-stage guided transfer flow.
+        frappe.throw(
+            "Legacy refill submission is retired. Create a standard Draft Material Request for Transfer instead.",
+            frappe.ValidationError,
         )
-        self.db_set("status", "Fulfilled", update_modified=False)

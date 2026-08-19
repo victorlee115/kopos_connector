@@ -17,10 +17,23 @@ from kopos_connector.utils.diagnostics import (
     log_sanitized_error,
     make_savepoint,
     rollback_to_savepoint,
+    sanitized_error_message,
 )
 
 
-def create_ingredient_stock_entry(fb_order: Any, resolved_sales: Any) -> str | None:
+def create_ingredient_stock_entry(
+    fb_order: Any,
+    resolved_sales: Any,
+    expense_account: str | None = None,
+    failure_reason: list[str] | None = None,
+) -> str | None:
+    """Post one Material Issue for a projected sale.
+
+    ``failure_reason`` is an optional out-list.  The savepoint rollback and the
+    ``None`` return are unchanged; when the caller supplies a list it also
+    receives the sanitized reason, so the projection log records why the entry
+    was not created instead of only that it was not.
+    """
     order_doc = _coerce_doc("FB Order", fb_order)
     if not order_doc:
         return None
@@ -87,8 +100,11 @@ def create_ingredient_stock_entry(fb_order: Any, resolved_sales: Any) -> str | N
                 _value(order_doc, "event_project"),
             )
 
+            detail_meta = frappe.get_meta("Stock Entry Detail")
             for item_row in grouped_items:
-                stock_entry.append("items", item_row)
+                detail = stock_entry.append("items", item_row)
+                if expense_account and detail_meta.has_field("expense_account"):
+                    detail.expense_account = expense_account
 
             stock_entry.insert(ignore_permissions=True)
             stock_entry.submit()
@@ -109,9 +125,11 @@ def create_ingredient_stock_entry(fb_order: Any, resolved_sales: Any) -> str | N
             )
 
         return stock_entry.name
-    except Exception:
+    except Exception as error:
         _rollback_savepoint(savepoint)
-        _log_error("Ingredient stock issue projection failed")
+        _log_error("Ingredient stock issue projection failed", error)
+        if failure_reason is not None:
+            failure_reason.append(sanitized_error_message(error))
         return None
 
 
@@ -156,7 +174,12 @@ def _build_grouped_issue_items(resolved_sale_docs: list[Any]) -> list[dict[str, 
                 resolved_sale_doc, "booth_warehouse"
             )
             item_code = _value(component, "item")
-            stock_qty_value = _value(component, "stock_qty")
+            # ``*_decimal`` is the canonical inventory quantity.  The Float
+            # columns remain as a compatibility fallback for pre-redesign
+            # resolved sales and must never be the authority for new rows.
+            stock_qty_value = _value(component, "stock_qty_decimal")
+            if stock_qty_value in (None, ""):
+                stock_qty_value = _value(component, "stock_qty")
             if stock_qty_value in (None, ""):
                 stock_qty_value = _value(component, "qty")
             qty = _positive_decimal_quantity(
@@ -436,5 +459,8 @@ def _rollback_savepoint(savepoint: str) -> None:
     rollback_to_savepoint(savepoint, title="Stock issue projection rollback failed")
 
 
-def _log_error(title: str) -> None:
-    log_sanitized_error(title)
+def _log_error(title: str, error: BaseException | None = None) -> None:
+    # Pass the exception through: without it the sanitized logger records only
+    # the title, which is how a NegativeStockError once surfaced as nothing more
+    # than "Material Issue Stock Entry was not created".
+    log_sanitized_error(title, error)

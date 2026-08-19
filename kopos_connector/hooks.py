@@ -42,7 +42,9 @@ requires_erpnext_version = ">=16.0.0,<17.0.0"
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
 
-doctype_js = {}
+doctype_js = {
+    "KoPOS Promotion": "public/js/kopos_promotion.js",
+}
 
 # Home Pages
 # ----------
@@ -101,7 +103,20 @@ before_uninstall = "kopos_connector.uninstall.before_uninstall"
 # 	"ToDo": "custom_app.overrides.CustomToDo"
 # }
 
-# Document event behavior is implemented directly in the DocType controllers.
+# Document event behavior is implemented directly in the DocType controllers
+# except for these fixed ERPNext-owned stock documents. Their submitted state
+# schedules one debounced, optional availability refresh after commit.
+doc_events = {
+    "Purchase Receipt": {
+        "on_submit": "kopos_connector.kopos.services.inventory_autopilot.availability_events.on_stock_document_submit",
+    },
+    "Stock Entry": {
+        "on_submit": "kopos_connector.kopos.services.inventory_autopilot.availability_events.on_stock_document_submit",
+    },
+    "Stock Reconciliation": {
+        "on_submit": "kopos_connector.kopos.services.inventory_autopilot.availability_events.on_stock_document_submit",
+    },
+}
 
 # POS Profile is an ERPNext-owned DocType, so extend its controller instead of
 # registering a second doc_events lifecycle.  The mixin invalidates managed
@@ -127,6 +142,17 @@ scheduler_events = {
         "kopos_connector.kopos.services.accounting.automatic_qr_finalization_service.recover_paid_automatic_qr_sales",
         "kopos_connector.kopos.services.projection.retry_service.retry_projection_failures",
     ],
+    "cron": {
+        "*/5 * * * *": [
+            "kopos_connector.kopos.services.inventory_autopilot.projection_worker.recover_inventory_projections",
+            "kopos_connector.kopos.services.inventory_autopilot.preparation.schedule_preparation_tasks",
+        ],
+        "0 * * * *": [
+            "kopos_connector.kopos.services.inventory_autopilot.availability_events.recover_availability_hourly",
+            "kopos_connector.kopos.services.inventory_autopilot.count_scheduler.schedule_inventory_count_tasks",
+            "kopos_connector.kopos.services.inventory_autopilot.planning.generate_inventory_plans",
+        ],
+    },
 }
 
 # Testing

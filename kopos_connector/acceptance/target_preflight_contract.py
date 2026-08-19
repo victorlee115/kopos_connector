@@ -235,6 +235,33 @@ REQUIRED_SCHEDULER_FREQUENCIES = {
     ): "All",
 }
 
+# Inventory recovery is deliberately isolated from the commercial retry
+# worker.  It is a five-minute cron job, not an ``all`` frequency hook; the
+# target preflight checks both groups independently so adding it cannot weaken
+# the commercial scheduler contract.
+REQUIRED_CRON_SCHEDULER_FREQUENCIES = {
+    (
+        "kopos_connector.kopos.services.inventory_autopilot."
+        "availability_events.recover_availability_hourly"
+    ): "0 * * * *",
+    (
+        "kopos_connector.kopos.services.inventory_autopilot."
+        "count_scheduler.schedule_inventory_count_tasks"
+    ): "0 * * * *",
+    (
+        "kopos_connector.kopos.services.inventory_autopilot."
+        "projection_worker.recover_inventory_projections"
+    ): "*/5 * * * *",
+    (
+        "kopos_connector.kopos.services.inventory_autopilot."
+        "preparation.schedule_preparation_tasks"
+    ): "*/5 * * * *",
+    (
+        "kopos_connector.kopos.services.inventory_autopilot."
+        "planning.generate_inventory_plans"
+    ): "0 * * * *",
+}
+
 OBSOLETE_SCHEDULER_JOBS = (
     "kopos_connector.api.modifiers.aggregate_modifier_stats",
 )

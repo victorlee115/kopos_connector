@@ -339,6 +339,9 @@ def test_default_full_smoke_seed_does_not_post_ingredient_stock(
     import frappe
     from kopos_connector.api import provisioning
 
+    monkeypatch.delenv(smoke.SMOKE_INVENTORY_ACCEPTANCE_ENV, raising=False)
+    monkeypatch.delenv(smoke.SMOKE_INVENTORY_EVALUATION_ENV, raising=False)
+
     def forbidden(*args: Any, **kwargs: Any) -> Any:
         del args, kwargs
         raise AssertionError("default full smoke seed posted optional ingredient stock")
@@ -393,6 +396,105 @@ def test_default_full_smoke_seed_does_not_post_ingredient_stock(
         ("System Settings", "time_zone", "Asia/Kuala_Lumpur")
     ]
     assert "stock_item_code" not in result
+
+
+def test_full_smoke_inventory_mode_is_campaign_aware_and_explicit_values_win(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke = _smoke_module()
+
+    monkeypatch.delenv(smoke.SMOKE_INVENTORY_ACCEPTANCE_ENV, raising=False)
+    monkeypatch.delenv(smoke.SMOKE_INVENTORY_EVALUATION_ENV, raising=False)
+    assert smoke._full_smoke_inventory_regression_requested(None) is False
+
+    monkeypatch.setenv(smoke.SMOKE_INVENTORY_ACCEPTANCE_ENV, "false")
+    assert smoke._full_smoke_inventory_regression_requested(None) is False
+
+    monkeypatch.setenv(smoke.SMOKE_INVENTORY_ACCEPTANCE_ENV, "true")
+    monkeypatch.setenv(
+        smoke.SMOKE_INVENTORY_EVALUATION_ENV,
+        "included_evaluated",
+    )
+    assert smoke._full_smoke_inventory_regression_requested(None) is True
+    assert smoke._full_smoke_inventory_regression_requested(False) is False
+
+
+def test_included_campaign_seed_checks_real_economics_before_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke = _smoke_module()
+
+    import frappe
+    from kopos_connector.api import provisioning
+
+    monkeypatch.setenv(smoke.SMOKE_INVENTORY_ACCEPTANCE_ENV, "true")
+    monkeypatch.setenv(
+        smoke.SMOKE_INVENTORY_EVALUATION_ENV,
+        "included_evaluated",
+    )
+    calls: list[str] = []
+    base = {
+        "company": "KoPOS Malaysia",
+        "pos_profile": "Smoke POS",
+        "warehouse": "Store - KMY",
+        "item_code": smoke.DEMO_DRINK_ITEM,
+        "recipe": smoke.DEMO_RECIPE_CODE,
+        "inventory_evaluation": "included_evaluated",
+    }
+    device = SimpleNamespace(
+        name="SMOKE-DEVICE-DOC",
+        device_name="Smoke Test Tablet",
+        device_prefix="SMK",
+    )
+
+    def setup_refund_smoke_data(**kwargs: Any) -> dict[str, Any]:
+        assert kwargs == {"include_inventory_regression": True}
+        return base
+
+    monkeypatch.setattr(smoke, "setup_refund_smoke_data", setup_refund_smoke_data)
+    monkeypatch.setattr(smoke, "_ensure_kopos_device", lambda **kwargs: device)
+    monkeypatch.setattr(
+        provisioning,
+        "ensure_device_api_credentials",
+        lambda device_doc: {"api_key": "key", "api_secret": "secret"},
+    )
+    monkeypatch.setattr(
+        provisioning,
+        "create_pos_provisioning",
+        lambda **kwargs: {"token": "token"},
+    )
+    monkeypatch.setattr(
+        smoke,
+        "set_demo_ingredient_quantities",
+        lambda: calls.append("stock"),
+    )
+    monkeypatch.setattr(
+        smoke,
+        "_ensure_demo_promotion",
+        lambda profile: calls.append("promotion") or "PROMO",
+    )
+    monkeypatch.setattr(
+        smoke,
+        "_ensure_demo_promotion_economics",
+        lambda promotion, profile: calls.append("economics") or {
+            "status": "Ready",
+            "economics_hash": "a" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        smoke,
+        "_ensure_promotion_snapshot",
+        lambda profile: calls.append("publish") or {},
+    )
+    monkeypatch.setattr(smoke, "_get_demo_currency", lambda company: "MYR")
+    monkeypatch.setattr(frappe.db, "set_single_value", lambda *args: None, raising=False)
+    monkeypatch.setattr(frappe.db, "commit", lambda: None)
+    frappe.local.site = "smoke.local"
+
+    result = smoke.setup_full_smoke_data(erpnext_url="https://erp.example.com")
+
+    assert result["inventory_evaluation"] == "included_evaluated"
+    assert calls == ["stock", "promotion", "economics", "publish"]
 
 
 def test_default_smoke_reset_never_queries_optional_inventory_schema(

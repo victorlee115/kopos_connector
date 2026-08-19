@@ -53,6 +53,7 @@ def after_install():
     """
     try:
         ensure_kopos_module_defs()
+        ensure_standard_pages()
         ensure_kopos_custom_fields(skip_if_missing_doctypes=True)
         create_fb_custom_fields()
         ensure_maybank_provider_device_id()
@@ -68,10 +69,59 @@ def after_install():
 def after_migrate():
     """Ensure active KoPOS custom fields exist after DocTypes are synced."""
     ensure_kopos_module_defs()
+    ensure_standard_pages()
     ensure_kopos_custom_fields(skip_if_missing_doctypes=False)
     create_fb_custom_fields()
     ensure_maybank_provider_device_id()
     ensure_operational_composite_indexes()
+
+
+def ensure_standard_pages() -> None:
+    """Keep the director-facing standard pages present after upgrades.
+
+    Frappe's page file sync is not guaranteed when a page is introduced in an
+    already-installed app (for example, when an upgrade skips the initial
+    module import).  These are durable navigation records, not a second page
+    implementation, so creating them idempotently here keeps the routes
+    available without asking directors to run a manual fixture import.
+    """
+    # Lightweight hook tests provide only the Frappe symbols needed for their
+    # assertion and intentionally omit site configuration.  Real Frappe always
+    # exposes ``conf``; skip page materialization in that reduced harness.
+    if not hasattr(frappe, "conf"):
+        return
+
+    pages = (
+        {
+            "name": "jiji_menu_recipes",
+            "title": "JiJi Menu & Recipes",
+            "roles": ("System Manager", "Company Director"),
+        },
+        {
+            "name": "jiji_stock_autopilot",
+            "title": "JiJi Stock Autopilot",
+            "roles": ("System Manager", "Company Director"),
+        },
+    )
+    for page in pages:
+        if frappe.db.exists("Page", page["name"]):
+            continue
+        previous_developer_mode = getattr(frappe.conf, "developer_mode", 0)
+        frappe.conf.developer_mode = 1
+        try:
+            frappe.get_doc(
+                {
+                    "doctype": "Page",
+                    "name": page["name"],
+                    "page_name": page["name"],
+                    "title": page["title"],
+                    "module": "KoPOS",
+                    "standard": "Yes",
+                    "roles": [{"role": role} for role in page["roles"]],
+                }
+            ).insert(ignore_permissions=True)
+        finally:
+            frappe.conf.developer_mode = previous_developer_mode
 
 
 OPERATIONAL_INDEX_SPECS = (
@@ -235,6 +285,8 @@ def create_kopos_custom_fields():
                 "options": "auto\nforce_available\nforce_unavailable",
                 "default": "auto",
                 "insert_after": "kopos_availability_section",
+                "hidden": 1,
+                "read_only": 1,
                 "description": "Controls item availability in KoPOS:<br>"
                 "• Auto - Use stock level (if tracking enabled)<br>"
                 "• Force Available - Always show as available<br>"
@@ -246,6 +298,8 @@ def create_kopos_custom_fields():
                 "fieldtype": "Check",
                 "default": 0,
                 "insert_after": "custom_kopos_availability_mode",
+                "hidden": 1,
+                "read_only": 1,
                 "description": "Enable stock-based availability checking in KoPOS",
             },
             {
@@ -254,6 +308,8 @@ def create_kopos_custom_fields():
                 "fieldtype": "Float",
                 "default": 1,
                 "insert_after": "custom_kopos_track_stock",
+                "hidden": 1,
+                "read_only": 1,
                 "depends_on": "eval:doc.custom_kopos_track_stock==1",
                 "description": "Minimum quantity required for item to be available",
             },
@@ -556,6 +612,10 @@ def ensure_kopos_client_scripts() -> None:
 def ensure_kopos_roles() -> None:
     if not frappe.db.exists("Role", KOPOS_DEVICE_API_ROLE):
         frappe.get_doc({"doctype": "Role", "role_name": KOPOS_DEVICE_API_ROLE}).insert(
+            ignore_permissions=True
+        )
+    if not frappe.db.exists("Role", "Company Director"):
+        frappe.get_doc({"doctype": "Role", "role_name": "Company Director"}).insert(
             ignore_permissions=True
         )
 

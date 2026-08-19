@@ -299,7 +299,11 @@ class TestDeviceOperationalMutationLock(unittest.TestCase):
     @pytest.mark.inventory_regression
     def test_optional_device_mutation_routes_lock_before_business_mutation(self) -> None:
         guarded_routes = {
-            "api/fb_refill.py": {"process_refill": "_build_refill_request"},
+            # Refill is now a compatibility adapter: FB Booth Refill Request was
+            # replaced by a Draft standard Material Request, so the guarded
+            # business call is the Material Request builder.  The property under
+            # test is unchanged -- the device lock still precedes the mutation.
+            "api/fb_refill.py": {"process_refill": "_build_material_request"},
             "api/fb_waste.py": {"process_waste": "_build_waste_event"},
             "api/fb_remakes.py": {"process_remake": "_build_remake_event"},
         }

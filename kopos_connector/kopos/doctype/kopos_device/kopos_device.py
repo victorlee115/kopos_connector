@@ -36,6 +36,7 @@ class KoPOSDevice(Document):
         ensure_unique_device_api_user(self.api_user, current_device_name=self.name)
         self._validate_static_qr_commissioning()
         self._validate_printers()
+        self._reject_legacy_user_edits_if_central_authority()
         self._normalize_users()
         self._bump_config_version_if_needed()
 
@@ -217,16 +218,74 @@ class KoPOSDevice(Document):
                     default_cashier_count += 1
 
         if cint(self.enabled) and active_user_count == 0:
-            frappe.throw(
-                _("Enabled KoPOS Devices require at least one active device user"),
-                frappe.ValidationError,
+            from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
+                central_staff_access_exists_for_device,
             )
+
+            if not central_staff_access_exists_for_device(self):
+                frappe.throw(
+                    _(
+                        "Enabled KoPOS Devices require central staff access or "
+                        "at least one active legacy device user"
+                    ),
+                    frappe.ValidationError,
+                )
 
         if default_cashier_count > 1:
             frappe.throw(
                 _("Only one active default cashier is allowed per device"),
                 frappe.ValidationError,
             )
+
+    def _reject_legacy_user_edits_if_central_authority(self) -> None:
+        """Keep legacy child rows as immutable migration evidence.
+
+        Once any central access assignment exists for this device's outlet,
+        the legacy child table remains available for historical compatibility
+        but cannot be edited, added, or removed through the document API.  An
+        unchanged save is allowed so unrelated device settings can still be
+        maintained during the staged rollout.
+        """
+
+        from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
+            central_staff_access_exists_for_device,
+            legacy_device_user_signature,
+        )
+
+        if not central_staff_access_exists_for_device(self):
+            return
+
+        previous = None
+        previous_getter = getattr(self, "get_doc_before_save", None)
+        if callable(previous_getter):
+            previous = previous_getter()
+        if previous is None and cstr(getattr(self, "name", None)).strip():
+            try:
+                previous = frappe.get_doc(self.doctype, self.name)
+            except Exception:
+                # A new document or a test double may not have a persisted
+                # copy.  The current rows are still rejected below.
+                previous = None
+
+        current_signature = legacy_device_user_signature(self)
+        previous_signature = legacy_device_user_signature(previous) if previous is not None else ()
+        if current_signature != previous_signature:
+            frappe.throw(
+                _(
+                    "Legacy device-user rows are read-only after central POS "
+                    "staff access is assigned; update KoPOS Staff Access instead"
+                ),
+                frappe.ValidationError,
+            )
+
+    def invalidate_for_staff_access(self) -> int:
+        """Invalidate the prior tablet report after central access changes."""
+
+        next_version = max(1, cint(getattr(self, "config_version", 0))) + 1
+        self.config_version = next_version
+        self.central_staff_access_locked = 1
+        self._clear_inventory_report_authority()
+        return next_version
 
     def _bump_config_version_if_needed(self) -> None:
         current_version = cint(self.config_version or 0)
@@ -239,8 +298,40 @@ class KoPOSDevice(Document):
         next_signature = _config_signature(self)
         if previous_signature != next_signature:
             self.config_version = max(1, current_version) + 1
+            # A device report is authority for one exact configuration. Any
+            # configuration change invalidates the prior inventory authority;
+            # the tablet must acknowledge a fresh overlay and report again.
+            self._clear_inventory_report_authority()
         else:
             self.config_version = max(1, current_version)
+
+    def _clear_inventory_report_authority(self) -> None:
+        for fieldname in (
+            "inventory_report_schema_version",
+            "inventory_report_revision",
+            "inventory_observed_at",
+            "inventory_report_received_at",
+            "inventory_config_version",
+            "inventory_catalog_version",
+            "inventory_overlay_version",
+            "inventory_overlay_hash",
+            "inventory_sales_pending",
+            "inventory_sales_syncing",
+            "inventory_sales_failed",
+            "inventory_sales_dead_letter",
+            "inventory_oldest_unsaved_sale_at",
+            "inventory_commands_pending",
+            "inventory_commands_syncing",
+            "inventory_commands_failed",
+            "inventory_commands_dead_letter",
+            "inventory_report_payload_hash",
+        ):
+            if hasattr(self, fieldname):
+                setattr(
+                    self,
+                    fieldname,
+                    None if fieldname.endswith(("_at", "_hash", "_version")) else 0,
+                )
 
 
 def _config_signature(doc: Document) -> str:

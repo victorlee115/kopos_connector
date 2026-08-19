@@ -1,0 +1,20 @@
+{
+ "doctype": "DocType",
+ "name": "KoPOS Staff Access",
+ "module": "KoPOS",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "autoname": "field:user",
+ "field_order": ["user", "employee", "active", "access_level", "pin", "pin_hash", "revision", "outlet_assignments"],
+ "fields": [
+  {"fieldname":"user","fieldtype":"Link","label":"User","options":"User","reqd":1,"unique":1},
+  {"fieldname":"employee","fieldtype":"Link","label":"Employee","options":"Employee","reqd":1},
+  {"fieldname":"active","fieldtype":"Check","label":"Active","default":1},
+  {"fieldname":"access_level","fieldtype":"Select","label":"POS Access","options":"Staff\nManager","default":"Staff","reqd":1},
+  {"fieldname":"pin","fieldtype":"Password","label":"PIN","permlevel":1,"description":"Enter a 4-digit PIN to rotate the secure verifier"},
+  {"fieldname":"pin_hash","fieldtype":"Small Text","label":"PIN Verifier","hidden":1,"read_only":1,"permlevel":1},
+  {"fieldname":"revision","fieldtype":"Int","label":"Revision","default":1,"read_only":1},
+  {"fieldname":"outlet_assignments","fieldtype":"Table","label":"Assigned Outlets","options":"KoPOS Staff Outlet"}
+ ],
+ "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]
+}

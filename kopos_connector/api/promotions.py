@@ -11,7 +11,7 @@ from frappe.utils import cint as frappe_cint
 from frappe.utils import cstr, flt as frappe_flt, get_datetime, now_datetime
 
 from kopos_connector.api.catalog import get_default_pos_profile
-from kopos_connector.api.devices import get_device_doc, require_system_manager
+from kopos_connector.api.devices import get_device_doc, get_session_roles, require_system_manager
 
 SNAPSHOT_STATUS_PUBLISHED = "Published"
 SNAPSHOT_STATUS_SUPERSEDED = "Superseded"
@@ -64,6 +64,22 @@ def build_effective_snapshot_body(
 ) -> dict[str, Any]:
     evaluation_time = get_datetime(at_time or now_datetime())
     promotions = get_active_promotions(pos_profile, evaluation_time)
+    from kopos_connector.api.inventory import validate_promotion_economics_for_publication
+
+    for promotion in promotions:
+        try:
+            validate_promotion_economics_for_publication(
+                promotion,
+                pos_profile=pos_profile,
+            )
+        except (ValueError, frappe.ValidationError) as error:
+            frappe.throw(
+                _("Promotion {0} cannot be published: {1}").format(
+                    cstr(getattr(promotion, "name", "")),
+                    cstr(error),
+                ),
+                frappe.ValidationError,
+            )
     normalized = [serialize_promotion(doc, pos_profile) for doc in promotions]
     normalized.sort(
         key=lambda promo: (promo.get("priority", 100), promo.get("promotion_id", ""))
@@ -183,7 +199,7 @@ def get_promotion_snapshot_payload(
     pos_profile: str | None = None,
     current_version: str | None = None,
     device_id: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     profile_name = resolve_snapshot_pos_profile(pos_profile, device_id=device_id)
     latest = get_latest_published_snapshot(profile_name)
 
@@ -204,16 +220,16 @@ def get_promotion_snapshot_payload(
         )
         return payload
 
-    payload = build_snapshot_payload(profile_name)
-    payload["source"] = "live"
-    payload["is_current"] = False
-    return payload
+    # Promotion snapshots are the immutable authority consumed by POS.  A
+    # live calculation here would let an unpublished or stale promotion leak
+    # into checkout, so callers must handle the explicit unavailable state.
+    return None
 
 
 def publish_promotion_snapshot(
     pos_profile: str | None = None, device_id: str | None = None
 ) -> dict[str, Any]:
-    require_system_manager()
+    require_company_director_for_promotion_publication()
     profile_name = resolve_snapshot_pos_profile(pos_profile, device_id=device_id)
     payload = build_snapshot_payload_for_persistence(profile_name)
     latest = get_latest_published_snapshot(profile_name)
@@ -249,6 +265,15 @@ def publish_promotion_snapshot(
         "pos_profile": snapshot.pos_profile,
         "promotion_count": snapshot.promotion_count,
     }
+
+
+def require_company_director_for_promotion_publication() -> None:
+    roles = get_session_roles()
+    if not roles.intersection({"Company Director", "System Manager"}):
+        frappe.throw(
+            _("Promotion publication requires Company Director permission"),
+            frappe.PermissionError,
+        )
 
 
 def reconcile_promotion_payload(

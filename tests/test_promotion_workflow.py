@@ -128,14 +128,20 @@ class PromotionWorkflowTests(unittest.TestCase):
             }
         )
 
-        with patch(
+        # Publication now runs the COGS gate, which this fixture promotion
+        # cannot satisfy.  That gate has its own tests; the subject here is
+        # only that child-row order does not change the snapshot hash.
+        economics_gate = patch(
+            "kopos_connector.api.inventory.validate_promotion_economics_for_publication"
+        )
+        with economics_gate, patch(
             "kopos_connector.api.promotions.get_active_promotions",
             return_value=[promotion_a],
         ):
             hash_a = compute_snapshot_content_hash(
                 build_effective_snapshot_body("KoPOS Main")
             )
-        with patch(
+        with economics_gate, patch(
             "kopos_connector.api.promotions.get_active_promotions",
             return_value=[promotion_b],
         ):
@@ -145,17 +151,9 @@ class PromotionWorkflowTests(unittest.TestCase):
 
         self.assertEqual(hash_a, hash_b)
 
-    def test_get_promotion_snapshot_payload_returns_live_snapshot_when_no_published(
+    def test_get_promotion_snapshot_payload_returns_none_when_no_published(
         self,
     ):
-        live_payload = {
-            "pos_profile": "Test POS",
-            "effective_from": "2026-03-13T18:05:00",
-            "promotions": [{"promotion_id": "PROMO-1"}],
-            "published_at": "2026-03-13T18:05:00",
-            "snapshot_hash": "live-hash",
-            "snapshot_version": "KOPOS-PROMO-live-hash",
-        }
         with (
             patch(
                 "kopos_connector.api.promotions.get_latest_published_snapshot",
@@ -167,14 +165,12 @@ class PromotionWorkflowTests(unittest.TestCase):
             ),
             patch(
                 "kopos_connector.api.promotions.build_snapshot_payload",
-                return_value=live_payload,
+                side_effect=AssertionError("unpublished promotions must not be evaluated"),
             ),
         ):
             result = get_promotion_snapshot_payload(pos_profile="Test POS")
 
-        self.assertIsNotNone(result)
-        self.assertEqual(result["source"], "live")
-        self.assertFalse(result["is_current"])
+        self.assertIsNone(result)
 
     def test_get_promotion_snapshot_payload_returns_latest_persisted_snapshot_only(
         self,
@@ -224,6 +220,12 @@ class PromotionWorkflowTests(unittest.TestCase):
             patch(
                 "kopos_connector.api.promotions.require_system_manager",
             ),
+            # Promotions became Company Director owned when inventory came into
+            # scope.  Pin the gate explicitly so these snapshot tests do not
+            # depend on whatever session user an earlier suite left behind.
+            patch(
+                "kopos_connector.api.promotions.require_company_director_for_promotion_publication",
+            ),
             patch(
                 "kopos_connector.api.promotions.resolve_snapshot_pos_profile",
                 return_value="KoPOS Main",
@@ -271,6 +273,12 @@ class PromotionWorkflowTests(unittest.TestCase):
             patch(
                 "kopos_connector.api.promotions.require_system_manager",
             ),
+            # Promotions became Company Director owned when inventory came into
+            # scope.  Pin the gate explicitly so these snapshot tests do not
+            # depend on whatever session user an earlier suite left behind.
+            patch(
+                "kopos_connector.api.promotions.require_company_director_for_promotion_publication",
+            ),
             patch(
                 "kopos_connector.api.promotions.resolve_snapshot_pos_profile",
                 return_value="KoPOS Main",
@@ -315,6 +323,12 @@ class PromotionWorkflowTests(unittest.TestCase):
         with (
             patch(
                 "kopos_connector.api.promotions.require_system_manager",
+            ),
+            # Promotions became Company Director owned when inventory came into
+            # scope.  Pin the gate explicitly so these snapshot tests do not
+            # depend on whatever session user an earlier suite left behind.
+            patch(
+                "kopos_connector.api.promotions.require_company_director_for_promotion_publication",
             ),
             patch(
                 "kopos_connector.api.promotions.resolve_snapshot_pos_profile",
@@ -716,6 +730,12 @@ class PromotionWorkflowTests(unittest.TestCase):
             patch(
                 "kopos_connector.api.promotions.require_system_manager",
             ),
+            # Promotions became Company Director owned when inventory came into
+            # scope.  Pin the gate explicitly so these snapshot tests do not
+            # depend on whatever session user an earlier suite left behind.
+            patch(
+                "kopos_connector.api.promotions.require_company_director_for_promotion_publication",
+            ),
             patch(
                 "frappe.get_all",
                 return_value=[invoice_row],
@@ -782,6 +802,12 @@ class PromotionWorkflowTests(unittest.TestCase):
         with (
             patch(
                 "kopos_connector.api.promotions.require_system_manager",
+            ),
+            # Promotions became Company Director owned when inventory came into
+            # scope.  Pin the gate explicitly so these snapshot tests do not
+            # depend on whatever session user an earlier suite left behind.
+            patch(
+                "kopos_connector.api.promotions.require_company_director_for_promotion_publication",
             ),
             patch(
                 "frappe.get_all",
@@ -858,6 +884,12 @@ class PromotionWorkflowTests(unittest.TestCase):
         with (
             patch(
                 "kopos_connector.api.promotions.require_system_manager",
+            ),
+            # Promotions became Company Director owned when inventory came into
+            # scope.  Pin the gate explicitly so these snapshot tests do not
+            # depend on whatever session user an earlier suite left behind.
+            patch(
+                "kopos_connector.api.promotions.require_company_director_for_promotion_publication",
             ),
             patch(
                 "frappe.get_all",

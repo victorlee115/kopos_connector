@@ -1,0 +1,14 @@
+{
+ "doctype": "DocType",
+ "name": "FB Inventory Count Task Line",
+ "module": "KoPOS",
+ "istable": 1,
+ "fields": [
+  {"fieldname":"item_id","fieldtype":"Link","label":"Item","options":"Item","reqd":1},
+  {"fieldname":"uom","fieldtype":"Link","label":"Loose / Stock UOM","options":"UOM","reqd":1,"read_only":1},
+  {"fieldname":"stock_uom","fieldtype":"Link","label":"Stock UOM","options":"UOM","reqd":1,"read_only":1},
+  {"fieldname":"purchase_uom","fieldtype":"Link","label":"Purchase / Pack UOM","options":"UOM","reqd":1,"read_only":1},
+  {"fieldname":"conversion_factor","fieldtype":"Data","label":"Pack to Stock Conversion","reqd":1,"read_only":1,"no_copy":1}
+ ],
+ "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]
+}
