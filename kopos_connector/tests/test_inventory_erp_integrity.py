@@ -68,7 +68,7 @@ class SaleableItemClassificationTests(TestCase):
             self.assertNotIn(role, menu_authoring.SALEABLE_ITEM_ROLES)
 
     def test_classification_dialog_offers_every_saleable_role(self) -> None:
-        page = (ERP_ROOT / "page" / "jiji_menu_recipes" / "jiji_menu_recipes.js").read_text()
+        page = (ERP_ROOT / "kopos" / "page" / "jiji_menu_recipes" / "jiji_menu_recipes.js").read_text()
         for role in sorted(menu_authoring.SALEABLE_ITEM_ROLES):
             self.assertIn(role, page)
 
@@ -94,3 +94,43 @@ class ReturnToStockTests(TestCase):
         ):
             with self.assertRaises(Exception):
                 stock_reversal_service.create_reversal_stock_entry(payload)
+
+
+class DeskPagePackagingTests(TestCase):
+    """Frappe loads a Page's assets from <app>/<module_dir>/page/<page_name>/.
+
+    ``frappe/core/doctype/page/page.py::load_assets`` does ``os.listdir`` on
+    exactly that path. Both JiJi pages declare ``module: KoPOS``, whose directory
+    is ``kopos_connector/kopos``. The assets previously sat in
+    ``kopos_connector/page/``, which is not a module directory, so the desk pages
+    could never load their JS: with an empty directory at the module path Frappe
+    returned a blank page, and with no directory at all it raised
+    FileNotFoundError and the page 500ed.
+    """
+
+    PAGES = ("jiji_stock_autopilot", "jiji_menu_recipes")
+
+    def test_page_assets_live_where_frappe_loads_them(self) -> None:
+        for page in self.PAGES:
+            module_path = ERP_ROOT / "kopos" / "page" / page
+            self.assertTrue(
+                module_path.is_dir(),
+                f"{page} must exist under the KoPOS module directory or Frappe raises"
+                " FileNotFoundError when loading the desk page",
+            )
+            self.assertTrue(
+                (module_path / f"{page}.js").is_file(),
+                f"{page}.js must sit beside its page directory or the desk page renders blank",
+            )
+            self.assertTrue(
+                (module_path / f"{page}.json").is_file(),
+                f"{page}.json must sit beside its page directory",
+            )
+
+    def test_page_assets_are_not_left_outside_the_module(self) -> None:
+        for page in self.PAGES:
+            self.assertFalse(
+                (ERP_ROOT / "page" / page).exists(),
+                f"{page} must not also live outside the module directory; two copies"
+                " is what made the authoritative location ambiguous",
+            )
