@@ -180,6 +180,7 @@ def project_inventory_order(order_name: str) -> dict[str, Any]:
             create_ingredient_stock_entry,
         )
 
+        failure_reason: list[str] = []
         target_name = create_ingredient_stock_entry(
             order,
             resolved_sales,
@@ -188,9 +189,18 @@ def project_inventory_order(order_name: str) -> dict[str, Any]:
                 or cstr(getattr(policy, "cogs_account", None)).strip()
                 or None
             ),
+            failure_reason=failure_reason,
         )
         if not target_name:
-            raise RuntimeError("Material Issue Stock Entry was not created")
+            # Carry the sanitized cause onto the projection log's last_error so
+            # an operator sees the real reason -- insufficient stock, a missing
+            # account -- rather than only that no entry appeared.
+            detail = failure_reason[0] if failure_reason else ""
+            raise RuntimeError(
+                f"Material Issue Stock Entry was not created: {detail}"
+                if detail
+                else "Material Issue Stock Entry was not created"
+            )
         _finalize_success(log_name, lease_token, target_name)
         _resolve_projection_exceptions(order)
         return {
