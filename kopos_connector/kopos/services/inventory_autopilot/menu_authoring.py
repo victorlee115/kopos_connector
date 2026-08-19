@@ -39,6 +39,17 @@ MAX_CSV_BYTES = 512 * 1024
 MAX_CSV_ROWS = 5_000
 RECIPE_TYPES = {"Finished Drink", "Add-On", "Prep Batch", "Packaging Assembly"}
 COMPONENT_TYPES = {"Ingredient", "Prep Item", "Packaging", "Tool Usage"}
+
+# Roles a saleable Item may legitimately carry. Matches the six-way split in
+# docs/INVENTORY_ITEM_CLASSIFICATION.md: a drink is made to order from a recipe,
+# a packaged finished good is sold as the stock Item it already is, and a
+# non-stock service consumes no stock at all.
+DRINK_RECIPE_ROLE = "Sellable Drink"
+SALEABLE_ITEM_ROLES = frozenset({
+    DRINK_RECIPE_ROLE,
+    "Packaged Finished Good",
+    "Non-Stock Service",
+})
 CANONICAL_RECIPE_HASH = re.compile(r"^[0-9a-f]{64}$")
 MAX_GUIDED_COMPONENTS = 100
 MAX_GUIDED_MODIFIER_GROUPS = 30
@@ -418,10 +429,14 @@ def summarize_menu_authoring(
         if str(row.get("sellable_item") or "").strip()
     }
 
+    # A saleable Item is not necessarily a drink. Packaged goods (keychains) and
+    # non-stock services (event booth) are legitimately sold and legitimately have
+    # no drink recipe; requiring every saleable Item to be a "Sellable Drink" made
+    # them permanently unclassified and blocked cutover on real catalogue data.
     unclassified = [
         row
         for row in saleable_items
-        if str(row.get("custom_fb_item_role") or "").strip() != "Sellable Drink"
+        if str(row.get("custom_fb_item_role") or "").strip() not in SALEABLE_ITEM_ROLES
     ]
     exclusions = [
         row for row in saleable_items if _truthy(row.get("custom_fb_inventory_excluded"))
@@ -437,10 +452,13 @@ def summarize_menu_authoring(
         if str(row.get("name") or row.get("item_code") or "").strip() in recipe_items
         and not _truthy(row.get("custom_fb_inventory_excluded"))
     }
+    # Only a made-to-order drink is projected from a recipe. A packaged good is
+    # sold as the stock Item it already is, and a service consumes no stock.
     missing_recipe = [
         row
         for row in saleable_items
-        if not _truthy(row.get("custom_fb_inventory_excluded"))
+        if str(row.get("custom_fb_item_role") or "").strip() == DRINK_RECIPE_ROLE
+        and not _truthy(row.get("custom_fb_inventory_excluded"))
         and str(row.get("name") or row.get("item_code") or "").strip() not in recipe_items
     ]
     ready = bool(

@@ -10,6 +10,7 @@
     "field_order": [
         "item",
         "qty",
+        "qty_decimal",
         "uom",
         "cost_center"
     ],
@@ -28,6 +29,15 @@
             "in_list_view": 1,
             "label": "Qty",
             "reqd": 1
+        },
+        {
+            "fieldname": "qty_decimal",
+            "fieldtype": "Data",
+            "label": "Exact Qty (Decimal)",
+            "read_only": 1,
+            "hidden": 1,
+            "no_copy": 1,
+            "description": "Canonical decimal text used when issuing waste stock. Historical rows may leave this blank."
         },
         {
             "fieldname": "uom",

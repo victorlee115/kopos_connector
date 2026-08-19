@@ -184,11 +184,10 @@ def project_inventory_order(order_name: str) -> dict[str, Any]:
         target_name = create_ingredient_stock_entry(
             order,
             resolved_sales,
-            expense_account=(
-                cstr(getattr(policy, "expense_account", None)).strip()
-                or cstr(getattr(policy, "cogs_account", None)).strip()
-                or None
-            ),
+            # One field owns where ingredient consumption is booked. The former
+            # cogs_account fallback is migrated into expense_account by
+            # consolidate_inventory_policy_cogs_account and is no longer read.
+            expense_account=cstr(getattr(policy, "expense_account", None)).strip() or None,
             failure_reason=failure_reason,
         )
         if not target_name:

@@ -132,7 +132,7 @@ class JiJiMenuRecipesPage {
 		const messages = [];
 		if (summary.company_selection_required) messages.push(__("Choose a company to review its recipe coverage."));
 		if (!summary.item_fields_ready || !summary.recipe_schema_ready) messages.push(__("Run the inventory migration before commissioning menu data."));
-		if (summary.unclassified_items) messages.push(`${summary.unclassified_items} ${__("saleable item(s) need the Sellable Drink role.")}`);
+		if (summary.unclassified_items) messages.push(`${summary.unclassified_items} ${__("saleable item(s) still need a classification (drink, packaged good, or service).")}`);
 		if (summary.items_missing_recipe) messages.push(`${summary.items_missing_recipe} ${__("saleable item(s) need a published recipe or explicit exclusion.")}`);
 		if (summary.invalid_exclusions) messages.push(`${summary.invalid_exclusions} ${__("exclusion(s) need a reason.")}`);
 		const companyReady = Boolean(summary.selected_company) && !summary.company_selection_required;
@@ -169,7 +169,7 @@ class JiJiMenuRecipesPage {
 			action = "none";
 			disabled = true;
 		} else if (state.migrationReady && !state.classificationReady) {
-			message = __("Next: classify each saleable Item as Sellable Drink or record an approved exclusion.");
+			message = __("Next: classify each saleable Item as a drink, packaged good, or service, or record an approved exclusion.");
 			label = __("Classify an Item");
 			action = "item";
 		} else if (state.classificationReady && !state.recipesReady) {
@@ -252,7 +252,7 @@ class JiJiMenuRecipesPage {
 				{ fieldtype: "Data", fieldname: "item_code", label: __("Item code (optional)") },
 				{ fieldtype: "Link", fieldname: "item_group", options: "Item Group", label: __("Item group"), reqd: 1 },
 				{ fieldtype: "Link", fieldname: "stock_uom", options: "UOM", label: __("Stock UOM"), reqd: 1 },
-				{ fieldtype: "Select", fieldname: "item_role", label: __("Classification"), options: ["Sellable Drink", "Ingredient", "Prep Item", "Packaging"].join("\n"), reqd: 1, default: "Sellable Drink" },
+				{ fieldtype: "Select", fieldname: "item_role", label: __("Classification"), options: ["Sellable Drink", "Packaged Finished Good", "Non-Stock Service", "Ingredient", "Prep Item", "Packaging"].join("\n"), reqd: 1, default: "Sellable Drink" },
 			],
 			primary_action_label: __("Create disabled Item"),
 			primary_action: (values) => frappe.call({

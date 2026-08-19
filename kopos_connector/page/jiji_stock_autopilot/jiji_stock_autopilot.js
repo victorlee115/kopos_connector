@@ -179,9 +179,15 @@ class JiJiStockAutopilotPage {
 				key: "settings",
 				title: __("Settings"),
 				icon: "⚙",
-				status: runtime.status === "verified" ? "info" : "critical",
+				status: runtime.status === "verified" ? "info" : runtime.status === "present" ? "warning" : "critical",
 				value: health.automation_state || __("Review First"),
-				detail: runtime.status === "verified" ? `${__("Runtime artifact identity verified · source freshness {0} minutes", [Number(health.max_source_age_minutes || 30)])} · ${this.checkedAge(health.as_of)}` : __("Runtime artifact identity is unavailable; rollout is blocked"),
+				detail: runtime.status === "verified"
+					? `${__("Runtime artifact identity verified · source freshness {0} minutes", [Number(health.max_source_age_minutes || 30)])} · ${this.checkedAge(health.as_of)}`
+					: runtime.status === "present"
+						? `${__("Runtime artifact is installed but not checked against accepted release evidence")} · ${this.checkedAge(health.as_of)}`
+						: runtime.status === "unmatched"
+							? __("Installed runtime does not match the artifact this site expects; rollout is blocked")
+							: __("Runtime artifact identity is unavailable; rollout is blocked"),
 				action: __("Open inventory policy"),
 				route: "settings",
 			},

@@ -1,196 +1,56 @@
 # pyright: reportMissingImports=false
 
+"""Return-to-stock reversal is not a supported capability.
+
+JiJi does not restock a refund. `process_return_payload` rejects a refund that
+declares an inventory evaluation, normalises any legacy `return_to_stock: true`
+intent to false, and posts the commercial refund without touching stock; the
+end-to-end refund test patches this module to fail if the cashier path ever
+reaches it.
+
+The previous implementation here derived per-unit component quantities with
+float division::
+
+    qty_per_unit = component_qty / total_qty
+    return_qty = qty_per_unit * qty_returned
+
+That is not sound authority for a Stock Ledger Entry, it had no production
+caller, and it carried no reversal identity, so a replay could post the same
+receipt twice. Rather than leave working-looking float stock maths one call away
+from being wired up, the entry point fails closed.
+
+If restocking is ever brought into scope it must be rebuilt to:
+
+- compile quantities from the frozen ``stock_qty_decimal`` on the resolved sale,
+  using ``Decimal`` throughout, exactly as the recipe compiler and guided
+  transfers already do;
+- carry a unique reversal identity (a ``custom_kopos_inventory_command_id`` on
+  the Stock Entry) so a retry adopts the existing document instead of posting a
+  second receipt;
+- be gated by an explicit director-approved policy, not inferred from a refund.
+"""
+
 from __future__ import annotations
 
 from typing import Any
 
 import frappe
-
-from kopos_connector.api.devices import privileged_device_api_operation
-from kopos_connector.utils.diagnostics import (
-    log_sanitized_error,
-    make_savepoint,
-    rollback_to_savepoint,
-)
+from frappe import _
 
 
 def create_reversal_stock_entry(fb_return_event: Any) -> str | None:
-    return_doc = _coerce_doc("FB Return Event", fb_return_event)
-    if not return_doc:
-        return None
+    """Refuse to reverse stock for a refund.
 
-    if not int(_value(return_doc, "return_to_stock") or 0):
-        return None
+    Kept as the module's public entry point so the commercial refund test can
+    continue to assert that the cashier path never calls it.
+    """
 
-    existing_entry = _get_existing_reversal_entry(return_doc)
-    if existing_entry:
-        return existing_entry
-
-    lines = _value(return_doc, "lines") or []
-    if not lines:
-        return None
-
-    items_to_receive = []
-    for line in lines:
-        resolved_sale_name = _value(line, "original_resolved_sale")
-        qty_returned = flt(_value(line, "qty_returned"))
-        if not resolved_sale_name or qty_returned <= 0:
-            continue
-
-        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
-        warehouse = _value(resolved_sale, "booth_warehouse")
-
-        for component in _value(resolved_sale, "resolved_components") or []:
-            if not int(_value(component, "affects_stock") or 0):
-                continue
-
-            item_code = _value(component, "item")
-            component_qty = flt(
-                _value(component, "stock_qty") or _value(component, "qty")
-            )
-            total_qty = resolved_sale.qty
-            if total_qty <= 0:
-                continue
-
-            qty_per_unit = component_qty / total_qty
-            return_qty = qty_per_unit * qty_returned
-
-            items_to_receive.append(
-                {
-                    "item_code": item_code,
-                    "t_warehouse": warehouse,
-                    "qty": return_qty,
-                    "stock_uom": _value(component, "stock_uom")
-                    or _value(component, "uom"),
-                    "basic_rate": 0,
-                }
-            )
-
-    if not items_to_receive:
-        return None
-
-    savepoint = _make_savepoint("fb_reversal_stock")
-
-    try:
-        with privileged_device_api_operation("stock_projection"):
-            stock_entry = frappe.new_doc("Stock Entry")
-            stock_entry.stock_entry_type = "Material Receipt"
-            stock_entry.purpose = "Material Receipt"
-            stock_entry.company = _resolve_company(return_doc)
-            posting_dt = _resolve_posting_datetime(return_doc)
-            stock_entry.posting_date = posting_dt.date().isoformat()
-            stock_entry.posting_time = posting_dt.time().strftime("%H:%M:%S")
-            stock_entry.set_posting_time = 1
-
-            _set_if_present(
-                stock_entry,
-                ["fb_return_event", "custom_fb_return_event"],
-                return_doc.name,
-            )
-            _set_if_present(
-                stock_entry,
-                ["custom_fb_order"],
-                _value(return_doc, "fb_order"),
-            )
-            original_invoice_name = _value(
-                return_doc, "original_sales_invoice"
-            )
-            original_invoice = (
-                frappe.get_doc("Sales Invoice", original_invoice_name)
-                if original_invoice_name
-                else None
-            )
-            _set_if_present(
-                stock_entry,
-                ["custom_fb_shift"],
-                _value(original_invoice, "custom_fb_shift"),
-            )
-
-            for item_row in items_to_receive:
-                stock_entry.append("items", item_row)
-
-            stock_entry.insert(ignore_permissions=True)
-            stock_entry.submit()
-
-        for line in lines:
-            line.reversal_stock_entry = stock_entry.name
-            line.db_set("reversal_stock_entry", stock_entry.name, update_modified=False)
-
-        return stock_entry.name
-    except Exception:
-        _rollback_savepoint(savepoint)
-        _log_error("Reversal stock entry creation failed")
-        return None
-
-
-def _coerce_doc(doctype: str, value: Any):
-    if not value:
-        return None
-    if getattr(value, "doctype", None) == doctype:
-        return value
-    try:
-        return frappe.get_doc(doctype, value)
-    except Exception:
-        return None
-
-
-def _value(doc: Any, fieldname: str) -> Any:
-    if hasattr(doc, fieldname):
-        return getattr(doc, fieldname)
-    getter = getattr(doc, "get", None)
-    if callable(getter):
-        return getter(fieldname)
+    frappe.throw(
+        _(
+            "Refunds do not return stock. Restocking a refund is not a supported "
+            "JiJi capability; record the stock movement as an assigned inventory "
+            "task instead."
+        ),
+        frappe.ValidationError,
+    )
     return None
-
-
-def _get_existing_reversal_entry(return_doc: Any) -> str | None:
-    lines = _value(return_doc, "lines") or []
-    for line in lines:
-        entry = _value(line, "reversal_stock_entry")
-        if entry:
-            return str(entry)
-    return None
-
-
-def _resolve_company(return_doc: Any) -> str:
-    fb_order = _value(return_doc, "fb_order")
-    if fb_order:
-        order_doc = frappe.get_doc("FB Order", fb_order)
-        company = _value(order_doc, "company")
-        if company:
-            return company
-    return frappe.defaults.get_defaults().get("company", "")
-
-
-def _resolve_posting_datetime(doc: Any):
-    created_at = _value(doc, "modified") or _value(doc, "creation")
-    if created_at:
-        return frappe.utils.get_datetime(created_at)
-    return frappe.utils.now_datetime()
-
-
-def _make_savepoint(prefix: str) -> str:
-    return make_savepoint(prefix)
-
-
-def _rollback_savepoint(savepoint: str) -> None:
-    rollback_to_savepoint(savepoint, title="Stock reversal rollback failed")
-
-
-def _log_error(title: str) -> None:
-    log_sanitized_error(title)
-
-
-def _set_if_present(doc: Any, fieldnames: list[str], value: Any) -> None:
-    if value in (None, ""):
-        return
-
-    meta = frappe.get_meta(doc.doctype)
-    for fieldname in fieldnames:
-        if meta.has_field(fieldname):
-            setattr(doc, fieldname, value)
-            return
-
-
-def flt(value: Any) -> float:
-    return float(frappe.utils.flt(value))

@@ -101,6 +101,14 @@ from kopos_connector.utils.manager_approval import (
 )
 
 
+# recover_inventory_projections stamps the scheduler markers and runs on the
+# "*/5 * * * *" cron in hooks.py. Health used to describe it as hourly and only
+# complained after 60/90 minutes, so a stalled five-minute worker could miss
+# seventeen runs before anyone was told.
+INVENTORY_RECOVER_INTERVAL_MINUTES = 5
+INVENTORY_SCHEDULER_WARNING_MINUTES = 30
+INVENTORY_SCHEDULER_CRITICAL_MINUTES = 60
+
 ACTIVE_PROJECTION_STATES = frozenset({"Pending", "Processing", "Failed", "Dead Letter"})
 OPEN_COUNT_TASK_STATUSES = frozenset({"Assigned", "Claimed", "In Progress", "Submitted", "Review"})
 OPEN_PLAN_STATUSES = frozenset({"Review First", "Ready", "Blocked"})
@@ -207,9 +215,9 @@ def get_autopilot_health(warehouse: str | None = None) -> dict[str, Any]:
     scheduler = _scheduler_health()
     scheduler_success = get_datetime(scheduler.get("last_success")) if scheduler.get("last_success") else None
     scheduler_age = _age_minutes(scheduler_success, now)
-    if scheduler_age is None or scheduler_age > 90:
+    if scheduler_age is None or scheduler_age > INVENTORY_SCHEDULER_CRITICAL_MINUTES:
         critical_reasons.append("inventory_scheduler_overdue")
-    elif scheduler_age > 60:
+    elif scheduler_age > INVENTORY_SCHEDULER_WARNING_MINUTES:
         warning_reasons.append("inventory_scheduler_delayed")
     device_rows = frappe.db.sql(
         """
@@ -285,9 +293,23 @@ def get_autopilot_health(warehouse: str | None = None) -> dict[str, Any]:
             warning_reasons.append("inventory_overlay_pending_acknowledgement")
     if stale_devices:
         warning_reasons.append("inventory_device_stale")
+    # Paused automation is not a healthy steady state: nothing is projecting,
+    # planning, or reordering. The external classifier already treats it as a
+    # warning, but the desk banner reads these reasons, so without it the page
+    # could show "All clear" over a stopped Autopilot.
+    if policy and cstr(policy.get("automation_state")).strip() == "Paused":
+        warning_reasons.append("inventory_automation_paused")
     runtime_artifact = _runtime_artifact_identity()
-    if runtime_artifact.get("status") != "verified":
+    runtime_artifact_status = cstr(runtime_artifact.get("status")).strip()
+    if runtime_artifact_status == "unavailable":
         critical_reasons.append("inventory_runtime_artifact_identity_unavailable")
+    elif runtime_artifact_status == "unmatched":
+        # The installed runtime is not the artifact this site was told to expect.
+        critical_reasons.append("inventory_runtime_artifact_identity_unmatched")
+    elif runtime_artifact_status != "verified":
+        # Hashed but never compared against release evidence. Not a stop, but the
+        # desk must not present it as a verified artifact.
+        warning_reasons.append("inventory_runtime_artifact_identity_unverified")
     counts = _health_count_summary(resolved_warehouse, now=now)
     count_director_reviews = _health_count_director_reviews(resolved_warehouse, now=now)
     plans = _health_plan_summary(resolved_warehouse, now=now)
@@ -2960,6 +2982,13 @@ def submit_transfer_receipt(*, device_id: str, payload: str | dict[str, Any]) ->
 
 
 @frappe.whitelist(methods=["POST"])
+def record_waste_event(*, device_id: str, payload: str | dict[str, Any]) -> dict[str, Any]:
+    """Record outlet waste as a Draft FB Waste Event a director must submit."""
+
+    return _handle_guided_task(device_id=device_id, payload=payload, task_type="record_waste_event")
+
+
+@frappe.whitelist(methods=["POST"])
 def submit_count_observation(*, device_id: str, payload: str | dict[str, Any]) -> dict[str, Any]:
     """Persist one blind-count observation and at most one draft reconciliation."""
 
@@ -3057,7 +3086,10 @@ def submit_count_observation(*, device_id: str, payload: str | dict[str, Any]) -
         # remains Review until the director creates its draft.
         observation_doc.status = "Conflict" if conflict else "Review"
         if frappe.get_meta("FB Inventory Count Observation").has_field("variance_percent"):
-            observation_doc.variance_percent = float(variance["percent"])
+            # Persist the Decimal _count_variance already computed. This row is
+            # director evidence, so the stored number should be the one the
+            # decision used, not a float round trip of it.
+            observation_doc.variance_percent = format(variance["percent"], "f")
         if frappe.get_meta("FB Inventory Count Observation").has_field("variance_value"):
             observation_doc.variance_value = variance["value"]
         if frappe.get_meta("FB Inventory Count Observation").has_field("variance_requires_director"):
@@ -4153,6 +4185,9 @@ _GUIDED_TASK_FIELDS: dict[str, frozenset[str]] = {
     "submit_purchase_receipt": frozenset({"purchase_order", "lines"}),
     "submit_transfer_dispatch": frozenset({"material_request", "lines", "quantity", "batch_no"}),
     "submit_transfer_receipt": frozenset({"material_request", "lines", "quantity", "batch_no"}),
+    # Waste has no counterparty document: the outlet observes it. The device
+    # supplies its own identity so the command stays replay-safe.
+    "record_waste_event": frozenset({"waste_id", "lines", "reason_code", "reason_text"}),
 }
 
 _GUIDED_TASK_MAX_PAYLOAD_BYTES = _DEVICE_MAX_PAYLOAD_BYTES
@@ -4175,6 +4210,7 @@ _GUIDED_TASK_LINE_FIELDS: dict[str, frozenset[str]] = {
         "material_request_item", "item_code", "qty", "uom", "stock_uom", "conversion_factor",
         "source_warehouse", "destination_warehouse", "batch_no",
     }),
+    "record_waste_event": frozenset({"item_code", "qty", "uom", "batch_no"}),
 }
 
 
@@ -4277,6 +4313,7 @@ def _parse_guided_task_payload(
         "submit_purchase_receipt": ("purchase_order", "lines"),
         "submit_transfer_dispatch": ("material_request", "lines"),
         "submit_transfer_receipt": ("material_request", "lines"),
+        "record_waste_event": ("waste_id", "lines", "reason_code"),
     }[task_type]
     for fieldname in required_task_fields:
         if fieldname not in value or value[fieldname] in (None, ""):
@@ -4309,6 +4346,7 @@ def _handle_guided_task(*, device_id: str, payload: str | dict[str, Any], task_t
         "submit_purchase_receipt": "purchase_order",
         "submit_transfer_dispatch": "material_request",
         "submit_transfer_receipt": "material_request",
+        "record_waste_event": "waste_id",
     }[task_type]
     source_value = cstr(value.get(source_field)).strip()
     if task_type == "accept_preparation_task" and not source_value:
@@ -4322,6 +4360,9 @@ def _handle_guided_task(*, device_id: str, payload: str | dict[str, Any], task_t
         "submit_purchase_receipt": "Purchase Receipt",
         "submit_transfer_dispatch": "Stock Entry",
         "submit_transfer_receipt": "Stock Entry",
+        # A Draft FB Waste Event, never a Stock Entry: the tablet records the
+        # observation and a director decides whether stock moves.
+        "record_waste_event": "FB Waste Event",
     }[task_type]
     device = lock_device_for_operational_mutation(device_id=device_id)
     existing = _find_command_document(doctype, command_id, payload_hash=cstr(value.get("payload_hash")).strip())
@@ -4335,6 +4376,8 @@ def _handle_guided_task(*, device_id: str, payload: str | dict[str, Any], task_t
         document = _create_manufacture_entry(value, command_id)
     elif task_type == "submit_purchase_receipt":
         document = _create_purchase_receipt(value, command_id)
+    elif task_type == "record_waste_event":
+        document = _record_waste_event(value, command_id)
     else:
         document = _create_transfer_entry(value, command_id, dispatch=task_type == "submit_transfer_dispatch")
     frappe.db.commit()
@@ -4650,6 +4693,70 @@ def _apply_batch_completion_details(document: Any, value: dict[str, Any], *, ord
             row.batch_no = measured_batch
         if measured_expiry and detail_meta.has_field("expiry_date"):
             row.expiry_date = measured_expiry
+
+
+WASTE_REASON_CODES = frozenset({"Expired", "Spoiled", "Damaged", "Prep Error", "Other"})
+
+
+def _record_waste_event(value: dict[str, Any], command_id: str) -> str:
+    """Record outlet waste as a Draft FB Waste Event for director review.
+
+    Waste is the one stock movement the outlet observes rather than being handed
+    a document for, so there is no Purchase Order or Material Request to execute
+    against. It is still not a free-form ledger write: the tablet records what
+    was seen, and the event stays **Draft** until a director submits it, which is
+    the point at which stock actually moves. This mirrors how a count observation
+    produces at most one Draft Stock Reconciliation.
+    """
+
+    company = cstr(value.get("company")).strip()
+    warehouse = cstr(value.get("warehouse")).strip()
+    waste_id = cstr(value.get("waste_id")).strip()
+    reason_code = cstr(value.get("reason_code")).strip()
+    if not company or not warehouse:
+        frappe.throw(_("Waste requires the outlet company and warehouse"), frappe.ValidationError)
+    if reason_code not in WASTE_REASON_CODES:
+        frappe.throw(_("Waste reason is not one of the approved reasons"), frappe.ValidationError)
+
+    lines = value.get("lines")
+    if not isinstance(lines, list) or not lines:
+        frappe.throw(_("Waste requires at least one line"), frappe.ValidationError)
+
+    document = frappe.new_doc("FB Waste Event")
+    document.waste_id = waste_id
+    document.company = company
+    document.warehouse = warehouse
+    document.reason_code = reason_code
+    document.reason_text = cstr(value.get("reason_text")).strip() or None
+    document.status = "Draft"
+    _set_document_value(document, "custom_kopos_inventory_command_id", command_id)
+    _set_document_value(document, "custom_kopos_inventory_payload_hash", cstr(value.get("payload_hash")).strip())
+    _apply_guided_task_audit(document, value)
+
+    for index, line in enumerate(lines):
+        if not isinstance(line, dict):
+            frappe.throw(_("Waste line {0} is invalid").format(index + 1), frappe.ValidationError)
+        item_code = cstr(line.get("item_code")).strip()
+        if not item_code:
+            frappe.throw(_("Waste line {0} needs an item").format(index + 1), frappe.ValidationError)
+        raw_qty = cstr(line.get("qty")).strip()
+        try:
+            quantity = Decimal(raw_qty or "0")
+        except (InvalidOperation, ValueError):
+            frappe.throw(_("Waste line {0} quantity is not a valid number").format(index + 1), frappe.ValidationError)
+        if quantity <= 0:
+            frappe.throw(_("Waste line {0} quantity must be greater than zero").format(index + 1), frappe.ValidationError)
+        document.append("lines", {
+            "item": item_code,
+            # Frappe keeps its Float copy; qty_decimal is the exact authority the
+            # waste service issues stock from.
+            "qty": str(quantity),
+            "qty_decimal": format(quantity, "f"),
+            "uom": cstr(line.get("uom")).strip() or None,
+        })
+
+    document.insert(ignore_permissions=True)
+    return document.name
 
 
 def _create_purchase_receipt(value: dict[str, Any], command_id: str) -> str:
@@ -5461,7 +5568,7 @@ def _device_is_dirty(row: dict[str, Any]) -> bool:
     )
 
 
-def _next_success_deadline(last_success: Any, *, expected_interval_minutes: int = 60) -> Any:
+def _next_success_deadline(last_success: Any, *, expected_interval_minutes: int = INVENTORY_RECOVER_INTERVAL_MINUTES) -> Any:
     if last_success is None:
         return None
     return last_success + timedelta(minutes=max(1, int(expected_interval_minutes)))
@@ -5646,7 +5753,22 @@ def _health_plan_summary(warehouse: str, *, now: Any) -> dict[str, Any]:
 
 
 def _runtime_artifact_identity() -> dict[str, Any]:
-    """Return the exact installed connector identity used by rollout preflight."""
+    """Return the exact installed connector identity used by rollout preflight.
+
+    Statuses are deliberately narrow:
+
+    - ``verified``   the computed hash matches the SHA-256 this site was told to
+                     expect (``kopos_expected_runtime_inventory_sha256`` in site
+                     config, written by the rollout that installed the wheel).
+    - ``present``    the package imported and hashed, but no expected SHA is
+                     recorded, so nothing has been verified against release
+                     evidence. A dirty checkout looks exactly like this.
+    - ``unmatched``  the installed runtime is not the artifact this site expects.
+    - ``unavailable`` the identity could not be computed at all.
+
+    Reporting ``verified`` for a successful import alone painted Settings green
+    for any install, including one that never matched an accepted release.
+    """
 
     try:
         from importlib import metadata
@@ -5657,11 +5779,22 @@ def _runtime_artifact_identity() -> dict[str, Any]:
             version = metadata.version("kopos_connector")
         except metadata.PackageNotFoundError:
             version = None
+        runtime_sha256 = _runtime_inventory_sha256()
+        expected = cstr(
+            (frappe.conf or {}).get("kopos_expected_runtime_inventory_sha256")
+        ).strip().lower()
+        if not expected:
+            status = "present"
+        elif expected == cstr(runtime_sha256).strip().lower():
+            status = "verified"
+        else:
+            status = "unmatched"
         return {
-            "status": "verified",
+            "status": status,
             "package": "kopos_connector",
             "version": version,
-            "runtime_inventory_sha256": _runtime_inventory_sha256(),
+            "runtime_inventory_sha256": runtime_sha256,
+            "expected_runtime_inventory_sha256": expected or None,
         }
     except Exception as error:
         log_sanitized_error("Inventory health runtime artifact identity failed", error)
@@ -5670,6 +5803,7 @@ def _runtime_artifact_identity() -> dict[str, Any]:
             "package": "kopos_connector",
             "version": None,
             "runtime_inventory_sha256": None,
+            "expected_runtime_inventory_sha256": None,
         }
 
 
@@ -5684,9 +5818,9 @@ def _scheduler_health() -> dict[str, Any]:
     last_success = get_datetime(values["last_success"]) if values.get("last_success") else None
     next_deadline = _next_success_deadline(last_success)
     return {
-        "expected": "hourly",
-        "expected_interval_minutes": 60,
-        "grace_minutes": 30,
+        "expected": "every 5 minutes",
+        "expected_interval_minutes": INVENTORY_RECOVER_INTERVAL_MINUTES,
+        "grace_minutes": INVENTORY_SCHEDULER_WARNING_MINUTES - INVENTORY_RECOVER_INTERVAL_MINUTES,
         **values,
         "next_success_deadline": _iso_with_offset(next_deadline) if next_deadline else None,
     }

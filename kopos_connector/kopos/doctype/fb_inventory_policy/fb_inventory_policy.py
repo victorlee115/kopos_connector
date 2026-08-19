@@ -32,6 +32,41 @@ class FBInventoryPolicy(Document):
         "opening_stock_reconciliation",
     )
 
+    # Ceilings that decide whether automation may raise a Material Request or a
+    # Draft Purchase Order. Frappe stores each as Float/Currency; the paired
+    # hidden *_decimal text is the authority planning compares against, matching
+    # how recipe components and plan lines already carry exact quantities.
+    _DECIMAL_CEILING_FIELDS = (
+        ("quantity_ceiling", "Quantity ceiling"),
+        ("value_ceiling", "Value ceiling"),
+        ("count_variance_percent_ceiling", "Count variance percentage ceiling"),
+        ("count_variance_value_ceiling", "Count variance value ceiling"),
+    )
+
+    def _sync_decimal_ceilings(self) -> None:
+        """Keep an exact decimal text beside each numeric automation ceiling.
+
+        An operator-supplied exact text is preserved when it still represents the
+        same number, so editing an unrelated field never silently rewrites a
+        director's precise ceiling through a float round trip.
+        """
+
+        for fieldname, label in self._DECIMAL_CEILING_FIELDS:
+            decimal_field = f"{fieldname}_decimal"
+            raw = getattr(self, fieldname, None)
+            if raw in (None, ""):
+                setattr(self, decimal_field, None)
+                continue
+            parsed = _finite_decimal(raw, label)
+            stored_text = cstr(getattr(self, decimal_field, None)).strip()
+            if stored_text:
+                try:
+                    if Decimal(stored_text) == parsed:
+                        continue
+                except (InvalidOperation, ValueError):
+                    pass
+            setattr(self, decimal_field, format(parsed, "f"))
+
     def validate(self) -> None:
         token = cstr(getattr(self, "cutover_token", None)).strip()
         cutover_at = getattr(self, "cutover_at", None)
@@ -114,6 +149,8 @@ class FBInventoryPolicy(Document):
                 frappe.throw("Inventory Exception Owner must be an enabled non-system user", frappe.ValidationError)
             if "Company Director" not in set(frappe.get_roles(exception_owner)):
                 frappe.throw("Inventory Exception Owner must hold Company Director", frappe.ValidationError)
+
+        self._sync_decimal_ceilings()
 
         before = self.get_doc_before_save()
         previous_token = cstr(getattr(before, "cutover_token", None)).strip() if before else ""

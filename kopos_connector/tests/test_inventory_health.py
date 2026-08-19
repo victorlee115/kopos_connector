@@ -53,11 +53,26 @@ class InventoryHealthReadModelTests(TestCase):
             row[fieldname] = 1
             self.assertTrue(inventory._device_is_dirty(row), fieldname)
 
-    def test_scheduler_deadline_is_one_hour_after_last_success(self) -> None:
+    def test_scheduler_deadline_matches_the_five_minute_recover_cron(self) -> None:
+        """The marker-stamping worker runs on "*/5", not hourly.
+
+        Health used to describe it as hourly, so a stalled five-minute worker
+        could miss seventeen runs before the deadline was even reached.
+        """
+
         last_success = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+        self.assertEqual(inventory.INVENTORY_RECOVER_INTERVAL_MINUTES, 5)
         self.assertEqual(
             inventory._next_success_deadline(last_success),
-            datetime(2026, 8, 15, 13, 0, tzinfo=timezone.utc),
+            datetime(2026, 8, 15, 12, 5, tzinfo=timezone.utc),
+        )
+
+    def test_scheduler_health_reports_the_real_cadence(self) -> None:
+        scheduler = inventory._scheduler_health()
+        self.assertEqual(scheduler["expected"], "every 5 minutes")
+        self.assertEqual(
+            scheduler["expected_interval_minutes"],
+            inventory.INVENTORY_RECOVER_INTERVAL_MINUTES,
         )
 
     def test_health_age_converts_explicit_utc_to_business_timezone(self) -> None:
