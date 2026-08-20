@@ -13,6 +13,9 @@ from zoneinfo import ZoneInfo
 
 import frappe
 from frappe.utils import cint, cstr, flt, now_datetime, nowdate
+from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
+    central_staff_access_exists_for_device,
+)
 
 from kopos_connector.kopos.api.money_contract import (
     persisted_money_to_sen,
@@ -456,6 +459,26 @@ def set_demo_ingredient_quantities(
     _set_qty(DEMO_STRAWBERRY_ITEM, strawberry_qty)
     _set_qty(DEMO_MILK_ITEM, milk_qty)
     _set_qty(DEMO_CUP_ITEM, cup_qty)
+
+    # Promotion economics refuses to publish against valuation evidence older
+    # than the policy's source-age window. _set_qty only posts a Stock Entry
+    # when the quantity actually moves, so re-seeding a site whose quantities
+    # already match left every Bin untouched and the seed failed on its own
+    # stale evidence. The seeder has just re-established these quantities and
+    # rates, so stamping the observation time is accurate, not a fudge.
+    for item_code in (
+        DEMO_MATCHA_ITEM,
+        DEMO_STRAWBERRY_ITEM,
+        DEMO_MILK_ITEM,
+        DEMO_CUP_ITEM,
+    ):
+        bin_name = frappe.db.get_value(
+            "Bin", {"item_code": item_code, "warehouse": warehouse}, "name"
+        )
+        if bin_name:
+            frappe.db.set_value(
+                "Bin", bin_name, "modified", now_datetime(), update_modified=False
+            )
     frappe.db.commit()
     return get_demo_ingredient_state()
 
@@ -2520,6 +2543,69 @@ def _build_smoke_device_printers() -> list[dict[str, Any]]:
     ]
 
 
+def _ensure_smoke_staff_access(device_doc: Any, users: list[dict[str, Any]]) -> None:
+    """Give the smoke staff a central access record with a linked Employee.
+
+    Every guided inventory task -- waste, receiving, transfers, count submission
+    -- is refused unless the signed-in user resolves to an Employee. That
+    identity comes only from KoPOS Staff Access; the legacy device_users child
+    table has no employee field at all, so without this the smoke tablet can
+    sign in and sell but cannot exercise a single inventory action.
+
+    Called after the device is saved: assigning central access locks the legacy
+    rows, so it must not run before they are written.
+    """
+
+    for required in ("KoPOS Staff Access", "KoPOS Staff Outlet", "Employee"):
+        if not frappe.db.exists("DocType", required):
+            return
+
+    profile = frappe.get_doc("POS Profile", device_doc.pos_profile)
+    company = cstr(getattr(profile, "company", None)).strip()
+    warehouse = cstr(getattr(profile, "warehouse", None)).strip()
+    outlet = cstr(getattr(profile, "name", None)).strip()
+    if not company or not warehouse or not outlet:
+        return
+
+    for row in users:
+        user = cstr(row.get("user")).strip()
+        if not user:
+            continue
+        employee = frappe.db.get_value("Employee", {"user_id": user}, "name")
+        if not employee:
+            employee_doc = frappe.new_doc("Employee")
+            employee_doc.employee_name = row.get("display_name") or user
+            employee_doc.first_name = cstr(row.get("display_name") or user).split()[0]
+            employee_doc.company = company
+            employee_doc.date_of_joining = "2026-01-01"
+            employee_doc.date_of_birth = "1995-01-01"
+            employee_doc.status = "Active"
+            employee_doc.user_id = user
+            employee_doc.insert(ignore_permissions=True, ignore_mandatory=True)
+            employee = employee_doc.name
+
+        existing = frappe.db.get_value("KoPOS Staff Access", {"user": user}, "name")
+        access = (
+            frappe.get_doc("KoPOS Staff Access", existing)
+            if existing
+            else frappe.new_doc("KoPOS Staff Access")
+        )
+        access.user = user
+        access.employee = employee
+        access.active = 1
+        access.access_level = "Manager" if cint(row.get("can_manager_override")) else "Staff"
+        access.pin_hash = row.get("pin_hash")
+        access.set("outlet_assignments", [])
+        access.append(
+            "outlet_assignments",
+            {"company": company, "outlet": outlet, "warehouse": warehouse},
+        )
+        if existing:
+            access.save(ignore_permissions=True)
+        else:
+            access.insert(ignore_permissions=True)
+
+
 def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
     from kopos_connector.utils.pin import hash_pin
 
@@ -2560,13 +2646,18 @@ def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
         doc = frappe.get_doc("KoPOS Device", existing)
         doc.pos_profile = pos_profile
         doc.allow_training_mode = SMOKE_ALLOW_TRAINING_MODE
-        doc.device_users = []
+        # Assigning central staff access makes the legacy rows read-only, and
+        # hash_pin salts every call, so re-appending them would always look like
+        # an edit and be rejected. Leave them exactly as stored once locked.
+        if not central_staff_access_exists_for_device(doc):
+            doc.device_users = []
+            for row in users:
+                doc.append("device_users", row)
         doc.printers = []
-        for row in users:
-            doc.append("device_users", row)
         for row in printers:
             doc.append("printers", row)
         doc.save(ignore_permissions=True)
+        _ensure_smoke_staff_access(doc, users)
         return doc
 
     doc = frappe.get_doc(
@@ -2585,6 +2676,7 @@ def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
         }
     )
     doc.insert(ignore_permissions=True)
+    _ensure_smoke_staff_access(doc, users)
     return doc
 
 
