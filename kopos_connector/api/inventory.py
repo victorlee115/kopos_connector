@@ -2913,9 +2913,12 @@ def create_count_reconciliation_after_director_review(*, payload: str | dict[str
     reconciliation.name = reconciliation_name
     reconciliation.company = cstr(task.company)
     reconciliation.purpose = "Stock Reconciliation"
-    observed_at = get_datetime(observation.get("observed_at"))
-    reconciliation.posting_date = observed_at.date()
-    reconciliation.posting_time = observed_at.time()
+    # Stored rows are site-local naive once the device write is coerced, but a row
+    # written before that fix can still carry an offset; _site_local_naive leaves a
+    # naive value untouched and normalises an aware one.
+    posted_at = _site_local_naive(get_datetime(observation.get("observed_at")))
+    reconciliation.posting_date = posted_at.date()
+    reconciliation.posting_time = posted_at.time()
     reconciliation.items = []
     for line in lines:
         if not isinstance(line, dict):
@@ -3078,7 +3081,9 @@ def submit_count_observation(*, device_id: str, payload: str | dict[str, Any]) -
         if frappe.get_meta("FB Inventory Count Observation").has_field("employee"):
             observation_doc.employee = cstr(actor_access.get("employee")).strip()
         observation_doc.stock_watermark = value["stock_watermark"]
-        observation_doc.observed_at = value["observed_at"]
+        observation_doc.observed_at = _site_local_naive(
+            _require_explicit_offset_timestamp(value["observed_at"], "Count observation observed_at")
+        )
         observation_doc.lines_json = json.dumps(value["lines"], sort_keys=True, separators=(",", ":"))
         # A safe observation still needs an online manager confirmation before
         # ERP submits the Draft Stock Reconciliation.  Only a stock-watermark
@@ -3141,8 +3146,13 @@ def submit_count_observation(*, device_id: str, payload: str | dict[str, Any]) -
     reconciliation.name = observation_name
     reconciliation.company = cstr(profile.get("company"))
     reconciliation.purpose = "Stock Reconciliation"
-    reconciliation.posting_date = get_datetime(value["observed_at"]).date()
-    reconciliation.posting_time = get_datetime(value["observed_at"]).time()
+    # Post in site-local time. Taking .date() off the sender's offset put a count
+    # recorded at 23:30 +08:00 on the previous accounting day.
+    posted_at = _site_local_naive(
+        _require_explicit_offset_timestamp(value["observed_at"], "Count observation observed_at")
+    )
+    reconciliation.posting_date = posted_at.date()
+    reconciliation.posting_time = posted_at.time()
     reconciliation.items = []
     for line in value["lines"]:
         reconciliation.append("items", {
@@ -3184,7 +3194,16 @@ def report_device_inventory_state(*, device_id: str, payload: str | dict[str, An
     current_revision = cint(getattr(device, "inventory_report_revision", 0))
     current_hash = cstr(getattr(device, "inventory_report_payload_hash", None)).strip()
     if revision < current_revision:
-        frappe.throw(_("Device inventory report revision regressed"), frappe.ValidationError)
+        # A device state report is a *snapshot*, not an event: only the newest one
+        # carries meaning. An offline-first outbox retries, so older snapshots
+        # legitimately arrive after newer ones. Throwing made every late snapshot a
+        # permanent failure the tablet retried forever, which starved the real
+        # inventory commands queued behind it. Acknowledge and drop it instead.
+        return {
+            "status": "superseded",
+            "device_id": device_id,
+            "report_revision": current_revision,
+        }
     if revision == current_revision and current_hash and current_hash != payload_hash:
         frappe.throw(_("Device inventory report revision was reused with different content"), frappe.ValidationError)
     if revision == current_revision and current_hash == payload_hash:
@@ -3194,7 +3213,9 @@ def report_device_inventory_state(*, device_id: str, payload: str | dict[str, An
     device_values = {
         "inventory_report_schema_version": report["schema_version"],
         "inventory_report_revision": revision,
-        "inventory_observed_at": report["observed_at"],
+        "inventory_observed_at": _site_local_naive(
+            _require_explicit_offset_timestamp(report["observed_at"], "Inventory report observed_at")
+        ),
         "inventory_report_received_at": now_datetime(),
         "inventory_config_version": report["config_version"],
         "inventory_catalog_version": report["catalog_version"],
@@ -3204,7 +3225,13 @@ def report_device_inventory_state(*, device_id: str, payload: str | dict[str, An
         "inventory_sales_syncing": report["sales_outbox"]["syncing"],
         "inventory_sales_failed": report["sales_outbox"]["failed"],
         "inventory_sales_dead_letter": report["sales_outbox"]["dead_letter"],
-        "inventory_oldest_unsaved_sale_at": report["oldest_unsaved_sale_timestamp"],
+        "inventory_oldest_unsaved_sale_at": _site_local_naive(
+            _require_explicit_offset_timestamp(
+                report["oldest_unsaved_sale_timestamp"], "Inventory report oldest_unsaved_sale_timestamp"
+            )
+        )
+        if report["oldest_unsaved_sale_timestamp"] is not None
+        else None,
         "inventory_commands_pending": report["inventory_outbox"]["pending"],
         "inventory_commands_syncing": report["inventory_outbox"]["syncing"],
         "inventory_commands_failed": report["inventory_outbox"]["failed"],
@@ -5900,6 +5927,37 @@ def _iso_with_offset(value: Any) -> str | None:
     if getattr(current, "tzinfo", None) is None:
         current = current.replace(tzinfo=ZoneInfo("Asia/Kuala_Lumpur"))
     return current.isoformat()
+
+
+def _site_timezone() -> ZoneInfo:
+    """Return the site timezone, failing back to UTC rather than guessing an outlet."""
+
+    name = cstr(getattr(frappe.utils, "get_system_timezone", lambda: "")()).strip()
+    if not name:
+        getter = getattr(frappe.db, "get_single_value", None)
+        name = cstr(getter("System Settings", "time_zone") if callable(getter) else "").strip()
+    try:
+        return ZoneInfo(name or "UTC")
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def _site_local_naive(value: datetime | None) -> datetime | None:
+    """Convert an offset-aware wire timestamp for a Frappe Datetime column.
+
+    Frappe stores Datetime as a site-local **naive** MariaDB DATETIME. Handing
+    MariaDB the offset-aware ISO string the tablet sends
+    (``2026-08-20T05:23:24.910Z``) raises error 1292 and the whole write is lost,
+    so every wire timestamp must be converted before it reaches a Datetime field.
+    ``fake_frappe`` does not enforce column types, which is why only a real
+    MariaDB surfaces this.
+    """
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(_site_timezone()).replace(tzinfo=None)
 
 
 def _require_explicit_offset_timestamp(value: Any, label: str) -> datetime:
