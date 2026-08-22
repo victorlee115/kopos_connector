@@ -1,3 +1,5 @@
+from decimal import Decimal, InvalidOperation
+
 import frappe
 from frappe.model.document import Document
 
@@ -12,8 +14,14 @@ class FBRemakeEvent(Document):
             frappe.throw("FB Remake Event requires remake_id")
         if not self.original_order:
             frappe.throw("FB Remake Event requires original_order")
-        if not self.original_resolved_sale:
-            frappe.throw("FB Remake Event requires original_resolved_sale")
+        if not self.original_order_line:
+            frappe.throw("FB Remake Event requires original_order_line")
+        try:
+            quantity = Decimal(str(self.quantity))
+        except (InvalidOperation, TypeError, ValueError):
+            quantity = Decimal("0")
+        if not quantity.is_finite() or quantity <= 0:
+            frappe.throw("FB Remake Event requires a positive quantity")
 
     def on_submit(self):
         replacement_stock_entry = create_remake_stock_entry(self)

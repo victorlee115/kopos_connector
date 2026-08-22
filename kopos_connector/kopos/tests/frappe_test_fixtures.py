@@ -94,9 +94,15 @@ def build_sen_v1_sale_payload(
     optional_recipe_fields: dict[str, Any] = {}
     if include_optional_recipe:
         recipe = _get_demo_recipe_reference(shift.company)
+        recipe_hash = frappe.db.get_value(
+            "FB Recipe", recipe["name"], "canonical_hash"
+        )
+        if not recipe_hash:
+            raise AssertionError("Canonical demo recipe is missing its published hash")
         optional_recipe_fields = {
             "recipe": recipe["name"],
             "recipe_version": recipe["version_no"],
+            "recipe_hash": recipe_hash,
         }
     total_sen = quantity * unit_price_sen
     tendered_sen = (

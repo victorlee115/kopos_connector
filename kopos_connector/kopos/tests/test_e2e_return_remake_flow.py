@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import unittest
-from typing import Any
+from unittest.mock import patch
 
 import frappe
 import pytest
@@ -10,17 +9,18 @@ from frappe.tests.utils import FrappeTestCase
 pytestmark = pytest.mark.inventory_regression
 
 
-@unittest.skip(
-    "Inventory-backed return/remake behavior is excluded during the owner redesign; commercial refunds have a separate non-stock gate"
-)
 class SaleBackedOperationsTestCase(FrappeTestCase):
     def setUp(self) -> None:
         from kopos_connector.kopos.api.fb_orders import submit_order_payload
+        from kopos_connector.kopos.services.inventory_autopilot.projection_worker import (
+            _prepare_frozen_resolved_sales,
+        )
         from kopos_connector.kopos.tests.frappe_test_fixtures import (
             build_sen_v1_sale_payload,
             create_open_test_shift,
         )
 
+        self.addCleanup(frappe.db.rollback)
         frappe.set_user("Administrator")
         self.shift = create_open_test_shift(
             prefix="KOPOS-E2E-OPS", replenish_stock=True
@@ -32,6 +32,12 @@ class SaleBackedOperationsTestCase(FrappeTestCase):
         )
         sale_result = submit_order_payload(sale_payload)
         self.order = frappe.get_doc("FB Order", sale_result["fb_order"])
+        # The production inventory worker prepares this immutable sale-time
+        # recipe snapshot after checkout commits. Keep the integration fixture
+        # inside FrappeTestCase's rollback boundary while exercising the same
+        # preparation implementation.
+        with patch.object(frappe.db, "commit"):
+            _prepare_frozen_resolved_sales(self.order)
         resolved_sales = frappe.get_all(
             "FB Resolved Sale",
             filters={"fb_order": self.order.name},
@@ -40,76 +46,10 @@ class SaleBackedOperationsTestCase(FrappeTestCase):
         self.assertEqual(len(resolved_sales), 1)
         self.resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sales[0])
 
-    def tearDown(self) -> None:
-        frappe.db.rollback()
-
-    def return_payload(self, *, return_to_stock: bool) -> dict[str, Any]:
-        return {
-            "return_id": f"KOPOS-E2E-RETURN-{frappe.generate_hash(length=12)}",
-            "device_id": self.order.device_id,
-            "fb_order": self.order.name,
-            "original_sales_invoice": self.order.sales_invoice,
-            "reason_code": "Quality Issue",
-            "reason_text": "Real-Frappe acceptance fixture",
-            "refund_method": "cash",
-            "return_to_stock": 1 if return_to_stock else 0,
-            "lines": [
-                {
-                    "original_resolved_sale": self.resolved_sale.name,
-                    "qty_returned": self.resolved_sale.qty,
-                }
-            ],
-        }
-
-
-class TestEndToEndReturnFlow(SaleBackedOperationsTestCase):
-    def test_return_creates_submitted_sales_invoice_return_and_settlement(self) -> None:
-        from kopos_connector.api.fb_returns import process_return_payload
-
-        result = process_return_payload(
-            self.return_payload(return_to_stock=False),
-            require_manager_approval=False,
-        )
-
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["settlement_status"], "Posted")
-        self.assertIn(result["settlement_doctype"], {"Payment Entry", "Journal Entry"})
-        self.assertTrue(frappe.db.exists(result["settlement_doctype"], result["settlement_document"]))
-
-        return_invoice = frappe.get_doc("Sales Invoice", result["return_sales_invoice"])
-        self.assertEqual(return_invoice.docstatus, 1)
-        self.assertEqual(return_invoice.is_return, 1)
-        self.assertEqual(return_invoice.return_against, self.order.sales_invoice)
-        self.assertEqual(return_invoice.custom_fb_order, self.order.name)
-        self.assertEqual(return_invoice.custom_fb_shift, self.shift.name)
-        self.assertEqual(result["reversal_stock_entries"], [])
-
-        return_event = frappe.get_doc("FB Return Event", result["return_event"])
-        self.assertEqual(return_event.docstatus, 1)
-        self.assertEqual(return_event.settlement_status, "Posted")
-        self.resolved_sale.reload()
-        self.assertEqual(self.resolved_sale.status, "Returned")
-
-    def test_return_to_stock_creates_submitted_material_receipt(self) -> None:
-        from kopos_connector.api.fb_returns import process_return_payload
-
-        result = process_return_payload(
-            self.return_payload(return_to_stock=True),
-            require_manager_approval=False,
-        )
-
-        self.assertEqual(result["return_to_stock"], 1)
-        self.assertEqual(len(result["reversal_stock_entries"]), 1)
-        stock_entry = frappe.get_doc("Stock Entry", result["reversal_stock_entries"][0])
-        self.assertEqual(stock_entry.docstatus, 1)
-        self.assertEqual(stock_entry.stock_entry_type, "Material Receipt")
-        self.assertGreater(len(stock_entry.items), 0)
-        self.assertTrue(all(row.t_warehouse == self.shift.warehouse for row in stock_entry.items))
-
 
 class TestEndToEndRemakeFlow(SaleBackedOperationsTestCase):
     def test_remake_creates_submitted_stock_issue_without_revenue(self) -> None:
-        from kopos_connector.api.fb_remakes import process_remake
+        from kopos_connector.api.fb_remakes import process_remake_payload
 
         invoices_before = set(
             frappe.get_all(
@@ -118,25 +58,36 @@ class TestEndToEndRemakeFlow(SaleBackedOperationsTestCase):
                 pluck="name",
             )
         )
-        frappe.request = None
-        frappe.form_dict = {
+        payload = {
             "remake_id": f"KOPOS-E2E-REMAKE-{frappe.generate_hash(length=12)}",
             "device_id": self.order.device_id,
             "original_order": self.order.name,
-            "original_order_line": self.order.items[0].name,
-            "original_resolved_sale": self.resolved_sale.name,
+            "original_order_line": self.order.items[0].line_id,
+            "quantity": self.order.items[0].qty,
             "reason_code": "Spill",
             "reason_text": "Real-Frappe acceptance fixture",
         }
 
-        result = process_remake()
+        result = process_remake_payload(payload, require_manager_approval=False)
+        duplicate = process_remake_payload(payload, require_manager_approval=False)
 
         self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["inventory_evaluation"], "included_evaluated")
+        self.assertEqual(result["inventory_status"], "Posted")
+        self.assertEqual(duplicate["status"], "duplicate")
+        self.assertEqual(duplicate["remake_event"], result["remake_event"])
+        self.assertEqual(
+            duplicate["replacement_stock_entry"], result["replacement_stock_entry"]
+        )
         remake_event = frappe.get_doc("FB Remake Event", result["remake_event"])
         self.assertEqual(remake_event.docstatus, 1)
+        self.assertEqual(remake_event.quantity, self.order.items[0].qty)
+        self.assertEqual(remake_event.original_resolved_sale, self.resolved_sale.name)
         stock_entry = frappe.get_doc("Stock Entry", result["replacement_stock_entry"])
         self.assertEqual(stock_entry.docstatus, 1)
         self.assertEqual(stock_entry.stock_entry_type, "Material Issue")
+        self.order.reload()
+        self.assertEqual(self.order.items[0].remade_qty, self.order.items[0].qty)
         invoices_after = set(
             frappe.get_all(
                 "Sales Invoice",
@@ -145,3 +96,38 @@ class TestEndToEndRemakeFlow(SaleBackedOperationsTestCase):
             )
         )
         self.assertEqual(invoices_after, invoices_before)
+
+    def test_remake_event_survives_missing_inventory_snapshot_as_exception(self) -> None:
+        from kopos_connector.api.fb_remakes import process_remake_payload
+
+        line = self.order.items[0]
+        frappe.db.set_value(
+            "FB Order Line",
+            line.name,
+            "resolved_sale",
+            None,
+            update_modified=False,
+        )
+        result = process_remake_payload(
+            {
+                "remake_id": f"KOPOS-E2E-REMAKE-EX-{frappe.generate_hash(length=12)}",
+                "device_id": self.order.device_id,
+                "original_order": self.order.name,
+                "original_order_line": line.line_id,
+                "quantity": line.qty,
+                "reason_code": "Quality Issue",
+                "reason_text": "Missing inventory evidence acceptance fixture",
+            },
+            require_manager_approval=False,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["inventory_status"], "Exception")
+        self.assertIsNone(result["replacement_stock_entry"])
+        self.assertTrue(result["inventory_exception"])
+        event = frappe.get_doc("FB Remake Event", result["remake_event"])
+        self.assertEqual(event.docstatus, 1)
+        self.assertEqual(event.inventory_status, "Exception")
+        self.assertTrue(
+            frappe.db.exists("FB Inventory Exception", result["inventory_exception"])
+        )

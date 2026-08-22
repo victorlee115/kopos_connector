@@ -1682,6 +1682,33 @@ def process_refund(**kwargs: Any) -> None:
         )
 
 
+@frappe.whitelist(methods=["POST"])
+def process_remake(**kwargs: Any) -> None:
+    """Record one manager-approved full-line remake and evaluate inventory."""
+    from .fb_remakes import process_remake_payload
+
+    try:
+        payload = _get_submit_payload(kwargs)
+        lock_device_for_operational_mutation(
+            device_id=frappe.utils.cstr(payload.get("device_id"))
+        )
+        result = process_remake_payload(payload, require_manager_approval=True)
+        _write_response(result)
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS process_remake failed", error)
+        _write_response(
+            {
+                "status": "error",
+                "message": "Unexpected server error while recording remake",
+            },
+            http_status_code=500,
+        )
+
+
 def _to_public_fb_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
     original_sales_invoice = frappe.utils.cstr(
         payload.get("original_sales_invoice") or payload.get("original_invoice")
@@ -1736,6 +1763,11 @@ def _resolve_manager_approval_scope(payload: dict[str, Any]) -> dict[str, Any]:
         from kopos_connector.api.fb_returns import build_refund_approval_scope
 
         scope = build_refund_approval_scope(_to_public_fb_return_payload(payload))
+        validate_requested_scope(payload, scope)
+    elif action == "stock_remake":
+        from kopos_connector.api.fb_remakes import build_remake_approval_scope
+
+        scope = build_remake_approval_scope(payload)
         validate_requested_scope(payload, scope)
     elif action == "inventory_count_reconciliation":
         device_id = frappe.utils.cstr(payload.get("device_id")).strip()
@@ -2346,6 +2378,7 @@ __all__ = [
     "ping",
     "prepare_automatic_qr_sale",
     "process_refund",
+    "process_remake",
     "publish_promotion_snapshot",
     "preflight_legacy_inventory_values",
     "redeem_pos_provisioning",

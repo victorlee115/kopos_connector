@@ -13,8 +13,15 @@
         "original_order",
         "original_order_line",
         "original_resolved_sale",
+        "quantity",
         "reason_code",
         "reason_text",
+        "approval_token_id",
+        "approved_by_manager",
+        "request_fingerprint",
+        "inventory_evaluation",
+        "inventory_status",
+        "inventory_exception",
         "replacement_stock_entry",
         "status"
     ],
@@ -43,7 +50,14 @@
             "fieldname": "original_resolved_sale",
             "fieldtype": "Link",
             "label": "Original Resolved Sale",
-            "options": "FB Resolved Sale"
+            "options": "FB Resolved Sale",
+            "read_only": 1
+        },
+        {
+            "fieldname": "quantity",
+            "fieldtype": "Float",
+            "label": "Quantity",
+            "reqd": 1
         },
         {
             "fieldname": "reason_code",
@@ -58,10 +72,56 @@
             "label": "Reason Text"
         },
         {
+            "fieldname": "approval_token_id",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Approval Token ID",
+            "read_only": 1
+        },
+        {
+            "fieldname": "approved_by_manager",
+            "fieldtype": "Link",
+            "label": "Approved By Manager",
+            "options": "User",
+            "read_only": 1
+        },
+        {
+            "fieldname": "request_fingerprint",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Request Fingerprint",
+            "read_only": 1
+        },
+        {
+            "default": "included_evaluated",
+            "fieldname": "inventory_evaluation",
+            "fieldtype": "Select",
+            "label": "Inventory Evaluation",
+            "options": "included_evaluated",
+            "read_only": 1
+        },
+        {
+            "default": "Pending",
+            "fieldname": "inventory_status",
+            "fieldtype": "Select",
+            "in_list_view": 1,
+            "label": "Inventory Status",
+            "options": "Pending\nPosted\nNot Applicable\nException",
+            "read_only": 1
+        },
+        {
+            "fieldname": "inventory_exception",
+            "fieldtype": "Link",
+            "label": "Inventory Exception",
+            "options": "FB Inventory Exception",
+            "read_only": 1
+        },
+        {
             "fieldname": "replacement_stock_entry",
             "fieldtype": "Link",
             "label": "Replacement Stock Entry",
-            "options": "Stock Entry"
+            "options": "Stock Entry",
+            "read_only": 1
         },
         {
             "default": "Draft",
