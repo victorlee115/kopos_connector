@@ -26,7 +26,8 @@ from kopos_connector.utils.manager_approval import (
 
 
 REFUND_METHODS = {"cash", "qr", "card", "voucher"}
-INVENTORY_EVALUATION_EXCLUDED = "excluded_not_evaluated"
+INVENTORY_EVALUATION_INCLUDED = "included_evaluated"
+LEGACY_INVENTORY_EVALUATION_EXCLUDED = "excluded_not_evaluated"
 
 
 @frappe.whitelist(methods=["POST"])
@@ -43,11 +44,17 @@ def process_return_payload(
     scope = _build_refund_approval_scope(validated)
     request_fingerprint = _return_request_fingerprint(validated, scope)
     validated["request_fingerprint"] = request_fingerprint
-    legacy_validated = dict(validated)
-    legacy_validated["return_to_stock"] = 1
     validated["legacy_request_fingerprint"] = _return_request_fingerprint(
-        legacy_validated,
+        validated,
         scope,
+        include_inventory_evaluation=False,
+    )
+    legacy_stock_validated = dict(validated)
+    legacy_stock_validated["return_to_stock"] = 1
+    validated["legacy_stock_request_fingerprint"] = _return_request_fingerprint(
+        legacy_stock_validated,
+        scope,
+        include_inventory_evaluation=False,
     )
     lock_and_validate_return_quantities(
         validated["return_id"],
@@ -159,9 +166,12 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "refund_method must be one of: cash, qr, card, voucher",
             frappe.ValidationError,
         )
-    if inventory_evaluation and inventory_evaluation != INVENTORY_EVALUATION_EXCLUDED:
+    if inventory_evaluation and inventory_evaluation not in {
+        INVENTORY_EVALUATION_INCLUDED,
+        LEGACY_INVENTORY_EVALUATION_EXCLUDED,
+    }:
         frappe.throw(
-            "inventory_evaluation must be excluded_not_evaluated for this commercial refund",
+            "inventory_evaluation must be included_evaluated for this commercial refund",
             frappe.ValidationError,
         )
     if requested_return_to_stock and inventory_evaluation:
@@ -169,9 +179,10 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "This refund does not change stock. Send return_to_stock as false and try again.",
             frappe.ValidationError,
         )
-    # Older tablets may already have queued `return_to_stock: true`. Preserve
-    # the commercial refund, but normalize that obsolete intent to false. New
-    # clients declare the exclusion above and are rejected if contradictory.
+    # Older tablets may already have queued `return_to_stock: true` or the
+    # superseded exclusion marker. Preserve the commercial refund, but
+    # normalize both onto the included/evaluated no-stock-change contract. New
+    # clients are rejected when they send contradictory stock-return intent.
     return_to_stock = 0
     if not original_sales_invoice and fb_order:
         original_sales_invoice = cstr(
@@ -311,7 +322,7 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "reason_text": reason_text,
         "refund_method": refund_method,
         "return_to_stock": return_to_stock,
-        "inventory_evaluation": INVENTORY_EVALUATION_EXCLUDED,
+        "inventory_evaluation": INVENTORY_EVALUATION_INCLUDED,
         "legacy_return_to_stock_normalized": legacy_return_to_stock_normalized,
         "lines": validated_lines,
         "manager_approval_token": manager_approval_token,
@@ -393,8 +404,19 @@ def _return_approval_context(validated: dict[str, Any]) -> dict[str, Any]:
 
 
 def _return_request_fingerprint(
-    validated: dict[str, Any], scope: dict[str, Any]
+    validated: dict[str, Any],
+    scope: dict[str, Any],
+    *,
+    include_inventory_evaluation: bool = True,
 ) -> str:
+    context = _return_approval_context(validated)
+    if include_inventory_evaluation:
+        # Inventory policy is server-owned, so it is deliberately absent from
+        # the short-lived manager approval scope. Bind it here to the durable
+        # request identity while keeping pre-deployment approval tokens valid.
+        context["inventory_evaluation"] = cstr(
+            validated["inventory_evaluation"]
+        ).strip()
     return canonical_context_hash(
         {
             "return_id": validated["return_id"],
@@ -404,7 +426,7 @@ def _return_request_fingerprint(
             "resource_id": scope["resource_id"],
             "amount_sen": scope["amount_sen"],
             "fb_order": scope["fb_order"],
-            "context": _return_approval_context(validated),
+            "context": context,
         }
     )
 
@@ -485,14 +507,22 @@ def _validate_existing_return_matches(validated: dict[str, Any], return_doc: Any
             "Existing FB Return Event has no request fingerprint; retry cannot be verified",
             frappe.ValidationError,
         )
-    legacy_inventory_retry = bool(
-        cint(getattr(return_doc, "return_to_stock", 0)) == 1
-        and existing_fingerprint
-        == cstr(validated.get("legacy_request_fingerprint")).strip()
+    existing_return_to_stock = cint(getattr(return_doc, "return_to_stock", 0))
+    legacy_contract_retry = bool(
+        (
+            existing_return_to_stock == 0
+            and existing_fingerprint
+            == cstr(validated.get("legacy_request_fingerprint")).strip()
+        )
+        or (
+            existing_return_to_stock == 1
+            and existing_fingerprint
+            == cstr(validated.get("legacy_stock_request_fingerprint")).strip()
+        )
     )
     if (
         existing_fingerprint != validated["request_fingerprint"]
-        and not legacy_inventory_retry
+        and not legacy_contract_retry
     ):
         frappe.throw(
             "return_id was already used with a different canonical payload",
@@ -511,9 +541,8 @@ def _validate_existing_return_matches(validated: dict[str, Any], return_doc: Any
             frappe.ValidationError,
         )
     if (
-        cint(getattr(return_doc, "return_to_stock", 0))
-        != cint(validated["return_to_stock"])
-        and not legacy_inventory_retry
+        existing_return_to_stock != cint(validated["return_to_stock"])
+        and not legacy_contract_retry
     ):
         frappe.throw(
             "return_id was already used with different return_to_stock intent",
@@ -642,11 +671,12 @@ def _serialize_return_response(
         "settlement_doctype": settlement_doctype,
         "settlement_document": settlement_document,
         "settlement_status": settlement_status,
-        # Inventory is excluded from this release. These response fields state
-        # that truth even when replaying a historical event that retained an
-        # older cashier-intent bit.
+        # Inventory is explicitly evaluated, but refunding a prepared item does
+        # not restore its ingredients to usable stock. Historical events may
+        # retain an older cashier-intent bit; the public contract never repeats
+        # that obsolete stock claim.
         "return_to_stock": 0,
-        "inventory_evaluation": INVENTORY_EVALUATION_EXCLUDED,
+        "inventory_evaluation": INVENTORY_EVALUATION_INCLUDED,
         "reversal_stock_entries": [],
     }
     if require_approval_proof:
