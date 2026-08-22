@@ -63,6 +63,7 @@ class SupplierReceivingContractTests(TestCase):
         *,
         received_qty: str = "0",
         receipt_name: str = "PREC-1",
+        delivery_note: str = "",
     ) -> tuple[_PurchaseReceipt, list[dict[str, object]], str]:
         line = {
             "item_code": "MILK",
@@ -82,6 +83,7 @@ class SupplierReceivingContractTests(TestCase):
             "source_document": "PO-1",
             "source_revision": "2026-08-15T10:00:00+08:00",
             "lines": [line],
+            **({"delivery_note": delivery_note} if delivery_note else {}),
         }
         document = _PurchaseReceipt(receipt_name)
         raised: list[dict[str, object]] = []
@@ -135,6 +137,20 @@ class SupplierReceivingContractTests(TestCase):
         self.assertEqual(raised[0]["item"], "MILK")
         self.assertIn("missing 1", raised[0]["summary"])
         self.assertIn("damaged 2", raised[0]["summary"])
+
+    def test_damage_note_is_preserved_on_the_director_exception(self) -> None:
+        document, raised, result = self._receive(
+            {"qty": "8", "damaged_qty": "2"},
+            delivery_note="Two cartons arrived wet on the bottom",
+        )
+
+        self.assertEqual(result, "PREC-1")
+        self.assertEqual(document.items[0]["qty"], Decimal("8"))
+        self.assertEqual(len(raised), 1)
+        self.assertIn(
+            "Staff note: Two cartons arrived wet on the bottom",
+            raised[0]["summary"],
+        )
 
     def test_excess_stays_outside_usable_stock(self) -> None:
         document, raised, result = self._receive({"qty": "10", "excess_qty": "3"})

@@ -147,6 +147,33 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
         with self.assertRaises(frappe.ValidationError):
             inventory._parse_availability_hold_command(missing, action="create")
 
+    def test_hold_command_parser_accepts_the_overlay_hash_as_source_revision(self) -> None:
+        valid = {
+            "schema_version": "inventory-command-v1",
+            "command_id": "hold-overlay-1",
+            "action": "create",
+            "device_id": "TAB-A",
+            "device_config_version": 7,
+            "staff_user": "manager@example.com",
+            "employee": "EMP-1",
+            "company": "JiJi Foods",
+            "outlet": "Outlet POS",
+            "warehouse": "Outlet - WH",
+            "source_document": "overlay-version-9",
+            "source_revision": "f" * 64,
+            "observed_at": "2026-08-15T10:00:00+08:00",
+            "target_type": "Item",
+            "target_id": "MONT-BLANC",
+            "reason_code": "manual_manager_pause",
+            "reason_label": "Stock check required",
+        }
+        valid["payload_hash"] = inventory._payload_hash(valid)
+
+        parsed = inventory._parse_availability_hold_command(valid, action="create")
+
+        self.assertEqual(parsed["source_document"], "overlay-version-9")
+        self.assertEqual(parsed["source_revision"], "f" * 64)
+
     def test_guided_task_envelope_requires_schema_revision_and_exact_hash(self) -> None:
         value = {
             "schema_version": "inventory-command-v1",

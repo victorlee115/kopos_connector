@@ -22,6 +22,7 @@ from kopos_connector.api.devices import (
 from kopos_connector.api.catalog import (
     get_default_pos_profile,
     get_catalog_target_ids,
+    get_item_barcodes_map,
     get_item_modifier_groups_map,
     get_item_recipe_snapshots_map,
     get_items,
@@ -2065,7 +2066,9 @@ def get_edge_snapshot(
     return payload
 
 
-def _get_count_task(*, device_id: str, task_id: str | None = None) -> dict[str, Any]:
+def _get_count_task(
+    *, device_id: str, task_id: str | None = None, include_barcodes: bool = True
+) -> dict[str, Any]:
     """Return the next outlet-pool or assigned blind-count task.
 
     An unassigned task is deliberately visible to the outlet pool without
@@ -2109,7 +2112,10 @@ def _get_count_task(*, device_id: str, task_id: str | None = None) -> dict[str, 
     ]
     if not visible:
         return {"status": "ok", "task": None}
-    return {"status": "ok", "task": _count_task_response(visible[0])}
+    return {
+        "status": "ok",
+        "task": _count_task_response(visible[0], include_barcodes=include_barcodes),
+    }
 
 
 @frappe.whitelist(methods=["POST"])
@@ -2227,7 +2233,7 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
         warehouse=warehouse,
     )
 
-    count_response = _get_count_task(device_id=device_id)
+    count_response = _get_count_task(device_id=device_id, include_barcodes=False)
     # ``_get_count_task`` already returns the device-safe count response. Keep
     # that object as the dedicated edge field so the count screen does not
     # have to reconstruct frozen UOM authority from the generic task list.
@@ -2504,6 +2510,7 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
                     **({"blocked_reason": route_blocked_reason} if route_blocked_reason else {}),
                 })
 
+    _attach_task_line_barcodes(tasks)
     return {
         "status": "ok",
         "warehouse": warehouse,
@@ -3639,7 +3646,9 @@ def _normalize_count_observation_lines(
     return normalized
 
 
-def _count_task_response(task: dict[str, Any]) -> dict[str, Any]:
+def _count_task_response(
+    task: dict[str, Any], *, include_barcodes: bool = True
+) -> dict[str, Any]:
     """Serialize a count task without expected quantities or financial data."""
 
     response = {
@@ -3696,6 +3705,8 @@ def _count_task_response(task: dict[str, Any]) -> dict[str, Any]:
                 "conversion_factor": conversion_factor,
             })
         response["lines"].append(line)
+    if include_barcodes:
+        _attach_task_line_barcodes([{"lines": response["lines"]}])
     review = _count_review_projection(
         task_name=response["name"],
         task_revision=response["revision"],
@@ -3705,6 +3716,33 @@ def _count_task_response(task: dict[str, Any]) -> dict[str, Any]:
     if review is not None:
         response["review"] = review
     return response
+
+
+def _attach_task_line_barcodes(tasks: list[dict[str, Any]]) -> None:
+    """Attach one scan code per item without making task reads depend on it."""
+
+    item_codes = sorted({
+        cstr(line.get("item_code") or line.get("item_id")).strip()
+        for task in tasks
+        for line in task.get("lines", [])
+        if isinstance(line, dict)
+        and cstr(line.get("item_code") or line.get("item_id")).strip()
+    })
+    if not item_codes:
+        return
+    try:
+        barcodes = get_item_barcodes_map(item_codes)
+    except Exception as error:
+        log_sanitized_error("KoPOS inventory task barcode lookup failed", error)
+        return
+    for task in tasks:
+        for line in task.get("lines", []):
+            if not isinstance(line, dict):
+                continue
+            item_code = cstr(line.get("item_code") or line.get("item_id")).strip()
+            barcode = cstr(barcodes.get(item_code)).strip()
+            if barcode:
+                line["barcode"] = barcode
 
 
 def _count_review_projection(
@@ -4110,7 +4148,14 @@ def _parse_availability_hold_command(
     source_revision = value.get("source_revision")
     if isinstance(config_version, bool) or not isinstance(config_version, int) or config_version < 0:
         frappe.throw(_("Availability hold command device_config_version is invalid"), frappe.ValidationError)
-    if isinstance(source_revision, bool) or not isinstance(source_revision, int) or source_revision < 1:
+    valid_source_revision = (
+        isinstance(source_revision, str) and bool(cstr(source_revision).strip())
+    ) or (
+        isinstance(source_revision, int)
+        and not isinstance(source_revision, bool)
+        and source_revision >= 1
+    )
+    if not valid_source_revision:
         frappe.throw(_("Availability hold command source_revision is invalid"), frappe.ValidationError)
     if value.get("target_type") not in {"Item", "Modifier"}:
         frappe.throw(_("Availability hold command target_type is invalid"), frappe.ValidationError)
@@ -4209,7 +4254,7 @@ _GUIDED_TASK_FIELDS: dict[str, frozenset[str]] = {
     "complete_preparation_task": frozenset({
         "work_order", "actual_yield", "qty", "fg_warehouse", "items", "waste_qty", "batch_no", "expiry_date",
     }),
-    "submit_purchase_receipt": frozenset({"purchase_order", "lines"}),
+    "submit_purchase_receipt": frozenset({"purchase_order", "lines", "delivery_note"}),
     "submit_transfer_dispatch": frozenset({"material_request", "lines", "quantity", "batch_no"}),
     "submit_transfer_receipt": frozenset({"material_request", "lines", "quantity", "batch_no"}),
     # Waste has no counterparty document: the outlet observes it. The device
@@ -4293,6 +4338,8 @@ def _parse_guided_task_payload(
     for fieldname in ("source_revision", "recorded_by"):
         if isinstance(value.get(fieldname), str) and len(value[fieldname]) > _GUIDED_TASK_MAX_STRING_LENGTH:
             frappe.throw(_("Guided task {0} is too long").format(fieldname), frappe.ValidationError)
+    if isinstance(value.get("delivery_note"), str) and len(value["delivery_note"]) > _GUIDED_TASK_MAX_STRING_LENGTH:
+        frappe.throw(_("Guided task delivery_note is too long"), frappe.ValidationError)
     if isinstance(value.get("draft_key"), str) and len(value["draft_key"]) > _GUIDED_TASK_MAX_DRAFT_KEY_LENGTH:
         frappe.throw(_("Guided task draft_key is too long"), frappe.ValidationError)
     observed_at = value.get("observed_at")
@@ -4814,6 +4861,7 @@ def _create_purchase_receipt(value: dict[str, Any], command_id: str) -> str:
     consumed_by_row: dict[str, Decimal] = {}
     seen_row_keys: set[str] = set()
     discrepancy_rows: list[dict[str, Any]] = []
+    delivery_note = cstr(value.get("delivery_note")).strip()
     for line in lines:
         if not isinstance(line, dict):
             frappe.throw(_("Receiving contains an invalid line"), frappe.ValidationError)
@@ -4889,6 +4937,8 @@ def _create_purchase_receipt(value: dict[str, Any], command_id: str) -> str:
         summary = "; ".join(
             f"{row['item']}: {row['kind']} {row['quantity']}" for row in discrepancy_rows
         )
+        if delivery_note:
+            summary = f"{summary}. Staff note: {delivery_note}"
         exception_name = upsert_inventory_exception(
             reason_code="supplier_receiving_discrepancy",
             summary=f"Supplier delivery differs from the Purchase Order ({summary})",

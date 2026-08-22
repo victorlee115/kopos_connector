@@ -272,11 +272,16 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
             inventory,
             "_get_count_task",
             return_value={"status": "ok", "task": count_task},
+        ), patch.object(
+            inventory,
+            "get_item_barcodes_map",
+            return_value={"MILK": "955000000001"},
         ):
             result = inventory._get_inventory_tasks(device_id="DEVICE-1")
 
         self.assertEqual(result["count_task"], count_task)
         self.assertEqual(result["tasks"][0]["kind"], "count")
+        self.assertEqual(result["count_task"]["lines"][0]["barcode"], "955000000001")
 
     def test_inventory_task_reader_keeps_blocked_preparation_setup_visible(self) -> None:
         blocked_alert = {

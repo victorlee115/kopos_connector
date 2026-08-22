@@ -293,7 +293,7 @@ class InventoryCountConfirmationTests(unittest.TestCase):
         for forbidden in ("expected", "valuation", "cogs", "rate", "threshold", "value"):
             self.assertNotIn(forbidden, serialized)
 
-    def test_count_task_lines_include_server_resolved_item_name_only(self) -> None:
+    def test_count_task_lines_include_server_resolved_item_name_and_scan_code_only(self) -> None:
         with patch.object(
             inventory.frappe,
             "get_all",
@@ -301,6 +301,10 @@ class InventoryCountConfirmationTests(unittest.TestCase):
                 [{"item_id": "MILK", "uom": "L"}],
                 [{"name": "MILK", "item_name": "Whole Milk", "item_code": "MILK"}],
             ],
+        ), patch.object(
+            inventory,
+            "get_item_barcodes_map",
+            return_value={"MILK": "955000000001"},
         ):
             response = inventory._count_task_response({
                 "name": "TASK-1",
@@ -309,7 +313,12 @@ class InventoryCountConfirmationTests(unittest.TestCase):
                 "assignee": "staff@example.com",
                 "stock_watermark": "watermark",
             })
-        self.assertEqual(response["lines"], [{"item_id": "MILK", "item_name": "Whole Milk", "uom": "L"}])
+        self.assertEqual(response["lines"], [{
+            "item_id": "MILK",
+            "item_name": "Whole Milk",
+            "uom": "L",
+            "barcode": "955000000001",
+        }])
         self.assertNotIn("expected_quantity", response["lines"][0])
         self.assertNotIn("valuation", response["lines"][0])
 
