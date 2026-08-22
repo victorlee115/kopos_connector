@@ -35,6 +35,11 @@ Stock Entry, or accounting record is rewritten by the redesign.
    Director as the authorised business role.
 5. A standard opening Stock Reconciliation is submitted before an outlet
    policy can activate its immutable cutover token.
+6. ERP Desk setup authorities agree before director acceptance: Frappe reports
+   setup complete, the global and System Settings flags are complete, every
+   setup-wizard application is complete, and `desktop:home_page` no longer
+   points to `setup-wizard`. The restored outlet matrix reports these checks
+   read-only and blocks the Companies category when they disagree.
 
 The restored-data rehearsal must run with email, notifications, webhooks,
 Server Scripts, supplier/provider calls, printers, and other outbound effects
