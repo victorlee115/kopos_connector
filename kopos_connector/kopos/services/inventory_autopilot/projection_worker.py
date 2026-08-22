@@ -8,7 +8,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import frappe
-from frappe.utils import cint, cstr, now_datetime
+from frappe.utils import cint, cstr, get_datetime, now_datetime
 
 try:
     from frappe.utils import add_to_date
@@ -96,6 +96,11 @@ def recover_inventory_projections(*, batch_size: int | None = None) -> list[dict
             result = project_inventory_order(cstr(row.get("name")))
             if result.get("state") in {"Succeeded", "Failed", "Not Evaluated"}:
                 results.append(result)
+        results.extend(
+            recover_remake_inventory_projections(
+                batch_size=limit,
+            )
+        )
         _set_scheduler_marker(cache, "last_success")
         return results
     except Exception:
@@ -103,6 +108,209 @@ def recover_inventory_projections(*, batch_size: int | None = None) -> list[dict
         raise
     finally:
         _release_lock(cache, token)
+
+
+def recover_remake_inventory_projections(
+    *, batch_size: int | None = None
+) -> list[dict[str, Any]]:
+    """Retry remake stock issues after their sale snapshot becomes available.
+
+    Checkout intentionally commits before the optional inventory worker. A
+    manager can therefore record a remake while the source order's immutable
+    resolved sale is still being prepared. The remake remains authoritative,
+    and this bounded inventory worker later attaches that same frozen snapshot
+    and retries the idempotent Material Issue.
+    """
+
+    limit = max(1, min(cint(batch_size or DEFAULT_BATCH_SIZE), 100))
+    rows = frappe.get_all(
+        "FB Remake Event",
+        filters={
+            "docstatus": 1,
+            "inventory_status": ["in", ["Pending", "Exception"]],
+        },
+        fields=["name"],
+        order_by="modified asc",
+        limit_page_length=limit * 4,
+    )
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        if len(results) >= limit:
+            break
+        source_name = cstr(_row_value(row, "name")).strip()
+        if not source_name:
+            continue
+        result = _recover_remake_inventory_projection(source_name)
+        if result is not None:
+            results.append(result)
+    return results
+
+
+def _recover_remake_inventory_projection(
+    source_name: str,
+) -> dict[str, Any] | None:
+    remake = frappe.get_doc("FB Remake Event", source_name)
+    log_name = cstr(
+        frappe.db.get_value(
+            "FB Projection Log",
+            {
+                "source_doctype": "FB Remake Event",
+                "source_name": source_name,
+                "projection_type": INVENTORY_PROJECTION_TYPE,
+            },
+            "name",
+        )
+    ).strip()
+    if not log_name:
+        log_name = _create_remake_inventory_projection_log(remake)
+
+    frappe.db.sql(
+        "SELECT name FROM `tabFB Projection Log` WHERE name = %s FOR UPDATE",
+        (log_name,),
+    )
+    log = frappe.get_doc("FB Projection Log", log_name)
+    if cstr(getattr(log, "state", None)) in {"Succeeded", "Dead Letter"}:
+        return None
+
+    retry_count = cint(getattr(log, "retry_count", 0))
+    maximum = _configured_retry_limit()
+    if retry_count >= maximum:
+        _finalize_remake_inventory_failure(log, retry_count, dead_letter=True)
+        return None
+
+    next_retry_at = getattr(log, "next_retry_at", None)
+    if next_retry_at and get_datetime(next_retry_at) > now_datetime():
+        return None
+
+    _attach_ready_remake_snapshot(remake)
+
+    from kopos_connector.kopos.services.operations.remake_service import (
+        create_remake_stock_entry,
+    )
+
+    target_name = create_remake_stock_entry(remake)
+    remake.reload()
+    inventory_status = cstr(getattr(remake, "inventory_status", None)).strip()
+    if target_name or inventory_status == "Not Applicable":
+        now = now_datetime()
+        frappe.db.set_value(
+            "FB Projection Log",
+            log_name,
+            {
+                "state": "Succeeded",
+                "target_doctype": "Stock Entry" if target_name else None,
+                "target_name": target_name,
+                "last_error": None,
+                "last_attempt_at": now,
+                "next_retry_at": None,
+                "dead_lettered_at": None,
+            },
+            update_modified=False,
+        )
+        frappe.db.commit()
+        return {
+            "source_doctype": "FB Remake Event",
+            "source_name": source_name,
+            "projection_log": log_name,
+            "target_name": target_name,
+            "state": "Succeeded",
+        }
+
+    next_retry_count = retry_count + 1
+    dead_letter = next_retry_count >= maximum
+    _finalize_remake_inventory_failure(
+        log,
+        next_retry_count,
+        dead_letter=dead_letter,
+    )
+    if dead_letter:
+        order = frappe.get_doc("FB Order", cstr(getattr(remake, "original_order", None)))
+        policy = _policy_for_order(order)
+        if policy is not None:
+            _pause_policy_for_integrity_failure(policy)
+            frappe.db.commit()
+    return {
+        "source_doctype": "FB Remake Event",
+        "source_name": source_name,
+        "projection_log": log_name,
+        "target_name": None,
+        "state": "Dead Letter" if dead_letter else "Failed",
+    }
+
+
+def _create_remake_inventory_projection_log(remake: Any) -> str:
+    identity = {
+        "remake_id": cstr(getattr(remake, "remake_id", None)).strip(),
+        "original_order": cstr(getattr(remake, "original_order", None)).strip(),
+        "original_order_line": cstr(
+            getattr(remake, "original_order_line", None)
+        ).strip(),
+        "quantity": cstr(getattr(remake, "quantity", None)).strip(),
+        "inventory_evaluation": cstr(
+            getattr(remake, "inventory_evaluation", None)
+        ).strip(),
+    }
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    payload_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    idempotency_key = hashlib.sha256(
+        f"FB Remake Event\0{cstr(getattr(remake, 'name', None))}\0Stock Issue".encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    return create_projection_log(
+        source_doctype="FB Remake Event",
+        source_name=cstr(getattr(remake, "name", None)).strip(),
+        projection_type=INVENTORY_PROJECTION_TYPE,
+        idempotency_key=idempotency_key,
+        payload_hash=payload_hash,
+    )
+
+
+def _attach_ready_remake_snapshot(remake: Any) -> None:
+    if cstr(getattr(remake, "original_resolved_sale", None)).strip():
+        return
+    order_line = cstr(getattr(remake, "original_order_line", None)).strip()
+    if not order_line:
+        return
+    resolved_sale = cstr(
+        frappe.db.get_value("FB Order Line", order_line, "resolved_sale")
+    ).strip()
+    if not resolved_sale:
+        return
+    remake.db_set("original_resolved_sale", resolved_sale, update_modified=False)
+    remake.original_resolved_sale = resolved_sale
+
+
+def _finalize_remake_inventory_failure(
+    log: Any,
+    retry_count: int,
+    *,
+    dead_letter: bool,
+) -> None:
+    now = now_datetime()
+    frappe.db.set_value(
+        "FB Projection Log",
+        cstr(getattr(log, "name", None)),
+        {
+            "state": "Dead Letter" if dead_letter else "Failed",
+            "retry_count": retry_count,
+            "target_doctype": None,
+            "target_name": None,
+            "last_error": "Remake inventory projection failed; see FB Inventory Exception",
+            "last_attempt_at": now,
+            "next_retry_at": (
+                None
+                if dead_letter
+                else add_to_date(
+                    now,
+                    seconds=min(60 * 60, 60 * (2 ** max(0, retry_count - 1))),
+                )
+            ),
+            "dead_lettered_at": now if dead_letter else None,
+        },
+        update_modified=False,
+    )
+    frappe.db.commit()
 
 
 def project_inventory_order(order_name: str) -> dict[str, Any]:

@@ -98,6 +98,33 @@ class InventoryProjectionWorkerTests(TestCase):
         self.assertEqual(result, {"order": self.order.name, "state": "Not Evaluated"})
         create_log.assert_not_called()
 
+    def test_remake_recovery_is_bounded_and_skips_unclaimable_rows(self) -> None:
+        rows = [
+            {"name": "FB-REMAKE-1"},
+            {"name": "FB-REMAKE-2"},
+            {"name": "FB-REMAKE-3"},
+        ]
+        recovered = {
+            "source_doctype": "FB Remake Event",
+            "source_name": "FB-REMAKE-2",
+            "state": "Succeeded",
+        }
+        with (
+            patch.object(projection_worker.frappe, "get_all", return_value=rows) as get_all,
+            patch.object(
+                projection_worker,
+                "_recover_remake_inventory_projection",
+                side_effect=[None, recovered],
+            ) as recover_one,
+        ):
+            result = projection_worker.recover_remake_inventory_projections(
+                batch_size=1
+            )
+
+        self.assertEqual(result, [recovered])
+        self.assertEqual(recover_one.call_count, 2)
+        self.assertEqual(get_all.call_args.kwargs["limit_page_length"], 4)
+
     def test_dead_letter_containment_pauses_only_the_affected_policy(self) -> None:
         with patch.object(projection_worker.frappe.db, "set_value") as set_value:
             projection_worker._pause_policy_for_integrity_failure(self.policy)

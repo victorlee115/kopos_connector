@@ -97,8 +97,11 @@ class TestEndToEndRemakeFlow(SaleBackedOperationsTestCase):
         )
         self.assertEqual(invoices_after, invoices_before)
 
-    def test_remake_event_survives_missing_inventory_snapshot_as_exception(self) -> None:
+    def test_remake_exception_recovers_after_sale_snapshot_becomes_ready(self) -> None:
         from kopos_connector.api.fb_remakes import process_remake_payload
+        from kopos_connector.kopos.services.inventory_autopilot.projection_worker import (
+            recover_remake_inventory_projections,
+        )
 
         line = self.order.items[0]
         frappe.db.set_value(
@@ -130,4 +133,67 @@ class TestEndToEndRemakeFlow(SaleBackedOperationsTestCase):
         self.assertEqual(event.inventory_status, "Exception")
         self.assertTrue(
             frappe.db.exists("FB Inventory Exception", result["inventory_exception"])
+        )
+
+        # Model the real checkout/remake race: the optional sale worker records
+        # the immutable snapshot after the operational remake already committed.
+        frappe.db.set_value(
+            "FB Order Line",
+            line.name,
+            "resolved_sale",
+            self.resolved_sale.name,
+            update_modified=False,
+        )
+        candidates = frappe.get_all(
+            "FB Remake Event",
+            filters={
+                "docstatus": 1,
+                "inventory_status": ["in", ["Pending", "Exception"]],
+            },
+            pluck="name",
+        )
+        self.assertIn(event.name, candidates)
+        projection_log_before_recovery = frappe.db.get_value(
+            "FB Projection Log",
+            {
+                "source_doctype": "FB Remake Event",
+                "source_name": event.name,
+                "projection_type": "Stock Issue",
+            },
+            "name",
+        )
+        self.assertFalse(projection_log_before_recovery)
+        # Keep FrappeTestCase's rollback boundary intact. Production commits
+        # each recovered projection; this case verifies the real documents
+        # without leaking its transaction into the rest of the broad suite.
+        with patch.object(frappe.db, "commit"):
+            recovery = recover_remake_inventory_projections(batch_size=1)
+
+        self.assertEqual(len(recovery), 1)
+        self.assertEqual(recovery[0]["state"], "Succeeded")
+        event.reload()
+        self.assertEqual(event.inventory_status, "Posted")
+        self.assertTrue(event.replacement_stock_entry)
+        stock_entry = frappe.get_doc("Stock Entry", event.replacement_stock_entry)
+        self.assertEqual(stock_entry.docstatus, 1)
+        self.assertEqual(stock_entry.stock_entry_type, "Material Issue")
+        self.assertEqual(
+            frappe.db.get_value(
+                "FB Inventory Exception",
+                result["inventory_exception"],
+                "status",
+            ),
+            "Resolved",
+        )
+        self.assertEqual(
+            frappe.db.get_value(
+                "FB Projection Log",
+                {
+                    "source_doctype": "FB Remake Event",
+                    "source_name": event.name,
+                    "projection_type": "Stock Issue",
+                },
+                "state",
+            ),
+            "Succeeded",
         )
