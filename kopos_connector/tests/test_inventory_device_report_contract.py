@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import nullcontext
 from copy import deepcopy
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
@@ -255,6 +257,73 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
         self.assertEqual(revision, "2026-08-15T10:00:00+08:00")
         with self.assertRaises(ValueError):
             inventory._authoritative_document_revision({})
+
+    def test_guided_stock_documents_run_as_the_dedicated_automation_user(self) -> None:
+        value = {
+            "command_id": "receipt-1",
+            "payload_hash": "a" * 64,
+            "company": "JiJi Foods",
+            "warehouse": "Outlet - WH",
+            "source_document": "PO-1",
+            "purchase_order": "PO-1",
+        }
+        with patch.object(inventory, "require_device_context", return_value=SimpleNamespace()), patch.object(
+            inventory, "_parse_guided_task_payload", return_value=value
+        ), patch.object(inventory, "_validate_guided_task_actor"), patch.object(
+            inventory, "_validate_guided_task_scope"
+        ), patch.object(inventory, "lock_device_for_operational_mutation"), patch.object(
+            inventory, "_find_command_document", return_value=None
+        ), patch.object(
+            inventory, "inventory_automation_identity", return_value=nullcontext("automation@example.com")
+        ) as identity, patch.object(
+            inventory, "_create_purchase_receipt", return_value="MAT-PRE-0001"
+        ) as create_receipt, patch.object(inventory.frappe.db, "commit"):
+            result = inventory._handle_guided_task(
+                device_id="TAB-A",
+                payload={},
+                task_type="submit_purchase_receipt",
+            )
+
+        identity.assert_called_once_with(
+            company="JiJi Foods",
+            warehouse="Outlet - WH",
+            create_doctypes=("Purchase Receipt",),
+            submit_doctypes=("Purchase Receipt",),
+        )
+        create_receipt.assert_called_once_with(value, "receipt-1")
+        self.assertEqual(result["document"], "MAT-PRE-0001")
+
+    def test_guided_stock_document_refuses_an_unsafe_automation_identity(self) -> None:
+        value = {
+            "command_id": "transfer-1",
+            "payload_hash": "b" * 64,
+            "company": "JiJi Foods",
+            "warehouse": "Outlet - WH",
+            "source_document": "MR-1",
+            "material_request": "MR-1",
+        }
+        with patch.object(inventory, "require_device_context", return_value=SimpleNamespace()), patch.object(
+            inventory, "_parse_guided_task_payload", return_value=value
+        ), patch.object(inventory, "_validate_guided_task_actor"), patch.object(
+            inventory, "_validate_guided_task_scope"
+        ), patch.object(inventory, "lock_device_for_operational_mutation"), patch.object(
+            inventory, "_find_command_document", return_value=None
+        ), patch.object(
+            inventory,
+            "inventory_automation_identity",
+            side_effect=inventory.AutomationIdentityError("Automation User lacks submit permission for Stock Entry"),
+        ), patch.object(inventory, "_create_transfer_entry") as create_transfer:
+            with self.assertRaisesRegex(
+                frappe.ValidationError,
+                "Guided inventory automation is not configured safely",
+            ):
+                inventory._handle_guided_task(
+                    device_id="TAB-A",
+                    payload={},
+                    task_type="submit_transfer_dispatch",
+                )
+
+        create_transfer.assert_not_called()
 
 
 if __name__ == "__main__":

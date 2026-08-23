@@ -4536,20 +4536,79 @@ def _handle_guided_task(*, device_id: str, payload: str | dict[str, Any], task_t
     existing = _find_command_document(doctype, command_id, payload_hash=cstr(value.get("payload_hash")).strip())
     if existing:
         return {"status": "replayed", "task_type": task_type, "document": existing}
-    if task_type == "accept_preparation_task":
-        document = _accept_preparation_task(value, command_id=command_id)
-    elif task_type == "start_preparation_task":
-        document = _submit_work_order(value, command_id)
-    elif task_type == "complete_preparation_task":
-        document = _create_manufacture_entry(value, command_id)
-    elif task_type == "submit_purchase_receipt":
-        document = _create_purchase_receipt(value, command_id)
-    elif task_type == "record_waste_event":
-        document = _record_waste_event(value, command_id)
+    requirements = _GUIDED_TASK_AUTOMATION_REQUIREMENTS.get(task_type)
+    if requirements is None:
+        document = _execute_guided_task_mutation(value, command_id=command_id, task_type=task_type)
     else:
-        document = _create_transfer_entry(value, command_id, dispatch=task_type == "submit_transfer_dispatch")
+        try:
+            with inventory_automation_identity(
+                company=cstr(value.get("company")).strip(),
+                warehouse=cstr(value.get("warehouse")).strip(),
+                create_doctypes=requirements["create_doctypes"],
+                submit_doctypes=requirements["submit_doctypes"],
+            ):
+                document = _execute_guided_task_mutation(
+                    value,
+                    command_id=command_id,
+                    task_type=task_type,
+                )
+        except AutomationIdentityError as error:
+            frappe.throw(
+                _("Guided inventory automation is not configured safely: {0}").format(error.reason),
+                frappe.ValidationError,
+            )
     frappe.db.commit()
     return {"status": "accepted", "task_type": task_type, "document": document}
+
+
+_GUIDED_TASK_AUTOMATION_REQUIREMENTS = {
+    "accept_preparation_task": {
+        "create_doctypes": ("Work Order",),
+        "submit_doctypes": (),
+    },
+    "start_preparation_task": {
+        "create_doctypes": (),
+        "submit_doctypes": ("Work Order",),
+    },
+    "complete_preparation_task": {
+        "create_doctypes": ("Stock Entry",),
+        "submit_doctypes": ("Stock Entry",),
+    },
+    "submit_purchase_receipt": {
+        "create_doctypes": ("Purchase Receipt",),
+        "submit_doctypes": ("Purchase Receipt",),
+    },
+    "submit_transfer_dispatch": {
+        "create_doctypes": ("Stock Entry",),
+        "submit_doctypes": ("Stock Entry",),
+    },
+    "submit_transfer_receipt": {
+        "create_doctypes": ("Stock Entry",),
+        "submit_doctypes": ("Stock Entry",),
+    },
+}
+
+
+def _execute_guided_task_mutation(
+    value: dict[str, Any], *, command_id: str, task_type: str
+) -> str:
+    """Create or advance the one standard document selected by a guided task."""
+
+    if task_type == "accept_preparation_task":
+        return _accept_preparation_task(value, command_id=command_id)
+    if task_type == "start_preparation_task":
+        return _submit_work_order(value, command_id)
+    if task_type == "complete_preparation_task":
+        return _create_manufacture_entry(value, command_id)
+    if task_type == "submit_purchase_receipt":
+        return _create_purchase_receipt(value, command_id)
+    if task_type == "record_waste_event":
+        return _record_waste_event(value, command_id)
+    return _create_transfer_entry(
+        value,
+        command_id,
+        dispatch=task_type == "submit_transfer_dispatch",
+    )
 
 
 def _find_command_document(doctype: str, command_id: str, *, payload_hash: str) -> str | None:
