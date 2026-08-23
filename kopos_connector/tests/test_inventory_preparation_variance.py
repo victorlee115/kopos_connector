@@ -117,6 +117,62 @@ class InventoryPreparationVarianceTests(TestCase):
         self.assertEqual(alerts[0]["revision"], f"setup:{alerts[0]['fingerprint']}")
         self.assertEqual(len(alerts[0]["revision"]), len("setup:") + 64)
 
+    def test_ready_preparation_query_builds_its_bom_field_allow_list(self) -> None:
+        bom_fields = [
+            "custom_kopos_autoprep_enabled",
+            "custom_kopos_batch_qty",
+            "custom_kopos_min_ready_qty",
+            "custom_kopos_preparation_lead_minutes",
+            "item_name",
+            "custom_kopos_preparation_instructions",
+        ]
+        bom_meta = type("Meta", (), {
+            "fields": [type("Field", (), {"fieldname": field})() for field in bom_fields],
+            "has_field": lambda self, field: field in bom_fields,
+        })()
+        work_order_meta = type("Meta", (), {
+            "has_field": lambda self, field: field == "custom_kopos_preparation_fingerprint",
+        })()
+        with patch.object(
+            preparation.frappe,
+            "get_meta",
+            side_effect=[bom_meta, work_order_meta],
+        ), patch.object(
+            preparation,
+            "preparation_variance_preflight",
+            return_value=(),
+        ), patch.object(
+            preparation.frappe,
+            "get_all",
+            return_value=[],
+        ) as get_all:
+            alerts = preparation._preparation_alerts_for_policy(
+                {
+                    "name": "FB-POLICY-JIJI-OUTLET",
+                    "company": "JiJi",
+                    "warehouse": "Outlet - KL",
+                    "cutover_at": "2026-08-16 10:00:00",
+                    "cutover_token": "cutover",
+                },
+                record_exceptions=False,
+            )
+
+        self.assertEqual(alerts, [])
+        self.assertEqual(
+            get_all.call_args.kwargs["fields"],
+            [
+                "name",
+                "item",
+                "quantity",
+                "modified",
+                "custom_kopos_batch_qty",
+                "custom_kopos_min_ready_qty",
+                "custom_kopos_preparation_lead_minutes",
+                "item_name",
+                "custom_kopos_preparation_instructions",
+            ],
+        )
+
 
 if __name__ == "__main__":
     import unittest

@@ -147,19 +147,6 @@ def preparation_variance_preflight(*, company: str, warehouse: str) -> tuple[str
         frappe.db.exists("DocType", "FB Inventory Policy")
         and frappe.get_meta("FB Inventory Policy").has_field(policy_variance_field)
     )
-    bom_fields = [
-        "name",
-        "item",
-        "quantity",
-        "modified",
-        "custom_kopos_batch_qty",
-        "custom_kopos_min_ready_qty",
-        "custom_kopos_preparation_lead_minutes",
-    ]
-    if frappe.get_meta("BOM").has_field("item_name"):
-        bom_fields.append("item_name")
-    if frappe.get_meta("BOM").has_field("custom_kopos_preparation_instructions"):
-        bom_fields.append("custom_kopos_preparation_instructions")
     rows = frappe.get_all(
         "BOM",
         filters={
@@ -315,6 +302,19 @@ def _preparation_alerts_for_policy(
         return []
     if not frappe.get_meta("Work Order").has_field("custom_kopos_preparation_fingerprint"):
         return []
+    bom_fields = [
+        "name",
+        "item",
+        "quantity",
+        "modified",
+        "custom_kopos_batch_qty",
+        "custom_kopos_min_ready_qty",
+        "custom_kopos_preparation_lead_minutes",
+    ]
+    if bom_meta.has_field("item_name"):
+        bom_fields.append("item_name")
+    if bom_meta.has_field("custom_kopos_preparation_instructions"):
+        bom_fields.append("custom_kopos_preparation_instructions")
     variance_failures = preparation_variance_preflight(company=company, warehouse=warehouse)
     if variance_failures:
         if record_exceptions:
