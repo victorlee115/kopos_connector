@@ -2762,11 +2762,24 @@ def confirm_count_reconciliation(*, device_id: str, payload: str | dict[str, Any
     if cstr(conflicting_observation).strip():
         frappe.throw(_("This confirmation command was already used for another count"), frappe.ValidationError)
 
+    stock_change_required = _count_observation_stock_change_required(
+        observation=observation,
+        company=profile_company,
+        warehouse=warehouse,
+    )
     reconciliation_name = cstr(observation.get("reconciliation")).strip()
-    if not reconciliation_name:
+    if cstr(observation.get("status")).strip() == "Accepted" and existing_command == command_id:
+        return {
+            "status": "replayed",
+            "observation_id": observation_id,
+            "reconciliation": reconciliation_name or None,
+            "document": reconciliation_name or observation_id,
+            "stock_changed": stock_change_required,
+        }
+    if not reconciliation_name and stock_change_required:
         frappe.throw(_("The count observation has no draft reconciliation to confirm"), frappe.ValidationError)
-    reconciliation = frappe.get_doc("Stock Reconciliation", reconciliation_name)
-    if cint(getattr(reconciliation, "docstatus", 0)) == 1:
+    reconciliation = frappe.get_doc("Stock Reconciliation", reconciliation_name) if reconciliation_name else None
+    if reconciliation is not None and cint(getattr(reconciliation, "docstatus", 0)) == 1:
         _record_count_confirmation_identity(
             observation["name"],
             command_id=command_id,
@@ -2774,7 +2787,7 @@ def confirm_count_reconciliation(*, device_id: str, payload: str | dict[str, Any
         )
         frappe.db.commit()
         return {"status": "replayed", "observation_id": observation_id, "reconciliation": reconciliation.name}
-    if cint(getattr(reconciliation, "docstatus", 0)) != 0:
+    if reconciliation is not None and cint(getattr(reconciliation, "docstatus", 0)) != 0:
         frappe.throw(_("The count reconciliation is no longer a draft"), frappe.ValidationError)
     if cstr(observation.get("status")).strip() == "Conflict":
         frappe.throw(_("This count cannot be confirmed because stock moved before review"), frappe.ValidationError)
@@ -2800,6 +2813,45 @@ def confirm_count_reconciliation(*, device_id: str, payload: str | dict[str, Any
     except Exception:
         frappe.throw(_("Manager approval for this count is invalid or has already been used"), frappe.PermissionError)
     manager_id = cstr(approval.get("manager_id")).strip()
+    if not stock_change_required:
+        # ERPNext correctly rejects an empty Stock Reconciliation. An exact
+        # blind count still needs manager approval, but it must close as
+        # audited evidence without inventing a stock movement. Older versions
+        # created a draft before discovering that it contained no changes, so
+        # remove that draft while accepting the immutable observation.
+        if reconciliation is not None:
+            frappe.db.set_value(
+                "FB Inventory Count Observation",
+                observation["name"],
+                "reconciliation",
+                None,
+                update_modified=False,
+            )
+            frappe.delete_doc(
+                "Stock Reconciliation",
+                reconciliation.name,
+                ignore_permissions=True,
+                force=True,
+            )
+        _record_count_confirmation_identity(
+            observation["name"],
+            command_id=command_id,
+            device_id=authenticated_device_id or device_id,
+            manager_id=manager_id,
+            status="Accepted",
+        )
+        if frappe.db.exists("FB Inventory Count Task", task_id):
+            frappe.db.set_value("FB Inventory Count Task", task_id, "status", "Reviewed", update_modified=False)
+        frappe.db.commit()
+        return {
+            "status": "accepted",
+            "observation_id": observation_id,
+            "reconciliation": None,
+            "document": observation_id,
+            "stock_changed": False,
+        }
+    if reconciliation is None:
+        frappe.throw(_("The count observation has no draft reconciliation to confirm"), frappe.ValidationError)
     try:
         with inventory_automation_identity(
             company=profile_company,
@@ -3057,6 +3109,7 @@ def submit_count_observation(*, device_id: str, payload: str | dict[str, Any]) -
         warehouse=warehouse,
         lines=value["lines"],
     )
+    stock_change_required = variance["absolute_quantity"] != Decimal("0")
     requires_director = _count_requires_director_review(warehouse=warehouse, variance=variance)
     observation_doc = None
     if observation_doctype_exists:
@@ -3144,6 +3197,22 @@ def submit_count_observation(*, device_id: str, payload: str | dict[str, Any]) -
             "observation_id": observation_id,
             "exception": exception,
             "reconciliation": None,
+        }
+    if not stock_change_required:
+        if frappe.db.exists("FB Inventory Count Task", value["task_id"]):
+            frappe.db.set_value("FB Inventory Count Task", value["task_id"], "status", "Submitted", update_modified=False)
+        frappe.db.commit()
+        review = _count_review_projection(
+            task_name=value["task_id"],
+            task_revision=value["task_revision"],
+            warehouse=warehouse,
+            assignee=value["actor_id"],
+        )
+        return {
+            "status": "review_required",
+            "observation_id": observation_id,
+            "reconciliation": None,
+            "review": review,
         }
     existing = frappe.db.exists("Stock Reconciliation", observation_name)
     if existing:
@@ -3509,6 +3578,20 @@ def _validate_count_confirmation_observation(
         frappe.throw(_("This count observation is not eligible for manager confirmation"), frappe.ValidationError)
 
 
+def _count_observation_stock_change_required(
+    *, observation: dict[str, Any], company: str, warehouse: str
+) -> bool:
+    try:
+        lines = json.loads(cstr(observation.get("lines_json")))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        frappe.throw(_("The count observation lines cannot be verified"), frappe.ValidationError)
+        raise AssertionError("frappe.throw must raise")
+    if not isinstance(lines, list) or not lines:
+        frappe.throw(_("The count observation lines cannot be verified"), frappe.ValidationError)
+    variance = _count_variance(company=company, warehouse=warehouse, lines=lines)
+    return variance["absolute_quantity"] != Decimal("0")
+
+
 def _record_count_confirmation_identity(
     observation_name: str,
     *,
@@ -3823,11 +3906,21 @@ def _count_review_projection(
         if malformed:
             continue
         status = cstr(row.get("status")).strip()
-        # A large variance is held for Company Director review before a
-        # Draft Stock Reconciliation exists. Do not expose a manager-ready
-        # button to the tablet until that director step has created the draft.
+        # A large variance is held for Company Director review before a Draft
+        # Stock Reconciliation exists. An exact match also has no draft because
+        # ERPNext forbids empty reconciliations, but it is ready for the normal
+        # manager evidence step.
         if status == "Review" and not cstr(row.get("reconciliation")).strip():
-            continue
+            try:
+                no_stock_change = not _count_observation_stock_change_required(
+                    observation=row,
+                    company="",
+                    warehouse=warehouse,
+                )
+            except frappe.ValidationError:
+                continue
+            if not no_stock_change:
+                continue
         public_status = {
             "Accepted": "accepted",
             "Review": "review_required",
@@ -3913,6 +4006,7 @@ def _count_variance(*, company: str, warehouse: str, lines: list[dict[str, Any]]
         value += difference * rate
     percent = (absolute_quantity / max(expected_quantity, Decimal("1")) * Decimal("100")).quantize(Decimal("0.01"))
     return {
+        "absolute_quantity": absolute_quantity,
         "percent": percent,
         "value": value.quantize(Decimal("0.01")),
         "valuation_complete": Decimal("1") if valuation_complete else Decimal("0"),
