@@ -82,6 +82,8 @@ SMOKE_MOCK_PRINTER_HOST_ENV = "KOPOS_SMOKE_MOCK_PRINTER_HOST"
 SMOKE_MOCK_PRINTER_PORT_ENV = "KOPOS_SMOKE_MOCK_PRINTER_PORT"
 SMOKE_INVENTORY_ACCEPTANCE_ENV = "KOPOS_CAMPAIGN_INVENTORY_ACCEPTANCE"
 SMOKE_INVENTORY_EVALUATION_ENV = "KOPOS_CAMPAIGN_INVENTORY_EVALUATION"
+SMOKE_INVENTORY_OPENING_REMARKS = "KoPOS included-inventory smoke cutover v1"
+SMOKE_INVENTORY_DIRECTOR = "manager@smoke.kopos.local"
 SMOKE_MOCK_PRINTER_DEFAULT_HOST = "127.0.0.1"
 SMOKE_MOCK_PRINTER_DEFAULT_PORT = 19100
 SUPPORT_REDACTED_VALUE = "[redacted]"
@@ -481,6 +483,194 @@ def set_demo_ingredient_quantities(
             )
     frappe.db.commit()
     return get_demo_ingredient_state()
+
+
+def _ensure_smoke_inventory_policy(
+    *,
+    company: str,
+    warehouse: str,
+    expense_account: str,
+    preparation_device: str,
+) -> str:
+    """Commission the isolated smoke outlet after its opening quantities exist.
+
+    Included-inventory campaigns must exercise the same immutable cutover and
+    explicit exception ownership required in production. The commercial-only
+    smoke path never calls this helper and remains independent of inventory.
+    """
+
+    policies = frappe.get_all(
+        "FB Inventory Policy",
+        filters={"company": company, "warehouse": warehouse},
+        fields=["name"],
+        order_by="name asc",
+        limit_page_length=0,
+    )
+    if len(policies) > 1:
+        frappe.throw(
+            f"Smoke warehouse {warehouse} has multiple inventory policies",
+            frappe.ValidationError,
+        )
+    if policies:
+        policy = frappe.get_doc("FB Inventory Policy", policies[0]["name"])
+        opening_name = cstr(
+            getattr(policy, "opening_stock_reconciliation", None)
+        ).strip()
+        opening_status = (
+            frappe.db.get_value("Stock Reconciliation", opening_name, "docstatus")
+            if opening_name
+            else None
+        )
+        expected = {
+            "automation_state": "Active",
+            "inventory_contract_version": "inventory-autopilot-v1",
+            "permitted_actions": "stock_projection",
+            "expense_account": expense_account,
+            "preparation_device": preparation_device,
+            "inventory_exception_owner": SMOKE_INVENTORY_DIRECTOR,
+            "purchase_review_owner": SMOKE_INVENTORY_DIRECTOR,
+        }
+        mismatched = [
+            fieldname
+            for fieldname, value in expected.items()
+            if cstr(getattr(policy, fieldname, None)).strip() != value
+        ]
+        token = cstr(getattr(policy, "cutover_token", None)).strip().lower()
+        if (
+            mismatched
+            or not re.fullmatch(r"[0-9a-f]{64}", token)
+            or not getattr(policy, "cutover_at", None)
+            or opening_status != 1
+        ):
+            frappe.throw(
+                "Existing smoke inventory policy does not match the immutable "
+                f"included-inventory fixture: {', '.join(mismatched) or 'cutover evidence'}",
+                frappe.ValidationError,
+            )
+        return cstr(policy.name)
+
+    director = frappe.get_doc("User", SMOKE_INVENTORY_DIRECTOR)
+    director_roles = {
+        cstr(getattr(row, "role", None)).strip()
+        for row in getattr(director, "roles", None) or []
+    }
+    if "Company Director" not in director_roles:
+        director.append("roles", {"role": "Company Director"})
+        director.save(ignore_permissions=True)
+
+    opening_accounts = frappe.get_all(
+        "Account",
+        filters={
+            "company": company,
+            "root_type": ["in", ["Asset", "Liability"]],
+            "is_group": 0,
+            "disabled": 0,
+        },
+        fields=["name", "account_type"],
+        order_by="name asc",
+        limit_page_length=0,
+    )
+    opening_difference_account = ""
+    for account_type in ("Temporary", "Stock"):
+        matches = [
+            cstr(row.get("name")).strip()
+            for row in opening_accounts
+            if cstr(row.get("account_type")).strip() == account_type
+        ]
+        if len(matches) == 1:
+            opening_difference_account = matches[0]
+            break
+        if len(matches) > 1:
+            frappe.throw(
+                f"Smoke company has multiple enabled {account_type} opening accounts",
+                frappe.ValidationError,
+            )
+    if not opening_difference_account:
+        frappe.throw(
+            "Smoke company has no unique Temporary or Stock opening account",
+            frappe.ValidationError,
+        )
+
+    reconciliation_rows = []
+    reconciliation_meta = frappe.get_meta("Stock Reconciliation")
+    if reconciliation_meta.has_field("remarks"):
+        reconciliation_rows = frappe.get_all(
+            "Stock Reconciliation",
+            filters={
+                "company": company,
+                "remarks": SMOKE_INVENTORY_OPENING_REMARKS,
+                "docstatus": 1,
+            },
+            fields=["name"],
+            order_by="creation asc, name asc",
+            limit_page_length=0,
+        )
+    if len(reconciliation_rows) > 1:
+        frappe.throw(
+            "Smoke warehouse has multiple submitted opening reconciliations",
+            frappe.ValidationError,
+        )
+
+    if reconciliation_rows:
+        opening_name = cstr(reconciliation_rows[0]["name"])
+    else:
+        reconciliation = frappe.new_doc("Stock Reconciliation")
+        reconciliation.company = company
+        reconciliation.purpose = "Opening Stock"
+        opening_posted_at = now_datetime() - timedelta(minutes=5)
+        reconciliation.posting_date = opening_posted_at.date()
+        if reconciliation_meta.has_field("set_posting_time"):
+            reconciliation.set_posting_time = 1
+        if reconciliation_meta.has_field("posting_time"):
+            reconciliation.posting_time = opening_posted_at.time()
+        if reconciliation_meta.has_field("expense_account"):
+            reconciliation.expense_account = opening_difference_account
+        if reconciliation_meta.has_field("remarks"):
+            reconciliation.remarks = SMOKE_INVENTORY_OPENING_REMARKS
+        target_quantities = {
+            DEMO_MATCHA_ITEM: SMOKE_ACCEPTANCE_MATCHA_TARGET_QTY,
+            DEMO_STRAWBERRY_ITEM: SMOKE_ACCEPTANCE_STRAWBERRY_TARGET_QTY,
+            DEMO_MILK_ITEM: SMOKE_ACCEPTANCE_MILK_TARGET_QTY,
+            DEMO_CUP_ITEM: SMOKE_ACCEPTANCE_CUP_TARGET_QTY,
+        }
+        for item_code, target_qty in target_quantities.items():
+            reconciliation.append(
+                "items",
+                {
+                    "item_code": item_code,
+                    "warehouse": warehouse,
+                    "qty": target_qty,
+                    "stock_uom": frappe.db.get_value("Item", item_code, "stock_uom"),
+                    "valuation_rate": DEMO_INGREDIENT_VALUATION_RATES[item_code],
+                },
+            )
+        reconciliation.insert(ignore_permissions=True)
+        reconciliation.submit()
+        if cint(getattr(reconciliation, "docstatus", 0)) != 1:
+            frappe.throw(
+                "Smoke opening Stock Reconciliation did not submit",
+                frappe.ValidationError,
+            )
+        opening_name = cstr(reconciliation.name)
+
+    policy = frappe.new_doc("FB Inventory Policy")
+    policy.company = company
+    policy.warehouse = warehouse
+    policy.automation_state = "Active"
+    policy.inventory_contract_version = "inventory-autopilot-v1"
+    policy.cutover_token = hashlib.sha256(
+        f"smoke-inventory-v1|{company}|{warehouse}|{opening_name}".encode("utf-8")
+    ).hexdigest()
+    policy.cutover_at = now_datetime()
+    policy.opening_stock_reconciliation = opening_name
+    policy.max_source_age_minutes = 30
+    policy.preparation_device = preparation_device
+    policy.permitted_actions = "stock_projection"
+    policy.expense_account = expense_account
+    policy.inventory_exception_owner = SMOKE_INVENTORY_DIRECTOR
+    policy.purchase_review_owner = SMOKE_INVENTORY_DIRECTOR
+    policy.insert(ignore_permissions=True)
+    return cstr(policy.name)
 
 
 def ensure_demo_fb_shift(shift_code: str = "smoke-shift-001") -> dict[str, Any]:
@@ -2720,7 +2910,14 @@ def setup_full_smoke_data(
         expires_in_seconds=86400,
     )
 
+    inventory_policy = None
     if inventory_regression:
+        inventory_policy = _ensure_smoke_inventory_policy(
+            company=company,
+            warehouse=base["warehouse"],
+            expense_account=base["expense_account"],
+            preparation_device=device_doc.name,
+        )
         set_demo_ingredient_quantities()
     promotion_name = _ensure_demo_promotion(base["pos_profile"])
     if inventory_regression:
@@ -2770,6 +2967,7 @@ def setup_full_smoke_data(
     }
     if inventory_regression:
         result["stock_item_code"] = DEMO_MATCHA_ITEM
+        result["inventory_policy"] = inventory_policy
     return result
 
 
