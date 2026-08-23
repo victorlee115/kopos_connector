@@ -106,6 +106,10 @@ def test_shift_reconciliation_links_shift_orders_invoices_payments_and_projectio
         "projection_status",
         "cash_variance",
         "idempotency_key",
+        '"options": "currency"',
+        '"currency": cstr(order.get("currency"))',
+        "1 refund or return recorded",
+        "Stock update",
     ):
         assert expected in source
     lowered = source.lower()

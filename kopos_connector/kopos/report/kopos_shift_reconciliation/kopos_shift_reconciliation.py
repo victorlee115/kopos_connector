@@ -42,14 +42,15 @@ def get_columns() -> list[dict[str, object]]:
         {"label": _("FB Order"), "fieldname": "fb_order", "fieldtype": "Link", "options": "FB Order", "width": 180},
         {"label": _("Sales Invoice"), "fieldname": "sales_invoice", "fieldtype": "Link", "options": "Sales Invoice", "width": 190},
         {"label": _("Idempotency Key"), "fieldname": "idempotency_key", "fieldtype": "Data", "width": 220},
-        {"label": _("Order Total"), "fieldname": "order_total", "fieldtype": "Currency", "width": 120},
-        {"label": _("Invoice Total"), "fieldname": "invoice_total", "fieldtype": "Currency", "width": 120},
+        {"label": _("Order Total"), "fieldname": "order_total", "fieldtype": "Currency", "options": "currency", "width": 120},
+        {"label": _("Invoice Total"), "fieldname": "invoice_total", "fieldtype": "Currency", "options": "currency", "width": 120},
         {"label": _("Payments"), "fieldname": "payments", "fieldtype": "Data", "width": 240},
         {"label": _("Refund/Void State"), "fieldname": "refund_void_state", "fieldtype": "Data", "width": 260},
         {"label": _("Projection Status"), "fieldname": "projection_status", "fieldtype": "Data", "width": 240},
-        {"label": _("Cash Variance"), "fieldname": "cash_variance", "fieldtype": "Currency", "width": 120},
+        {"label": _("Cash Variance"), "fieldname": "cash_variance", "fieldtype": "Currency", "options": "currency", "width": 120},
         {"label": _("Variance Summary"), "fieldname": "variance_summary", "fieldtype": "Data", "width": 280},
         {"label": _("Next Action"), "fieldname": "next_action", "fieldtype": "Data", "width": 360},
+        {"label": _("Currency"), "fieldname": "currency", "fieldtype": "Data", "hidden": 1},
     ]
 
 
@@ -72,8 +73,11 @@ def get_data(filters: Mapping[str, object]) -> list[dict[str, object]]:
     for shift in shifts:
         shift_name = cstr(shift.get("name")).strip()
         shift_orders = orders_by_shift.get(shift_name, [])
+        company_currency = cstr(
+            frappe.get_cached_value("Company", cstr(shift.get("company")).strip(), "default_currency")
+        ).strip()
         if not shift_orders:
-            data.append(_build_shift_only_row(shift))
+            data.append(_build_shift_only_row(shift, currency=company_currency))
             continue
         for order in shift_orders:
             data.append(
@@ -83,6 +87,7 @@ def get_data(filters: Mapping[str, object]) -> list[dict[str, object]]:
                     invoices_by_order.get(cstr(order.get("name")).strip(), []),
                     returns_by_order.get(cstr(order.get("name")).strip(), []),
                     projections_by_order.get(cstr(order.get("name")).strip(), []),
+                    company_currency=company_currency,
                 )
             )
     return data
@@ -228,7 +233,7 @@ def _collect_projection_rows_by_order(order_names: list[str]) -> dict[str, list[
     return projections_by_order
 
 
-def _build_shift_only_row(shift: Mapping[str, Any]) -> dict[str, object]:
+def _build_shift_only_row(shift: Mapping[str, Any], *, currency: str = "") -> dict[str, object]:
     return {
         "fb_shift": cstr(shift.get("name")).strip(),
         "shift_code": cstr(shift.get("shift_code")).strip(),
@@ -244,6 +249,7 @@ def _build_shift_only_row(shift: Mapping[str, Any]) -> dict[str, object]:
         "cash_variance": _money(shift.get("cash_variance")),
         "variance_summary": _variance_summary(shift),
         "next_action": _("Confirm whether this FB Shift is still expected to have no orders"),
+        "currency": currency,
     }
 
 
@@ -253,6 +259,8 @@ def _build_order_reconciliation_row(
     invoices: list[dict[str, Any]],
     returns: list[dict[str, Any]],
     projections: list[dict[str, Any]],
+    *,
+    company_currency: str = "",
 ) -> dict[str, object]:
     primary_invoice = _primary_invoice(order, invoices)
     return {
@@ -270,6 +278,7 @@ def _build_order_reconciliation_row(
         "cash_variance": _money(shift.get("cash_variance")),
         "variance_summary": _variance_summary(shift),
         "next_action": _reconciliation_next_action(primary_invoice, projections, order),
+        "currency": cstr(order.get("currency")).strip() or company_currency,
     }
 
 
@@ -308,7 +317,8 @@ def _refund_void_summary(
     order_cancelled = cstr(order.get("status")).strip() == "Cancelled"
     parts = []
     if submitted_returns or returns:
-        parts.append(_("{0} refund/return record(s)").format(len(submitted_returns) or len(returns)))
+        return_count = len(submitted_returns) or len(returns)
+        parts.append(_("1 refund or return recorded") if return_count == 1 else _("{0} refunds or returns recorded").format(return_count))
     if cancelled_invoices or order_cancelled:
         parts.append(_("void/cancelled state present"))
     return "; ".join(parts) if parts else _("No refunds or voids found")
@@ -317,14 +327,21 @@ def _refund_void_summary(
 def _projection_summary(projections: list[dict[str, Any]], order: Mapping[str, Any]) -> str:
     parts = []
     if cstr(order.get("invoice_status")).strip():
-        parts.append(_("invoice {0}").format(cstr(order.get("invoice_status")).strip()))
+        parts.append(_("Invoice: {0}").format(cstr(order.get("invoice_status")).strip().lower()))
     if cstr(order.get("stock_status")).strip():
-        parts.append(_("stock {0}").format(cstr(order.get("stock_status")).strip()))
+        parts.append(_("Stock: {0}").format(cstr(order.get("stock_status")).strip().lower()))
     for row in projections:
         projection_type = cstr(row.get("projection_type")).strip() or _("projection")
         state = cstr(row.get("state")).strip() or _("unknown")
         retry_count = cint(row.get("retry_count") or 0)
-        parts.append(_("{0}: {1} ({2} retries)").format(projection_type, state, retry_count))
+        projection_label = {
+            "Sales Invoice": _("Invoice"),
+            "FB Shift": _("Shift"),
+            "Stock Issue": _("Stock update"),
+        }.get(projection_type, projection_type)
+        state_label = _("complete") if state == "Succeeded" else state.lower()
+        retry_label = _("no retries") if retry_count == 0 else _("{0} retries").format(retry_count)
+        parts.append(_("{0}: {1} ({2})").format(projection_label, state_label, retry_label))
     return "; ".join(parts) if parts else _("No projection rows found")
 
 

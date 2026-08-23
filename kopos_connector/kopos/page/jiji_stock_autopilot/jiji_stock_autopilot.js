@@ -113,6 +113,7 @@ class JiJiStockAutopilotPage {
 		const countReviews = health.count_director_reviews || {};
 		const exceptionRouting = health.exception_routing || {};
 		const stockReportAge = this.oldestDeviceReportAge(devices, health.as_of);
+		const unacknowledgedDevices = Number(health.overlay?.unacknowledged_devices || 0);
 		const overallCritical = critical > 0 || (exceptions.critical_reasons || []).length > 0 || health.draft_purchase_order_safety === "unsafe" || ["missing", "policy_missing"].includes(exceptionRouting.status);
 		const overallWarning = warningCount > 0 || Number(devices.stale || 0) > 0 || Number(devices.dirty || 0) > 0 || Number(countReviews.open || 0) > 0;
 		this.page.set_indicator(
@@ -151,7 +152,7 @@ class JiJiStockAutopilotPage {
 				icon: "▣",
 				status: Number(devices.stale || 0) || Number(devices.dirty || 0) || !health.overlay?.acknowledged ? "warning" : "ok",
 				value: __("{0} current · {1} stale · {2} waiting to send", [Number(devices.current || 0), Number(devices.stale || 0), Number(devices.dirty || 0)]),
-				detail: `${health.overlay?.acknowledged ? __("Every reporting tablet is using the latest menu and stock guidance") : __("{0} tablet(s) have not confirmed the latest menu or stock guidance", [Number(health.overlay?.unacknowledged_devices || 0)])} · ${stockReportAge}`,
+				detail: `${health.overlay?.acknowledged ? __("Every reporting tablet is using the latest menu and stock guidance") : unacknowledgedDevices === 1 ? __("1 tablet has not confirmed the latest menu or stock guidance") : __("{0} tablets have not confirmed the latest menu or stock guidance", [unacknowledgedDevices])} · ${stockReportAge}`,
 				action: __("Open stock"),
 				route: "stock",
 			},
@@ -407,8 +408,12 @@ class JiJiStockAutopilotPage {
 	ageMinutesPhrase(minutes) {
 		if (minutes == null) return __("age unavailable");
 		if (minutes < 1) return __("just now");
-		if (minutes < 60) return __("{0} min ago", [minutes]);
-		return __("{0} hr ago", [Math.floor(minutes / 60)]);
+		if (minutes < 60) return minutes === 1 ? __("1 minute ago") : __("{0} minutes ago", [minutes]);
+		const hours = Math.floor(minutes / 60);
+		if (hours < 48) return hours === 1 ? __("1 hour ago") : __("{0} hours ago", [hours]);
+		const days = Math.floor(minutes / 1440);
+		if (days < 365) return days === 1 ? __("1 day ago") : __("{0} days ago", [days]);
+		return __("more than a year ago");
 	}
 
 	ageMinutes(timestamp, asOf) {

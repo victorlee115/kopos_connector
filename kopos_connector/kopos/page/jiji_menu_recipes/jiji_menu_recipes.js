@@ -22,7 +22,7 @@ class JiJiMenuRecipesPage {
 			["Prepared Components", "Set up cold foam, juice or another batch-made component with its ingredients and expected yield.", "bom", "Set up a batch"],
 			["Modifiers", "Create modifier groups and options, then select them in the recipe editor.", "modifier", "Set up modifiers"],
 			["Promotions", "Review revenue, ingredient cost, profit margin and simple volume scenarios before activating a promotion.", "promotion", "Create a promotion"],
-			["Publish & validation", "Fix the remaining checklist items, review Draft recipes and publish them together.", "validate", "Review checklist"],
+			["Publish & validation", "Fix the remaining checklist items, review draft recipes and publish them together.", "validate", "Review checklist"],
 		];
 		$(this.page.body).html(`
 			<div class="jiji-menu-page">
@@ -35,12 +35,12 @@ class JiJiMenuRecipesPage {
 				<div class="card mb-4"><div class="card-body">
 					<div class="d-flex flex-wrap justify-content-between align-items-start mb-3"><div><h4 class="mb-1">${__("Commission one menu item")}</h4><p class="text-muted mb-0">${__("The guided editor saves to the official item, recipe and batch records. It does not autosave or create a separate authoring record.")}</p></div><div class="small text-muted" data-company-status>${__("Choose a company, then a menu item")}</div></div>
 					<div class="row mb-3"><div class="col-md-4"><div data-company-link></div></div><div class="col-md-4"><div data-menu-item-link></div></div><div class="col-md-4"><div data-catalog-profile-link></div></div></div>
-					<div class="row"><div class="col-lg-8"><ol class="mb-0 pl-3"><li>${__("Classify the saleable Item or record an explicit exclusion.")}</li><li>${__("Enter measured recipe rows, modifier groups and prepared-component guidance, then preview the exact conversion and cost.")}</li><li>${__("Save a Draft, review the checklist, and publish selected Draft recipes atomically.")}</li></ol></div><div class="col-lg-4 mt-3 mt-lg-0 d-flex flex-wrap align-content-start gap-2"><button class="btn btn-sm btn-default" type="button" data-menu-commission="item" disabled>${__("1. Classify item")}</button><button class="btn btn-sm btn-primary" type="button" data-menu-commission="recipe" disabled>${__("2. Guided recipe")}</button><button class="btn btn-sm btn-default" type="button" data-menu-commission="recipes">${__("Copy / revise")}</button><button class="btn btn-sm btn-default" type="button" data-menu-catalog-preview disabled>${__("Check outlet catalog")}</button></div></div>
+					<div class="row"><div class="col-lg-8"><ol class="mb-0 pl-3"><li>${__("Classify the saleable menu item or record an explicit exclusion.")}</li><li>${__("Enter measured recipe rows, modifier groups and prepared-component guidance, then preview the exact conversion and cost.")}</li><li>${__("Save a draft, review the checklist, and publish selected recipes together.")}</li></ol></div><div class="col-lg-4 mt-3 mt-lg-0 d-flex flex-wrap align-content-start gap-2"><button class="btn btn-sm btn-default" type="button" data-menu-commission="item" disabled>${__("1. Classify item")}</button><button class="btn btn-sm btn-primary" type="button" data-menu-commission="recipe" disabled>${__("2. Guided recipe")}</button><button class="btn btn-sm btn-default" type="button" data-menu-commission="recipes">${__("Copy / revise")}</button><button class="btn btn-sm btn-default" type="button" data-menu-catalog-preview disabled>${__("Check outlet catalog")}</button></div></div>
 					<pre class="small bg-light p-2 mt-3 mb-0 d-none" data-menu-catalog-results></pre><div class="small mt-2" data-guided-editor-status></div>
 				</div></div>
-				<div class="card mb-4"><div class="card-body"><div class="d-flex flex-wrap justify-content-between align-items-center mb-2"><div><h4 class="mb-1">${__("Publish selected recipes")}</h4><p class="text-muted mb-0">${__("Every selected Draft is validated first. If one fails, none are published.")}</p></div><button class="btn btn-sm btn-primary" type="button" data-publish-selected disabled>${__("Publish selected")}</button></div><div data-publish-queue class="small text-muted">${__("Choose a company to load Draft recipes.")}</div></div></div>
+				<div class="card mb-4"><div class="card-body"><div class="d-flex flex-wrap justify-content-between align-items-center mb-2"><div><h4 class="mb-1">${__("Publish selected recipes")}</h4><p class="text-muted mb-0">${__("Every selected draft is checked first. If one fails, none are published.")}</p></div><button class="btn btn-sm btn-primary" type="button" data-publish-selected disabled>${__("Publish selected")}</button></div><div data-publish-queue class="small text-muted">${__("Choose a company to load draft recipes.")}</div></div></div>
 				<div class="card mb-4"><div class="card-body">
-					<div class="d-flex flex-wrap justify-content-between align-items-start mb-2"><div><h4 class="mb-1">${__("Quick recipe preflight")}</h4><p class="text-muted mb-0">${__("Paste the fixed spreadsheet template to catch row errors. This remains a dry run; use the guided editor or standard documents to save.")}</p></div><div class="small text-muted" data-csv-status>${__("No file checked")}</div></div>
+					<div class="d-flex flex-wrap justify-content-between align-items-start mb-2"><div><h4 class="mb-1">${__("Quick recipe preflight")}</h4><p class="text-muted mb-0">${__("Paste the fixed spreadsheet template to catch row errors. This remains a dry run; use the guided editor or official records to save.")}</p></div><div class="small text-muted" data-csv-status>${__("No file checked")}</div></div>
 					<textarea class="form-control mb-2" rows="4" data-csv-input placeholder="${__("recipe_code,recipe_name,sellable_item,company,recipe_type,...")}"></textarea><div class="d-flex flex-wrap gap-2"><button class="btn btn-sm btn-default" type="button" data-csv-template>${__("Download template")}</button><button class="btn btn-sm btn-primary" type="button" data-csv-validate>${__("Check rows")}</button></div><pre class="small bg-light p-2 mt-3 mb-0 d-none" data-csv-results></pre>
 				</div></div>
 				<div class="card mb-4"><div class="card-body">
@@ -119,10 +119,10 @@ class JiJiMenuRecipesPage {
 	refreshPublishQueue() {
 		const company = this.companyControl?.get_value?.() || "";
 		const output = this.page.body.find("[data-publish-queue]");
-		if (!company) { output.text(__("Choose a company to load Draft recipes.")); this.page.body.find("[data-publish-selected]").prop("disabled", true); return; }
+		if (!company) { output.text(__("Choose a company to load draft recipes.")); this.page.body.find("[data-publish-selected]").prop("disabled", true); return; }
 		frappe.call({ method: "kopos_connector.api.menu_authoring.get_menu_recipe_publish_queue", type: "GET", args: { company }, callback: (response) => {
 			const recipes = response.message?.recipes || [];
-			if (!recipes.length) { output.text(__("No Draft recipes yet.")); this.page.body.find("[data-publish-selected]").prop("disabled", true); return; }
+			if (!recipes.length) { output.text(__("No draft recipes yet.")); this.page.body.find("[data-publish-selected]").prop("disabled", true); return; }
 			output.html(recipes.map((row) => `<label class="d-flex align-items-start mb-2"><input class="mr-2 mt-1" type="checkbox" data-publish-recipe="${this.escape(row.name)}" ${row.valid ? "" : "disabled"}><span><strong>${this.escape(row.recipe_name || row.recipe_code || row.name)}</strong> <span class="text-muted">v${row.version_no || "?"} · ${row.component_count || 0} ${__("components")}</span><br><span class="${row.valid ? "text-success" : "text-danger"}">${row.valid ? __("Ready for review") : this.escape((row.errors || []).join("; "))}</span></span></label>`).join(""));
 			this.page.body.find("[data-publish-selected]").prop("disabled", !output.find("[data-publish-recipe]").length);
 		}, error: () => { output.text(__("Draft recipes could not be loaded.")); this.page.body.find("[data-publish-selected]").prop("disabled", true); } });
@@ -132,9 +132,9 @@ class JiJiMenuRecipesPage {
 		const messages = [];
 		if (summary.company_selection_required) messages.push(__("Choose a company to review its recipe coverage."));
 		if (!summary.item_fields_ready || !summary.recipe_schema_ready) messages.push(__("Run the inventory migration before commissioning menu data."));
-		if (summary.unclassified_items) messages.push(`${summary.unclassified_items} ${__("saleable item(s) still need a classification (drink, packaged good, or service).")}`);
-		if (summary.items_missing_recipe) messages.push(`${summary.items_missing_recipe} ${__("saleable item(s) need a published recipe or explicit exclusion.")}`);
-		if (summary.invalid_exclusions) messages.push(`${summary.invalid_exclusions} ${__("exclusion(s) need a reason.")}`);
+		if (summary.unclassified_items) messages.push(`${this.countLabel(summary.unclassified_items, __("saleable item still needs"), __("saleable items still need"))} ${__("a classification (drink, packaged good, or service).")}`);
+		if (summary.items_missing_recipe) messages.push(`${this.countLabel(summary.items_missing_recipe, __("saleable item needs"), __("saleable items need"))} ${__("a published recipe or explicit exclusion.")}`);
+		if (summary.invalid_exclusions) messages.push(`${this.countLabel(summary.invalid_exclusions, __("exclusion needs"), __("exclusions need"))} ${__("a reason.")}`);
 		const companyReady = Boolean(summary.selected_company) && !summary.company_selection_required;
 		const migrationReady = Boolean(summary.item_fields_ready) && Boolean(summary.recipe_schema_ready);
 		const classificationReady = migrationReady && !Number(summary.unclassified_items || 0);
@@ -169,15 +169,15 @@ class JiJiMenuRecipesPage {
 			action = "none";
 			disabled = true;
 		} else if (state.migrationReady && !state.classificationReady) {
-			message = __("Next: classify each saleable Item as a drink, packaged good, or service, or record an approved exclusion.");
-			label = __("Classify an Item");
+			message = __("Next: classify each saleable menu item as a drink, packaged good, or service, or record an approved exclusion.");
+			label = __("Classify a menu item");
 			action = "item";
 		} else if (state.classificationReady && !state.recipesReady) {
-			message = __("Next: enter and publish the measured recipe for each menu Item.");
+			message = __("Next: enter and publish the measured recipe for each menu item.");
 			label = __("Enter a recipe");
 			action = "recipe";
 		} else if (state.recipesReady && !state.complete) {
-			message = __("Next: review the Draft recipe queue and publish the selected recipes.");
+			message = __("Next: review the draft recipe queue and publish the selected recipes.");
 			label = __("Review Drafts");
 			action = "validate";
 		} else if (state.complete) {

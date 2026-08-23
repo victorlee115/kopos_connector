@@ -150,6 +150,8 @@ class DeskPagePackagingTests(TestCase):
             "Draft PO creation is paused",
             "need sync",
             "standard ERPNext form",
+            "tablet(s)",
+            "hr ago",
         ):
             self.assertNotIn(retired_copy, stock_page)
         for expected_copy in (
@@ -166,6 +168,8 @@ class DeskPagePackagingTests(TestCase):
             "Checking on the ERP server",
             "Check COGS & margin",
             "Economics checked — Review First",
+            "saleable item(s)",
+            "Classify an Item",
         ):
             self.assertNotIn(retired_copy, menu_page)
         for expected_copy in (
