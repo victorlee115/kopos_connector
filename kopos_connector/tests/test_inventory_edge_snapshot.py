@@ -317,6 +317,35 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         self.assertIn("setup is incomplete", result["tasks"][0]["blocked_reason"])
         self.assertTrue(result["tasks"][0]["revision"])
 
+    def test_inventory_task_reader_canonicalizes_bom_alert_revision(self) -> None:
+        alert = {
+            "kind": "preparation",
+            "status": "alert",
+            "document": "BOM-COLD-FOAM",
+            "bom_no": "BOM-COLD-FOAM",
+            "item_code": "COLD-FOAM",
+            "item_name": "Cold Foam",
+            "fingerprint": "preparation-fingerprint",
+            "revision": "2026-08-23 23:05:16.613240",
+        }
+        work_order_meta = SimpleNamespace(has_field=lambda field: field == "custom_kopos_preparation_fingerprint")
+        with patch.object(inventory, "require_device_context", return_value=SimpleNamespace(name="DEVICE-1")), patch.object(
+            inventory, "resolve_catalog_pos_profile", return_value={"company": "JiJi", "warehouse": "Outlet - J"}
+        ), patch.object(inventory, "_preparation_tasks_visible_to_device", return_value=True), patch.object(
+            inventory, "_get_count_task", return_value={"task": None}
+        ), patch.object(inventory, "derived_preparation_alerts", return_value=[alert]), patch.object(
+            inventory.frappe.db,
+            "exists",
+            side_effect=lambda doctype, name=None, *args, **kwargs: (
+                doctype == "Work Order" or (doctype == "DocType" and name == "Work Order")
+            ),
+        ), patch.object(inventory.frappe, "get_meta", return_value=work_order_meta), patch.object(
+            inventory.frappe, "get_all", return_value=[]
+        ):
+            result = inventory._get_inventory_tasks(device_id="DEVICE-1")
+
+        self.assertEqual(result["tasks"][0]["revision"], "2026-08-23T23:05:16.613240+08:00")
+
     def test_snapshot_is_bounded_and_contains_operational_values_only(self) -> None:
         with (
             patch(

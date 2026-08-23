@@ -2284,6 +2284,14 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
                 continue
             if cstr(alert.get("bom_no")).strip() in active_work_order_boms:
                 continue
+            revision = cstr(alert.get("revision")).strip()
+            # Real preparation alerts originate from a standard BOM row. Give
+            # the tablet the same opaque representation that the command
+            # validator derives from the locked BOM document. Setup-only
+            # alerts use a non-document fingerprint revision and must remain
+            # untouched.
+            if cstr(alert.get("bom_no")).strip():
+                revision = _authoritative_document_revision({"modified": revision})
             blocked_reason = cstr(alert.get("blocked_reason")).strip() or None
             item_name = cstr(alert.get("item_name") or alert.get("item_code")).strip()
             title = cstr(alert.get("title")).strip() or (
@@ -2310,7 +2318,7 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
                 "lead_minutes": alert.get("lead_minutes"),
                 "preparation_instructions": cstr(alert.get("preparation_instructions")),
                 "blocked_reason": blocked_reason,
-                "revision": cstr(alert.get("revision")),
+                "revision": revision,
             })
         for row in work_orders:
             component_lines = _work_order_component_lines(cstr(row.get("name")))
