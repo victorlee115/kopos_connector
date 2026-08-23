@@ -4788,6 +4788,11 @@ def _submit_work_order(value: dict[str, Any], command_id: str) -> str:
     _set_document_value(document, "custom_kopos_inventory_payload_hash", cstr(value.get("payload_hash")).strip())
     _apply_guided_task_audit(document, value)
     if document.docstatus == 0:
+        # This guided outlet flow has no separate physical transfer-to-WIP
+        # step. Use ERPNext's standard direct-backflush mode so the eventual
+        # Manufacture entry consumes the exact outlet ingredient rows shown on
+        # the tablet rather than inventing stock in the WIP warehouse.
+        _set_document_value(document, "skip_transfer", 1)
         document.flags.ignore_permissions = True
         document.submit()
     elif document.docstatus != 1:

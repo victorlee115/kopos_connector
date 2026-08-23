@@ -5,7 +5,7 @@ from contextlib import nullcontext
 from copy import deepcopy
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
 
@@ -257,6 +257,40 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
         self.assertEqual(revision, "2026-08-15T10:00:00+08:00")
         with self.assertRaises(ValueError):
             inventory._authoritative_document_revision({})
+
+    def test_preparation_start_uses_direct_outlet_backflush(self) -> None:
+        document = SimpleNamespace(
+            doctype="Work Order",
+            name="MFG-WO-0001",
+            docstatus=0,
+            skip_transfer=0,
+            flags=SimpleNamespace(ignore_permissions=False),
+            submit=Mock(),
+        )
+        meta = SimpleNamespace(has_field=lambda field: field in {
+            "skip_transfer",
+            "custom_kopos_inventory_command_id",
+            "custom_kopos_inventory_payload_hash",
+            "custom_kopos_inventory_recorded_by",
+            "custom_kopos_inventory_confirmed_by",
+        })
+        value = {
+            "work_order": document.name,
+            "payload_hash": "a" * 64,
+            "recorded_by": "staff@example.com",
+            "staff_user": "manager@example.com",
+        }
+        with patch.object(inventory, "_lock_guided_source_document"), patch.object(
+            inventory.frappe, "get_doc", return_value=document
+        ), patch.object(inventory, "_validate_work_order_scope"), patch.object(
+            inventory, "_validate_guided_source_revision"
+        ), patch.object(inventory.frappe, "get_meta", return_value=meta):
+            result = inventory._submit_work_order(value, "command-1")
+
+        self.assertEqual(result, document.name)
+        self.assertEqual(document.skip_transfer, 1)
+        self.assertTrue(document.flags.ignore_permissions)
+        document.submit.assert_called_once_with()
 
     def test_guided_stock_documents_run_as_the_dedicated_automation_user(self) -> None:
         value = {
