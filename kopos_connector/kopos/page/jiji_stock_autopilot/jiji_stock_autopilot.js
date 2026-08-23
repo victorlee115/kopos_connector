@@ -114,8 +114,32 @@ class JiJiStockAutopilotPage {
 		const exceptionRouting = health.exception_routing || {};
 		const stockReportAge = this.oldestDeviceReportAge(devices, health.as_of);
 		const unacknowledgedDevices = Number(health.overlay?.unacknowledged_devices || 0);
+		const schedulerState = this.schedulerStatus(health);
+		const stockNeedsReview = Number(devices.stale || 0) > 0 || Number(devices.dirty || 0) > 0 || !health.overlay?.acknowledged;
 		const overallCritical = critical > 0 || (exceptions.critical_reasons || []).length > 0 || health.draft_purchase_order_safety === "unsafe" || ["missing", "policy_missing"].includes(exceptionRouting.status);
-		const overallWarning = warningCount > 0 || Number(devices.stale || 0) > 0 || Number(devices.dirty || 0) > 0 || Number(countReviews.open || 0) > 0;
+		const overallWarning = warningCount > 0 || stockNeedsReview || Number(countReviews.open || 0) > 0 || Number(health.planning?.open || 0) > 0;
+		let needs = {
+			value: __("No critical issues"),
+			detail: __("No director action is currently required"),
+			action: __("Open exceptions"),
+			route: "needs",
+		};
+		if (["missing", "policy_missing"].includes(exceptionRouting.status)) {
+			needs = { value: exceptionRouting.status === "policy_missing" ? __("Inventory policy is not configured") : __("Exception owner is not configured"), detail: exceptionRouting.message, action: __("Open inventory policy"), route: "settings" };
+		} else if (critical > 0) {
+			needs = { value: critical === 1 ? __("1 critical exception") : __("{0} critical exceptions", [critical]), detail: this.firstExceptionDetail(exceptions), action: __("Open exceptions"), route: "needs" };
+		} else if (Number(countReviews.open || 0) > 0) {
+			const openReviews = Number(countReviews.open || 0);
+			needs = { value: openReviews === 1 ? __("1 count needs review") : __("{0} counts need review", [openReviews]), detail: __("Review the counted quantities, then create each draft reconciliation."), action: __("Review counts"), route: "counts" };
+		} else if (schedulerState === "critical") {
+			needs = { value: __("Automatic stock update needs attention"), detail: __("Complete one successful automatic update before rollout."), action: __("Open update history"), route: "today" };
+		} else if (health.draft_purchase_order_safety === "unsafe") {
+			needs = { value: __("Buying safeguards need review"), detail: __("Draft purchase orders remain paused until the safeguards are corrected."), action: __("Open inventory policy"), route: "settings" };
+		} else if ((exceptions.critical_reasons || []).length > 0 || warningCount > 0) {
+			needs = { value: __("Inventory checks need review"), detail: this.firstExceptionDetail(exceptions), action: __("Open exceptions"), route: "needs" };
+		} else if (stockNeedsReview) {
+			needs = { value: __("Tablet stock reports need review"), detail: stockReportAge, action: __("Open stock"), route: "stock" };
+		}
 		this.page.set_indicator(
 			overallCritical ? __("Action needed") : overallWarning ? __("Review needed") : __("All clear"),
 			overallCritical ? "red" : overallWarning ? "orange" : "green",
@@ -131,16 +155,16 @@ class JiJiStockAutopilotPage {
 				title: __("Needs you"),
 				icon: "⚠",
 				status: overallCritical ? "critical" : overallWarning ? "warning" : "ok",
-				value: ["missing", "policy_missing"].includes(exceptionRouting.status) ? (exceptionRouting.status === "policy_missing" ? __("Inventory policy is not configured") : __("Exception owner is not configured")) : critical ? __("{0} critical exception(s)", [critical]) : Number(countReviews.open || 0) ? __("{0} count review(s)", [Number(countReviews.open || 0)]) : __("No critical exceptions"),
-				detail: ["missing", "policy_missing"].includes(exceptionRouting.status) ? exceptionRouting.message : Number(countReviews.open || 0) ? __("Review the counted quantities, then create each draft reconciliation.") : this.firstExceptionDetail(exceptions),
-				action: ["missing", "policy_missing"].includes(exceptionRouting.status) ? __("Open inventory policy") : __("Open exceptions"),
-				route: ["missing", "policy_missing"].includes(exceptionRouting.status) ? "settings" : "needs",
+				value: needs.value,
+				detail: needs.detail,
+				action: needs.action,
+				route: needs.route,
 			},
 			{
 				key: "today",
 				title: __("Today"),
 				icon: "◷",
-				status: this.schedulerStatus(health),
+				status: schedulerState,
 				value: scheduler.last_success ? __("Last automatic stock update {0} ago", [this.agePhrase(scheduler.last_success, health.as_of)]) : __("No automatic stock update completed yet"),
 				detail: scheduler.next_success_deadline ? __("Next update expected by {0}", [this.shortDate(scheduler.next_success_deadline)]) : __("Complete one successful automatic update before rollout"),
 				action: __("Open update history"),
@@ -161,7 +185,7 @@ class JiJiStockAutopilotPage {
 				title: __("Counts"),
 				icon: "▤",
 				status: this.summaryStatus(health.counts),
-				value: this.summaryValue(health.counts, __("open count task(s)")),
+				value: this.summaryValue(health.counts, __("open count task"), __("open count tasks")),
 				detail: this.summaryAge(health.counts, __("Oldest count")),
 				action: __("Open count tasks"),
 				route: "counts",
@@ -171,7 +195,7 @@ class JiJiStockAutopilotPage {
 				title: __("Plans & buying"),
 				icon: "▥",
 				status: health.draft_purchase_order_safety === "unsafe" ? "critical" : this.summaryStatus(health.planning),
-				value: health.draft_purchase_order_safety === "unsafe" ? __("Draft purchase orders are paused") : this.summaryValue(health.planning, __("open plan(s)")),
+				value: health.draft_purchase_order_safety === "unsafe" ? __("Draft purchase orders are paused") : this.summaryValue(health.planning, __("open plan"), __("open plans")),
 				detail: health.draft_purchase_order_safety === "unsafe" ? __("Review the buying safeguards before creating another draft") : this.summaryAge(health.planning, __("Oldest plan")),
 				action: __("Open plans"),
 				route: "plans",
@@ -317,10 +341,11 @@ class JiJiStockAutopilotPage {
 		return Number(summary.open || 0) > 0 ? "info" : "ok";
 	}
 
-	summaryValue(summary, label) {
+	summaryValue(summary, singular, plural) {
 		if (!summary || summary.status === "not_installed") return __("Not configured");
 		if (summary.status === "unavailable") return __("Could not read");
-		return `${Number(summary.open || 0)} ${label}`;
+		const count = Number(summary.open || 0);
+		return `${count} ${count === 1 ? singular : plural}`;
 	}
 
 	summaryAge(summary, label) {

@@ -152,6 +152,8 @@ class DeskPagePackagingTests(TestCase):
             "standard ERPNext form",
             "tablet(s)",
             "hr ago",
+            "task(s)",
+            "plan(s)",
         ):
             self.assertNotIn(retired_copy, stock_page)
         for expected_copy in (
@@ -159,6 +161,8 @@ class DeskPagePackagingTests(TestCase):
             "Installed version verified",
             "Draft purchase orders are paused",
             "Approval required",
+            "Automatic stock update needs attention",
+            "Tablet stock reports need review",
         ):
             self.assertIn(expected_copy, stock_page)
 
