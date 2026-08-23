@@ -17,23 +17,23 @@ class JiJiMenuRecipesPage {
 
 	render() {
 		const cards = [
-			["Menu Items", "Start here: classify a sellable Item and complete its standard Item form.", "item", "Classify an Item"],
-			["Recipes", "Enter the measured ingredients, UOMs, yield and modifier choices for one menu Item.", "recipe", "Enter a recipe"],
-			["Prepared Components", "Set up a standard BOM for cold foam, juice or another batch-made component.", "bom", "Set up a batch"],
+			["Menu Items", "Start here: decide how each sellable menu item uses stock, then complete its details.", "item", "Classify a menu item"],
+			["Recipes", "Enter measured ingredients, units, expected yield and modifier choices for one menu item.", "recipe", "Enter a recipe"],
+			["Prepared Components", "Set up cold foam, juice or another batch-made component with its ingredients and expected yield.", "bom", "Set up a batch"],
 			["Modifiers", "Create modifier groups and options, then select them in the recipe editor.", "modifier", "Set up modifiers"],
-			["Promotions", "Review revenue, COGS, margin and simple volume scenarios before activating a promotion.", "promotion", "Create a promotion"],
+			["Promotions", "Review revenue, ingredient cost, profit margin and simple volume scenarios before activating a promotion.", "promotion", "Create a promotion"],
 			["Publish & validation", "Fix the remaining checklist items, review Draft recipes and publish them together.", "validate", "Review checklist"],
 		];
 		$(this.page.body).html(`
 			<div class="jiji-menu-page">
-				<div class="alert alert-info"><strong>${__("Director workflow")}</strong><br>${__("Complete one menu Item from left to right. This page guides you to the right standard ERPNext form; it does not create a second menu system or autosave unfinished work.")}</div>
+				<div class="alert alert-info"><strong>${__("Director workflow")}</strong><br>${__("Complete one menu item from left to right. This page guides you to the official company records; it does not create a second menu system or autosave unfinished work.")}</div>
 				<div class="card mb-4" data-completion-card><div class="card-body">
 					<div class="d-flex flex-wrap justify-content-between align-items-start"><div><h4 class="mb-1">${__("Commissioning checklist")}</h4><p class="text-muted mb-0">${__("Pick a company to see what is ready, what is missing and your next action.")}</p></div><div class="small text-muted" data-progress-summary>${__("Choose a company")}</div></div>
 					<div class="progress mt-3" style="height: 8px" aria-label="${__("Commissioning progress")}"><div class="progress-bar" role="progressbar" data-progress-bar style="width: 0%"></div></div>
 					<div class="d-flex flex-wrap justify-content-between align-items-center mt-3"><span class="small" data-next-action>${__("Next: choose a company")}</span><button class="btn btn-sm btn-primary" type="button" data-next-action-button disabled>${__("Choose a company")}</button></div>
 				</div></div>
 				<div class="card mb-4"><div class="card-body">
-					<div class="d-flex flex-wrap justify-content-between align-items-start mb-3"><div><h4 class="mb-1">${__("Commission one menu item")}</h4><p class="text-muted mb-0">${__("The guided editor uses standard Item, FB Recipe and BOM documents as the authorities. It does not autosave or create a separate authoring record.")}</p></div><div class="small text-muted" data-company-status>${__("Choose a company, then a menu item")}</div></div>
+					<div class="d-flex flex-wrap justify-content-between align-items-start mb-3"><div><h4 class="mb-1">${__("Commission one menu item")}</h4><p class="text-muted mb-0">${__("The guided editor saves to the official item, recipe and batch records. It does not autosave or create a separate authoring record.")}</p></div><div class="small text-muted" data-company-status>${__("Choose a company, then a menu item")}</div></div>
 					<div class="row mb-3"><div class="col-md-4"><div data-company-link></div></div><div class="col-md-4"><div data-menu-item-link></div></div><div class="col-md-4"><div data-catalog-profile-link></div></div></div>
 					<div class="row"><div class="col-lg-8"><ol class="mb-0 pl-3"><li>${__("Classify the saleable Item or record an explicit exclusion.")}</li><li>${__("Enter measured recipe rows, modifier groups and prepared-component guidance, then preview the exact conversion and cost.")}</li><li>${__("Save a Draft, review the checklist, and publish selected Draft recipes atomically.")}</li></ol></div><div class="col-lg-4 mt-3 mt-lg-0 d-flex flex-wrap align-content-start gap-2"><button class="btn btn-sm btn-default" type="button" data-menu-commission="item" disabled>${__("1. Classify item")}</button><button class="btn btn-sm btn-primary" type="button" data-menu-commission="recipe" disabled>${__("2. Guided recipe")}</button><button class="btn btn-sm btn-default" type="button" data-menu-commission="recipes">${__("Copy / revise")}</button><button class="btn btn-sm btn-default" type="button" data-menu-catalog-preview disabled>${__("Check outlet catalog")}</button></div></div>
 					<pre class="small bg-light p-2 mt-3 mb-0 d-none" data-menu-catalog-results></pre><div class="small mt-2" data-guided-editor-status></div>
@@ -44,8 +44,8 @@ class JiJiMenuRecipesPage {
 					<textarea class="form-control mb-2" rows="4" data-csv-input placeholder="${__("recipe_code,recipe_name,sellable_item,company,recipe_type,...")}"></textarea><div class="d-flex flex-wrap gap-2"><button class="btn btn-sm btn-default" type="button" data-csv-template>${__("Download template")}</button><button class="btn btn-sm btn-primary" type="button" data-csv-validate>${__("Check rows")}</button></div><pre class="small bg-light p-2 mt-3 mb-0 d-none" data-csv-results></pre>
 				</div></div>
 				<div class="card mb-4"><div class="card-body">
-					<div class="d-flex flex-wrap justify-content-between align-items-start mb-2"><div><h4 class="mb-1">${__("Promotion economics")}</h4><p class="text-muted mb-0">${__("Check server-calculated revenue, COGS, margin, stock risk and simple volume scenarios before publishing. Scenarios are planning-only and never place an order.")}</p></div><div class="small text-muted" data-promotion-status>${__("No promotion checked")}</div></div>
-					<div class="row mb-3"><div class="col-md-6"><div data-promotion-link></div></div><div class="col-md-6"><div data-promotion-profile></div></div></div><div class="row mb-3"><div class="col-sm-4"><label class="text-muted small" for="jiji-promotion-low">${__("Low units")}</label><input id="jiji-promotion-low" class="form-control" type="number" min="1" step="1" value="10" data-promotion-low></div><div class="col-sm-4"><label class="text-muted small" for="jiji-promotion-base">${__("Base units")}</label><input id="jiji-promotion-base" class="form-control" type="number" min="1" step="1" value="25" data-promotion-base></div><div class="col-sm-4"><label class="text-muted small" for="jiji-promotion-high">${__("High units")}</label><input id="jiji-promotion-high" class="form-control" type="number" min="1" step="1" value="50" data-promotion-high></div></div><button class="btn btn-sm btn-primary" type="button" data-promotion-check disabled>${__("Check COGS & margin")}</button><div class="small mt-3 mb-0 d-none" role="status" aria-live="polite" data-promotion-results></div>
+					<div class="d-flex flex-wrap justify-content-between align-items-start mb-2"><div><h4 class="mb-1">${__("Promotion economics")}</h4><p class="text-muted mb-0">${__("Check calculated revenue, ingredient cost, profit margin, stock risk and simple volume scenarios before publishing. Scenarios are planning-only and never place an order.")}</p></div><div class="small text-muted" data-promotion-status>${__("No promotion checked")}</div></div>
+					<div class="row mb-3"><div class="col-md-6"><div data-promotion-link></div></div><div class="col-md-6"><div data-promotion-profile></div></div></div><div class="row mb-3"><div class="col-sm-4"><label class="text-muted small" for="jiji-promotion-low">${__("Low units")}</label><input id="jiji-promotion-low" class="form-control" type="number" min="1" step="1" value="10" data-promotion-low></div><div class="col-sm-4"><label class="text-muted small" for="jiji-promotion-base">${__("Base units")}</label><input id="jiji-promotion-base" class="form-control" type="number" min="1" step="1" value="25" data-promotion-base></div><div class="col-sm-4"><label class="text-muted small" for="jiji-promotion-high">${__("High units")}</label><input id="jiji-promotion-high" class="form-control" type="number" min="1" step="1" value="50" data-promotion-high></div></div><button class="btn btn-sm btn-primary" type="button" data-promotion-check disabled>${__("Check cost & margin")}</button><div class="small mt-3 mb-0 d-none" role="status" aria-live="polite" data-promotion-results></div>
 				</div></div>
 				<div class="row">${cards.map(([title, copy, action, primary]) => `
 					<div class="col-sm-6 col-lg-4 mb-3"><div class="card h-100" data-menu-card="${action}"><div class="card-body d-flex flex-column"><div class="d-flex justify-content-between align-items-start"><h4>${__(title)}</h4><span class="badge badge-light" data-card-state="${action}">${__("Not checked")}</span></div><p class="text-muted">${__(copy)}</p><div class="small text-muted mb-3" data-check="${action}">${__("Checking…")}</div><div class="mt-auto d-flex flex-wrap gap-2"><button class="btn btn-sm btn-primary" type="button" data-menu-create="${action}">${__(primary)}</button><button class="btn btn-sm btn-default" type="button" data-menu-action="${action}">${action === "validate" ? __("Open checklist") : __("Open records")}</button></div></div></div></div>`).join("")}</div>
@@ -106,9 +106,9 @@ class JiJiMenuRecipesPage {
 			}
 			this.page.body.find('[data-check="item"]').text(`${summary.items_ready || 0}/${summary.saleable_items || 0} ${__("ready")} · ${summary.items_missing_recipe || 0} ${__("missing recipe")} · ${summary.approved_exclusions || 0} ${__("excluded")}`);
 			this.page.body.find('[data-check="recipe"]').text(`${summary.published_recipes || 0} ${__("published")} · ${summary.draft_recipes || 0} ${__("draft")}`);
-			this.page.body.find('[data-check="bom"]').text(`${summary.boms || 0} ${__("standard BOMs")}`);
-			this.page.body.find('[data-check="modifier"]').text(`${summary.modifier_groups || 0} ${__("modifier groups")}`);
-			this.page.body.find('[data-check="promotion"]').text(`${summary.active_promotions || 0} ${__("active promotions")}`);
+			this.page.body.find('[data-check="bom"]').text(this.countLabel(summary.boms, __("batch recipe"), __("batch recipes")));
+			this.page.body.find('[data-check="modifier"]').text(this.countLabel(summary.modifier_groups, __("modifier group"), __("modifier groups")));
+			this.page.body.find('[data-check="promotion"]').text(this.countLabel(summary.active_promotions, __("active promotion"), __("active promotions")));
 			this.page.body.find('[data-check="validate"]').text(summary.ready ? __("Ready to publish reviewed records") : __("Resolve the checklist before publishing"));
 			this.renderCommissioningStatus(summary);
 			this.page.set_indicator(summary.ready ? __("Ready") : __("Needs review"), summary.ready ? "green" : "orange");
@@ -463,8 +463,8 @@ class JiJiMenuRecipesPage {
 		if (!promotion) return this.showMessage(__("Choose a promotion first."));
 		const scenarios = {};
 		for (const [label, selector] of [["low", "[data-promotion-low]"], ["base", "[data-promotion-base]"], ["high", "[data-promotion-high]"]]) { const value = Number.parseInt(this.page.body.find(selector).val(), 10); if (!Number.isInteger(value) || value <= 0) return this.showMessage(`${__("Enter a positive unit count for")} ${label}.`); scenarios[label] = value; }
-		this.page.body.find("[data-promotion-status]").text(__("Checking on the ERP server…"));
-		frappe.call({ method: "kopos_connector.api.inventory.get_promotion_economics", type: "POST", args: { payload: JSON.stringify({ promotion, pos_profile: this.profileControl?.get_value?.() || "", scenarios }) }, callback: (response) => this.renderPromotionEconomics(response.message || {}), error: () => this.renderPromotionEconomics({ status: "blocked", reason: __("The ERP could not calculate promotion economics") }) });
+		this.page.body.find("[data-promotion-status]").text(__("Checking current business records…"));
+		frappe.call({ method: "kopos_connector.api.inventory.get_promotion_economics", type: "POST", args: { payload: JSON.stringify({ promotion, pos_profile: this.profileControl?.get_value?.() || "", scenarios }) }, callback: (response) => this.renderPromotionEconomics(response.message || {}), error: () => this.renderPromotionEconomics({ status: "blocked", reason: __("The promotion figures could not be calculated") }) });
 	}
 
 	renderPromotionEconomics(response) {
@@ -477,15 +477,15 @@ class JiJiMenuRecipesPage {
 
 		const economics = response.economics;
 		const publicationBlocked = response.publication_status === "Blocked" || Number(economics.gross_profit_sen) < 0;
-		const statusLabel = publicationBlocked ? __("Below cost — director review required") : __("Economics checked — Review First");
+		const statusLabel = publicationBlocked ? __("Below cost — director review required") : __("Figures ready — approval still required");
 		const statusTone = publicationBlocked ? "danger" : "success";
 		this.page.body.find("[data-promotion-status]").text(statusLabel);
 		output.addClass(`alert alert-${statusTone}`).html(`
 			<div class="d-flex flex-wrap justify-content-between align-items-start mb-3">
-				<strong>${this.escape(__("Server-calculated promotion review"))}</strong>
+				<strong>${this.escape(__("Current promotion review"))}</strong>
 				<span class="badge badge-${statusTone}">${this.escape(statusLabel)}</span>
 			</div>
-			${publicationBlocked ? `<div class="alert alert-danger small mb-3"><strong>${this.escape(__("Activation is blocked."))}</strong> ${this.escape(__("A second Company Director must approve a one-time exception with a reason. This check does not activate the promotion."))}</div>` : `<div class="alert alert-info small mb-3">${this.escape(__("Review First: this report explains the economics. It does not forecast promotion lift or create purchasing automatically."))}</div>`}
+			${publicationBlocked ? `<div class="alert alert-danger small mb-3"><strong>${this.escape(__("Activation is blocked."))}</strong> ${this.escape(__("A second Company Director must approve a one-time exception with a reason. This check does not activate the promotion."))}</div>` : `<div class="alert alert-info small mb-3">${this.escape(__("Approval is still required. This report explains the figures; it does not predict extra demand or create purchasing automatically."))}</div>`}
 			${this.renderPromotionSummary(economics)}
 			${this.renderPromotionScenarios(economics)}
 			${this.renderPromotionDemand(economics)}
@@ -499,14 +499,14 @@ class JiJiMenuRecipesPage {
 		const metrics = [
 			[__("Net revenue (excluding tax)"), this.formatSen(economics.net_revenue_sen ?? economics.revenue_sen)],
 			[__("Tax"), this.formatSen(economics.tax_sen)],
-			[__("COGS"), this.formatSen(economics.cogs_sen)],
+			[__("Ingredient cost (COGS)"), this.formatSen(economics.cogs_sen)],
 			[__("Gross profit"), this.formatSen(economics.gross_profit_sen)],
 			[__("Margin"), this.formatPercent(economics.margin_percent)],
 			[__("Margin change"), this.formatPercent(economics.margin_change_percent)],
 			[__("Break-even additional units"), economics.break_even_additional_units == null ? __("Not available") : `${this.escape(economics.break_even_additional_units)} ${__("units")}`],
 		];
 		const worstGroup = economics.worst_affected_item_group;
-		return `<section aria-labelledby="jiji-promotion-summary-heading" class="mb-3"><h5 id="jiji-promotion-summary-heading" class="mb-2">${this.escape(__("Promotion summary"))}</h5><div class="row">${metrics.map(([label, value]) => `<div class="col-sm-6 col-lg-4 mb-2"><div class="border rounded p-2 h-100"><div class="small text-muted">${this.escape(label)}</div><strong>${this.escape(value)}</strong></div></div>`).join("")}</div><div class="small mt-1">${worstGroup ? `${this.escape(__("Worst affected Item group (largest COGS exposure)"))}: <strong>${this.escape(worstGroup.item_group || __("Unassigned"))}</strong> · ${this.escape(this.formatSen(worstGroup.cogs_sen))}` : this.escape(__("Worst affected Item group: Not available"))}</div></section>`;
+		return `<section aria-labelledby="jiji-promotion-summary-heading" class="mb-3"><h5 id="jiji-promotion-summary-heading" class="mb-2">${this.escape(__("Promotion summary"))}</h5><div class="row">${metrics.map(([label, value]) => `<div class="col-sm-6 col-lg-4 mb-2"><div class="border rounded p-2 h-100"><div class="small text-muted">${this.escape(label)}</div><strong>${this.escape(value)}</strong></div></div>`).join("")}</div><div class="small mt-1">${worstGroup ? `${this.escape(__("Most affected item group (largest ingredient-cost impact)"))}: <strong>${this.escape(worstGroup.item_group || __("Unassigned"))}</strong> · ${this.escape(this.formatSen(worstGroup.cogs_sen))}` : this.escape(__("Most affected item group: Not available"))}</div></section>`;
 	}
 
 	renderPromotionScenarios(economics) {
@@ -517,7 +517,7 @@ class JiJiMenuRecipesPage {
 			const margin = Number(revenue) > 0 && Number.isFinite(Number(revenue)) ? `${((Number(row.gross_profit_sen || 0) / Number(revenue)) * 100).toFixed(2)}%` : __("Not available");
 			return `<tr><td>${this.escape(row.label)}</td><td>${this.escape(row.units)}</td><td>${this.escape(this.formatSen(revenue))}</td><td>${this.escape(this.formatSen(row.cogs_sen))}</td><td>${this.escape(this.formatSen(row.gross_profit_sen))}</td><td>${this.escape(margin)}</td></tr>`;
 		}).join("");
-		return `<details open class="mb-3"><summary><strong>${this.escape(__("Volume scenarios"))}</strong> <span class="text-muted">${this.escape(__("planning only"))}</span></summary><div class="table-responsive mt-2"><table class="table table-bordered table-sm mb-0"><thead><tr><th>${this.escape(__("Scenario"))}</th><th>${this.escape(__("Units"))}</th><th>${this.escape(__("Net revenue"))}</th><th>${this.escape(__("COGS"))}</th><th>${this.escape(__("Gross profit"))}</th><th>${this.escape(__("Margin"))}</th></tr></thead><tbody>${scenarioRows}</tbody></table></div></details>`;
+		return `<details open class="mb-3"><summary><strong>${this.escape(__("Volume scenarios"))}</strong> <span class="text-muted">${this.escape(__("planning only"))}</span></summary><div class="table-responsive mt-2"><table class="table table-bordered table-sm mb-0"><thead><tr><th>${this.escape(__("Scenario"))}</th><th>${this.escape(__("Units"))}</th><th>${this.escape(__("Net revenue"))}</th><th>${this.escape(__("Ingredient cost"))}</th><th>${this.escape(__("Gross profit"))}</th><th>${this.escape(__("Margin"))}</th></tr></thead><tbody>${scenarioRows}</tbody></table></div></details>`;
 	}
 
 	renderPromotionDemand(economics) {
@@ -530,7 +530,7 @@ class JiJiMenuRecipesPage {
 		const impact = economics.batch_preparation_impact || {};
 		if (impact.status === "not_applicable") return `<details class="mb-3"><summary><strong>${this.escape(__("Prepared-batch impact"))}</strong> <span class="text-muted">${this.escape(__("Not applicable"))}</span></summary><p class="small text-muted mt-2 mb-0">${this.escape(__("This promotion does not use a prepared component."))}</p></details>`;
 		const components = Array.isArray(impact.components) ? impact.components : [];
-		if (!components.length) return `<details class="mb-3"><summary><strong>${this.escape(__("Prepared-batch impact"))}</strong> <span class="text-warning">${this.escape(__("Not available"))}</span></summary><p class="small text-warning mt-2 mb-0">${this.escape(__("Prepared-component or BOM evidence is missing."))}</p></details>`;
+		if (!components.length) return `<details class="mb-3"><summary><strong>${this.escape(__("Prepared-batch impact"))}</strong> <span class="text-warning">${this.escape(__("Not available"))}</span></summary><p class="small text-warning mt-2 mb-0">${this.escape(__("Prepared-component or batch-recipe evidence is missing."))}</p></details>`;
 		const scenarioLabels = (Array.isArray(economics.scenarios) ? economics.scenarios : []).map((scenario) => String(scenario.label));
 		const rows = components.map((row) => {
 			if (row.status !== "available") return `<tr><td>${this.escape(row.item)}</td><td colspan="5" class="text-warning">${this.escape(row.reason || __("Batch evidence unavailable"))}</td></tr>`;
@@ -538,7 +538,7 @@ class JiJiMenuRecipesPage {
 			return `<tr><td>${this.escape(row.item)}</td><td>${this.escape(row.base_demand)}</td><td>${this.escape(row.batch_qty)}</td><td>${this.escape(row.batches_required)}</td><td>${this.escape(scenarioBatches || __("Not entered"))}</td><td>${this.escape(row.lead_minutes ?? __("Not set"))}</td></tr>`;
 		}).join("");
 		const hasUnavailable = components.some((row) => row.status !== "available");
-		return `<details open class="mb-3"><summary><strong>${this.escape(__("Prepared-batch impact"))}</strong> <span class="${hasUnavailable ? "text-warning" : "text-success"}">${this.escape(hasUnavailable ? __("Check evidence") : __("Calculated"))}</span></summary><div class="table-responsive mt-2"><table class="table table-bordered table-sm mb-0"><thead><tr><th>${this.escape(__("Prepared Item"))}</th><th>${this.escape(__("Base demand"))}</th><th>${this.escape(__("Batch output"))}</th><th>${this.escape(__("Batches"))}</th><th>${this.escape(__("Scenario batches"))}</th><th>${this.escape(__("Lead minutes"))}</th></tr></thead><tbody>${rows}</tbody></table></div><p class="small text-muted mt-2 mb-0">${this.escape(__("Use the batch alert and standard BOM flow to prepare stock; this report does not create a Work Order."))}</p></details>`;
+		return `<details open class="mb-3"><summary><strong>${this.escape(__("Prepared-batch impact"))}</strong> <span class="${hasUnavailable ? "text-warning" : "text-success"}">${this.escape(hasUnavailable ? __("Check evidence") : __("Calculated"))}</span></summary><div class="table-responsive mt-2"><table class="table table-bordered table-sm mb-0"><thead><tr><th>${this.escape(__("Prepared item"))}</th><th>${this.escape(__("Base demand"))}</th><th>${this.escape(__("Batch output"))}</th><th>${this.escape(__("Batches"))}</th><th>${this.escape(__("Scenario batches"))}</th><th>${this.escape(__("Lead minutes"))}</th></tr></thead><tbody>${rows}</tbody></table></div><p class="small text-muted mt-2 mb-0">${this.escape(__("Use the batch alert and official preparation records to prepare stock; this report does not start production automatically."))}</p></details>`;
 	}
 
 	renderPromotionRisk(economics) {
@@ -553,8 +553,8 @@ class JiJiMenuRecipesPage {
 		const actual = economics.actual_results || {};
 		const available = actual.status === "available";
 		const notes = [actual.note, actual.reason, actual.tax_reason].filter(Boolean).join(" ");
-		if (!available) return `<details class="mb-0"><summary><strong>${this.escape(__("Actual post-promotion results"))}</strong> <span class="text-warning">${this.escape(__("Not available yet"))}</span></summary><p class="small text-warning mt-2 mb-0">${this.escape(notes || __("No post-cutover attributed orders with complete ERP valuation evidence."))}</p></details>`;
-		return `<details open class="mb-0"><summary><strong>${this.escape(__("Actual post-promotion results"))}</strong> <span class="text-success">${this.escape(__("Available"))}</span></summary><div class="row mt-2"><div class="col-sm-6 col-lg-3 mb-2"><div class="small text-muted">${this.escape(__("Orders"))}</div><strong>${this.escape(actual.order_count ?? __("Not available"))}</strong></div><div class="col-sm-6 col-lg-3 mb-2"><div class="small text-muted">${this.escape(__("Promoted units"))}</div><strong>${this.escape(actual.promoted_units ?? __("Not available"))}</strong></div><div class="col-sm-6 col-lg-3 mb-2"><div class="small text-muted">${this.escape(__("Actual net revenue"))}</div><strong>${this.escape(this.formatSen(actual.net_revenue_sen))}</strong></div><div class="col-sm-6 col-lg-3 mb-2"><div class="small text-muted">${this.escape(__("Actual COGS"))}</div><strong>${this.escape(this.formatSen(actual.cogs_sen))}</strong></div></div><div class="small">${this.escape(__("Gross profit"))}: <strong>${this.escape(this.formatSen(actual.gross_profit_sen))}</strong> · ${this.escape(__("Margin"))}: <strong>${this.escape(this.formatPercent(actual.margin_percent))}</strong></div><div class="small text-muted mt-2">${this.escape(actual.cogs_source || __("Valuation source not available"))}${notes ? ` · ${this.escape(notes)}` : ""}</div></details>`;
+		if (!available) return `<details class="mb-0"><summary><strong>${this.escape(__("Actual post-promotion results"))}</strong> <span class="text-warning">${this.escape(__("Not available yet"))}</span></summary><p class="small text-warning mt-2 mb-0">${this.escape(notes || __("No post-cutover promoted orders have complete stock-valuation evidence yet."))}</p></details>`;
+		return `<details open class="mb-0"><summary><strong>${this.escape(__("Actual post-promotion results"))}</strong> <span class="text-success">${this.escape(__("Available"))}</span></summary><div class="row mt-2"><div class="col-sm-6 col-lg-3 mb-2"><div class="small text-muted">${this.escape(__("Orders"))}</div><strong>${this.escape(actual.order_count ?? __("Not available"))}</strong></div><div class="col-sm-6 col-lg-3 mb-2"><div class="small text-muted">${this.escape(__("Promoted units"))}</div><strong>${this.escape(actual.promoted_units ?? __("Not available"))}</strong></div><div class="col-sm-6 col-lg-3 mb-2"><div class="small text-muted">${this.escape(__("Actual net revenue"))}</div><strong>${this.escape(this.formatSen(actual.net_revenue_sen))}</strong></div><div class="col-sm-6 col-lg-3 mb-2"><div class="small text-muted">${this.escape(__("Actual ingredient cost"))}</div><strong>${this.escape(this.formatSen(actual.cogs_sen))}</strong></div></div><div class="small">${this.escape(__("Gross profit"))}: <strong>${this.escape(this.formatSen(actual.gross_profit_sen))}</strong> · ${this.escape(__("Margin"))}: <strong>${this.escape(this.formatPercent(actual.margin_percent))}</strong></div><div class="small text-muted mt-2">${this.escape(actual.cogs_source || __("Valuation source not available"))}${notes ? ` · ${this.escape(notes)}` : ""}</div></details>`;
 	}
 
 	promotionRiskLabel(value) {
@@ -572,6 +572,7 @@ class JiJiMenuRecipesPage {
 		frappe.call({ method: "kopos_connector.api.inventory.validate_menu_recipe_csv", type: "POST", args: { csv_text: csvText }, callback: (response) => { const result = response.message || {}; const errors = result.errors || []; const output = errors.length ? errors.map((error) => `${__("Row")} ${error.row}: ${error.message}`).join("\n") : __(`${result.recipe_count || 0} recipe(s) passed the dry run. Use the guided editor to save a Draft.`); this.page.body.find("[data-csv-results]").removeClass("d-none").text(output); this.page.body.find("[data-csv-status]").text(result.valid ? __("Rows look complete") : `${errors.length} ${__("row issue(s)")}`); } });
 	}
 
+	countLabel(value, singular, plural) { const count = Number(value || 0); return `${count} ${count === 1 ? singular : plural}`; }
 	formatSen(value) { const number = Number(value); return value == null || value === "" || !Number.isFinite(number) ? __("Unavailable") : `RM ${(number / 100).toFixed(2)}`; }
 	formatPercent(value) { return value == null || value === "" || !Number.isFinite(Number(value)) ? __("Not available") : `${Number(value).toFixed(2)}%`; }
 	showMessage(message) { this.page.body.find("[data-guided-editor-status]").text(message); }

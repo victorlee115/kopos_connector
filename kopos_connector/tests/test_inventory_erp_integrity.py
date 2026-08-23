@@ -135,6 +135,47 @@ class DeskPagePackagingTests(TestCase):
                 " is what made the authoritative location ambiguous",
             )
 
+    def test_director_overviews_use_business_language_and_specific_actions(self) -> None:
+        stock_page = (
+            ERP_ROOT / "kopos" / "page" / "jiji_stock_autopilot" / "jiji_stock_autopilot.js"
+        ).read_text()
+        menu_page = (
+            ERP_ROOT / "kopos" / "page" / "jiji_menu_recipes" / "jiji_menu_recipes.js"
+        ).read_text()
+
+        for retired_copy in (
+            "No scheduler success recorded",
+            "Could not read health",
+            "Runtime artifact identity",
+            "Draft PO creation is paused",
+            "need sync",
+            "standard ERPNext form",
+        ):
+            self.assertNotIn(retired_copy, stock_page)
+        for expected_copy in (
+            "No automatic stock update completed yet",
+            "Installed version verified",
+            "Draft purchase orders are paused",
+            "Approval required",
+        ):
+            self.assertIn(expected_copy, stock_page)
+
+        for retired_copy in (
+            "Start here: classify a sellable Item",
+            "standard BOMs",
+            "Checking on the ERP server",
+            "Check COGS & margin",
+            "Economics checked — Review First",
+        ):
+            self.assertNotIn(retired_copy, menu_page)
+        for expected_copy in (
+            "Classify a menu item",
+            "batch recipe",
+            "Check cost & margin",
+            "Figures ready — approval still required",
+        ):
+            self.assertIn(expected_copy, menu_page)
+
 
 class WireTimestampStorageTests(TestCase):
     """A Frappe Datetime column is a site-local *naive* MariaDB DATETIME.

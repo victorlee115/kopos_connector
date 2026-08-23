@@ -45,7 +45,7 @@ class JiJiStockAutopilotPage {
 		$(this.page.body).html(`
 			<div class="jiji-stock-autopilot">
 				<div class="alert alert-info mb-4">
-					${__("This page tells directors what needs attention. It does not replace ERPNext forms: use the guided POS tasks for physical work and standard forms for approvals and documents.")}
+					${__("This page tells directors what needs attention. Staff complete physical work on the tablet; use the linked records here for approvals and final documents.")}
 				</div>
 				<div class="row align-items-end mb-4">
 					<div class="col-sm-5"><div data-warehouse></div></div>
@@ -93,9 +93,9 @@ class JiJiStockAutopilotPage {
 				this.renderHealth();
 			},
 			error: () => {
-				this.page.set_indicator(__("Could not read health"), "red");
+				this.page.set_indicator(__("Could not refresh"), "red");
 				frappe.msgprint({
-					title: __("Health check failed"),
+					title: __("Stock overview could not be refreshed"),
 					message: __("No stock or document was changed. Check the warehouse and try again."),
 				});
 			},
@@ -140,9 +140,9 @@ class JiJiStockAutopilotPage {
 				title: __("Today"),
 				icon: "◷",
 				status: this.schedulerStatus(health),
-				value: scheduler.last_success ? __("Last scheduler success {0} ago", [this.agePhrase(scheduler.last_success, health.as_of)]) : __("No scheduler success recorded"),
-				detail: scheduler.next_success_deadline ? __("Next success expected by {0}", [this.shortDate(scheduler.next_success_deadline)]) : __("Scheduler must report one successful run before rollout"),
-				action: __("Open projection logs"),
+				value: scheduler.last_success ? __("Last automatic stock update {0} ago", [this.agePhrase(scheduler.last_success, health.as_of)]) : __("No automatic stock update completed yet"),
+				detail: scheduler.next_success_deadline ? __("Next update expected by {0}", [this.shortDate(scheduler.next_success_deadline)]) : __("Complete one successful automatic update before rollout"),
+				action: __("Open update history"),
 				route: "today",
 			},
 			{
@@ -150,8 +150,8 @@ class JiJiStockAutopilotPage {
 				title: __("Stock"),
 				icon: "▣",
 				status: Number(devices.stale || 0) || Number(devices.dirty || 0) || !health.overlay?.acknowledged ? "warning" : "ok",
-				value: __("{0} current · {1} stale · {2} need sync", [Number(devices.current || 0), Number(devices.stale || 0), Number(devices.dirty || 0)]),
-				detail: `${health.overlay?.acknowledged ? __("Every reported catalog and stock overlay is acknowledged") : __("{0} device(s) have not acknowledged the latest catalog or overlay", [Number(health.overlay?.unacknowledged_devices || 0)])} · ${stockReportAge}`,
+				value: __("{0} current · {1} stale · {2} waiting to send", [Number(devices.current || 0), Number(devices.stale || 0), Number(devices.dirty || 0)]),
+				detail: `${health.overlay?.acknowledged ? __("Every reporting tablet is using the latest menu and stock guidance") : __("{0} tablet(s) have not confirmed the latest menu or stock guidance", [Number(health.overlay?.unacknowledged_devices || 0)])} · ${stockReportAge}`,
 				action: __("Open stock"),
 				route: "stock",
 			},
@@ -170,8 +170,8 @@ class JiJiStockAutopilotPage {
 				title: __("Plans & buying"),
 				icon: "▥",
 				status: health.draft_purchase_order_safety === "unsafe" ? "critical" : this.summaryStatus(health.planning),
-				value: health.draft_purchase_order_safety === "unsafe" ? __("Draft PO creation is paused") : this.summaryValue(health.planning, __("open plan(s)")),
-				detail: health.draft_purchase_order_safety === "unsafe" ? __("Review the outbound-safety configuration before buying automation") : this.summaryAge(health.planning, __("Oldest plan")),
+				value: health.draft_purchase_order_safety === "unsafe" ? __("Draft purchase orders are paused") : this.summaryValue(health.planning, __("open plan(s)")),
+				detail: health.draft_purchase_order_safety === "unsafe" ? __("Review the buying safeguards before creating another draft") : this.summaryAge(health.planning, __("Oldest plan")),
 				action: __("Open plans"),
 				route: "plans",
 			},
@@ -180,14 +180,14 @@ class JiJiStockAutopilotPage {
 				title: __("Settings"),
 				icon: "⚙",
 				status: runtime.status === "verified" ? "info" : runtime.status === "present" ? "warning" : "critical",
-				value: health.automation_state || __("Review First"),
+				value: this.automationStateLabel(health.automation_state),
 				detail: runtime.status === "verified"
-					? `${__("Runtime artifact identity verified · source freshness {0} minutes", [Number(health.max_source_age_minutes || 30)])} · ${this.checkedAge(health.as_of)}`
+					? `${__("Installed version verified · stock information may be up to {0} minutes old", [Number(health.max_source_age_minutes || 30)])} · ${this.checkedAge(health.as_of)}`
 					: runtime.status === "present"
-						? `${__("Runtime artifact is installed but not checked against accepted release evidence")} · ${this.checkedAge(health.as_of)}`
+						? `${__("Installed version has not been checked against the approved release")} · ${this.checkedAge(health.as_of)}`
 						: runtime.status === "unmatched"
-							? __("Installed runtime does not match the artifact this site expects; rollout is blocked")
-							: __("Runtime artifact identity is unavailable; rollout is blocked"),
+							? __("Installed version does not match the approved release; rollout is blocked")
+							: __("Installed version cannot be verified; rollout is blocked"),
 				action: __("Open inventory policy"),
 				route: "settings",
 			},
@@ -248,7 +248,7 @@ class JiJiStockAutopilotPage {
 				args: { payload: JSON.stringify({ observation_id: id, reason: values.reason }) },
 				callback: (response) => {
 					const result = response.message || {};
-					const message = result.status === "replayed" ? __("The draft reconciliation already exists; nothing was duplicated.") : __("Draft Stock Reconciliation created. Review and submit it in the standard ERPNext form.");
+					const message = result.status === "replayed" ? __("The draft reconciliation already exists; nothing was duplicated.") : __("Draft Stock Reconciliation created. Review and submit it from the linked record.");
 					frappe.show_alert({ message, indicator: "green" });
 					this.refresh();
 				},
@@ -340,6 +340,14 @@ class JiJiStockAutopilotPage {
 		return { critical: __("Action required"), warning: __("Review"), ok: __("OK"), info: __("Information") }[status] || __("Information");
 	}
 
+	automationStateLabel(state) {
+		return {
+			Active: __("Automatic actions on"),
+			Paused: __("Paused"),
+			"Review First": __("Approval required"),
+		}[String(state || "Review First")] || __("Approval required");
+	}
+
 	toneClass(status) {
 		return { critical: "danger", warning: "warning", ok: "success", info: "info" }[status] || "secondary";
 	}
@@ -382,10 +390,10 @@ class JiJiStockAutopilotPage {
 				args: values,
 				callback: (response) => {
 					const result = response.message || {};
-					frappe.show_alert({ message: result.status === "already_active" ? __("Cutover is already recorded; its identity was preserved.") : __("Cutover recorded. Automation remains in Review First."), indicator: "green" });
+					frappe.show_alert({ message: result.status === "already_active" ? __("Cutover is already recorded; its identity was preserved.") : __("Cutover recorded. Automatic actions still require approval."), indicator: "green" });
 					this.refresh();
 				},
-				error: () => frappe.msgprint({ title: __("Cutover blocked"), message: __("No cutover identity was changed. Fix the prerequisite shown by ERPNext and try again.") }),
+				error: () => frappe.msgprint({ title: __("Cutover blocked"), message: __("No cutover identity was changed. Fix the prerequisite shown by the system and try again.") }),
 			});
 		}, __("Record inventory cutover"), __("Record cutover"));
 	}

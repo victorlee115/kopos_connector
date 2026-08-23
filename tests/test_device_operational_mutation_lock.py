@@ -305,7 +305,9 @@ class TestDeviceOperationalMutationLock(unittest.TestCase):
             # test is unchanged -- the device lock still precedes the mutation.
             "api/fb_refill.py": {"process_refill": "_build_material_request"},
             "api/fb_waste.py": {"process_waste": "_build_waste_event"},
-            "api/fb_remakes.py": {"process_remake": "_build_remake_event"},
+            # The public remake route locks first, then delegates so the same
+            # payload handler can also be exercised by real-service tests.
+            "api/fb_remakes.py": {"process_remake": "process_remake_payload"},
         }
 
         for relative_path, routes in guarded_routes.items():
@@ -320,6 +322,12 @@ class TestDeviceOperationalMutationLock(unittest.TestCase):
                     self.assertTrue(guard_lines)
                     self.assertTrue(business_lines)
                     self.assertLess(max(guard_lines), min(business_lines))
+
+        remake_payload_calls = _function_call_lines(
+            CONNECTOR_ROOT / "api/fb_remakes.py",
+            "process_remake_payload",
+        )
+        self.assertTrue(remake_payload_calls.get("_build_remake_event"))
 
     def test_maybank_routes_call_provider_outside_broad_device_lock(self) -> None:
         api_path = CONNECTOR_ROOT / "api/__init__.py"
