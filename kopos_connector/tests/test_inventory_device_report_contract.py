@@ -258,6 +258,32 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             inventory._authoritative_document_revision({})
 
+    def test_guided_revision_accepts_only_the_equal_legacy_db_timestamp(self) -> None:
+        document = {"modified": "2026-08-15 10:00:00.123456"}
+
+        inventory._validate_guided_source_revision(
+            {"source_revision": "2026-08-15 10:00:00.123456"},
+            document,
+            "BOM",
+        )
+        inventory._validate_guided_source_revision(
+            {"source_revision": "2026-08-15T10:00:00.123456+08:00"},
+            document,
+            "BOM",
+        )
+        with self.assertRaisesRegex(frappe.ValidationError, "changed after"):
+            inventory._validate_guided_source_revision(
+                {"source_revision": "2026-08-15 10:00:01.123456"},
+                document,
+                "BOM",
+            )
+        with self.assertRaisesRegex(frappe.ValidationError, "changed after"):
+            inventory._validate_guided_source_revision(
+                {"source_revision": "2026-08-15"},
+                document,
+                "BOM",
+            )
+
     def test_preparation_start_uses_direct_outlet_backflush(self) -> None:
         document = SimpleNamespace(
             doctype="Work Order",

@@ -5649,11 +5649,27 @@ def _lock_guided_source_document(doctype: str, name: str) -> None:
 def _validate_guided_source_revision(value: dict[str, Any], document: Any, label: str) -> None:
     expected = _authoritative_document_revision(document)
     supplied = cstr(value.get("source_revision")).strip()
-    if supplied != expected:
-        frappe.throw(
-            _("{0} changed after this tablet task was issued; refresh the task").format(label),
-            frappe.ValidationError,
-        )
+    if supplied == expected:
+        return
+    # Tablets that received a task before canonical revision formatting was
+    # deployed may retain ERPNext's raw DB timestamp. Accept only that precise
+    # legacy shape when it resolves to the same instant; stale timestamps still
+    # fail closed and current tasks must use the canonical offset form.
+    legacy_revision = None
+    for timestamp_format in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            legacy_revision = cstr(
+                _iso_with_offset(datetime.strptime(supplied, timestamp_format))
+            ).strip()
+            break
+        except ValueError:
+            continue
+    if legacy_revision == expected:
+        return
+    frappe.throw(
+        _("{0} changed after this tablet task was issued; refresh the task").format(label),
+        frappe.ValidationError,
+    )
 
 
 def _get_policy(warehouse: str) -> dict[str, Any] | None:
