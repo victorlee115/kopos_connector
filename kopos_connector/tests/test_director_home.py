@@ -65,11 +65,13 @@ def test_the_page_degrades_instead_of_blanking() -> None:
 
 def test_a_login_is_never_shown_as_a_person() -> None:
     source = SOURCE.read_text(encoding="utf-8")
+    money = (SOURCE.parent / "shift_money.py").read_text(encoding="utf-8")
     # FB Shift records staff_id, which is an email. Running the endpoint against
-    # real data printed "Start with staff@smoke.kopos.local."
-    assert "_person_name(" in source
-    assert "employee_name" in source
-    assert "f\"Start with {cstr(first.get('staff_id'))}.\"" not in source
+    # real data printed "Start with staff@smoke.kopos.local." The name now
+    # comes from the shared reader, so the id never reaches the page.
+    assert "staff_id" not in source
+    assert "person_name(" in money
+    assert "employee_name" in money
 
 
 def test_a_single_company_site_does_not_ask_which_company() -> None:

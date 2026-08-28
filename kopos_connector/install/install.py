@@ -98,6 +98,11 @@ def ensure_standard_pages() -> None:
             "roles": ("System Manager", "Company Director"),
         },
         {
+            "name": "jiji_money",
+            "title": "JiJi Money",
+            "roles": ("System Manager", "Company Director"),
+        },
+        {
             "name": "jiji_menu_recipes",
             "title": "JiJi Menu, Recipes & Offers",
             "roles": ("System Manager", "Company Director"),

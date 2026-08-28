@@ -20,6 +20,8 @@ from typing import Any
 import frappe
 from frappe.utils import cint, cstr, flt, nowdate
 
+from kopos_connector.api.shift_money import closed_shifts, group_shifts
+
 
 def _company() -> str:
     """The company this director is looking at.
@@ -50,37 +52,13 @@ def _today_takings(company: str) -> dict[str, Any]:
 
 
 def _shifts_needing_review(company: str) -> list[dict[str, Any]]:
-    """Closed shifts whose counted cash did not match, using the stored variance.
+    """Closed shifts whose counted cash did not match.
 
-    cash_variance is written by the shift close path and is the single stored
-    answer to this question; nothing is recomputed here.
+    Delegated to shift_money so Home and the Money page cannot disagree about
+    how many shifts need a director. cash_variance is written by the shift
+    close path and is never recomputed.
     """
-    rows = frappe.get_all(
-        "FB Shift",
-        filters={"company": company, "status": "Closed"},
-        fields=["name", "staff_id", "closed_at", "cash_variance"],
-        order_by="closed_at desc",
-        limit_page_length=20,
-    )
-    return [row for row in rows if flt(row.get("cash_variance")) != 0]
-
-
-def _person_name(staff_id: str) -> str:
-    """A name a director can say out loud, never a login.
-
-    FB Shift records the staff id, which is an email. KoPOS Staff Access links
-    that user to an Employee, and the Employee carries the person's name.
-    """
-    identifier = cstr(staff_id).strip()
-    if not identifier:
-        return ""
-    employee = frappe.db.get_value("KoPOS Staff Access", {"user": identifier}, "employee")
-    if employee:
-        name = cstr(frappe.db.get_value("Employee", employee, "employee_name")).strip()
-        if name:
-            return name
-    full_name = cstr(frappe.db.get_value("User", identifier, "full_name")).strip()
-    return full_name or identifier
+    return group_shifts(closed_shifts(company))["needs_review"]
 
 
 def _staff_count() -> int:
@@ -124,7 +102,7 @@ def get_director_home() -> dict[str, Any]:
                 if len(unmatched_shifts) == 1
                 else f"{len(unmatched_shifts)} shifts counted a different amount of cash"
             ),
-            "detail": f"Start with {_person_name(cstr(first.get('staff_id')))}.",
+            "detail": f"Start with {cstr(first.get('person'))}.",
             "action": "Review money",
             "route": "/app/query-report/KoPOS Shift Reconciliation",
         }
