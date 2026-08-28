@@ -46,7 +46,7 @@ def test_exactly_one_next_step_is_returned() -> None:
 
 def test_every_tile_links_to_the_record_it_came_from() -> None:
     source = SOURCE.read_text(encoding="utf-8")
-    for route in ("/app/sales-invoice", "/app/jiji-menu-recipes", "/app/kopos-staff-access"):
+    for route in ('["List", "Sales Invoice"]', '["jiji_menu_recipes"]', '["List", "KoPOS Staff Access"]'):
         assert route in source
 
 
@@ -80,3 +80,14 @@ def test_a_single_company_site_does_not_ask_which_company() -> None:
     # only has one company.
     assert 'frappe.get_all("Company"' in source
     assert "len(companies) == 1" in source
+
+
+def test_routes_are_segments_not_urls() -> None:
+    source = SOURCE.read_text(encoding="utf-8")
+    page = PAGE.read_text(encoding="utf-8")
+    # The desk lives at /app on some deployments and /desk on others, and its
+    # router intercepts clicks rather than following an href. Hard-coded URLs
+    # 404'd on one and did nothing on the other.
+    assert "/app/" not in source
+    assert '["query-report", "KoPOS Shift Reconciliation"]' in source
+    assert "frappe.set_route.apply" in page

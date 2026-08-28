@@ -12,6 +12,25 @@
  * that owns it, and every link goes to the real record.
  */
 
+/**
+ * Follow a route the way the desk does.
+ *
+ * The desk is served at /app on some deployments and /desk on others, and its
+ * router intercepts clicks rather than following an href, so a hard-coded URL
+ * either 404s or silently does nothing. Route segments work on both.
+ */
+function routeLink(segments, label) {
+	const route = Array.isArray(segments) ? segments : [];
+	const link = $("<a>").attr("href", route.length ? `/app/${route.filter((part) => typeof part === "string").join("/")}` : "#");
+	if (label) link.text(label);
+	link.on("click", (event) => {
+		if (!route.length) return;
+		event.preventDefault();
+		frappe.set_route.apply(null, route);
+	});
+	return link;
+}
+
 frappe.pages["jiji_home"].on_page_load = function (wrapper) {
 	new JiJiHome(wrapper);
 };
@@ -101,14 +120,14 @@ class JiJiHome {
 		const copy = $("<div>").addClass("jiji-home__next-copy").appendTo(card);
 		copy.append($("<div>").addClass("jiji-home__next-title").text(next.title || ""));
 		if (next.detail) copy.append($("<div>").addClass("jiji-home__next-detail").text(next.detail));
-		if (next.action && next.route) {
-			$("<a>").addClass("btn btn-primary").attr("href", next.route).text(next.action).appendTo(card);
+		if (next.action && (next.route || []).length) {
+			routeLink(next.route, next.action).addClass("btn btn-primary").appendTo(card);
 		}
 		this.body.append(nextBlock);
 
 		const tiles = $("<div>").addClass("jiji-home__tiles");
 		(data.tiles || []).forEach((tile) => {
-			const link = $("<a>").addClass("jiji-home__tile").attr("href", tile.route || "#");
+			const link = routeLink(tile.route).addClass("jiji-home__tile");
 			link.append($("<div>").addClass("jiji-home__label").text(tile.label || ""));
 			link.append(
 				$("<div>")
@@ -126,7 +145,7 @@ class JiJiHome {
 			waitingBlock.append($("<div>").addClass("jiji-home__label").text(__("Waiting behind that")));
 			const list = $("<div>").addClass("jiji-home__waiting").appendTo(waitingBlock);
 			data.waiting.forEach((row) => {
-				$("<a>").attr("href", row.route || "#")
+				routeLink(row.route)
 					.append($("<span>").text(row.title || ""))
 					.append($("<span>").text("›"))
 					.appendTo(list);

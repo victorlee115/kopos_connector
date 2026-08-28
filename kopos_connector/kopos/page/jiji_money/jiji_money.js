@@ -11,6 +11,36 @@
  * the right tool for an audit and the wrong one for a decision.
  */
 
+/**
+ * "2026-08-23 09:04:02" is a database timestamp, not something a director
+ * reads. Shifts are discussed by day and time, so that is what is shown.
+ */
+/** Route segments, not URLs: the desk router intercepts clicks. */
+function routeLink(segments, label) {
+	const route = Array.isArray(segments) ? segments : [];
+	const link = $("<a>").attr("href", route.length ? `/app/${route.filter((part) => typeof part === "string").join("/")}` : "#");
+	if (label) link.text(label);
+	link.on("click", (event) => {
+		if (!route.length) return;
+		event.preventDefault();
+		frappe.set_route.apply(null, route);
+	});
+	return link;
+}
+
+function readableWhen(value) {
+	if (!value) return "";
+	const parsed = new Date(String(value).replace(" ", "T"));
+	if (Number.isNaN(parsed.getTime())) return String(value);
+	return parsed.toLocaleString(undefined, {
+		weekday: "short",
+		day: "numeric",
+		month: "short",
+		hour: "numeric",
+		minute: "2-digit",
+	});
+}
+
 frappe.pages["jiji_money"].on_page_load = function (wrapper) {
 	new JiJiMoney(wrapper);
 };
@@ -91,10 +121,8 @@ class JiJiMoney {
 		}
 
 		this.body.append(
-			$("<a>")
-				.addClass("jiji-money__advanced")
-				.attr("href", data.report_route || "#")
-				.text(__("Advanced details · the full shift reconciliation report")),
+			routeLink(data.report_route, __("Advanced details · the full shift reconciliation report"))
+				.addClass("jiji-money__advanced"),
 		);
 	}
 
@@ -104,8 +132,8 @@ class JiJiMoney {
 		block.append($("<div>").addClass("jiji-money__label").text(title));
 		const list = $("<div>").addClass("jiji-money__rows").appendTo(block);
 		rows.forEach((row) => {
-			const link = $("<a>").addClass("jiji-money__row").attr("href", `/app/fb-shift/${encodeURIComponent(row.shift)}`);
-			link.append($("<span>").addClass("jiji-money__who").text(`${row.person || ""} · ${row.closed_at || ""}`));
+			const link = routeLink(["Form", "FB Shift", row.shift]).addClass("jiji-money__row");
+			link.append($("<span>").addClass("jiji-money__who").text(`${row.person || ""} · ${readableWhen(row.closed_at)}`));
 			link.append(
 				$("<span>")
 					.addClass("jiji-money__amounts")

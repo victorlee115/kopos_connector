@@ -23,6 +23,11 @@ from frappe.utils import cint, cstr, flt, nowdate
 from kopos_connector.api.shift_money import closed_shifts, group_shifts
 
 
+# Routes are returned as Frappe route segments, not URLs. The desk is served
+# at /app on some deployments and /desk on others, and its router intercepts
+# clicks rather than following an href, so a hard-coded prefix either 404s or
+# does nothing when clicked. frappe.set_route(...segments) is deployment
+# agnostic; the page builds an href from the same segments for middle-click.
 def _company() -> str:
     """The company this director is looking at.
 
@@ -104,7 +109,7 @@ def get_director_home() -> dict[str, Any]:
             ),
             "detail": f"Start with {cstr(first.get('person'))}.",
             "action": "Review money",
-            "route": "/app/query-report/KoPOS Shift Reconciliation",
+            "route": ["query-report", "KoPOS Shift Reconciliation"],
         }
     elif drafts:
         next_step = {
@@ -116,7 +121,7 @@ def get_director_home() -> dict[str, Any]:
             ),
             "detail": "Nothing is sent until you say so.",
             "action": "Review supplies",
-            "route": "/app/purchase-order?docstatus=0",
+            "route": ["List", "Purchase Order", {"docstatus": 0}],
         }
     elif items_missing_recipe:
         next_step = {
@@ -128,7 +133,7 @@ def get_director_home() -> dict[str, Any]:
             ),
             "detail": "Each one needs a recipe, or a reason it does not need one.",
             "action": "Open Menu & Recipes",
-            "route": "/app/jiji-menu-recipes",
+            "route": ["jiji_menu_recipes"],
         }
     else:
         next_step = {
@@ -136,7 +141,7 @@ def get_director_home() -> dict[str, Any]:
             "title": "Nothing needs you right now",
             "detail": "Today's sales and stock are behaving.",
             "action": "",
-            "route": "",
+            "route": [],
         }
 
     waiting = []
@@ -147,7 +152,7 @@ def get_director_home() -> dict[str, Any]:
                 if drafts == 1
                 else f"{drafts} supplier orders to review"
             ),
-            "route": "/app/purchase-order?docstatus=0",
+            "route": ["List", "Purchase Order", {"docstatus": 0}],
         })
     if next_step["area"] != "menu" and items_missing_recipe:
         waiting.append({
@@ -156,7 +161,7 @@ def get_director_home() -> dict[str, Any]:
                 if items_missing_recipe == 1
                 else f"{items_missing_recipe} menu items have no recipe yet"
             ),
-            "route": "/app/jiji-menu-recipes",
+            "route": ["jiji_menu_recipes"],
         })
 
     return {
@@ -165,10 +170,10 @@ def get_director_home() -> dict[str, Any]:
         "next_step": next_step,
         "waiting": waiting,
         "tiles": [
-            {"key": "today", "label": "Today", "value": f"RM {takings['total']:,.2f}", "detail": f"{takings['orders']} orders", "route": "/app/sales-invoice"},
-            {"key": "menu", "label": "Menu", "value": str(items_ready), "detail": "on sale", "route": "/app/jiji-menu-recipes"},
-            {"key": "stock", "label": "Stock", "value": str(drafts), "detail": "orders to review", "route": "/app/jiji-stock-autopilot", "attention": drafts > 0},
-            {"key": "staff", "label": "Staff", "value": str(staff), "detail": "can use tablets", "route": "/app/kopos-staff-access"},
-            {"key": "money", "label": "Money", "value": str(len(unmatched_shifts)), "detail": "shifts to review", "route": "/app/query-report/KoPOS Shift Reconciliation", "attention": bool(unmatched_shifts)},
+            {"key": "today", "label": "Today", "value": f"RM {takings['total']:,.2f}", "detail": f"{takings['orders']} orders", "route": ["List", "Sales Invoice"]},
+            {"key": "menu", "label": "Menu", "value": str(items_ready), "detail": "on sale", "route": ["jiji_menu_recipes"]},
+            {"key": "stock", "label": "Stock", "value": str(drafts), "detail": "orders to review", "route": ["jiji_stock_autopilot"], "attention": drafts > 0},
+            {"key": "staff", "label": "Staff", "value": str(staff), "detail": "can use tablets", "route": ["List", "KoPOS Staff Access"]},
+            {"key": "money", "label": "Money", "value": str(len(unmatched_shifts)), "detail": "shifts to review", "route": ["query-report", "KoPOS Shift Reconciliation"], "attention": bool(unmatched_shifts)},
         ],
     }

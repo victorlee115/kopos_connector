@@ -105,5 +105,5 @@ def get_shift_money(company: str | None = None) -> dict[str, Any]:
         ],
         "needs_review": grouped["needs_review"],
         "missing_count": grouped["missing_count"],
-        "report_route": "/app/query-report/KoPOS Shift Reconciliation",
+        "report_route": ["query-report", "KoPOS Shift Reconciliation"],
     }
