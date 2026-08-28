@@ -61,3 +61,16 @@ def test_the_raw_report_stays_reachable_as_advanced_detail() -> None:
     page = PAGE.read_text(encoding="utf-8")
     assert "Advanced details" in page
     assert "report_route" in page
+
+
+def test_a_person_has_the_same_name_everywhere() -> None:
+    source = SOURCE.read_text(encoding="utf-8")
+    staff_access = (
+        SOURCE.parent.parent / "kopos" / "services" / "inventory_autopilot" / "staff_access.py"
+    ).read_text(encoding="utf-8")
+    # The tablet builds its staff list from User.full_name. A director's
+    # screens must not read a different record and show a different name.
+    assert 'get_value("User", row["user"], "full_name")' in staff_access
+    user_index = source.index('get_value("User", identifier, "full_name")')
+    employee_index = source.index('get_value("Employee", employee, "employee_name")')
+    assert user_index < employee_index, "User.full_name must be preferred, as the tablet does"

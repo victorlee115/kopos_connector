@@ -2804,13 +2804,13 @@ def _ensure_smoke_staff_access(device_doc: Any, users: list[dict[str, Any]]) -> 
 def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
     from kopos_connector.utils.pin import hash_pin
 
-    _ensure_frappe_user("staff@smoke.kopos.local", "Staff Ahmad")
-    _ensure_frappe_user("manager@smoke.kopos.local", "Manager Siti")
+    _ensure_frappe_user("staff@smoke.kopos.local", "Aisyah Rahman")
+    _ensure_frappe_user("manager@smoke.kopos.local", "Farid Hassan")
 
     users = [
         {
             "user": "staff@smoke.kopos.local",
-            "display_name": "Staff Ahmad",
+            "display_name": "Aisyah Rahman",
             "active": 1,
             "default_cashier": 1,
             "pin_hash": hash_pin("1234"),
@@ -2822,7 +2822,7 @@ def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
         },
         {
             "user": "manager@smoke.kopos.local",
-            "display_name": "Manager Siti",
+            "display_name": "Farid Hassan",
             "active": 1,
             "default_cashier": 0,
             "pin_hash": hash_pin("2345"),
@@ -2960,12 +2960,12 @@ def setup_full_smoke_data(
         "users": [
             {
                 "id": "staff@smoke.kopos.local",
-                "display_name": "Staff Ahmad",
+                "display_name": "Aisyah Rahman",
                 "pin": "1234",
             },
             {
                 "id": "manager@smoke.kopos.local",
-                "display_name": "Manager Siti",
+                "display_name": "Farid Hassan",
                 "pin": "2345",
             },
         ],

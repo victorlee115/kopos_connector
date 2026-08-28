@@ -20,17 +20,24 @@ from frappe.utils import cstr, flt
 
 
 def person_name(staff_id: str) -> str:
-    """A name a director can say out loud, never a login."""
+    """A name a director can say out loud, never a login.
+
+    User.full_name first, because that is the name the tablet shows its own
+    staff when they sign in. Reading Employee first made the same person
+    "Aisyah Rahman" on the tablet and something else on a director's screen.
+    """
     identifier = cstr(staff_id).strip()
     if not identifier:
         return ""
+    full_name = cstr(frappe.db.get_value("User", identifier, "full_name")).strip()
+    if full_name:
+        return full_name
     employee = frappe.db.get_value("KoPOS Staff Access", {"user": identifier}, "employee")
     if employee:
         name = cstr(frappe.db.get_value("Employee", employee, "employee_name")).strip()
         if name:
             return name
-    full_name = cstr(frappe.db.get_value("User", identifier, "full_name")).strip()
-    return full_name or identifier
+    return identifier
 
 
 def closed_shifts(company: str, limit: int = 50) -> list[dict[str, Any]]:
