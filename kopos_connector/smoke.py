@@ -246,7 +246,9 @@ def _ensure_smoke_base_data(
         "item_code": item,
         "recipe": demo_recipe,
         "inventory_evaluation": (
-            "inventory_regression" if include_inventory_regression else "excluded_not_evaluated"
+            "included_evaluated"
+            if include_inventory_regression
+            else "excluded_not_evaluated"
         ),
     }
 
@@ -2341,8 +2343,11 @@ def dump_smoke_json(
 
 def assert_smoke_business_state_json(
     expected_idempotency_keys: list[str] | None = None,
+    include_inventory_regression: int | str | bool = False,
 ) -> dict[str, Any]:
-    state = dump_smoke_state()
+    state = dump_smoke_state(
+        include_inventory_regression=bool(cint(include_inventory_regression))
+    )
     return build_smoke_business_assertions(
         state,
         expected_idempotency_keys=expected_idempotency_keys,
@@ -3773,8 +3778,8 @@ def _collect_inventory_mutation_audit(
 ) -> dict[str, Any]:
     """Read a complete, zero-write inventory mutation window for acceptance.
 
-    This does not test or accept inventory behavior. It proves that the current
-    non-inventory campaign did not mutate inventory while registering sales.
+    This captures the exact standard ERP inventory documents and balances used
+    by both included-inventory acceptance and excluded-inventory diagnostics.
     All four inventory reads share one MariaDB repeatable-read, read-only
     snapshot established at or after the database capture boundary.
     """
@@ -4127,7 +4132,7 @@ def _collect_smoke_business_state(
                 site_timezone=cstr(site_timezone).strip(),
                 window_start_utc=inventory_window_start_utc,
             ),
-            "inventory_evaluation": "inventory_regression",
+            "inventory_evaluation": "included_evaluated",
         }
     shift_fields = [
         "name",
@@ -4336,6 +4341,12 @@ def build_smoke_business_assertions(
     order_history = data.get("order_history")
     order_history_data = order_history if isinstance(order_history, dict) else {}
     device_state = state.get("device") if isinstance(state, dict) else None
+    inventory_evaluation = str(
+        data.get("inventory_evaluation") or "excluded_not_evaluated"
+    )
+    inventory_acceptance = inventory_evaluation == "included_evaluated"
+    ingredient_stock_entries = _list(data.get("ingredient_stock_entries"))
+    ingredient_bin_balances = _list(data.get("ingredient_bin_balances"))
 
     failed_projections = _list(projection_statuses.get("failed"))
     failed_commercial_projections = [
@@ -4530,11 +4541,100 @@ def build_smoke_business_assertions(
         and all(order.get("sales_invoice") for order in submitted_orders),
         {
             "orders": submitted_orders,
-            "inventory_acceptance": False,
-            "inventory_evaluation": data.get("inventory_evaluation")
-            or "excluded_not_evaluated",
+            "inventory_acceptance": inventory_acceptance,
+            "inventory_evaluation": inventory_evaluation,
         },
     )
+    if inventory_acceptance:
+        inventory_orders = [
+            row
+            for row in fb_orders
+            if row.get("status") in {"Submitted", "Cancelled"}
+        ]
+        stock_entries_by_name = {
+            row.get("name"): row
+            for row in ingredient_stock_entries
+            if isinstance(row, dict) and row.get("name")
+        }
+        linked_entries = [
+            stock_entries_by_name.get(order.get("ingredient_stock_entry"))
+            for order in inventory_orders
+        ]
+        expect(
+            "inventory_stock_issue_links_proven",
+            bool(inventory_orders)
+            and len(stock_entries_by_name) == len(inventory_orders)
+            and all(
+                order.get("stock_status") == "Posted"
+                and isinstance(entry, dict)
+                and entry.get("docstatus") == 1
+                and entry.get("purpose") == "Material Issue"
+                and entry.get("stock_entry_type") == "Material Issue"
+                and entry.get("custom_fb_order") == order.get("name")
+                for order, entry in zip(inventory_orders, linked_entries)
+            ),
+            {"orders": inventory_orders, "stock_entries": ingredient_stock_entries},
+        )
+        expect(
+            "inventory_stock_entry_details_proven",
+            bool(linked_entries)
+            and all(
+                isinstance(entry, dict)
+                and bool(_list(entry.get("items")))
+                and all(
+                    item.get("item_code")
+                    and item.get("stock_uom")
+                    and item.get("s_warehouse")
+                    and not item.get("t_warehouse")
+                    and _exact_quantity_has_sign(item.get("qty"), 1)
+                    and _exact_quantity_has_sign(item.get("transfer_qty"), 1)
+                    for item in _list(entry.get("items"))
+                )
+                for entry in linked_entries
+            ),
+            ingredient_stock_entries,
+        )
+        expect(
+            "inventory_stock_ledger_movements_proven",
+            bool(linked_entries)
+            and all(
+                isinstance(entry, dict)
+                and bool(_list(entry.get("stock_ledger_entries")))
+                and all(
+                    ledger.get("voucher_type") == "Stock Entry"
+                    and ledger.get("voucher_no") == entry.get("name")
+                    and ledger.get("item_code")
+                    and ledger.get("warehouse")
+                    and ledger.get("is_cancelled") is False
+                    and _exact_quantity_has_sign(ledger.get("actual_qty"), -1)
+                    for ledger in _list(entry.get("stock_ledger_entries"))
+                )
+                for entry in linked_entries
+            ),
+            ingredient_stock_entries,
+        )
+        expect(
+            "inventory_stock_projection_sale_datetime_preserved",
+            bool(inventory_orders)
+            and all(
+                isinstance(entry, dict)
+                and _projection_posts_at_sale_datetime(order, entry)
+                for order, entry in zip(inventory_orders, linked_entries)
+            ),
+            {"orders": inventory_orders, "stock_entries": ingredient_stock_entries},
+        )
+        expect(
+            "inventory_bin_balances_proven",
+            bool(ingredient_bin_balances)
+            and all(
+                balance.get("name")
+                and balance.get("item_code")
+                and balance.get("warehouse")
+                and _exact_quantity_has_sign(balance.get("actual_qty"), 1)
+                for balance in ingredient_bin_balances
+            ),
+            ingredient_bin_balances,
+        )
     expect("refund_return_record_proven", bool(returns), returns)
     expect("refund_return_sales_invoice_proven", bool(submitted_return_invoices), invoices)
     expect(
@@ -4625,9 +4725,8 @@ def build_smoke_business_assertions(
             "fb_shifts": len(fb_shifts),
             "fb_orders": len(fb_orders),
             "sales_invoices": len(invoices),
-            "inventory_acceptance": False,
-            "inventory_evaluation": data.get("inventory_evaluation")
-            or "excluded_not_evaluated",
+            "inventory_acceptance": inventory_acceptance,
+            "inventory_evaluation": inventory_evaluation,
             "return_records": len(returns),
             "void_records": len(voids),
             "duplicate_qr_incidents": len(duplicate_qr_incidents),
@@ -5936,6 +6035,16 @@ def _projection_posts_at_sale_datetime(
         sale_datetime.date().isoformat() == posting_date
         and sale_datetime.strftime("%H:%M:%S") == posting_time
     )
+
+
+def _exact_quantity_has_sign(value: Any, sign: int) -> bool:
+    try:
+        quantity = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return False
+    if not quantity.is_finite():
+        return False
+    return quantity > 0 if sign > 0 else quantity < 0
 
 
 def _shift_timestamps_in_order(shift: dict[str, Any]) -> bool:

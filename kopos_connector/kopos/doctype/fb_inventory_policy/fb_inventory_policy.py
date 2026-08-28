@@ -72,22 +72,22 @@ class FBInventoryPolicy(Document):
         cutover_at = getattr(self, "cutover_at", None)
         if bool(token) != bool(cutover_at):
             frappe.throw(
-                "Inventory cutover token and cutover time must be provided together",
+                "The stock tracking start reference and start time must be saved together",
                 frappe.ValidationError,
             )
         if cstr(getattr(self, "automation_state", None)).strip() == "Active" and not token:
             frappe.throw(
-                "Inventory automation cannot be Active before an immutable cutover is recorded",
+                "Stock suggestions cannot be turned on until the starting stock count is saved",
                 frappe.ValidationError,
             )
         if cstr(getattr(self, "automation_state", None)).strip() == "Active" and not cstr(getattr(self, "opening_stock_reconciliation", None)).strip():
             frappe.throw(
-                "Inventory automation cannot be Active before the opening Stock Reconciliation is submitted",
+                "Stock suggestions cannot be turned on until the approved starting stock count is submitted",
                 frappe.ValidationError,
             )
         max_age = int(getattr(self, "max_source_age_minutes", 30) or 30)
         if max_age < 1 or max_age > 24 * 60:
-            frappe.throw("Maximum source age must be between 1 and 1440 minutes", frappe.ValidationError)
+            frappe.throw("Stock information must be allowed to be between 1 minute and 24 hours old", frappe.ValidationError)
         preparation_device = cstr(getattr(self, "preparation_device", None)).strip()
         if preparation_device:
             device = frappe.db.get_value(
@@ -97,7 +97,7 @@ class FBInventoryPolicy(Document):
                 as_dict=True,
             )
             if not device or not bool(device.get("enabled")):
-                frappe.throw("Preparation Device must be an enabled KoPOS Device", frappe.ValidationError)
+                frappe.throw("The tablet used for preparation must be turned on in JiJi settings", frappe.ValidationError)
             profile = frappe.db.get_value(
                 "POS Profile",
                 device.get("pos_profile"),
@@ -105,50 +105,50 @@ class FBInventoryPolicy(Document):
                 as_dict=True,
             ) or {}
             if cstr(profile.get("company")).strip() != cstr(self.company).strip() or cstr(profile.get("warehouse")).strip() != cstr(self.warehouse).strip():
-                frappe.throw("Preparation Device must belong to this policy company and warehouse", frappe.ValidationError)
+                frappe.throw("The preparation tablet must belong to this company and stock location", frappe.ValidationError)
         percent_ceiling = getattr(self, "count_variance_percent_ceiling", None)
         if percent_ceiling not in (None, ""):
             percent_value = _finite_decimal(
                 percent_ceiling,
-                "Count variance percentage ceiling",
+                "Largest allowed count difference",
             )
             if percent_value < 0 or percent_value > 100:
-                frappe.throw("Count variance percentage ceiling must be between 0 and 100", frappe.ValidationError)
+                frappe.throw("The largest allowed count difference must be between 0% and 100%", frappe.ValidationError)
         value_ceiling = getattr(self, "count_variance_value_ceiling", None)
         if value_ceiling not in (None, ""):
             value = _finite_decimal(
                 value_ceiling,
-                "Count variance value ceiling",
+                "Largest allowed count value difference",
             )
             if value < 0:
-                frappe.throw("Count variance value ceiling must be a non-negative amount", frappe.ValidationError)
+                frappe.throw("The largest allowed count value difference must be zero or more", frappe.ValidationError)
         preparation_percent_ceiling = getattr(self, "preparation_variance_percent_ceiling", None)
         if preparation_percent_ceiling not in (None, ""):
             preparation_value = _finite_decimal(
                 preparation_percent_ceiling,
-                "Preparation variance percentage ceiling",
+                "Largest allowed preparation difference",
             )
             if preparation_value < 0 or preparation_value > 100:
-                frappe.throw("Preparation variance percentage ceiling must be between 0 and 100", frappe.ValidationError)
+                frappe.throw("The largest allowed preparation difference must be between 0% and 100%", frappe.ValidationError)
         automation_user = cstr(getattr(self, "automation_user", None)).strip()
         if automation_user:
             if automation_user == "Administrator" or not frappe.db.get_value("User", automation_user, "enabled"):
-                frappe.throw("Automation User must be an enabled non-Administrator user", frappe.ValidationError)
+                frappe.throw("Choose an enabled staff account for automatic stock work, not Administrator", frappe.ValidationError)
             roles = set(frappe.get_roles(automation_user))
             if roles.intersection({"System Manager", "Company Director"}):
-                frappe.throw("Automation User must not hold Company Director or System Manager", frappe.ValidationError)
+                frappe.throw("The account used for automatic stock work cannot be a Company Director or System Manager", frappe.ValidationError)
         review_owner = cstr(getattr(self, "purchase_review_owner", None)).strip()
         if review_owner:
             if not frappe.db.get_value("User", review_owner, "enabled"):
-                frappe.throw("Draft PO Review Owner must be an enabled user", frappe.ValidationError)
+                frappe.throw("Choose an enabled director to review supplier order drafts", frappe.ValidationError)
             if "Company Director" not in set(frappe.get_roles(review_owner)):
-                frappe.throw("Draft PO Review Owner must hold Company Director", frappe.ValidationError)
+                frappe.throw("The person who reviews supplier order drafts must have the Company Director role", frappe.ValidationError)
         exception_owner = cstr(getattr(self, "inventory_exception_owner", None)).strip()
         if exception_owner:
             if exception_owner in {"Administrator", "Guest"} or not frappe.db.get_value("User", exception_owner, "enabled"):
-                frappe.throw("Inventory Exception Owner must be an enabled non-system user", frappe.ValidationError)
+                frappe.throw("Choose an enabled staff account to handle stock problems", frappe.ValidationError)
             if "Company Director" not in set(frappe.get_roles(exception_owner)):
-                frappe.throw("Inventory Exception Owner must hold Company Director", frappe.ValidationError)
+                frappe.throw("The person who handles stock problems must have the Company Director role", frappe.ValidationError)
 
         self._sync_decimal_ceilings()
 
@@ -164,7 +164,7 @@ class FBInventoryPolicy(Document):
         ]
         if changed:
             frappe.throw(
-                "Activated inventory cutover identity is immutable; changed fields: "
+                "The stock tracking start record cannot be changed after activation. Changed fields: "
                 + ", ".join(changed),
                 frappe.ValidationError,
             )

@@ -408,6 +408,7 @@ def project_inventory_order(order_name: str) -> dict[str, Any]:
                 if detail
                 else "Material Issue Stock Entry was not created"
             )
+        _schedule_availability_after_stock_change(order)
         _finalize_success(log_name, lease_token, target_name)
         _resolve_projection_exceptions(order)
         return {
@@ -812,6 +813,7 @@ def _claim_log(log_name: str) -> str | None:
     )
     claimed = cstr(frappe.db.get_value("FB Projection Log", log_name, "lease_token")) == lease_token
     if claimed:
+        _set_projection_order_stock_status(log_name, "Pending")
         frappe.db.commit()
     else:
         frappe.db.rollback()
@@ -839,6 +841,7 @@ def _finalize_success(log_name: str, lease_token: str, target_name: str | None) 
         """,
         ("Stock Entry" if target_name else None, target_name, now, log_name),
     )
+    _set_projection_order_stock_status(log_name, "Posted", target_name=target_name)
     frappe.db.commit()
 
 
@@ -888,6 +891,10 @@ def _record_failure(
             log_name,
         ),
     )
+    _set_projection_order_stock_status(
+        log_name,
+        "Failed" if state == "Dead Letter" else "Pending",
+    )
     upsert_inventory_exception(
         reason_code="inventory_projection_dead_letter" if state == "Dead Letter" else "inventory_projection_failed",
         summary=(
@@ -905,6 +912,53 @@ def _record_failure(
     if state == "Dead Letter":
         _pause_policy_for_integrity_failure(policy)
     frappe.db.commit()
+
+
+def _set_projection_order_stock_status(
+    log_name: str,
+    status: str,
+    *,
+    target_name: str | None = None,
+) -> None:
+    """Keep the FB Order's bounded stock read model aligned with its log."""
+
+    source = frappe.db.get_value(
+        "FB Projection Log",
+        log_name,
+        ["source_doctype", "source_name"],
+        as_dict=True,
+    ) or {}
+    if cstr(source.get("source_doctype")).strip() != "FB Order":
+        return
+    order_name = cstr(source.get("source_name")).strip()
+    if not order_name:
+        return
+    values: dict[str, Any] = {"stock_status": status}
+    if target_name:
+        values["ingredient_stock_entry"] = target_name
+    frappe.db.set_value("FB Order", order_name, values, update_modified=False)
+
+
+def _schedule_availability_after_stock_change(order: Any) -> None:
+    """Invalidate availability after stock posts, outside the sale transaction."""
+
+    warehouse = cstr(getattr(order, "booth_warehouse", None)).strip()
+    if not warehouse:
+        return
+    try:
+        from kopos_connector.kopos.services.inventory_autopilot.availability_events import (
+            schedule_warehouse_availability_recheck,
+        )
+
+        schedule_warehouse_availability_recheck(warehouse)
+    except Exception as error:
+        # Availability is optional to the already-posted ingredient movement.
+        # Its hourly recovery remains the safety net and the failure is kept in
+        # the existing sanitized diagnostics rather than escaping checkout.
+        frappe.log_error(
+            title="Inventory availability scheduling failed",
+            message=f"Availability could not be scheduled after stock changed: {type(error).__name__}",
+        )
 
 
 def _pause_policy_for_integrity_failure(policy: Any) -> None:
@@ -968,20 +1022,25 @@ def _configured_retry_limit() -> int:
 
 def _acquire_lock(cache: Any) -> str | None:
     token = uuid4().hex
-    redis_client = getattr(cache, "redis_client", None)
-    if callable(redis_client):
-        redis_client = redis_client()
+    redis_client = _resolve_redis_client(cache)
     if redis_client is None or not hasattr(redis_client, "set"):
         return None
     return token if redis_client.set(INVENTORY_WORKER_LOCK_KEY, token, ex=INVENTORY_WORKER_LOCK_TTL_SECONDS, nx=True) else None
 
 
 def _release_lock(cache: Any, token: str) -> None:
+    redis_client = _resolve_redis_client(cache)
+    if redis_client is not None and hasattr(redis_client, "eval"):
+        redis_client.eval(COMPARE_AND_DELETE_LUA, 1, INVENTORY_WORKER_LOCK_KEY, token)
+
+
+def _resolve_redis_client(cache: Any) -> Any | None:
+    """Accept Frappe v16's direct RedisWrapper and older wrapped caches."""
+
     redis_client = getattr(cache, "redis_client", None)
     if callable(redis_client):
         redis_client = redis_client()
-    if redis_client is not None and hasattr(redis_client, "eval"):
-        redis_client.eval(COMPARE_AND_DELETE_LUA, 1, INVENTORY_WORKER_LOCK_KEY, token)
+    return redis_client if redis_client is not None else cache
 
 
 def _set_scheduler_marker(cache: Any, marker: str) -> None:

@@ -7,8 +7,11 @@ Stock Ledger Entry or a GL Entry.
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import Mock, patch
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
 
@@ -47,8 +50,15 @@ class WasteIdempotencyTests(TestCase):
 
         self.assertEqual(waste_service._decimal_quantity({"qty": "2.5"}), Decimal("2.5"))
 
-    def test_waste_quantity_refuses_zero_negative_and_malformed(self) -> None:
-        for line in ({"qty": "0"}, {"qty": "-1"}, {"qty": "abc"}, {"qty": ""}):
+    def test_waste_quantity_refuses_zero_negative_non_finite_and_malformed(self) -> None:
+        for line in (
+            {"qty": "0"},
+            {"qty": "-1"},
+            {"qty": "NaN"},
+            {"qty": "Infinity"},
+            {"qty": "abc"},
+            {"qty": ""},
+        ):
             with self.assertRaises(Exception):
                 waste_service._decimal_quantity(line)
 
@@ -71,6 +81,22 @@ class SaleableItemClassificationTests(TestCase):
         page = (ERP_ROOT / "kopos" / "page" / "jiji_menu_recipes" / "jiji_menu_recipes.js").read_text()
         for role in sorted(menu_authoring.SALEABLE_ITEM_ROLES):
             self.assertIn(role, page)
+
+    def test_empty_catalog_is_not_rendered_as_complete(self) -> None:
+        page = (ERP_ROOT / "kopos" / "page" / "jiji_menu_recipes" / "jiji_menu_recipes.js").read_text()
+
+        self.assertIn(
+            "const hasSaleableItems = Number(summary.saleable_items || 0) > 0;",
+            page,
+        )
+        self.assertIn(
+            "const classificationReady = migrationReady && hasSaleableItems",
+            page,
+        )
+        company_gate = page.index("if (!state.companyReady)")
+        empty_catalog_gate = page.index("else if (!state.hasSaleableItems)")
+        self.assertLess(company_gate, empty_catalog_gate)
+        self.assertIn("Add a menu item", page)
 
 
 class ReturnToStockTests(TestCase):
@@ -142,6 +168,15 @@ class DeskPagePackagingTests(TestCase):
         menu_page = (
             ERP_ROOT / "kopos" / "page" / "jiji_menu_recipes" / "jiji_menu_recipes.js"
         ).read_text()
+        stock_page_record = json.loads(
+            (ERP_ROOT / "kopos" / "page" / "jiji_stock_autopilot" / "jiji_stock_autopilot.json").read_text()
+        )
+        menu_page_record = json.loads(
+            (ERP_ROOT / "kopos" / "page" / "jiji_menu_recipes" / "jiji_menu_recipes.json").read_text()
+        )
+
+        self.assertEqual(stock_page_record["title"], "JiJi Stock Overview")
+        self.assertEqual(menu_page_record["title"], "JiJi Menu, Recipes & Offers")
 
         for retired_copy in (
             "No scheduler success recorded",
@@ -154,17 +189,95 @@ class DeskPagePackagingTests(TestCase):
             "hr ago",
             "task(s)",
             "plan(s)",
+            " · {1} stale · ",
+            "New to stock control?",
+            "You do not need to remember system terms.",
         ):
             self.assertNotIn(retired_copy, stock_page)
         for expected_copy in (
-            "No automatic stock update completed yet",
-            "Installed version verified",
-            "Draft purchase orders are paused",
+            "Stock has not updated automatically yet",
+            "JiJi setup checked",
+            "New supplier order drafts are paused",
             "Approval required",
-            "Automatic stock update needs attention",
+            "A stock update needs attention",
             "Tablet stock reports need review",
+            "Start using stock tracking",
+            "Difference from the saved amount",
+            "Available stock will not change until an authorized person approves it.",
+            "Finish the stock settings for this outlet before starting stock tracking.",
+            "No additional stock problems",
+            "Choose an outlet. JiJi will show what needs your attention.",
+            "Updates automatically.",
+            "Updating automatically.",
+            "Stock needs a manager.",
+            "Check now",
+            "Who does each part?",
+            "Only Company Directors use this page for business decisions.",
+            "Staff",
+            "Outlet manager",
+            "Company director",
+            "Buying",
+            "Supplier",
+            "Finance",
+            "Support",
+            "Your next step",
+            "Nothing to do right now",
+            "Review restock plans",
+            "Open detailed stock changes",
+            "Open finance view",
+            'ledger: ["query-report", "Stock Ledger"]',
+            "Follow these steps",
+            "Back to stock overview",
+            "Advanced: detailed stock records",
+            "Draft — not sent",
+            "get_autopilot_workflow",
+            "get_stock_update_status",
+            "JiJi never sends or approves a supplier order.",
+            "Help number",
+            "What to do",
+            "JiJi could not finish a stock update. Your saved information is safe.",
         ):
             self.assertIn(expected_copy, stock_page)
+
+        for internal_copy in (
+            "Test worker unavailable",
+            "safe automatic retry",
+            "Wait for the automatic worker",
+            "Advanced: projection records",
+            "<th>${__(\"Reference\")}</th>",
+            "this.escape(row.summary",
+            "this.escape(row.reason_code)",
+            "this.escape(review.threshold_reason",
+        ):
+            self.assertNotIn(internal_copy, stock_page)
+
+        self.assertEqual(
+            {row["role"] for row in stock_page_record["roles"]},
+            {"System Manager", "Company Director"},
+        )
+        self.assertNotIn("Outlet Staff", json.dumps(stock_page_record))
+        self.assertNotIn("Outlet Manager", json.dumps(stock_page_record))
+
+        self.assertNotIn("ERPNext calls this a Draft Stock Reconciliation", stock_page)
+        self.assertNotIn("detail: exceptionRouting.message", stock_page)
+
+        visible_labels = re.findall(r'__\("([^"\\]*(?:\\.[^"\\]*)*)"', stock_page)
+        beginner_labels = [label for label in visible_labels if not label.startswith("Advanced:")]
+        beginner_copy = " ".join(beginner_labels).lower()
+        for technical_term in (
+            "worker",
+            "scheduler",
+            "projection",
+            "payload",
+            "runtime artifact",
+            "erpnext",
+            "doctype",
+            "stock reconciliation",
+            "ledger",
+            "retry",
+            "bench migrate",
+        ):
+            self.assertNotIn(technical_term, beginner_copy)
 
         for retired_copy in (
             "Start here: classify a sellable Item",
@@ -174,15 +287,140 @@ class DeskPagePackagingTests(TestCase):
             "Economics checked — Review First",
             "saleable item(s)",
             "Classify an Item",
+            "ERPNext calls this record a BOM",
+            "Continue to ingredient recipe (BOM)",
+            "approved ingredient recipe (BOM)",
+            "ingredient recipe (BOM) required",
+            "The Draft could not be saved",
         ):
             self.assertNotIn(retired_copy, menu_page)
         for expected_copy in (
-            "Classify a menu item",
-            "batch recipe",
-            "Check cost & margin",
-            "Figures ready — approval still required",
+            "Set up a menu item",
+            "prepared-item recipe",
+            "Check cost and money left",
+            "Figures are ready — a director must still approve the offer",
+            "New to running a food or drink business?",
+            "How much the full recipe makes",
+            "Extra items to sell to recover the discount",
+            "Choose a company to check this area.",
+            "'Nos' means a count of whole items",
         ):
             self.assertIn(expected_copy, menu_page)
+
+        self.assertIn("if (!state.companyReady)", menu_page)
+
+        install_source = (ERP_ROOT / "install" / "install.py").read_text()
+        self.assertIn('"title": "JiJi Menu, Recipes & Offers"', install_source)
+        self.assertIn('"title": "JiJi Stock Overview"', install_source)
+        self.assertIn('frappe.db.set_value(', install_source)
+
+        for unexplained_copy in (
+            "Director workflow",
+            "Commissioning checklist",
+            "Quick recipe preflight",
+            "Promotion economics",
+            "Net revenue (excluding tax)",
+            "Ingredient cost (COGS)",
+            "Break-even additional units",
+            "Prepared-batch impact",
+            "Runout and waste risk",
+        ):
+            self.assertNotIn(unexplained_copy, menu_page)
+
+    def test_stock_runbook_requires_uncoached_acceptance_for_every_human_handoff(self) -> None:
+        runbook = (ERP_ROOT.parent / "docs" / "INVENTORY_AUTOPILOT_RUNBOOK.md").read_text()
+        plain_copy = " ".join(runbook.split())
+
+        for expected_copy in (
+            "## No-training acceptance",
+            "Do not show them the workflow first",
+            "First-time outlet staff",
+            "First-time outlet managers",
+            "First-time Company Directors",
+            "The person responsible for buying",
+            "The person responsible for finance",
+            "A support operator",
+            "A supplier who receives a sample order",
+            "without coaching",
+            "Record confusion, wrong turns, and misunderstood words as product defects.",
+        ):
+            self.assertIn(expected_copy, plain_copy)
+
+    def test_director_forms_explain_required_food_business_terms(self) -> None:
+        def fields(doctype: str) -> dict[str, dict[str, object]]:
+            path = ERP_ROOT / "kopos" / "doctype" / doctype / f"{doctype}.json"
+            payload = json.loads(path.read_text())
+            return {row["fieldname"]: row for row in payload["fields"]}
+
+        recipe = fields("fb_recipe")
+        components = fields("fb_recipe_component")
+        policy = fields("fb_inventory_policy")
+        count = fields("fb_inventory_count_observation")
+        promotion = fields("kopos_promotion")
+
+        self.assertEqual(recipe["yield_qty"]["label"], "Total usable amount made")
+        self.assertEqual(recipe["yield_uom"]["label"], "Unit used for the amount made")
+        self.assertEqual(components["affects_cogs"]["label"], "Include in ingredient cost")
+        self.assertEqual(policy["cutover_at"]["label"], "Stock tracking started on")
+        self.assertEqual(policy["opening_stock_reconciliation"]["label"], "Checked opening stock count")
+        self.assertEqual(
+            policy["count_variance_percent_ceiling"]["label"],
+            "Largest allowed count difference (%)",
+        )
+        self.assertTrue(count["stock_watermark"]["hidden"])
+        self.assertEqual(
+            count["reconciliation"]["label"],
+            "Saved stock correction",
+        )
+        self.assertEqual(
+            promotion["economics_section"]["label"],
+            "Ingredient cost and money-left check",
+        )
+
+
+class SupportWorkspaceCopyMigrationTests(TestCase):
+    def test_original_copy_is_simplified_without_replacing_other_blocks(self) -> None:
+        from kopos_connector.patches import simplify_kopos_support_workspace_copy
+
+        original = [
+            {"type": "header", "data": {"text": simplify_kopos_support_workspace_copy.OLD_HEADER}},
+            {"type": "paragraph", "data": {"text": simplify_kopos_support_workspace_copy.OLD_PARAGRAPH}},
+            {"type": "card", "data": {"card_name": "Custom support card"}},
+        ]
+        set_value = Mock()
+        with (
+            patch.object(simplify_kopos_support_workspace_copy.frappe.db, "exists", return_value=True),
+            patch.object(
+                simplify_kopos_support_workspace_copy.frappe.db,
+                "get_value",
+                return_value=json.dumps(original),
+            ),
+            patch.object(simplify_kopos_support_workspace_copy.frappe.db, "set_value", set_value),
+        ):
+            simplify_kopos_support_workspace_copy.execute()
+
+        saved = json.loads(set_value.call_args.args[3])
+        self.assertEqual(saved[0]["data"]["text"], "Need help?")
+        self.assertIn("tablet, sale, or shift needs help", saved[1]["data"]["text"])
+        self.assertNotIn("projection_status", saved[1]["data"]["text"])
+        self.assertEqual(saved[2], original[2])
+
+    def test_custom_copy_is_left_untouched(self) -> None:
+        from kopos_connector.patches import simplify_kopos_support_workspace_copy
+
+        set_value = Mock()
+        with (
+            patch.object(simplify_kopos_support_workspace_copy.frappe.db, "exists", return_value=True),
+            patch.object(
+                simplify_kopos_support_workspace_copy.frappe.db,
+                "get_value",
+                return_value=json.dumps([{"type": "header", "data": {"text": "My support page"}}]),
+            ),
+            patch.object(simplify_kopos_support_workspace_copy.frappe.db, "set_value", set_value),
+        ):
+            simplify_kopos_support_workspace_copy.execute()
+
+        set_value.assert_not_called()
 
 
 class WireTimestampStorageTests(TestCase):
@@ -416,3 +654,66 @@ class GuidedTaskEndpointRegistrationTests(TestCase):
                 exported,
                 f"{task_type} is missing from __all__",
             )
+
+
+class PublishedRecipeFormContractTests(TestCase):
+    """The browser must present the same immutability enforced by the server."""
+
+    def test_published_recipe_form_locks_every_definition_owner(self) -> None:
+        source = (
+            ERP_ROOT
+            / "kopos"
+            / "doctype"
+            / "fb_recipe"
+            / "fb_recipe.js"
+        ).read_text()
+
+        self.assertIn('["Active", "Retired"].includes(frm.doc.status)', source)
+        self.assertIn('frm.set_df_property(fieldname, "read_only"', source)
+        for fieldname in (
+            "recipe_code",
+            "recipe_name",
+            "sellable_item",
+            "yield_qty",
+            "components",
+            "allowed_modifier_groups",
+            "effective_from",
+            "effective_to",
+        ):
+            self.assertIn(f'"{fieldname}"', source)
+
+    def test_published_recipe_form_explains_the_supported_revision_path(self) -> None:
+        source = (
+            ERP_ROOT
+            / "kopos"
+            / "doctype"
+            / "fb_recipe"
+            / "fb_recipe.js"
+        ).read_text()
+
+        self.assertIn("This recipe is already available to outlets", source)
+        self.assertIn("Copy or change a recipe on JiJi Menu, Recipes & Offers", source)
+        self.assertIn('frm.doc.status === "Retired"', source)
+
+
+class StaffAccessFormContractTests(TestCase):
+    """Directors must be able to audit outlet assignments without opening rows."""
+
+    def test_staff_outlet_identity_is_visible_in_the_grid(self) -> None:
+        import json
+
+        schema = json.loads(
+            (
+                ERP_ROOT
+                / "kopos"
+                / "doctype"
+                / "kopos_staff_outlet"
+                / "kopos_staff_outlet.json"
+            ).read_text()
+        )
+        fields = {field["fieldname"]: field for field in schema["fields"]}
+
+        for fieldname in ("company", "outlet", "warehouse"):
+            with self.subTest(fieldname=fieldname):
+                self.assertEqual(fields[fieldname].get("in_list_view"), 1)
+                self.assertGreater(fields[fieldname].get("columns", 0), 0)

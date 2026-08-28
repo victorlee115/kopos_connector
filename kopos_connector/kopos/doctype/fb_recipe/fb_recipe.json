@@ -44,13 +44,14 @@
         {
             "fieldname": "recipe_info",
             "fieldtype": "Section Break",
-            "label": "Recipe Information"
+            "label": "Recipe details"
         },
         {
             "fieldname": "recipe_code",
             "fieldtype": "Data",
             "in_list_view": 1,
-            "label": "Recipe Code",
+            "label": "Recipe code",
+			"description": "Optional short reference used by the business, such as MATCHA-LATTE-01.",
             "reqd": 1,
             "unique": 1
         },
@@ -58,14 +59,14 @@
             "fieldname": "recipe_name",
             "fieldtype": "Data",
             "in_list_view": 1,
-            "label": "Recipe Name",
+            "label": "Recipe name",
             "reqd": 1
         },
         {
             "fieldname": "sellable_item",
             "fieldtype": "Link",
             "in_list_view": 1,
-            "label": "Sellable Item",
+            "label": "Menu item this recipe makes",
             "options": "Item",
             "reqd": 1
         },
@@ -78,7 +79,8 @@
             "fieldname": "recipe_type",
             "fieldtype": "Select",
             "in_list_view": 1,
-            "label": "Recipe Type",
+            "label": "What this recipe makes",
+			"description": "Finished Drink is made for an order. Prep Batch is made in advance, such as cold foam or syrup.",
             "options": "Finished Drink\nAdd-On\nPrep Batch\nPackaging Assembly",
             "reqd": 1
         },
@@ -95,7 +97,8 @@
             "default": "1",
             "fieldname": "version_no",
             "fieldtype": "Int",
-            "label": "Version No",
+            "label": "Version number",
+			"description": "JiJi increases this when a published recipe is replaced. Published recipes stay unchanged so old sales keep the correct ingredient amounts.",
             "reqd": 1
         },
         {
@@ -109,13 +112,14 @@
         {
             "fieldname": "yield_section",
             "fieldtype": "Section Break",
-            "label": "Yield Information"
+            "label": "How much this recipe makes"
         },
         {
             "default": "1",
             "fieldname": "yield_qty",
             "fieldtype": "Float",
-            "label": "Yield Qty",
+            "label": "Total usable amount made",
+			"description": "The amount left for sale after normal preparation, before splitting it into servings.",
             "reqd": 1
         },
         {
@@ -130,7 +134,8 @@
         {
             "fieldname": "yield_uom",
             "fieldtype": "Link",
-            "label": "Yield UOM",
+            "label": "Unit used for the amount made",
+			"description": "For example: Cup, Gram, or Millilitre.",
             "options": "UOM",
             "reqd": 1
         },
@@ -138,7 +143,7 @@
             "default": "1",
             "fieldname": "default_serving_qty",
             "fieldtype": "Float",
-            "label": "Default Serving Qty",
+            "label": "Amount in one serving",
             "reqd": 1
         },
         {
@@ -153,7 +158,7 @@
         {
             "fieldname": "default_serving_uom",
             "fieldtype": "Link",
-            "label": "Default Serving UOM",
+            "label": "Unit used for one serving",
             "options": "UOM",
             "reqd": 1
         },
@@ -164,7 +169,8 @@
         {
             "fieldname": "station",
             "fieldtype": "Data",
-            "label": "Station"
+            "label": "Preparation area",
+			"description": "Where staff make this item, such as Coffee Bar or Matcha Bar."
         },
         {
             "fieldname": "company",
@@ -176,52 +182,52 @@
         {
             "fieldname": "effective_dates",
             "fieldtype": "Section Break",
-            "label": "Effective Dates"
+            "label": "When to use this recipe"
         },
         {
             "fieldname": "effective_from",
             "fieldtype": "Datetime",
-            "label": "Effective From"
+            "label": "Start using on"
         },
         {
             "fieldname": "effective_to",
             "fieldtype": "Datetime",
-            "label": "Effective To"
+            "label": "Stop using on (optional)"
         },
         {
             "fieldname": "components_section",
             "fieldtype": "Section Break",
-            "label": "Recipe Components"
+            "label": "Ingredients and supplies"
         },
         {
             "fieldname": "components",
             "fieldtype": "Table",
-            "label": "Components",
+            "label": "What goes into this recipe",
             "options": "FB Recipe Component"
         },
         {
             "fieldname": "modifier_groups_section",
             "fieldtype": "Section Break",
-            "label": "Allowed Modifier Groups"
+            "label": "Customer choice groups"
         },
         {
             "fieldname": "allowed_modifier_groups",
             "fieldtype": "Table",
-            "label": "Allowed Modifier Groups",
+            "label": "Choices allowed with this item",
             "options": "FB Allowed Modifier Group"
         },
         {
             "fieldname": "modifier_effects_section",
             "fieldtype": "Section Break",
-            "label": "Frozen Modifier Effects"
+            "label": "Saved changes from customer choices"
         },
         {
             "fieldname": "recipe_modifier_effects",
             "fieldtype": "Table",
-            "label": "Frozen Modifier Effects",
+            "label": "Saved changes from customer choices",
             "options": "FB Recipe Modifier Effect",
             "read_only": 1,
-            "description": "Generated on publish. Change a modifier effect by publishing a new recipe version."
+            "description": "JiJi saves the exact ingredient change for each customer choice when the recipe is published. To change it, publish a new recipe version."
         },
         {
             "fieldname": "notes_section",

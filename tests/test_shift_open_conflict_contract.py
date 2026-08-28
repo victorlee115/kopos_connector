@@ -311,7 +311,7 @@ def test_open_shift_lookup_returns_typed_staff_conflict_only_after_no_device_shi
     }
 
 
-def test_get_device_open_shift_endpoint_validates_staff_before_lookup(
+def test_get_device_open_shift_validates_staff_without_mutating_heartbeat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     device_doc = _device_doc()
@@ -349,7 +349,7 @@ def test_get_device_open_shift_endpoint_validates_staff_before_lookup(
     public_api.get_device_open_shift("DEVICE-1", STAFF_ID)
 
     assert validated == [(device_doc, STAFF_ID)]
-    assert marked == ["DEVICE-1"]
+    assert marked == []
     assert public_api.frappe.local.response == {
         "status": "ok",
         "shift": None,

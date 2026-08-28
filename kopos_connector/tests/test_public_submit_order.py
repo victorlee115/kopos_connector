@@ -50,6 +50,17 @@ def _called_names(node: ast.AST) -> set[str]:
     return names
 
 
+def test_read_only_device_endpoints_do_not_record_mutating_heartbeats() -> None:
+    module = ast.parse(PUBLIC_API_PATH.read_text(encoding="utf-8"))
+
+    for endpoint in (
+        "get_catalog",
+        "get_promotion_snapshot",
+        "get_device_open_shift",
+    ):
+        assert "mark_device_seen" not in _called_names(_function_node(module, endpoint))
+
+
 def test_public_submit_order_routes_to_fb_order_payload_only() -> None:
     tree = ast.parse(PUBLIC_API_PATH.read_text())
     submit_order = _function_node(tree, "submit_order")

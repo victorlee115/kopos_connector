@@ -38,7 +38,7 @@ def _decimal_quantity(line: dict[str, Any]) -> Decimal:
         quantity = Decimal(raw or "0")
     except (InvalidOperation, ValueError):
         frappe.throw(_("Waste line quantity is not a valid number"), frappe.ValidationError)
-    if quantity <= 0:
+    if not quantity.is_finite() or quantity <= 0:
         frappe.throw(_("Waste line quantity must be greater than zero"), frappe.ValidationError)
     return quantity
 

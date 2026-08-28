@@ -269,29 +269,29 @@ class FBRecipe(Document):
 
         _require_positive_decimal(
             _decimal_field(self, "yield_qty_decimal", "yield_qty"),
-            "Yield Qty",
+            "Total usable amount made",
         )
         _require_positive_decimal(
             _decimal_field(self, "default_serving_qty_decimal", "default_serving_qty"),
-            "Default Serving Qty",
+            "Amount in one serving",
         )
         if not self.yield_uom:
-            frappe.throw("Yield UOM is required for an active recipe")
+            frappe.throw("Choose the unit used for the amount made before making this recipe active")
         if not self.default_serving_uom:
-            frappe.throw("Default Serving UOM is required for an active recipe")
+            frappe.throw("Choose the unit used for one serving before making this recipe active")
 
         components = list(self.get("components") or [])
         if not components:
-            frappe.throw("An active FB Recipe must define at least one component")
+            frappe.throw("Add at least one ingredient, prepared item, or supply before making this recipe active")
         for row_index, row in enumerate(components, start=1):
             if not row.item:
-                frappe.throw("Each recipe component must define an Item")
+                frappe.throw("Choose an item on every recipe row")
             _require_positive_decimal(
                 _decimal_field(row, "qty_decimal", "qty"),
-                f"Recipe component {row_index} Qty",
+                f"Amount on recipe row {row_index}",
             )
             if not row.uom:
-                frappe.throw(f"Recipe component {row_index} UOM is required")
+                frappe.throw(f"Choose a counting unit on recipe row {row_index}")
 
             stock_qty_value = (
                 _decimal_field(row, "stock_qty_decimal", "stock_qty")
@@ -299,7 +299,7 @@ class FBRecipe(Document):
             )
             _require_positive_decimal(
                 stock_qty_value,
-                f"Recipe component {row_index} Stock Qty",
+                f"Stock amount on recipe row {row_index}",
             )
             if not cint(row.affects_stock):
                 continue
@@ -311,7 +311,7 @@ class FBRecipe(Document):
                 as_dict=True,
             )
             if not item_values:
-                frappe.throw(f"Recipe component Item {row.item} was not found")
+                frappe.throw(f"Item {row.item} on this recipe could not be found")
             item_stock_uom = getattr(item_values, "stock_uom", None)
             if isinstance(item_values, dict):
                 item_stock_uom = item_values.get("stock_uom")
@@ -320,14 +320,14 @@ class FBRecipe(Document):
                 is_stock_item = cint(getattr(item_values, "is_stock_item", None))
             if not is_stock_item:
                 frappe.throw(
-                    f"Recipe component {row.item} affects stock and must be a stock Item"
+                    f"Item {row.item} is marked to use stock, but stock tracking is not turned on for that item"
                 )
             resolved_stock_uom = row.stock_uom or row.uom
             if not resolved_stock_uom:
-                frappe.throw(f"Recipe component {row_index} Stock UOM is required")
+                frappe.throw(f"Item {row.item} is missing the unit used in stock")
             if not item_stock_uom or resolved_stock_uom != item_stock_uom:
                 frappe.throw(
-                    f"Recipe component {row.item} Stock UOM must match Item stock UOM {item_stock_uom or '(missing)'}"
+                    f"The stock unit for {row.item} must be {item_stock_uom or '(not set)'}. Update the recipe row and try again"
                 )
 
         active_filters = {
@@ -368,9 +368,9 @@ class FBRecipe(Document):
         for row in self.get("allowed_modifier_groups") or []:
             modifier_group = row.modifier_group
             if not modifier_group:
-                frappe.throw("Allowed Modifier Group row must define a Modifier Group")
+                frappe.throw("Choose a customer choice group on every row")
             if modifier_group in seen_groups:
-                frappe.throw(f"Modifier Group {modifier_group} can only appear once")
+                frappe.throw(f"Customer choice group {modifier_group} can only be added once")
             seen_groups.add(modifier_group)
 
             group_doc = frappe.get_cached_doc("FB Modifier Group", modifier_group)
@@ -385,22 +385,22 @@ class FBRecipe(Document):
                 )
                 if not modifier_values:
                     frappe.throw(
-                        f"Default Modifier {row.default_modifier} was not found"
+                        f"Default customer choice {row.default_modifier} could not be found"
                     )
                 if modifier_values.modifier_group != modifier_group:
                     frappe.throw(
-                        f"Default Modifier {row.default_modifier} does not belong to Modifier Group {modifier_group}"
+                        f"Default customer choice {row.default_modifier} is not part of group {modifier_group}"
                     )
                 if not cint(modifier_values.active):
                     frappe.throw(
-                        f"Default Modifier {row.default_modifier} must be active"
+                        f"Default customer choice {row.default_modifier} is not in use"
                     )
 
             min_selection = cint(row.override_min_selection)
             max_selection = cint(row.override_max_selection)
             if min_selection and max_selection and min_selection > max_selection:
                 frappe.throw(
-                    f"Override Min Selection cannot be greater than Override Max Selection for group {modifier_group}"
+                    f"The minimum number of choices cannot be larger than the maximum for group {modifier_group}"
                 )
 
     def validate_modifier_group_selection_rules(
@@ -426,7 +426,7 @@ class FBRecipe(Document):
             shared_bounds = resolve_effective_modifier_bounds(**group_values)
         except ModifierBoundsError as error:
             frappe.throw(
-                f"Modifier Group {modifier_group} has invalid selection rules: {error}",
+                f"Customer choice group {modifier_group} has invalid rules: {error}",
                 frappe.ValidationError,
             )
             raise AssertionError("frappe.throw must raise") from error
@@ -440,8 +440,8 @@ class FBRecipe(Document):
             )
         except ModifierBoundsError as error:
             frappe.throw(
-                "Recipe {0} has invalid selection rules for modifier group {1}: "
-                "{2}. Use a separate modifier group if this recipe needs different "
+                "Recipe {0} has invalid rules for customer choice group {1}: "
+                "{2}. Use a separate customer choice group if this recipe needs different "
                 "rules.".format(recipe_name, modifier_group, error),
                 frappe.ValidationError,
             )
@@ -449,8 +449,8 @@ class FBRecipe(Document):
 
         if recipe_bounds != shared_bounds:
             frappe.throw(
-                "Recipe {0} changes the selection rules for modifier group {1}. "
-                "Use a separate modifier group so every tablet uses the same rules.".format(
+                "Recipe {0} changes the rules for customer choice group {1}. "
+                "Use a separate customer choice group so every tablet uses the same rules.".format(
                     recipe_name,
                     modifier_group,
                 ),
@@ -531,9 +531,9 @@ def _stock_conversion_for_item(
     *, item_code: str, entered_uom: str, label: str
 ) -> tuple[str, Decimal]:
     if not item_code:
-        frappe.throw(f"{label} Item is required", frappe.ValidationError)
+        frappe.throw(f"Choose an item for {label}", frappe.ValidationError)
     if not entered_uom:
-        frappe.throw(f"{label} UOM is required", frappe.ValidationError)
+        frappe.throw(f"Choose a counting unit for {label}", frappe.ValidationError)
     item_values = frappe.db.get_value(
         "Item",
         item_code,
@@ -541,7 +541,7 @@ def _stock_conversion_for_item(
         as_dict=True,
     )
     if not item_values:
-        frappe.throw(f"{label} Item {item_code} was not found", frappe.ValidationError)
+        frappe.throw(f"Item {item_code} for {label} could not be found", frappe.ValidationError)
     stock_uom = cstr(getattr(item_values, "stock_uom", None)).strip()
     if isinstance(item_values, dict):
         stock_uom = cstr(item_values.get("stock_uom")).strip()
@@ -550,7 +550,7 @@ def _stock_conversion_for_item(
         is_stock_item = cint(getattr(item_values, "is_stock_item", None))
     if not is_stock_item or not stock_uom:
         frappe.throw(
-            f"{label} Item {item_code} must be a stock Item with a stock UOM",
+            f"Turn on stock tracking and set a stock unit for item {item_code} used by {label}",
             frappe.ValidationError,
         )
     if entered_uom == stock_uom:
@@ -562,7 +562,7 @@ def _stock_conversion_for_item(
     )
     conversion = _require_positive_decimal(
         raw_conversion,
-        f"{label} UOM conversion from {entered_uom} to {stock_uom}",
+        f"Number of {stock_uom} in one {entered_uom} for {label}",
     )
     return stock_uom, conversion
 
@@ -601,7 +601,7 @@ def _frozen_modifier_effect_row(recipe: FBRecipe, modifier: Any) -> dict[str, An
     kind = effect["kind"]
     if kind not in {"Instruction Only", "Add", "Replace", "Remove", "Scale"}:
         frappe.throw(
-            f"Modifier {modifier_name} has an unsupported effect kind {kind or '(missing)'}",
+            f"Customer choice {modifier_name} has an unsupported change type: {kind or '(not set)'}",
             frappe.ValidationError,
         )
     if not effect["affects_recipe"]:
@@ -610,23 +610,23 @@ def _frozen_modifier_effect_row(recipe: FBRecipe, modifier: Any) -> dict[str, An
         target_item = effect["new_item"] or effect["target_item"]
         if not target_item:
             frappe.throw(
-                f"Modifier {modifier_name} requires a new or target Item for Add",
+                f"Choose the item added by customer choice {modifier_name}",
                 frappe.ValidationError,
             )
         entered_qty = _require_positive_decimal(
-            effect["qty_delta"], f"Modifier {modifier_name} Quantity Delta"
+            effect["qty_delta"], f"Amount added by customer choice {modifier_name}"
         )
         entered_uom = cstr(effect["qty_uom"]).strip()
         if not entered_uom:
             frappe.throw(
-                f"Modifier {modifier_name} requires a Quantity UOM for Add",
+                f"Choose a counting unit for the amount added by customer choice {modifier_name}",
                 frappe.ValidationError,
             )
         if effect["affects_stock"]:
             stock_uom, conversion = _stock_conversion_for_item(
                 item_code=cstr(target_item),
                 entered_uom=entered_uom,
-                label=f"Modifier {modifier_name}",
+                label=f"customer choice {modifier_name}",
             )
             effect["stock_uom"] = stock_uom
             effect["stock_conversion_factor"] = str(conversion)
@@ -640,20 +640,20 @@ def _frozen_modifier_effect_row(recipe: FBRecipe, modifier: Any) -> dict[str, An
     if kind == "Replace":
         if not effect["new_item"]:
             frappe.throw(
-                f"Modifier {modifier_name} requires a New Item for Replace",
+                f"Choose the replacement item for customer choice {modifier_name}",
                 frappe.ValidationError,
             )
         target_rows = _replacement_target_rows(recipe, effect)
         if not target_rows:
             frappe.throw(
-                f"Modifier {modifier_name} does not target a component in recipe {recipe.name}",
+                f"Customer choice {modifier_name} does not match an ingredient or supply in recipe {recipe.name}",
                 frappe.ValidationError,
             )
         if effect["affects_stock"]:
             new_item_stock_uom, _ = _stock_conversion_for_item(
                 item_code=cstr(effect["new_item"]),
-                entered_uom=_item_stock_uom(cstr(effect["new_item"]), f"Modifier {modifier_name}"),
-                label=f"Modifier {modifier_name}",
+                entered_uom=_item_stock_uom(cstr(effect["new_item"]), f"customer choice {modifier_name}"),
+                label=f"customer choice {modifier_name}",
             )
             for row in target_rows:
                 if not cint(getattr(row, "affects_stock", 0)):
@@ -661,8 +661,8 @@ def _frozen_modifier_effect_row(recipe: FBRecipe, modifier: Any) -> dict[str, An
                 target_stock_uom = cstr(getattr(row, "stock_uom", None)).strip()
                 if target_stock_uom != new_item_stock_uom:
                     frappe.throw(
-                        "Modifier {0} replaces a stock component with a different stock UOM. "
-                        "Use separate Remove and Add modifiers with explicit quantities.".format(
+                        "Customer choice {0} replaces an item that uses a different stock unit. "
+                        "Set it up as one Remove choice and one Add choice, with an amount for each.".format(
                             modifier_name
                         ),
                         frappe.ValidationError,
@@ -670,18 +670,18 @@ def _frozen_modifier_effect_row(recipe: FBRecipe, modifier: Any) -> dict[str, An
             effect["stock_uom"] = new_item_stock_uom
             if effect["qty_delta"] not in (None, "", 0, "0"):
                 entered_qty = _require_positive_decimal(
-                    effect["qty_delta"], f"Modifier {modifier_name} Quantity Delta"
+                    effect["qty_delta"], f"Amount changed by customer choice {modifier_name}"
                 )
                 entered_uom = cstr(effect["qty_uom"]).strip()
                 if not entered_uom:
                     frappe.throw(
-                        f"Modifier {modifier_name} requires a Quantity UOM for Replace delta",
+                        f"Choose a counting unit for the amount changed by customer choice {modifier_name}",
                         frappe.ValidationError,
                     )
                 _, conversion = _stock_conversion_for_item(
                     item_code=cstr(effect["new_item"]),
                     entered_uom=entered_uom,
-                    label=f"Modifier {modifier_name}",
+                    label=f"customer choice {modifier_name}",
                 )
                 effect["stock_conversion_factor"] = str(conversion)
                 effect["stock_conversion_factor_decimal"] = _plain_decimal(conversion)
@@ -693,10 +693,10 @@ def _frozen_modifier_effect_row(recipe: FBRecipe, modifier: Any) -> dict[str, An
         return effect
     if kind == "Scale":
         if _require_positive_decimal(
-            effect["scale_percent"], f"Modifier {modifier_name} Scale Percent"
+            effect["scale_percent"], f"Recipe amount percent for customer choice {modifier_name}"
         ) <= 0:
             frappe.throw(
-                f"Modifier {modifier_name} Scale Percent must be greater than 0",
+                f"Recipe amount percent for customer choice {modifier_name} must be greater than 0",
                 frappe.ValidationError,
             )
     return effect
@@ -705,7 +705,7 @@ def _frozen_modifier_effect_row(recipe: FBRecipe, modifier: Any) -> dict[str, An
 def _item_stock_uom(item_code: str, label: str) -> str:
     values = frappe.db.get_value("Item", item_code, ["stock_uom", "is_stock_item"], as_dict=True)
     if not values:
-        frappe.throw(f"{label} Item {item_code} was not found", frappe.ValidationError)
+        frappe.throw(f"Item {item_code} for {label} could not be found", frappe.ValidationError)
     stock_uom = cstr(
         values.get("stock_uom") if isinstance(values, dict) else getattr(values, "stock_uom", None)
     ).strip()
@@ -714,7 +714,7 @@ def _item_stock_uom(item_code: str, label: str) -> str:
     )
     if not stock_uom or not is_stock_item:
         frappe.throw(
-            f"{label} Item {item_code} must be a stock Item with a stock UOM",
+            f"Turn on stock tracking and set a stock unit for item {item_code} used by {label}",
             frappe.ValidationError,
         )
     return stock_uom

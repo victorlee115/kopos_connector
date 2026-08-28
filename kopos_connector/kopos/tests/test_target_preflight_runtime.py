@@ -55,5 +55,6 @@ class TestTargetPreflightRuntime(FrappeTestCase):
         self.assertTrue(indexes["passed"])
         self.assertEqual(indexes["missing"], [])
         self.assertTrue(scheduler["passed"])
+        self.assertTrue(scheduler["siteSchedulerEnabled"])
         self.assertEqual(scheduler["missing"], [])
         self.assertEqual(scheduler["obsolete"], [])

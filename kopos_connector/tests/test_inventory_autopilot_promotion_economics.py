@@ -38,6 +38,19 @@ class PromotionEconomicsTest(unittest.TestCase):
         self.assertEqual(result["ingredient_demand"], {"Milk": "20"})
         self.assertEqual(result["planning_mode"], "Review First")
 
+    def test_accepts_fractional_recipe_component_quantities(self) -> None:
+        result = calculate_promotion_economics(
+            items=[{
+                "units": 2,
+                "baseline_price_sen": 1000,
+                "promoted_price_sen": 900,
+                "cogs_sen": 250,
+                "components": [{"item": "Matcha", "qty": "2.5"}],
+            }]
+        )
+
+        self.assertEqual(result["ingredient_demand"], {"Matcha": "5"})
+
     def test_missing_cost_blocks_publication(self) -> None:
         with self.assertRaisesRegex(PromotionEconomicsError, "cogs_sen is required"):
             calculate_promotion_economics(items=[{
@@ -314,6 +327,59 @@ class PromotionEconomicsTest(unittest.TestCase):
                     modified="2026-03-13T16:00:00",
                     max_source_age_minutes=30,
                 )
+
+    def test_exact_accepted_count_refreshes_valuation_evidence_without_moving_stock(self) -> None:
+        from kopos_connector.api import inventory
+
+        with (
+            patch.object(inventory.frappe.db, "exists", return_value=True),
+            patch.object(
+                inventory.frappe.db,
+                "sql",
+                return_value=[["2026-03-13 18:00:00"]],
+            ),
+            patch.object(
+                inventory.frappe,
+                "get_all",
+                return_value=[{
+                    "observed_at": "2026-03-13 18:04:00",
+                    "stock_watermark": "2026-03-13 18:00:00",
+                    "lines_json": json.dumps([{"item_id": "Milk", "total_quantity": "12"}]),
+                }],
+            ),
+        ):
+            self.assertEqual(
+                inventory._current_exact_count_observed_at(
+                    item_code="Milk", warehouse="Outlet - JJ"
+                ),
+                "2026-03-13 18:04:00",
+            )
+
+    def test_accepted_count_is_ignored_after_the_stock_ledger_moves(self) -> None:
+        from kopos_connector.api import inventory
+
+        with (
+            patch.object(inventory.frappe.db, "exists", return_value=True),
+            patch.object(
+                inventory.frappe.db,
+                "sql",
+                return_value=[["2026-03-13 18:05:00"]],
+            ),
+            patch.object(
+                inventory.frappe,
+                "get_all",
+                return_value=[{
+                    "observed_at": "2026-03-13 18:04:00",
+                    "stock_watermark": "2026-03-13 18:00:00",
+                    "lines_json": json.dumps([{"item_id": "Milk"}]),
+                }],
+            ),
+        ):
+            self.assertIsNone(
+                inventory._current_exact_count_observed_at(
+                    item_code="Milk", warehouse="Outlet - JJ"
+                )
+            )
 
     def test_scenarios_are_limited_to_bounded_whole_number_inputs(self) -> None:
         self.assertEqual(

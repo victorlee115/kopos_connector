@@ -163,6 +163,23 @@ def test_menu_checklist_blocks_missing_recipe_and_unexplained_exclusion():
     assert result["ready"] is False
 
 
+def test_menu_checklist_rejects_an_empty_catalog():
+    result = summarize_menu_authoring(
+        item_rows=[],
+        recipe_rows=[],
+        bom_count=0,
+        modifier_count=0,
+        promotion_count=0,
+        company="JiJi",
+        company_selection_required=False,
+        item_fields_ready=True,
+        recipe_schema_ready=True,
+    )
+
+    assert result["saleable_items"] == 0
+    assert result["ready"] is False
+
+
 def test_guided_preview_uses_decimal_uom_conversion_and_serving_ratio():
     result = build_guided_recipe_preview(
         yield_qty="10",

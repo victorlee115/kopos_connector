@@ -34,6 +34,7 @@ def create_hold(
     expires_at: Any = None,
     evaluated_at: Any = None,
     idempotency_key: str | None = None,
+    command_payload_hash: str | None = None,
 ) -> str:
     actor_name = cstr(actor or frappe.session.user).strip()
     key = cstr(idempotency_key).strip() or _idempotency_key(
@@ -42,6 +43,23 @@ def create_hold(
     existing = frappe.db.get_value("FB Availability Hold", {"idempotency_key": key}, "name")
     if existing:
         existing_doc = frappe.get_doc("FB Availability Hold", existing)
+        _validate_create_replay(
+            existing_doc,
+            command_payload_hash=command_payload_hash,
+            expected={
+                "target_type": target_type,
+                "target_id": target_id,
+                "company": company,
+                "warehouse": warehouse,
+                "source": source,
+                "reason_code": reason_code,
+                "reason_label": reason_label,
+                "actor": actor_name,
+                "pos_profile": pos_profile,
+                "originating_doctype": originating_doctype,
+                "originating_name": originating_name,
+            },
+        )
         if cstr(existing_doc.status).strip() == "Active" and source == "automation":
             # An automation hold is refreshed only by a new trustworthy
             # calculation.  A manager override remains a timed selling window;
@@ -68,6 +86,7 @@ def create_hold(
             "expires_at": expires_at,
             "last_evaluated_at": evaluated_at or (now_datetime() if source == "automation" else None),
             "idempotency_key": key,
+            **({"create_payload_hash": _validated_create_payload_hash(command_payload_hash)} if command_payload_hash else {}),
             "active_from": now_datetime(),
             "status": "Active",
         }
@@ -80,17 +99,76 @@ def create_hold(
     return cstr(document.name)
 
 
-def release_hold(hold_name: str, *, actor: str | None = None) -> str:
+def _validate_create_replay(
+    document: Any,
+    *,
+    command_payload_hash: str | None,
+    expected: dict[str, Any],
+) -> None:
+    for fieldname, expected_value in expected.items():
+        if cstr(getattr(document, fieldname, None)).strip() != cstr(expected_value).strip():
+            frappe.throw(
+                "Availability hold command ID was reused for a different hold",
+                frappe.ValidationError,
+            )
+    if not command_payload_hash:
+        return
+    normalized_hash = _validated_create_payload_hash(command_payload_hash)
+    if cstr(getattr(document, "create_payload_hash", None)).strip() != normalized_hash:
+        frappe.throw(
+            "Availability hold command ID was reused with different content",
+            frappe.ValidationError,
+        )
+
+
+def _validated_create_payload_hash(payload_hash: str | None) -> str:
+    normalized_hash = cstr(payload_hash).strip()
+    if len(normalized_hash) != 64 or any(character not in "0123456789abcdef" for character in normalized_hash):
+        frappe.throw("Availability hold create payload hash is invalid", frappe.ValidationError)
+    if not frappe.get_meta("FB Availability Hold").has_field("create_payload_hash"):
+        frappe.throw(
+            "Availability hold create command field is not installed; run bench migrate",
+            frappe.ValidationError,
+        )
+    return normalized_hash
+
+
+def release_hold(
+    hold_name: str,
+    *,
+    actor: str | None = None,
+    command_id: str | None = None,
+    payload_hash: str | None = None,
+) -> str:
     name = cstr(hold_name).strip()
     document = frappe.get_doc("FB Availability Hold", name)
+    if _release_command_is_replay(
+        document,
+        command_id=command_id,
+        payload_hash=payload_hash,
+    ):
+        return name
     if document.status == "Released":
         return name
     document.status = "Released"
+    _record_release_command(
+        document,
+        command_id=command_id,
+        payload_hash=payload_hash,
+    )
     document.save(ignore_permissions=True)
     return name
 
 
-def manager_override_automation_hold(hold_name: str, *, actor: str, reason: str, minutes: int = 30) -> str:
+def manager_override_automation_hold(
+    hold_name: str,
+    *,
+    actor: str,
+    reason: str,
+    command_id: str,
+    payload_hash: str,
+    minutes: int = 30,
+) -> str:
     """Temporarily let a manager sell through an automation hold.
 
     The hold stays as the durable authority and expires back into the normal
@@ -104,6 +182,12 @@ def manager_override_automation_hold(hold_name: str, *, actor: str, reason: str,
     if not cstr(reason).strip():
         frappe.throw("A manager override reason is required", frappe.ValidationError)
     document = frappe.get_doc("FB Availability Hold", name)
+    if _release_command_is_replay(
+        document,
+        command_id=command_id,
+        payload_hash=payload_hash,
+    ):
+        return name
     if cstr(document.source).strip() != "automation" or cstr(document.status).strip() != "Active":
         frappe.throw("Only an active automation stock hold can receive a manager override", frappe.ValidationError)
     document.expires_at = now_datetime() + timedelta(minutes=minutes)
@@ -112,8 +196,65 @@ def manager_override_automation_hold(hold_name: str, *, actor: str, reason: str,
         document.manager_override_reason = cstr(reason).strip()
     if frappe.get_meta("FB Availability Hold").has_field("manager_override_at"):
         document.manager_override_at = now_datetime()
+    _record_release_command(
+        document,
+        command_id=command_id,
+        payload_hash=payload_hash,
+    )
     document.save(ignore_permissions=True)
     return name
+
+
+def _release_command_is_replay(
+    document: Any,
+    *,
+    command_id: str | None,
+    payload_hash: str | None,
+) -> bool:
+    normalized_command = cstr(command_id).strip()
+    if not normalized_command:
+        return False
+    _require_release_command_fields()
+    existing_command = cstr(getattr(document, "last_release_command_id", None)).strip()
+    if existing_command != normalized_command:
+        return False
+    if cstr(getattr(document, "last_release_payload_hash", None)).strip() != cstr(payload_hash).strip():
+        frappe.throw(
+            "Availability restore command ID was reused with different content",
+            frappe.ValidationError,
+        )
+    return True
+
+
+def _record_release_command(
+    document: Any,
+    *,
+    command_id: str | None,
+    payload_hash: str | None,
+) -> None:
+    normalized_command = cstr(command_id).strip()
+    if not normalized_command:
+        return
+    normalized_hash = cstr(payload_hash).strip()
+    if not normalized_hash:
+        frappe.throw("Availability restore requires its payload hash", frappe.ValidationError)
+    _require_release_command_fields()
+    document.last_release_command_id = normalized_command
+    document.last_release_payload_hash = normalized_hash
+
+
+def _require_release_command_fields() -> None:
+    meta = frappe.get_meta("FB Availability Hold")
+    missing = [
+        fieldname
+        for fieldname in ("last_release_command_id", "last_release_payload_hash")
+        if not meta.has_field(fieldname)
+    ]
+    if missing:
+        frappe.throw(
+            "Availability restore command fields are not installed; run bench migrate",
+            frappe.ValidationError,
+        )
 
 
 def active_holds(*, target_type: str, target_id: str, warehouse: str) -> list[dict[str, Any]]:

@@ -915,7 +915,7 @@ class TestModifierOptionChoices(unittest.TestCase):
 
 
 class TestCatalogApiElevation(unittest.TestCase):
-    def test_get_catalog_elevates_device_requests(self):
+    def test_get_catalog_elevates_device_requests_without_mutating_heartbeat(self):
         from kopos_connector.api import get_catalog
 
         events = []
@@ -948,7 +948,7 @@ class TestCatalogApiElevation(unittest.TestCase):
             get_catalog(device_id="device-1")
 
         require_device_context.assert_called_once_with(device_id="device-1")
-        mark_device_seen.assert_called_once_with(device_id="device-1")
+        mark_device_seen.assert_not_called()
         build_catalog_payload.assert_called_once_with(
             since=None,
             device_id="device-1",

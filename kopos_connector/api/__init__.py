@@ -60,7 +60,9 @@ from .inventory import (
     confirm_count_reconciliation,
     create_count_reconciliation_after_director_review,
     get_autopilot_health,
+    get_autopilot_workflow,
     get_edge_snapshot,
+    get_stock_update_status,
     preflight_legacy_inventory_values,
     record_waste_event,
     release_availability_hold,
@@ -210,8 +212,6 @@ def get_catalog(
     """Public KoPOS endpoint for catalog sync."""
     try:
         require_device_context(device_id=device_id)
-        if device_id:
-            mark_device_seen(device_id=device_id)
         with elevate_device_api_user():
             _write_response(
                 build_catalog_payload(
@@ -297,8 +297,6 @@ def get_promotion_snapshot(
     """Return the latest KoPOS promotion snapshot for a POS profile."""
     try:
         require_device_context(device_id=device_id)
-        if device_id:
-            mark_device_seen(device_id=device_id)
         payload = get_promotion_snapshot_payload(
             pos_profile=pos_profile,
             current_version=current_version,
@@ -1262,7 +1260,6 @@ def get_device_open_shift(
                     frappe.ValidationError,
                 )
             resolve_and_validate_device_user(device_doc, resolved_staff_id)
-        mark_device_seen(device_id=resolved_device_id)
 
         result = get_device_open_shift_payload(
             device_id=resolved_device_id,
@@ -2364,10 +2361,12 @@ __all__ = [
     "create_count_reconciliation_after_director_review",
     "get_catalog",
     "get_autopilot_health",
+    "get_autopilot_workflow",
     "claim_count_task",
     "confirm_count_reconciliation",
     "get_device_config",
     "get_edge_snapshot",
+    "get_stock_update_status",
     "get_item_modifiers",
     "get_order_history",
     "get_promotion_review_queue",

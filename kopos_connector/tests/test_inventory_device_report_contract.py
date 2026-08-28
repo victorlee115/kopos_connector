@@ -84,6 +84,15 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
                 }
             )
 
+    def test_count_claim_lock_serializes_competing_tablets(self) -> None:
+        with patch.object(inventory.frappe.db, "sql") as sql:
+            inventory._lock_count_task("COUNT-A")
+
+        query = sql.call_args.args[0]
+        self.assertIn("tabFB Inventory Count Task", query)
+        self.assertIn("FOR UPDATE", query)
+        self.assertEqual(sql.call_args.args[1], ("COUNT-A",))
+
     def test_device_current_helper_requires_exact_catalog_and_overlay_identity(self) -> None:
         row = {
             "name": "TAB-A",
@@ -322,6 +331,7 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
         value = {
             "command_id": "receipt-1",
             "payload_hash": "a" * 64,
+            "device_config_version": 7,
             "company": "JiJi Foods",
             "warehouse": "Outlet - WH",
             "source_document": "PO-1",
@@ -331,7 +341,11 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
             inventory, "_parse_guided_task_payload", return_value=value
         ), patch.object(inventory, "_validate_guided_task_actor"), patch.object(
             inventory, "_validate_guided_task_scope"
-        ), patch.object(inventory, "lock_device_for_operational_mutation"), patch.object(
+        ), patch.object(
+            inventory,
+            "lock_device_for_operational_mutation",
+            return_value=SimpleNamespace(config_version=7),
+        ), patch.object(
             inventory, "_find_command_document", return_value=None
         ), patch.object(
             inventory, "inventory_automation_identity", return_value=nullcontext("automation@example.com")
@@ -357,6 +371,7 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
         value = {
             "command_id": "transfer-1",
             "payload_hash": "b" * 64,
+            "device_config_version": 7,
             "company": "JiJi Foods",
             "warehouse": "Outlet - WH",
             "source_document": "MR-1",
@@ -366,7 +381,11 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
             inventory, "_parse_guided_task_payload", return_value=value
         ), patch.object(inventory, "_validate_guided_task_actor"), patch.object(
             inventory, "_validate_guided_task_scope"
-        ), patch.object(inventory, "lock_device_for_operational_mutation"), patch.object(
+        ), patch.object(
+            inventory,
+            "lock_device_for_operational_mutation",
+            return_value=SimpleNamespace(config_version=7),
+        ), patch.object(
             inventory, "_find_command_document", return_value=None
         ), patch.object(
             inventory,
@@ -384,6 +403,37 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
                 )
 
         create_transfer.assert_not_called()
+
+    def test_guided_task_rejects_a_stale_locked_device_configuration(self) -> None:
+        value = {
+            "command_id": "receipt-stale",
+            "payload_hash": "c" * 64,
+            "device_config_version": 6,
+            "company": "JiJi Foods",
+            "warehouse": "Outlet - WH",
+            "source_document": "PO-1",
+            "purchase_order": "PO-1",
+        }
+        with patch.object(inventory, "require_device_context"), patch.object(
+            inventory, "_parse_guided_task_payload", return_value=value
+        ), patch.object(
+            inventory,
+            "lock_device_for_operational_mutation",
+            return_value=SimpleNamespace(config_version=7),
+        ), patch.object(
+            inventory, "_validate_guided_task_actor"
+        ) as validate_actor, patch.object(
+            inventory, "_execute_guided_task_mutation"
+        ) as mutate:
+            with self.assertRaisesRegex(frappe.ValidationError, "configuration changed"):
+                inventory._handle_guided_task(
+                    device_id="TAB-A",
+                    payload={},
+                    task_type="submit_purchase_receipt",
+                )
+
+        validate_actor.assert_not_called()
+        mutate.assert_not_called()
 
 
 if __name__ == "__main__":

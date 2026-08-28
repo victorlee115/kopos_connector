@@ -13,6 +13,11 @@ from kopos_connector.kopos.services.inventory_autopilot import availability_even
 
 
 class InventoryAvailabilityEventTests(TestCase):
+    def test_frappe_v16_direct_redis_wrapper_is_supported(self) -> None:
+        cache = SimpleNamespace(set=Mock(), eval=Mock())
+        with patch.object(availability_events.frappe, "cache", return_value=cache):
+            self.assertIs(availability_events._redis_client(), cache)
+
     def test_stock_entry_warehouses_are_deduplicated_but_sale_issue_is_excluded(self) -> None:
         document = SimpleNamespace(
             doctype="Stock Entry",
@@ -48,6 +53,30 @@ class InventoryAvailabilityEventTests(TestCase):
         self.assertEqual(redis_client.set.call_args.kwargs["ex"], 60)
         self.assertTrue(redis_client.set.call_args.kwargs["nx"])
         self.assertTrue(enqueue.call_args.kwargs["enqueue_after_commit"])
+        redis_client.sadd.assert_called_once_with(
+            availability_events.DEFERRED_WAREHOUSES_KEY,
+            "Outlet A",
+        )
+
+    def test_deferred_busy_warehouses_receive_one_trailing_check(self) -> None:
+        redis_client = Mock()
+        redis_client.smembers.return_value = {b"Outlet B", "Outlet A"}
+        with (
+            patch.object(availability_events, "_redis_client", return_value=redis_client),
+            patch.object(
+                availability_events,
+                "schedule_warehouse_availability_recheck",
+                side_effect=[True, False],
+            ) as schedule,
+        ):
+            result = availability_events.flush_deferred_availability_rechecks()
+
+        self.assertEqual(result, {"warehouses": 2, "scheduled": 1, "deferred": 1})
+        self.assertEqual(
+            [call.args for call in schedule.call_args_list],
+            [("Outlet A",), ("Outlet B",)],
+        )
+        self.assertEqual(redis_client.srem.call_count, 2)
 
     def test_recheck_calls_only_the_requested_warehouse(self) -> None:
         with (

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
 
@@ -41,6 +41,26 @@ class InventoryProjectionWorkerTests(TestCase):
             cutover_at=datetime(2026, 8, 15, 8, 0, 0),
             expense_account=None,
             cogs_account=None,
+        )
+
+    def test_recovery_lock_supports_frappe_v16_direct_redis_wrapper(self) -> None:
+        cache = SimpleNamespace(set=Mock(return_value=True), eval=Mock())
+
+        token = projection_worker._acquire_lock(cache)
+        self.assertIsNotNone(token)
+        cache.set.assert_called_once_with(
+            projection_worker.INVENTORY_WORKER_LOCK_KEY,
+            token,
+            ex=projection_worker.INVENTORY_WORKER_LOCK_TTL_SECONDS,
+            nx=True,
+        )
+
+        projection_worker._release_lock(cache, token)
+        cache.eval.assert_called_once_with(
+            projection_worker.COMPARE_AND_DELETE_LUA,
+            1,
+            projection_worker.INVENTORY_WORKER_LOCK_KEY,
+            token,
         )
 
     def test_payload_hash_is_stable_for_the_immutable_sale_snapshot(self) -> None:
@@ -141,3 +161,23 @@ class InventoryProjectionWorkerTests(TestCase):
         with patch.object(projection_worker.frappe.db, "set_value") as set_value:
             projection_worker._pause_policy_for_integrity_failure(self.policy)
         set_value.assert_not_called()
+
+    def test_success_updates_the_order_even_when_the_sale_used_no_stock(self) -> None:
+        with (
+            patch.object(projection_worker, "_lock_owned_log"),
+            patch.object(projection_worker.frappe.db, "sql"),
+            patch.object(projection_worker, "_set_projection_order_stock_status") as set_status,
+            patch.object(projection_worker.frappe.db, "commit") as commit,
+        ):
+            projection_worker._finalize_success("PROJECTION-1", "lease-1", None)
+
+        set_status.assert_called_once_with("PROJECTION-1", "Posted", target_name=None)
+        commit.assert_called_once()
+
+    def test_posted_ingredient_stock_schedules_one_warehouse_availability_check(self) -> None:
+        with patch(
+            "kopos_connector.kopos.services.inventory_autopilot.availability_events.schedule_warehouse_availability_recheck"
+        ) as schedule:
+            projection_worker._schedule_availability_after_stock_change(self.order)
+
+        schedule.assert_called_once_with("Outlet - J")

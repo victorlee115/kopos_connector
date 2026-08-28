@@ -26,6 +26,7 @@ EXPECTED_PATCHES = (
     "kopos_connector.patches.migrate_branch_scoped_maybank_qr",
     "kopos_connector.patches.retire_pre_cutover_stock_issue_projections",
     "kopos_connector.patches.consolidate_inventory_policy_cogs_account",
+    "kopos_connector.patches.simplify_kopos_support_workspace_copy",
 )
 EXPECTED_ACCEPTANCE_MODULES = (
     "kopos_connector.acceptance.maybank_uat_accounting",

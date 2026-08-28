@@ -38,26 +38,26 @@ def resolve_effective_modifier_bounds(
     """
 
     normalized_type = _selection_type(selection_type)
-    raw_minimum = _integer(group_min_selection, "group min selection", default=0)
+    raw_minimum = _integer(group_min_selection, "minimum number of customer choices", default=0)
     raw_maximum = _integer(
         group_max_selection,
-        "group max selection",
+        "maximum number of customer choices",
         default=1 if normalized_type == "single" else 0,
     )
     if raw_minimum < 0 or raw_maximum < 0:
-        raise ModifierBoundsError("modifier selection bounds cannot be negative")
+        raise ModifierBoundsError("the minimum and maximum number of customer choices cannot be negative")
     if normalized_type == "single" and raw_maximum > 1:
         raise ModifierBoundsError(
-            "single-select modifier group cannot allow more than one selection"
+            "a single-choice group cannot allow more than one choice"
         )
 
-    group_required = _flag(group_is_required, "group required")
-    row_required = _flag(recipe_required, "recipe required")
+    group_required = _flag(group_is_required, "whether the customer choice group is required")
+    row_required = _flag(recipe_required, "whether this recipe requires a customer choice")
     minimum_override = _optional_override(
-        override_min_selection, "override min selection"
+        override_min_selection, "recipe minimum number of customer choices"
     )
     maximum_override = _optional_override(
-        override_max_selection, "override max selection"
+        override_max_selection, "recipe maximum number of customer choices"
     )
     if minimum_override is not None:
         minimum = minimum_override
@@ -74,14 +74,14 @@ def resolve_effective_modifier_bounds(
         maximum = raw_maximum
 
     if minimum < 0 or maximum < 0:
-        raise ModifierBoundsError("modifier selection bounds cannot be negative")
+        raise ModifierBoundsError("the minimum and maximum number of customer choices cannot be negative")
     if minimum > maximum:
         raise ModifierBoundsError(
-            "modifier minimum selection cannot exceed maximum selection"
+            "the minimum number of customer choices cannot be larger than the maximum"
         )
     if normalized_type == "single" and maximum > 1:
         raise ModifierBoundsError(
-            "single-select modifier group cannot allow more than one selection"
+            "a single-choice group cannot allow more than one choice"
         )
     return EffectiveModifierBounds(
         selection_type=normalized_type,
@@ -113,7 +113,7 @@ def validate_published_modifier_bounds(
     )
     if declared_required and declared_minimum < 1:
         raise ModifierBoundsError(
-            "required modifier group must require at least one selection"
+            "a required customer choice group must require at least one choice"
         )
     effective = resolve_effective_modifier_bounds(
         selection_type=selection_type,
@@ -127,7 +127,7 @@ def validate_published_modifier_bounds(
         or declared_maximum != effective.max_selection
     ):
         raise ModifierBoundsError(
-            "published modifier bounds do not match ERP order semantics"
+            "the saved customer choice limits do not match the limits used for orders"
         )
     return effective
 
@@ -135,7 +135,7 @@ def validate_published_modifier_bounds(
 def _selection_type(value: object) -> Literal["single", "multiple"]:
     normalized = str(value or "").strip().lower()
     if normalized not in {"single", "multiple"}:
-        raise ModifierBoundsError("modifier selection type must be single or multiple")
+        raise ModifierBoundsError("customer choice type must be Single or Multiple")
     return cast(Literal["single", "multiple"], normalized)
 
 

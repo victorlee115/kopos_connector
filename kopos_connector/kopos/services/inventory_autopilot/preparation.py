@@ -240,10 +240,10 @@ def record_preparation_variance(
     return upsert_inventory_exception(
         reason_code="batch_preparation_variance",
         summary=(
-            f"Prepared batch {item} yield/waste variance is {variance_percent}% "
-            f"against the {threshold}% ceiling"
+            f"The usable amount or waste for prepared item {item} differs by "
+            f"{variance_percent}%. The allowed difference is {threshold}%"
         ),
-        next_action="Review the measured batch yield and waste, then correct the BOM or preparation process",
+        next_action="Check the usable amount made and the waste. Then correct the ingredient recipe (BOM) or the preparation steps",
         severity="Warning",
         company=company,
         warehouse=warehouse,
@@ -321,8 +321,8 @@ def _preparation_alerts_for_policy(
             for failure in variance_failures:
                 upsert_inventory_exception(
                     reason_code="batch_preparation_variance_configuration",
-                    summary="Prepared batch variance authority is missing or invalid",
-                    next_action="Set a director-approved BOM or outlet policy variance ceiling before preparing another batch",
+                    summary="The allowed difference for a prepared item is missing or invalid",
+                    next_action="Set a director-approved limit on the ingredient recipe (BOM) or outlet stock settings before preparing this item again",
                     severity="Warning",
                     company=company,
                     warehouse=warehouse,
@@ -345,17 +345,17 @@ def _preparation_alerts_for_policy(
             "status": "alert",
             "kind": "preparation",
             "preparation_alert": True,
-            "title": "Batch preparation setup needed",
+            "title": "Preparation setup needed",
             "document": "Setup required",
-            "item_name": "Batch preparation setup needed",
+            "item_name": "Preparation setup needed",
             "warehouse": warehouse,
             "blocked_reason": (
-                "Batch preparation setup is incomplete. A Company Director "
-                "must set a valid BOM or outlet variance ceiling before "
-                "another batch can be prepared."
+                "Preparation setup is incomplete. A Company Director must set "
+                "an allowed difference on the ingredient recipe (BOM) or outlet "
+                "stock settings before this item can be prepared again."
             ),
             "preparation_instructions": (
-                "Ask a Company Director to complete the batch preparation setup."
+                "Ask a Company Director to complete the preparation setup."
             ),
             "reason": "|".join(variance_failures),
             # POS requires every guided task to carry a non-empty source
@@ -390,7 +390,7 @@ def _preparation_alerts_for_policy(
             )
         except ValueError as error:
             if record_exceptions:
-                _block_bom(policy, bom_name, item, f"Fix the prepared batch quantities: {error}")
+                _block_bom(policy, bom_name, item, f"Fix the amount made each time: {error}")
             continue
         reliable_forecast = warehouse_has_reliable_forecast(warehouse)
         daily_demand = (
@@ -415,7 +415,7 @@ def _preparation_alerts_for_policy(
         if blocking_sources:
             blocked_reason = (
                 "Resolve the " + ", ".join(sorted(blocking_sources))
-                + " hold before preparing another batch"
+                + " pause before preparing this item again"
             )
             if record_exceptions:
                 _block_bom(policy, bom_name, item, blocked_reason)
@@ -435,7 +435,7 @@ def _preparation_alerts_for_policy(
             continue
         if not _batch_shelf_life_safe(item=item, batch_qty=batch_qty, daily_demand=daily_demand):
             blocked_reason = (
-                "Review batch size or shelf life; measured sell-through cannot use this batch before expiry"
+                "Review the amount made each time or the safe storage time. Recent sales show this amount may not be used before its use-by date"
             )
             if record_exceptions:
                 _block_bom(policy, bom_name, item, blocked_reason)
@@ -470,7 +470,7 @@ def _preparation_alerts_for_policy(
             actual_qty=actual_qty,
             stock_marker=stock_marker,
             blocked_reason=(
-                "Inventory automation is paused for this outlet; resume it before preparing this batch"
+                "Automatic stock work is paused for this outlet. Resume it before preparing this item"
                 if paused
                 else None
             ),
@@ -529,7 +529,7 @@ def _preparation_alert(
 def _block_bom(policy: dict[str, Any], bom_name: str, item: str, action: str) -> None:
     upsert_inventory_exception(
         reason_code="batch_preparation_configuration",
-        summary=f"Prepared batch {item} cannot be scheduled safely",
+        summary=f"Prepared item {item} cannot be scheduled safely",
         next_action=action,
         severity="Warning",
         company=cstr(policy.get("company")),

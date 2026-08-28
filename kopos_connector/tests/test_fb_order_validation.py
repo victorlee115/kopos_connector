@@ -58,7 +58,7 @@ class TestFBOrderModifierValidation(unittest.TestCase):
 
         with self.assertRaisesRegex(
             Exception,
-            "single-select modifier group cannot allow more than one selection",
+            "a single-choice group cannot allow more than one choice",
         ):
             FBOrder().resolve_modifier_bounds(
                 SimpleNamespace(

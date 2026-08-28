@@ -58,7 +58,7 @@
    "fieldname": "promotion_name",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Promotion Name",
+   "label": "Offer name",
    "reqd": 1,
    "unique": 1
   },
@@ -66,7 +66,8 @@
    "fieldname": "promotion_type",
    "fieldtype": "Select",
    "in_list_view": 1,
-   "label": "Promotion Type",
+   "label": "How the offer works",
+   "description": "item_discount: discount selected items. order_discount: discount the full order. happy_hour: use during set times. buy_x_get_y: buy items and get one. nth_item_discount: discount every nth item.",
    "options": "item_discount\norder_discount\nhappy_hour\nbuy_x_get_y\nnth_item_discount",
    "reqd": 1
   },
@@ -79,49 +80,53 @@
    "fieldname": "is_active",
    "fieldtype": "Check",
    "in_list_view": 1,
-   "label": "Active"
+   "label": "Available to customers"
   },
   {
    "default": "1",
    "fieldname": "offline_allowed",
    "fieldtype": "Check",
    "in_list_view": 1,
-   "label": "Offline Allowed"
+   "label": "Allow when the tablet is offline",
+   "description": "The tablet may apply this offer using its last approved settings while the store connection is unavailable."
   },
   {
    "default": "automatic",
    "fieldname": "activation_mode",
    "fieldtype": "Select",
-   "label": "Activation Mode",
+   "label": "How staff apply the offer",
+	 "description": "automatic: JiJi applies it when the order qualifies. manual_selectable: staff choose it.",
    "options": "automatic\nmanual_selectable"
   },
   {
    "fieldname": "display_label",
    "fieldtype": "Data",
-   "label": "Display Label"
+   "label": "Short label shown at checkout"
   },
   {
    "fieldname": "customer_message",
    "fieldtype": "Small Text",
-   "label": "Customer Message"
+   "label": "Message shown to customers"
   },
   {
    "fieldname": "scope_section",
    "fieldtype": "Section Break",
-   "label": "Scope and Priority"
+   "label": "Where and when this offer applies"
   },
   {
    "default": "100",
    "fieldname": "priority",
    "fieldtype": "Int",
    "in_list_view": 1,
-   "label": "Priority"
+   "label": "Which offer wins first",
+	 "description": "A lower number is checked first when more than one offer could apply."
   },
   {
    "default": "exclusive",
    "fieldname": "stacking_policy",
    "fieldtype": "Select",
-   "label": "Stacking Policy",
+   "label": "Can this be combined with another offer?",
+	 "description": "exclusive: use only this offer. stackable: allow another offer too. best_price: use the offer that saves the customer the most.",
    "options": "exclusive\nstackable\nbest_price"
   },
   {
@@ -132,32 +137,35 @@
    "default": "all_pos_profiles",
    "fieldname": "outlet_scope_mode",
    "fieldtype": "Select",
-   "label": "Outlet Scope",
+   "label": "Which outlets",
+	 "description": "all_pos_profiles: every outlet. selected_pos_profiles: only the outlets listed below.",
    "options": "all_pos_profiles\nselected_pos_profiles"
   },
   {
    "default": "eligible_pool",
    "fieldname": "eligible_scope_mode",
    "fieldtype": "Select",
-   "label": "Eligible Scope Mode",
+   "label": "Which item receives the discount",
+	 "description": "same_item: discount the same item. eligible_pool: discount an item from the eligible list.",
    "options": "same_item\neligible_pool"
   },
   {
    "default": "once",
    "fieldname": "repeat_mode",
    "fieldtype": "Select",
-   "label": "Repeat Mode",
+   "label": "How often in one order",
+	 "description": "once: apply one time per order. repeat: apply again whenever the order qualifies.",
    "options": "once\nrepeat"
   },
   {
    "fieldname": "valid_from",
    "fieldtype": "Datetime",
-   "label": "Valid From"
+   "label": "Start date and time"
   },
   {
    "fieldname": "valid_upto",
    "fieldtype": "Datetime",
-   "label": "Valid Up To"
+   "label": "End date and time"
   },
   {
    "fieldname": "discount_section",
@@ -168,19 +176,20 @@
    "default": "1",
    "fieldname": "buy_qty",
    "fieldtype": "Int",
-   "label": "Buy Qty"
+   "label": "Number the customer must buy"
   },
   {
    "default": "1",
    "fieldname": "discount_qty",
    "fieldtype": "Int",
-   "label": "Discount Qty"
+   "label": "Number that receive the discount"
   },
   {
    "default": "cheaper_eligible",
    "fieldname": "discount_target",
    "fieldtype": "Select",
-   "label": "Discount Target",
+   "label": "Which qualifying item is discounted",
+	 "description": "The least expensive qualifying item receives the discount.",
    "options": "cheaper_eligible"
   },
   {
@@ -191,14 +200,16 @@
    "default": "percentage",
    "fieldname": "discount_type",
    "fieldtype": "Select",
-   "label": "Discount Type",
+   "label": "Type of discount",
+	 "description": "percentage: percent off. fixed_amount: fixed amount off. fixed_price: set the final price. free_item: no charge for the discounted item.",
    "options": "percentage\nfixed_amount\nfixed_price\nfree_item"
   },
   {
    "default": "0",
    "fieldname": "discount_value",
    "fieldtype": "Float",
-   "label": "Discount Value"
+   "label": "Discount amount",
+	 "description": "For example, enter 10 for 10% off when the discount type is percentage."
   },
   {
    "default": "base_item_only",
@@ -218,55 +229,56 @@
    "default": "excluded_by_default",
    "fieldname": "modifier_policy",
    "fieldtype": "Select",
-   "label": "Modifier Policy",
+   "label": "Are paid customer choices discounted?",
+	 "description": "excluded_by_default: charge paid choices at full price. include_paid_modifiers: include paid choices in the discount.",
    "options": "excluded_by_default\ninclude_paid_modifiers"
   },
   {
    "fieldname": "eligible_items_section",
    "fieldtype": "Section Break",
-   "label": "Eligibility"
+   "label": "Orders and items that can use this offer"
   },
   {
    "default": "0",
    "fieldname": "min_qty",
    "fieldtype": "Int",
-   "label": "Min Qty"
+   "label": "Minimum number of items"
   },
   {
    "default": "0",
    "fieldname": "min_amount",
    "fieldtype": "Currency",
-   "label": "Min Amount"
+   "label": "Minimum order amount"
   },
   {
    "fieldname": "eligible_items",
    "fieldtype": "Table",
-   "label": "Eligible Items",
+   "label": "Menu items included",
    "options": "KoPOS Promotion Item"
   },
   {
    "fieldname": "eligible_item_groups",
    "fieldtype": "Table",
-   "label": "Eligible Item Groups",
+   "label": "Menu groups included",
    "options": "KoPOS Promotion Item Group"
   },
   {
    "fieldname": "eligible_pos_profiles",
    "fieldtype": "Table",
-   "label": "Eligible POS Profiles",
+   "label": "Outlets included",
    "options": "KoPOS Promotion POS Profile"
   },
   {
    "fieldname": "economics_section",
    "fieldtype": "Section Break",
-   "label": "COGS and Margin Review"
+   "label": "Ingredient cost and money-left check"
   },
   {
    "fieldname": "economics_status",
    "fieldtype": "Select",
    "default": "Not checked",
    "in_list_view": 1,
-   "label": "Economics Status",
+   "label": "Cost and profit check",
    "options": "Not checked\nReady\nBlocked\nOverride approved",
    "read_only": 1
   },
@@ -280,7 +292,7 @@
   {
    "fieldname": "economics_checked_at",
    "fieldtype": "Datetime",
-   "label": "Economics Checked At",
+   "label": "Cost and profit last checked",
    "read_only": 1
   },
   {
@@ -294,13 +306,13 @@
   {
    "fieldname": "economics_block_reason",
    "fieldtype": "Small Text",
-   "label": "Economics Block Reason",
+   "label": "Why the offer cannot be turned on",
    "read_only": 1
   },
   {
    "fieldname": "economics_override_reason",
    "fieldtype": "Small Text",
-   "label": "One-time Override Reason",
+   "label": "Reason for one-time approval",
    "read_only": 1
   },
   {
@@ -314,7 +326,7 @@
   {
    "fieldname": "economics_override_at",
    "fieldtype": "Datetime",
-   "label": "Override Approved At",
+   "label": "One-time approval date",
    "read_only": 1
   },
   {

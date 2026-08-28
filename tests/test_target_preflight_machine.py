@@ -583,12 +583,26 @@ def test_scheduler_probe_requires_one_active_all_frequency_row_per_job(
         return list(required_rows)
 
     monkeypatch.setattr(preflight.frappe, "get_all", get_all)
+    monkeypatch.setattr(
+        preflight.frappe,
+        "get_system_settings",
+        lambda fieldname: 1 if fieldname == "enable_scheduler" else None,
+        raising=False,
+    )
     monkeypatch.setattr(preflight, "_config_value", lambda *args: 0)
 
     proof = preflight._scheduler_check()
     assert len(proof["requiredFrequencies"]) == len(
         preflight.REQUIRED_SCHEDULER_JOBS
     )
+    assert proof["siteSchedulerEnabled"] is True
+    assert proof["siteSchedulerPaused"] is False
+
+    monkeypatch.setattr(preflight.frappe, "get_system_settings", lambda _fieldname: 0)
+    with pytest.raises(frappe.ValidationError, match="inactive"):
+        preflight._scheduler_check()
+
+    monkeypatch.setattr(preflight.frappe, "get_system_settings", lambda _fieldname: 1)
 
     required_rows.append(dict(required_rows[0]))
     with pytest.raises(frappe.ValidationError, match="duplicated"):
