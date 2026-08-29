@@ -22,7 +22,7 @@
   {
    "hidden": 0,
    "is_query_report": 1,
-   "label": "Every shift, one by one",
+   "label": "Shift audit (technical)",
    "link_count": 0,
    "link_to": "KoPOS Shift Reconciliation",
    "link_type": "Report",
@@ -32,7 +32,7 @@
   {
    "hidden": 0,
    "is_query_report": 1,
-   "label": "Tablet health",
+   "label": "Tablet health (technical)",
    "link_count": 0,
    "link_to": "KoPOS Device Health",
    "link_type": "Report",
