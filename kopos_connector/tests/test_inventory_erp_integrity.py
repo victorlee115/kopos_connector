@@ -227,7 +227,7 @@ class DeskPagePackagingTests(TestCase):
             "Nothing to do right now",
             "See the suggested orders",
             "Open detailed stock changes",
-            "Open finance view",
+            "See cost and value",
             'ledger: ["query-report", "Stock Ledger"]',
             "Follow these steps",
             "Back to stock overview",

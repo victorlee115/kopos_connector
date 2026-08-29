@@ -348,7 +348,7 @@ class JiJiStockAutopilotPage {
 			} else if ((exceptions.critical_reasons || []).length > 0 || warningCount > 0) {
 				needs = { value: __("Something in your stock needs you"), detail: this.firstExceptionDetail(exceptions), action: __("Open stock problems"), route: "needs" };
 		} else if (stockNeedsReview) {
-			needs = { value: __("A tablet's stock report needs you"), detail: stockReportAge, action: __("Open stock"), route: "stock" };
+			needs = { value: __("A tablet's stock report needs you"), detail: stockReportAge, action: __("See the tablets"), route: "stock" };
 		} else if (Number(health.planning?.open || 0) > 0) {
 			const openPlans = Number(health.planning.open || 0);
 			needs = { value: openPlans === 1 ? __("1 suggested order needs your check") : __("{0} suggested orders need your check", [openPlans]), detail: __("Check the amounts and the order before anything is sent."), action: __("See the suggested orders"), route: "plans" };
@@ -377,7 +377,7 @@ class JiJiStockAutopilotPage {
 		const sections = [
 			{
 				key: "today",
-				title: __("Today"),
+				title: __("Automatic updates"),
 				icon: "◷",
 				status: schedulerState,
 					value: scheduler.last_success ? __("JiJi last updated your stock {0} ago", [this.agePhrase(scheduler.last_success, health.as_of)]) : __("JiJi has not updated your stock yet"),
@@ -387,12 +387,12 @@ class JiJiStockAutopilotPage {
 			},
 			{
 				key: "stock",
-				title: __("Stock"),
+				title: __("What the tablets know"),
 				icon: "▣",
 				status: Number(devices.stale || 0) || Number(devices.dirty || 0) || !health.overlay?.acknowledged ? "warning" : "ok",
 				value: __("{0} current · {1} need an update · {2} waiting to send", [Number(devices.current || 0), Number(devices.stale || 0), Number(devices.dirty || 0)]),
 					detail: `${health.overlay?.acknowledged ? __("Every connected tablet has the latest menu and stock instructions") : unacknowledgedDevices === 1 ? __("1 tablet has not received the latest menu or stock instructions") : __("{0} tablets have not received the latest menu or stock instructions", [unacknowledgedDevices])} · ${stockReportAge}`,
-				action: __("Open stock"),
+				action: __("See the tablets"),
 				route: "stock",
 			},
 			{
@@ -417,12 +417,12 @@ class JiJiStockAutopilotPage {
 			},
 			{
 				key: "finance",
-				title: __("Finance"),
+				title: __("Cost and value"),
 				icon: "◫",
 				status: "info",
 				value: __("Stock value and changes"),
 				detail: __("See what was received, used, transferred, or wasted over 7, 30, or 90 days."),
-				action: __("Open finance view"),
+				action: __("See cost and value"),
 				route: "ledger",
 			},
 			{

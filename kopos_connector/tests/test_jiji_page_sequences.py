@@ -97,3 +97,30 @@ def test_stock_keeps_all_six_areas() -> None:
     areas = [key for key in ("today", "stock", "counts", "plans", "finance", "settings")
              if f'key: "{key}"' in page]
     assert areas == ["today", "stock", "counts", "plans", "finance", "settings"]
+
+
+def test_every_area_is_named_by_what_it_holds() -> None:
+    """An area card's title has to survive being read on its own.
+
+    "Today" held the automatic job's status, on a page where every other card
+    is named by its subject. "Stock" sat on a page called Stock Overview and
+    held how many tablets have the current instructions. "Finance" is a
+    department, not a thing a café owner looks for.
+    """
+    page = STOCK.read_text(encoding="utf-8")
+    # Only the six area cards. "Finance" is also a role in the who-does-what
+    # fold, where a department name is exactly what is meant.
+    sections = page[page.index("const sections = ["):page.index("this.page.body.find(\"[data-sections]\")")]
+    for named in ("Automatic updates", "What the tablets know", "Cost and value"):
+        assert f'title: __("{named}")' in sections, f"the {named!r} area is not named after its contents"
+    for vague in ('title: __("Today")', 'title: __("Stock")', 'title: __("Finance")'):
+        assert vague not in sections, f"{vague} names a time or a department, not what the card holds"
+
+
+def test_an_area_button_says_where_it_goes() -> None:
+    page = STOCK.read_text(encoding="utf-8")
+    # "Open stock" on a stock page, and "Open finance view" on a card holding
+    # stock value, both told a reader nothing they did not already see.
+    assert '__("See the tablets")' in page
+    assert '__("See cost and value")' in page
+    assert '__("Open finance view")' not in page
