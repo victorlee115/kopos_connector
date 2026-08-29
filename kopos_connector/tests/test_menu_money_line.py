@@ -83,3 +83,49 @@ def test_a_drink_that_costs_nothing_is_an_absence_not_a_margin() -> None:
     # so a zero total would otherwise read as keeping the entire price.
     assert "if (!cost) {" in page
     assert "counts towards cost yet" in page
+
+
+def test_the_drink_is_on_the_page_not_behind_a_dialog() -> None:
+    page = PAGE.read_text(encoding="utf-8")
+    api = API.read_text(encoding="utf-8")
+    # Choosing a menu item used to change nothing visible until a dialog was
+    # opened. What goes into it, and whether it still makes money, is now
+    # answerable without opening anything.
+    assert "renderDrink(" in page and "loadDrink()" in page
+    assert "What goes into a {0}?" in page
+    # Opening on a drink shows that drink's recipe, not an empty form.
+    assert "active_recipe_name" in api
+
+
+def test_which_recipe_is_active_has_one_owner() -> None:
+    api = API.read_text(encoding="utf-8")
+    capacity = (ROOT / "kopos" / "services" / "inventory_autopilot" / "availability_capacity.py").read_text("utf-8")
+    # A second reading of "active" would let a director cost one recipe while
+    # the counter pours another.
+    assert "def active_recipe_name" in capacity
+    assert '"status": "Active"' not in api
+
+
+def test_a_director_never_reads_a_code() -> None:
+    service = (ROOT / "kopos" / "services" / "inventory_autopilot" / "menu_authoring.py").read_text("utf-8")
+    page = PAGE.read_text(encoding="utf-8")
+    # The rows printed DEMO-CAFE-WHOLE-MILK. The item id stays for the link and
+    # for support; the name is what is read.
+    assert '"item_name":' in service
+    assert "line.item_name" in page
+
+
+def test_the_price_is_said_once_on_the_drink() -> None:
+    page = PAGE.read_text(encoding="utf-8")
+    # It appeared in the card header and again in the money line below it.
+    assert page.count('__("Sells for {0}"') == 0
+    assert '__("Sells for")' in page
+
+
+def test_what_stock_can_make_is_read_from_the_capacity_owner() -> None:
+    api = API.read_text(encoding="utf-8")
+    # The same number the tablet is refused past. A second calculation here
+    # would let the desk promise drinks the counter will not pour.
+    assert "target_capacity" in api
+    assert "result.reliable" in api
+    assert "frappe.log_error" in api

@@ -342,6 +342,17 @@ def _active_recipe(item: str, company: str, at_time: Any) -> Any | None:
     return _first_effective_recipe(rows, at_time)
 
 
+def active_recipe_name(*, item: str, company: str, at_time: Any | None = None) -> str:
+    """Which recipe is in force for this drink right now.
+
+    Exposed because the menu desk needs the same answer this module already
+    uses to decide what a tablet may sell. A second reading of "active" would
+    let a director cost one recipe while the counter pours another.
+    """
+    document = _active_recipe(item, company, at_time or now_datetime())
+    return cstr(getattr(document, "name", "")).strip()
+
+
 def _active_recipes_for_modifier(modifier: str, company: str, at_time: Any) -> list[Any]:
     rows = frappe.get_all(
         "FB Recipe",

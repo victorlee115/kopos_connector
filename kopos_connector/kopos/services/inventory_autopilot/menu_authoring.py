@@ -299,6 +299,9 @@ def build_guided_recipe_preview(
         preview_components.append(
             {
                 "item": item,
+                # The name, because a director never reads a code. The item id
+                # stays for the link and for support.
+                "item_name": str(detail.get("item_name") or "").strip() or item,
                 "component_type": component_type,
                 "entered_qty": _guided_decimal_text(entered_qty),
                 "entered_uom": entered_uom,
@@ -309,6 +312,12 @@ def build_guided_recipe_preview(
                 "loss_factor_pct": _guided_decimal_text(loss_factor),
                 "valuation_rate": _guided_decimal_text(valuation) if valuation is not None else None,
                 "cost_per_batch": _guided_decimal_text(row_cost) if row_cost is not None else None,
+                # What this line costs in one drink, which is the number a
+                # director reads next to the price. The batch figure answers a
+                # different question and was the only one available.
+                "cost_per_serving": (
+                    _guided_decimal_text(row_cost * output_ratio) if row_cost is not None else None
+                ),
                 "affects_stock": affects_stock,
                 "affects_cogs": affects_cogs,
                 "prepared_bom": prepared,

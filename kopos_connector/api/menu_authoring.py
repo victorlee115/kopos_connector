@@ -14,10 +14,11 @@ from typing import Any, Mapping
 
 import frappe
 from frappe import _
-from frappe.utils import cint, cstr
+from frappe.utils import cint, cstr, flt
 
+from kopos_connector.api.cafe_units import amount_phrase
 from kopos_connector.api.catalog import get_item_prices_map
-from kopos_connector.api.director_scope import director_price_list
+from kopos_connector.api.director_scope import director_price_list, director_warehouse
 from kopos_connector.kopos.doctype.fb_recipe.fb_recipe import (
     _canonical_recipe_hash,
 )
@@ -70,6 +71,17 @@ def get_menu_recipe_editor(
 
     _require_company_director("Menu recipe editor")
     recipe_doc = _load_recipe(recipe) if cstr(recipe).strip() else None
+    if recipe_doc is None and cstr(sellable_item).strip() and cstr(company).strip():
+        # Opening on a drink with no recipe named should show the drink's own
+        # recipe, not an empty form. The capacity owner already answers which
+        # one is active, so there is no second definition of "active" here.
+        from kopos_connector.kopos.services.inventory_autopilot.availability_capacity import (
+            active_recipe_name,
+        )
+
+        active = active_recipe_name(item=cstr(sellable_item).strip(), company=cstr(company).strip())
+        if active:
+            recipe_doc = _load_recipe(active)
     selected_company = cstr(company or getattr(recipe_doc, "company", None)).strip()
     selected_item = cstr(
         sellable_item or getattr(recipe_doc, "sellable_item", None)
@@ -77,9 +89,11 @@ def get_menu_recipe_editor(
     if not selected_company or not selected_item:
         frappe.throw(_("Choose a company and menu Item before opening the editor"), frappe.ValidationError)
     _require_existing_company(selected_company)
-    item_details = _load_item_details(
-        {selected_item}, warehouse=cstr(warehouse).strip() or None
-    )
+    # Costs and capacity are read against an outlet's own stock. A director
+    # who has not named one is asking about the outlet they already have, and
+    # one owner answers that for every desk page.
+    resolved_warehouse = cstr(warehouse).strip() or director_warehouse(selected_company)
+    item_details = _load_item_details({selected_item}, warehouse=resolved_warehouse or None)
     item = item_details.get(selected_item)
     if not item or cint(item.get("disabled")) or not cint(item.get("is_sales_item")):
         frappe.throw(_("Choose an enabled saleable Item"), frappe.ValidationError)
@@ -87,7 +101,7 @@ def get_menu_recipe_editor(
     components = _recipe_components(recipe_doc) if recipe_doc else []
     component_items = {cstr(row.get("item")).strip() for row in components if cstr(row.get("item")).strip()}
     item_details.update(
-        _load_item_details(component_items, warehouse=cstr(warehouse).strip() or None)
+        _load_item_details(component_items, warehouse=resolved_warehouse or None)
     )
     modifier_groups = _recipe_modifier_groups(recipe_doc) if recipe_doc else []
     modifier_group_names = {
@@ -118,7 +132,7 @@ def get_menu_recipe_editor(
     preview = _preview_from_values(
         {
             **editor_recipe,
-            "warehouse": cstr(warehouse).strip(),
+            "warehouse": resolved_warehouse,
             "components": components,
             "modifier_groups": modifier_groups,
         },
@@ -131,7 +145,7 @@ def get_menu_recipe_editor(
         "schema_version": "jiji-menu-guided-editor-v1",
         "company": selected_company,
         "sellable_item": selected_item,
-        "warehouse": cstr(warehouse).strip() or None,
+        "warehouse": resolved_warehouse or None,
         "recipe": editor_recipe,
         "item": _public_item_detail(item),
         "items": _public_item_choices(
@@ -141,8 +155,37 @@ def get_menu_recipe_editor(
         "modifier_groups": _modifier_group_choices(),
         "modifier_effects": _public_modifier_effects(modifier_effects),
         "prepared_boms": prepared,
-        "preview": _public_preview(preview),
+        "preview": _public_preview(
+            preview,
+            price_sen=_selling_price_sen(selected_item, selected_company, item_details),
+        ),
+        "can_make": _stock_can_make(selected_item, selected_company, resolved_warehouse),
     }
+
+
+def _stock_can_make(item: str, company: str, warehouse: str) -> dict[str, Any]:
+    """How many of this drink today's stock could make.
+
+    Read from the capacity owner the availability holds and the tablet overlay
+    already use, so the desk cannot quote a different number than the counter
+    refuses to sell past.
+    """
+    if not item or not company or not warehouse:
+        return {"value": None, "reason": _("Choose an outlet to see what your stock can make")}
+    try:
+        from kopos_connector.kopos.services.inventory_autopilot.availability_capacity import (
+            target_capacity,
+        )
+
+        result = target_capacity(
+            target_type="Item", target_id=item, company=company, warehouse=warehouse
+        )
+    except Exception:
+        frappe.log_error(title="JiJi menu could not read stock capacity")
+        return {"value": None, "reason": _("JiJi could not read your stock just now")}
+    if result.capacity is None or not result.reliable:
+        return {"value": None, "reason": cstr(result.reason) or _("Stock information is not complete enough")}
+    return {"value": int(result.capacity), "reason": ""}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -807,6 +850,10 @@ def _public_preview(preview: Mapping[str, Any], *, price_sen: int | None = None)
     for row in result.get("components", []):
         row["valuation_rate_sen"] = _money_to_sen(row.pop("valuation_rate", None))
         row["cost_per_batch_sen"] = _money_to_sen(row.pop("cost_per_batch", None))
+        row["cost_per_serving_sen"] = _money_to_sen(row.pop("cost_per_serving", None))
+        # "180 Millilitre" is what the ERP stores; "180 ml" is what a café
+        # says. One owner words every amount the desk shows.
+        row["amount"] = amount_phrase(flt(row.get("stock_qty_per_serving")), cstr(row.get("stock_uom")))
     result["cost_per_batch_sen"] = _money_to_sen(result.pop("cost_per_batch", None))
     result["cost_per_serving_sen"] = _money_to_sen(result.pop("cost_per_serving", None))
     result["price_sen"] = price_sen

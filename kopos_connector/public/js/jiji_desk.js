@@ -296,6 +296,10 @@ a.jiji-kv:hover { text-decoration: none; color: inherit; }
 .jiji-outletbar .frappe-control { margin-bottom: 0 !important; }
 .jiji-outletbar .control-label, .jiji-outletbar .help-box { display: none !important; }
 
+.jiji-drink__title { font-size: 21px; font-weight: 600; letter-spacing: -.01em; flex: 1 1 auto; }
+.jiji-drink__amount { color: var(--jiji-ink); }
+.jiji-drink__cost { color: var(--jiji-ink-3); min-width: 92px; text-align: right; }
+
 .jiji-advanced { color: var(--jiji-ink-3); font-size: 12px; margin-top: 4px; }
 `;
 		document.head.appendChild(style);

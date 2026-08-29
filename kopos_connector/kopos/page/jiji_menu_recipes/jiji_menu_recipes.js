@@ -70,6 +70,7 @@ class JiJiMenuRecipesPage {
 					<div class="row mb-3"><div class="col-md-4"><div data-company-link></div></div><div class="col-md-4"><div data-menu-item-link></div></div><div class="col-md-4"><div data-catalog-profile-link></div></div></div>
 					<div class="d-flex flex-wrap align-items-center gap-2"><button class="btn btn-sm btn-default" type="button" data-menu-commission="item" disabled>${__("1. Choose item type")}</button><button class="btn btn-sm btn-primary" type="button" data-menu-commission="recipe" disabled>${__("2. Enter recipe")}</button><button class="btn btn-sm btn-default" type="button" data-menu-catalog-preview disabled>${__("3. Check what the outlet will see")}</button></div>
 					<p class="text-muted small mt-2 mb-0" data-sequence-waiting></p>
+					<div data-drink class="mt-4"></div>
 					<p class="small mt-2 mb-0"><button class="btn btn-link btn-sm p-0" type="button" data-menu-commission="recipes">${__("Copy or change a recipe")}</button> <span class="text-muted">${__("— for an item that already has one.")}</span></p>
 					<pre class="small bg-light p-2 mt-3 mb-0 d-none" data-menu-catalog-results></pre><div class="small mt-2" data-guided-editor-status></div>
 				</div></div>
@@ -117,7 +118,95 @@ class JiJiMenuRecipesPage {
 
 	onSelectionChanged(refreshSummary) {
 		this.updateActionState();
+		this.loadDrink();
 		if (refreshSummary) this.refresh(); else this.refreshPublishQueue();
+	}
+
+	/**
+	 * The drink itself, on the page.
+	 *
+	 * Choosing a menu item used to change nothing visible until a dialog was
+	 * opened. A director's question -- what goes into this, and does it still
+	 * make money -- is answerable without opening anything, from figures the
+	 * editor already computes.
+	 */
+	loadDrink() {
+		const company = this.companyControl?.get_value?.();
+		const item = this.menuItemControl?.get_value?.();
+		const target = this.page.body.find("[data-drink]");
+		if (!company || !item) return target.empty();
+		frappe.call({
+			method: "kopos_connector.api.menu_authoring.get_menu_recipe_editor",
+			type: "GET",
+			// No warehouse: the server resolves the director's own outlet.
+			args: { company, sellable_item: item },
+			callback: (response) => this.renderDrink(response.message || {}),
+			error: () => target.empty(),
+		});
+	}
+
+	renderDrink(data) {
+		const target = this.page.body.find("[data-drink]").empty();
+		if (data.status !== "ok") return;
+		const preview = data.preview || {};
+		const recipe = data.recipe || {};
+		const name = (data.item || {}).item_name || data.sellable_item || "";
+		const lines = (preview.components || []).filter((row) => row.item);
+
+		const card = $('<div class="jiji-card"></div>').appendTo(target);
+		const head = $('<div class="jiji-head"></div>').appendTo(card);
+		head.append(
+			$("<span>")
+				.addClass("jiji-drink__title")
+				.text(lines.length ? __("What goes into a {0}?", [name]) : __("{0} has no recipe yet", [name])),
+		);
+		if (recipe.status) head.append(jiji.desk.pill(recipe.status, recipe.status === "Active" ? "ok" : ""));
+		card.append(
+			$("<div>")
+				.addClass("jiji-muted")
+				.css("margin-top", "2px")
+				.text(
+					lines.length
+						? __("Measured for one drink. JiJi works out the cost and what it can make from your stock.")
+						: __("Add the ingredients and JiJi will cost it for you."),
+				),
+		);
+
+		if (lines.length) {
+			const rows = $('<div class="jiji-rows"></div>').css("margin-top", "14px").appendTo(card);
+			lines.forEach((line) => {
+				const row = $('<div class="jiji-row"></div>').appendTo(rows);
+				row.append($("<span>").addClass("jiji-row__main").text(line.item_name || line.item));
+				row.append(
+					$("<span>")
+						.addClass("jiji-drink__amount jiji-num")
+						.text(line.component_type === "Packaging" ? __("packaging") : line.amount || ""),
+				);
+				row.append(
+					$("<span>")
+						.addClass("jiji-drink__cost jiji-num")
+						.text(line.cost_per_serving_sen == null ? __("no cost yet") : this.formatSen(line.cost_per_serving_sen)),
+				);
+			});
+			card.append($("<div>").addClass("mt-3").html(this.moneyLineHtml(preview, true)));
+		}
+
+		// What the saved recipe means, beyond whether it is valid.
+		const facts = [];
+		const canMake = data.can_make || {};
+		if (canMake.value != null) {
+			facts.push([__("Today's stock can make"), __("{0} more", [canMake.value])]);
+		} else if (canMake.reason) {
+			facts.push([__("Today's stock can make"), canMake.reason]);
+		}
+		if (facts.length) {
+			const list = $("<div>").css("margin-top", "14px").appendTo(card);
+			facts.forEach(([label, value]) => {
+				const row = $('<div class="jiji-kv"></div>').appendTo(list);
+				row.append($("<span>").addClass("jiji-kv__main").text(label));
+				row.append($("<span>").addClass("jiji-num").css("font-weight", "600").text(value));
+			});
+		}
 	}
 
 	updateActionState() {
