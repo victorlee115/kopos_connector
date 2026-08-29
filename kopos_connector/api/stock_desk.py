@@ -192,7 +192,13 @@ def _money(value: Any) -> str:
     return f"RM {flt(value):,.2f}"
 
 
-def _counted_tiles(company: str, warehouse: str, low: list[dict[str, Any]], moved: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _counted_tiles(
+    company: str,
+    warehouse: str,
+    low: list[dict[str, Any]],
+    moved: list[dict[str, Any]],
+    no_estimate: str,
+) -> list[dict[str, Any]]:
     """The six things a director counts, not the six areas support watches.
 
     The page already reports how the automatic work is behaving, which is the
@@ -241,8 +247,16 @@ def _counted_tiles(company: str, warehouse: str, low: list[dict[str, Any]], move
 
     first_arrival = next((row.get("schedule_date") for row in arriving if row.get("schedule_date")), None)
     return [
-        {"label": "Running low", "value": str(len(low)),
-         "detail": ", ".join(row["name"] for row in low[:3]) or "nothing short",
+        # "0 · nothing short" is a claim, and it is false when there is no
+        # estimate to count. An empty list and an unanswerable question look
+        # identical in a number; they must not read identically.
+        {"label": "Running low",
+         "value": str(len(low)) if low or not no_estimate else "\u2014",
+         "detail": (
+             ", ".join(row["name"] for row in low[:3])
+             if low
+             else ("nothing short" if not no_estimate else "JiJi cannot say yet")
+         ),
          "attention": bool(low), "route": ["List", "Item"]},
         {"label": "Counts", "value": str(counts_waiting),
          "detail": "waiting for your check" if counts_waiting else "nothing waiting",
@@ -317,7 +331,7 @@ def get_stock_desk(*, warehouse: str | None = None) -> dict[str, Any]:
         "status": "ok",
         "company": company,
         "warehouse": store,
-        "tiles": _counted_tiles(company, store, low, moved),
+        "tiles": _counted_tiles(company, store, low, moved, no_estimate),
         "checked_at": format_datetime(now_datetime(), "HH:mm"),
         "running_low": low,
         # Empty because nothing is low, or empty because JiJi cannot say yet.

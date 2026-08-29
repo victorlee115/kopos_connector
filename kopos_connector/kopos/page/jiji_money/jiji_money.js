@@ -87,7 +87,16 @@ class JiJiMoney {
 			return;
 		}
 
-		const summary = $("<div>").addClass("jiji-tiles");
+		// The statement first, the counters behind it, the same shape as every
+		// other page. Three zeros with the good news underneath said nothing.
+		const next = data.next_step || {};
+		if (next.title) {
+			const block = $("<div>").append(jiji.desk.label(__("Where the cash stands")));
+			jiji.desk.notice(next.title, next.detail).appendTo(block);
+			this.body.append(block);
+		}
+
+		const summary = $("<div>").addClass("jiji-tiles jiji-tiles--few");
 		(data.summary || []).forEach((card) => {
 			const box = $("<div>").addClass("jiji-tile" + (card.attention ? " jiji-money__card--attention" : ""));
 			box.append(jiji.desk.label(card.label || ""));
@@ -102,12 +111,6 @@ class JiJiMoney {
 
 		this.appendGroup(__("Need review"), data.needs_review || []);
 		this.appendGroup(__("Never counted"), data.missing_count || []);
-
-		if (!(data.needs_review || []).length && !(data.missing_count || []).length) {
-			this.body.append(
-				$("<div>").addClass("jiji-muted").text(__("Every closed shift matched. Nothing to review.")),
-			);
-		}
 
 		this.body.append(
 			jiji.desk

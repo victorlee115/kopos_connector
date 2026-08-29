@@ -225,6 +225,9 @@ frappe.provide("jiji.desk");
 .jiji-next__consequence { color: var(--jiji-ink-3); font-size: 12px; margin-top: 8px; }
 
 .jiji-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+/* Three tiles stretched across a full row read as three empty boxes. Cap them
+   so a short row keeps a tile's natural size instead of inflating it. */
+.jiji-tiles--few { grid-template-columns: repeat(auto-fit, minmax(170px, 260px)); }
 .jiji-tile { display: block; background: var(--jiji-surface); border: 1px solid var(--jiji-line);
   border-radius: 10px; padding: 15px 17px; text-decoration: none; color: inherit;
   box-shadow: var(--jiji-lift); }
@@ -298,7 +301,7 @@ a.jiji-kv:hover { text-decoration: none; color: inherit; }
 
 .jiji-drink__title { font-size: 21px; font-weight: 600; letter-spacing: -.01em; flex: 1 1 auto; }
 .jiji-drink__amount { color: var(--jiji-ink); }
-.jiji-drink__cost { color: var(--jiji-ink-3); min-width: 92px; text-align: right; }
+.jiji-drink__cost { color: var(--jiji-ink-2); min-width: 92px; text-align: right; }
 
 .jiji-advanced { color: var(--jiji-ink-3); font-size: 12px; margin-top: 4px; }
 `;

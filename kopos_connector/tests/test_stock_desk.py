@@ -123,3 +123,12 @@ def test_the_counted_tiles_are_quantities_not_statuses() -> None:
     # café's: what is short, waiting, coming, made, wasted, in transit.
     for label in ("Running low", "Counts", "Deliveries", "Made in store", "Waste", "Transfers"):
         assert f'"label": "{label}"' in source, f"the counted tiles are missing {label}"
+
+
+def test_an_unanswerable_count_is_not_reported_as_zero() -> None:
+    source = _source()
+    # "Running low: 0 · nothing short" sat directly above a block saying JiJi
+    # could not say yet. An empty list and an unanswerable question look the
+    # same in a number and must not read the same.
+    assert '"JiJi cannot say yet"' in source
+    assert "if low or not no_estimate" in source

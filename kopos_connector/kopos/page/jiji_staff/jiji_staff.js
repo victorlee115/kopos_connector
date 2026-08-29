@@ -100,9 +100,17 @@ class JiJiStaff {
 			return;
 		}
 
-		const list = $("<div>").addClass("jiji-rows");
+		// Every other block on the desk is named. This one started mid-air.
+		const people = $("<div>").append(
+			jiji.desk.label(
+				data.needs_pin
+					? __("Who can use a tablet · {0} waiting for a PIN", [data.needs_pin])
+					: __("Who can use a tablet"),
+			),
+		);
+		const list = $("<div>").addClass("jiji-rows").css("margin-top", "8px").appendTo(people);
 		(data.people || []).forEach((person) => list.append(this.renderPerson(person)));
-		this.body.append(list);
+		this.body.append(people);
 
 		if (this.setting) this.body.append(this.renderPinForm(this.setting));
 

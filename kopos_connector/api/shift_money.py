@@ -98,6 +98,10 @@ def get_shift_money(company: str | None = None) -> dict[str, Any]:
     return {
         "status": "ok",
         "company": resolved,
+        # Every other desk page leads with one statement. Money led with three
+        # counters, so a café where nothing needs doing opened on a row of
+        # zeros and buried the good news underneath them.
+        "next_step": _money_next_step(grouped),
         "summary": [
             {"key": "matched", "label": "Cash matched", "count": len(grouped["matched"])},
             {"key": "needs_review", "label": "Need review", "count": len(grouped["needs_review"]), "attention": bool(grouped["needs_review"])},
@@ -106,4 +110,38 @@ def get_shift_money(company: str | None = None) -> dict[str, Any]:
         "needs_review": grouped["needs_review"],
         "missing_count": grouped["missing_count"],
         "report_route": ["query-report", "KoPOS Shift Reconciliation"],
+    }
+
+
+def _money_next_step(grouped: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """The one thing to do about the cash, or that there is nothing.
+
+    Worst first: a shift that was counted and did not match is a discrepancy
+    to explain; a shift never counted is a gap in the record. Neither is a
+    list of three numbers.
+    """
+    unmatched = grouped["needs_review"]
+    never = grouped["missing_count"]
+    if unmatched:
+        first = unmatched[0]
+        return {
+            "title": (
+                "1 shift counted a different amount of cash"
+                if len(unmatched) == 1
+                else f"{len(unmatched)} shifts counted a different amount of cash"
+            ),
+            "detail": f"Start with {cstr(first.get('person'))}, {cstr(first.get('difference'))}.",
+        }
+    if never:
+        return {
+            "title": (
+                "1 shift closed without counting the cash"
+                if len(never) == 1
+                else f"{len(never)} shifts closed without counting the cash"
+            ),
+            "detail": "There is nothing to compare against for these.",
+        }
+    return {
+        "title": "The cash is accounted for",
+        "detail": "Every closed shift counted what JiJi expected.",
     }

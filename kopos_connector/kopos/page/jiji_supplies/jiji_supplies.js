@@ -44,7 +44,7 @@ class JiJiSupplies {
 .jiji-supplies__actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
 .jiji-supplies__when { margin-left: auto; color: var(--jiji-ink-3); font-size: 12px; }
 .jiji-supplies__amount { color: var(--jiji-ink-2); }
-.jiji-supplies__cost { font-variant-numeric: tabular-nums; color: var(--jiji-ink-3); min-width: 92px; text-align: right; }
+.jiji-supplies__cost { font-variant-numeric: tabular-nums; color: var(--jiji-ink-2); min-width: 92px; text-align: right; }
 .jiji-supplies__date { color: var(--jiji-ink-3); font-size: 12px; width: 74px; flex: 0 0 auto; }
 .jiji-supplies__why + .jiji-supplies__actions { margin-top: 0; }
 .jiji-supplies__history-total { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 100px; text-align: right; }
@@ -157,7 +157,16 @@ class JiJiSupplies {
 		const head = $("<div>").addClass("jiji-head").appendTo(card);
 		head.append(jiji.desk.label(__("Last orders from {0}", [draft.supplier || ""])));
 		// The reliability line belongs beside the decision, not repeated here.
-		head.append($("<span>").addClass("jiji-muted").text(__("What this record is drawn from")));
+		// This says what the record covers, which the line above does not.
+		head.append(
+			$("<span>")
+				.addClass("jiji-muted")
+				.text(
+					draft.history.length === 1
+						? __("1 finished order")
+						: __("{0} finished orders", [draft.history.length]),
+				),
+		);
 		const list = $("<div>").css("margin-top", "8px").appendTo(card);
 		draft.history.forEach((entry) => {
 			const row = jiji.desk.routeLink(entry.route).addClass("jiji-kv").appendTo(list);
