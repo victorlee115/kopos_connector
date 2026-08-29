@@ -35,7 +35,10 @@ def test_how_long_something_lasts_has_one_owner() -> None:
     # The tablet reads the same snapshot. Recomputing here would give the café
     # two answers to "when does the matcha run out".
     assert "build_edge_inventory_snapshot" in source
-    assert "forecast" not in source
+    # No arithmetic of its own: the module reads the estimate and its reason,
+    # and never derives either.
+    assert "median" not in source and "timedelta" not in source
+    assert 'runout.get("days")' in source
 
 
 def test_the_item_nobody_ordered_is_the_one_that_needs_a_person() -> None:
@@ -82,3 +85,24 @@ def test_the_snapshot_is_asked_for_a_size_it_accepts() -> None:
     assert "SNAPSHOT_LIMIT = 100" in source
     assert "limit=SNAPSHOT_LIMIT" in source
     assert "min(100, max(1," in supplies
+
+
+def test_an_empty_list_says_which_kind_of_empty_it_is() -> None:
+    source = _source()
+    page = PAGE.read_text(encoding="utf-8")
+    # "Nothing is due to run out" and "JiJi cannot say yet" are different
+    # facts, and a blank space says neither. The snapshot already carries its
+    # own plain-language reason, so it is passed through rather than reworded.
+    assert '"running_low_note"' in source
+    assert "runout_reason" in source and "reliability_reason" in source
+    assert "data.running_low_note" in page
+    assert "data.moved_empty_note" in page
+
+
+def test_a_new_cafe_is_told_why_rather_than_shown_nothing() -> None:
+    forecast = (ROOT / "kopos" / "services" / "inventory_autopilot" / "forecast.py").read_text("utf-8")
+    # The forecast refuses to guess from a short history: 14 training days plus
+    # 14 test days. So a café under four weeks past cutover has no runout at
+    # all, by design, and the running-low list is empty for a good reason.
+    assert "MIN_RELIABLE_DAYS = MIN_TRAINING_DAYS + MIN_TEST_DAYS" in forecast
+    assert "MIN_TRAINING_DAYS = 14" in forecast and "MIN_TEST_DAYS = 14" in forecast

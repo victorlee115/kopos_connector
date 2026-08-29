@@ -40,11 +40,16 @@ SOLD_PURPOSES = ("Material Issue",)
 MADE_PURPOSES = ("Manufacture", "Repack")
 
 
-def _runouts(company: str, warehouse: str) -> list[dict[str, Any]]:
-    """Every item with a runout estimate, soonest first.
+def _runouts(company: str, warehouse: str) -> tuple[list[dict[str, Any]], str]:
+    """Every item with a runout estimate, soonest first, and why there is none.
 
     Delegated to the snapshot the tablet reads. Recomputing it here would give
     the café two answers to "when does the matcha run out".
+
+    A café that has not traded for four weeks since it started tracking stock
+    has no reliable estimate, on purpose -- the forecast refuses to guess from
+    a short history. That is worth saying rather than showing a director an
+    empty space, so the snapshot's own reason comes back with the rows.
     """
     from kopos_connector.kopos.services.inventory_autopilot.edge_snapshot import (
         build_edge_inventory_snapshot,
@@ -52,9 +57,11 @@ def _runouts(company: str, warehouse: str) -> list[dict[str, Any]]:
 
     snapshot = build_edge_inventory_snapshot(company=company, warehouse=warehouse, limit=SNAPSHOT_LIMIT)
     rows = []
+    reason = ""
     for target in snapshot.get("items") or []:
         runout = target.get("runout") or {}
         if runout.get("days") is None:
+            reason = reason or cstr(target.get("runout_reason")).strip()
             continue
         rows.append({
             "item": cstr(target.get("stock_item")).strip(),
@@ -62,7 +69,9 @@ def _runouts(company: str, warehouse: str) -> list[dict[str, Any]]:
             "days": flt(runout.get("days")),
         })
     rows.sort(key=lambda row: row["days"])
-    return rows
+    if not rows:
+        reason = reason or cstr(snapshot.get("reliability_reason")).strip()
+    return rows, reason
 
 
 def _items_on_draft_orders(company: str) -> set[str]:
@@ -192,11 +201,11 @@ def get_stock_desk(*, warehouse: str | None = None) -> dict[str, Any]:
         return {"status": "no_outlet", "company": company}
 
     try:
-        runouts = _runouts(company, store)
+        runouts, no_estimate = _runouts(company, store)
     except Exception:
         # Six area cards are still worth reading without this one.
         frappe.log_error(title="JiJi stock desk could not read the runout snapshot")
-        runouts = []
+        runouts, no_estimate = [], "JiJi could not read the stock estimate just now."
 
     ordered = _items_on_draft_orders(company)
     low = [
@@ -229,6 +238,14 @@ def get_stock_desk(*, warehouse: str | None = None) -> dict[str, Any]:
         "company": company,
         "warehouse": store,
         "running_low": low,
+        # Empty because nothing is low, or empty because JiJi cannot say yet.
+        # A director cannot tell those apart from a blank space.
+        "running_low_note": (
+            ""
+            if low
+            else (no_estimate or "Nothing is due to run out in the next three weeks.")
+        ),
         "moved": moved,
+        "moved_empty_note": "Nothing has moved in or out of this outlet today.",
         "moved_note": "Written by the tablets, not by hand",
     }

@@ -163,7 +163,12 @@ class JiJiStockAutopilotPage {
 		moved.empty();
 		if (data.status !== "ok") return;
 
-		if ((data.running_low || []).length) {
+		if (!(data.running_low || []).length && data.running_low_note) {
+			// Blank would read as "nothing to see"; it may mean "JiJi cannot
+			// say yet", which is a different thing a director should know.
+			low.html(`<div class="jiji-head mb-2"><div class="jiji-label">${__("Running low")}</div></div>
+				<div class="text-muted">${this.escape(data.running_low_note)}</div>`);
+		} else if ((data.running_low || []).length) {
 			const rows = data.running_low.map((row) => `
 				<div class="d-flex align-items-center gap-3 py-2 border-bottom">
 					<span class="flex-grow-1">${this.escape(row.name)}</span>
@@ -176,7 +181,10 @@ class JiJiStockAutopilotPage {
 				<div class="card"><div class="card-body py-2">${rows}</div></div>`);
 		}
 
-		if ((data.moved || []).length) {
+		if (!(data.moved || []).length && data.moved_empty_note) {
+			moved.html(`<div class="jiji-head mb-2"><div class="jiji-label">${__("What moved today")}</div></div>
+				<div class="text-muted">${this.escape(data.moved_empty_note)}</div>`);
+		} else if ((data.moved || []).length) {
 			const rows = data.moved.map((row) => `
 				<div class="d-flex align-items-baseline gap-3 py-2 border-bottom">
 					<span class="flex-grow-1">${this.escape(row.title)}</span>
