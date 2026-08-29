@@ -133,7 +133,7 @@ def calculate_promotion_economics(
             if not isinstance(component, dict):
                 raise PromotionEconomicsError(f"items[{index}].components contains an invalid row")
             item = str(component.get("item") or "").strip()
-            qty = _positive(component.get("qty"), f"items[{index}].components.qty")
+            qty = _positive_quantity(component.get("qty"), f"items[{index}].components.qty")
             if not item:
                 raise PromotionEconomicsError(f"items[{index}].components.item is required")
             ingredient_demand[item] = ingredient_demand.get(item, Decimal("0")) + units * qty

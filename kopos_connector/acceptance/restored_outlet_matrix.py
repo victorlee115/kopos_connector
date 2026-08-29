@@ -431,6 +431,84 @@ def _read_timezone(ctx: dict[str, Any]) -> str | None:
     return text
 
 
+def _site_setup(ctx: dict[str, Any]) -> dict[str, Any]:
+    """Read the four Frappe authorities that must agree before Desk is usable."""
+
+    runtime = _runtime_frappe()
+    database = getattr(runtime, "db", None)
+    reasons: list[str] = []
+
+    try:
+        setup_complete = bool(runtime.is_setup_complete())
+    except Exception:
+        setup_complete = False
+        reasons.append("framework_setup_state_unreadable")
+
+    get_default = getattr(database, "get_default", None)
+    if callable(get_default):
+        try:
+            global_setup_complete = _text(get_default("setup_complete"))
+            desktop_home_page = _text(get_default("desktop:home_page"))
+        except Exception:
+            global_setup_complete = ""
+            desktop_home_page = ""
+    else:
+        global_setup_complete = ""
+        desktop_home_page = ""
+
+    get_single_value = getattr(database, "get_single_value", None)
+    if callable(get_single_value):
+        try:
+            system_setup_complete = _text(
+                get_single_value("System Settings", "setup_complete")
+            )
+        except Exception:
+            system_setup_complete = ""
+    else:
+        system_setup_complete = ""
+
+    setup_apps = _rows(
+        ctx,
+        "Installed Application",
+        ("app_name", "has_setup_wizard", "is_setup_complete"),
+        "companies",
+        filters={"has_setup_wizard": 1},
+    )
+    incomplete_setup_apps = sum(
+        not _has_truthy(row, "is_setup_complete") for row in setup_apps
+    )
+
+    if not setup_complete:
+        reasons.append("framework_setup_incomplete")
+    if global_setup_complete not in {"1", "true", "True"}:
+        reasons.append("global_setup_default_incomplete")
+    if system_setup_complete not in {"1", "true", "True"}:
+        reasons.append("system_settings_setup_incomplete")
+    if not setup_apps:
+        reasons.append("setup_application_authority_missing")
+    elif incomplete_setup_apps:
+        reasons.append("setup_application_incomplete")
+    if not desktop_home_page:
+        reasons.append("desktop_home_page_not_configured")
+    elif desktop_home_page == "setup-wizard":
+        reasons.append("desktop_home_page_still_setup_wizard")
+
+    for reason in reasons:
+        _missing(ctx, "companies", reason)
+    return {
+        "ready": not reasons,
+        "frameworkSetupComplete": setup_complete,
+        "globalSetupComplete": global_setup_complete in {"1", "true", "True"},
+        "systemSettingsSetupComplete": system_setup_complete
+        in {"1", "true", "True"},
+        "setupApplicationCount": len(setup_apps),
+        "incompleteSetupApplicationCount": incomplete_setup_apps,
+        "desktopHomePageReady": bool(desktop_home_page)
+        and desktop_home_page != "setup-wizard",
+        "missingReasons": reasons,
+    }
+
+
 def _companies(ctx: dict[str, Any]) -> dict[str, Any]:
     rows = _rows(
         ctx,
@@ -439,11 +517,13 @@ def _companies(ctx: dict[str, Any]) -> dict[str, Any]:
         "companies",
     )
     timezone_name = _read_timezone(ctx)
+    site_setup = _site_setup(ctx)
     reasons: list[str] = []
     if not rows:
         reasons.append("no_company_authority")
     if not timezone_name:
         reasons.append("business_timezone_not_configured")
+    reasons.extend(site_setup["missingReasons"])
     return _category(
         len(rows),
         ctx["fixtureCounts"].get("Company", 0),
@@ -454,6 +534,7 @@ def _companies(ctx: dict[str, Any]) -> dict[str, Any]:
         defaultWarehouseReferenceCount=sum(
             bool(_text(_value(row, "default_warehouse"))) for row in rows
         ),
+        siteSetup=site_setup,
     )
 
 

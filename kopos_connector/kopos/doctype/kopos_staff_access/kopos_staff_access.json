@@ -16,5 +16,8 @@
   {"fieldname":"revision","fieldtype":"Int","label":"Revision","default":1,"read_only":1},
   {"fieldname":"outlet_assignments","fieldtype":"Table","label":"Assigned Outlets","options":"KoPOS Staff Outlet"}
  ],
- "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]
+ "permissions": [
+  {"role":"Company Director","read":1,"write":1,"create":1},
+  {"role":"Company Director","permlevel":1,"read":1,"write":1}
+ ]
 }

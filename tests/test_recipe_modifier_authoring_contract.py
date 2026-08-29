@@ -98,8 +98,8 @@ def test_recipe_required_flag_cannot_change_an_optional_shared_rule(
     with pytest.raises(
         frappe.ValidationError,
         match=(
-            "Recipe AMERICANO_COFFEE_RECIPE changes the selection rules for "
-            "modifier group ADDITIONAL_ESPRESSO_SHOT.*separate modifier group"
+            "Recipe AMERICANO_COFFEE_RECIPE changes the rules for customer choice "
+            "group ADDITIONAL_ESPRESSO_SHOT.*separate customer choice group"
         ),
     ):
         recipe.validate_modifier_groups()
@@ -115,8 +115,8 @@ def test_nonzero_recipe_override_cannot_change_the_shared_rule(
     with pytest.raises(
         frappe.ValidationError,
         match=(
-            "Recipe AMERICANO_COFFEE_RECIPE changes the selection rules for "
-            "modifier group ADDITIONAL_ESPRESSO_SHOT.*separate modifier group"
+            "Recipe AMERICANO_COFFEE_RECIPE changes the rules for customer choice "
+            "group ADDITIONAL_ESPRESSO_SHOT.*separate customer choice group"
         ),
     ):
         recipe.validate_modifier_groups()
@@ -147,7 +147,7 @@ def test_invalid_recipe_override_explains_how_to_fix_it(
 
     with pytest.raises(
         frappe.ValidationError,
-        match="invalid selection rules.*Use a separate modifier group",
+        match="invalid rules for customer choice group.*Use a separate customer choice group",
     ):
         recipe.validate_modifier_groups()
 

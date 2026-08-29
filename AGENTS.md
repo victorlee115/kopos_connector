@@ -46,14 +46,21 @@ requirements, not suggestions.
 - Provider polling locks must be proven with the installed Frappe Redis wrapper,
   including acquisition, renewal, ownership-safe release, and concurrency.
 
-## Current inventory exclusion
+## Current inventory scope
 
-Inventory is being redesigned outside this work. Unless a user explicitly
-changes the scope, do not modify or claim acceptance for ingredient Items,
-recipe components used for stock, quantities, UOM conversions, Stock Entries,
-stock projections, warehouses, COGS configuration, or inventory balances.
-Regression fixtures for non-inventory work must use non-stock items and must not
-post stock movements.
+Inventory is included and evaluated under the active
+`pos_erp_inventory_autopilot_2026_08` campaign. Work may change ingredient
+Items, recipe components used for stock, quantities, exact UOM conversions,
+standard Stock Entries, projections, warehouses, COGS configuration, and
+inventory balances when required by the approved plan. Historical stub recipes,
+resolved sales, and pre-cutover commercial documents must remain unchanged and
+must never be backfilled into ingredient stock history.
+
+Inventory inclusion does not establish acceptance. Do not describe inventory as
+accepted, complete, or production-ready until the exact candidate wheel passes
+real Frappe/MariaDB/Redis integration, restored-production-data commissioning
+and accounting proof, physical-device and novice-user acceptance, canary,
+pilot, and production verification.
 
 Recipe and inventory code is optional to the commercial lane. Missing, disabled,
 invalid, slow, or failing recipe/stock services must not block the base catalog,

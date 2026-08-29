@@ -81,7 +81,7 @@ def build_edge_inventory_snapshot(
     resolved_warehouse = cstr(warehouse).strip()
     if not resolved_company or not resolved_warehouse:
         frappe.throw(
-            _("The authenticated device has no company and warehouse binding"),
+            _("This tablet is not linked to a company and stock location"),
             frappe.ValidationError,
         )
     normalized_search, result_limit = normalize_edge_query(search, limit)
@@ -185,10 +185,10 @@ def build_edge_inventory_snapshot(
                         "stock_uom": None,
                         "freshness": "stale",
                         "reliability": "Not ready",
-                        "reliability_reason": "This modifier has no stocked Item mapping",
+                        "reliability_reason": "This customer choice is not linked to a stock item",
                         "availability": "warning" if target["availability"] == "available" else target["availability"],
                         "runout": None,
-                        "runout_reason": "Runout is unavailable until the modifier is mapped to a stocked Item",
+                        "runout_reason": "JiJi cannot estimate when this may sell out until the customer choice is linked to a stock item",
                     }
                 )
             else:
@@ -206,12 +206,12 @@ def build_edge_inventory_snapshot(
                         "freshness": "current" if instruction_ready else "stale",
                         "reliability": "Reliable" if instruction_ready else "Not ready",
                         "reliability_reason": (
-                            "This modifier is instruction-only and does not consume stock"
+                            "This customer choice changes instructions only and does not use stock"
                             if instruction_ready
                             else target["reliability_reason"]
                         ),
                         "runout": None,
-                        "runout_reason": "Runout does not apply to an instruction-only modifier",
+                        "runout_reason": "A sell-out estimate is not needed for a customer choice that only gives staff an instruction",
                     }
                 )
         modifier_result.append(target)
@@ -627,29 +627,29 @@ def _operational_target(
     )
     reasons: list[str] = []
     reliability = "Reliable"
-    reliability_reason = "Current ERPNext stock evidence is available"
+    reliability_reason = "The latest stock amounts are available"
     if not policy:
         reliability = "Not ready"
-        reliability_reason = "Inventory policy is not configured for this warehouse"
+        reliability_reason = "The stock settings are not finished for this outlet"
     elif not cstr(policy.get("cutover_token")).strip() or not policy.get("cutover_at"):
         reliability = "Not ready"
-        reliability_reason = "Inventory cutover is not active for this warehouse"
+        reliability_reason = "Stock tracking has not started for this outlet"
     elif not is_catalog_target and not stock_item:
         reliability = "Not ready"
-        reliability_reason = "This target has no stocked Item mapping"
+        reliability_reason = "This item or customer choice is not linked to a stock item"
     elif (not is_catalog_target or is_stock_item) and not stock_uom:
         reliability = "Not ready"
-        reliability_reason = "The stocked Item has no stock UOM"
+        reliability_reason = "This item is missing the unit used to count it in stock"
     elif (not is_catalog_target or is_stock_item) and bin_row is None:
         reliability = "Not ready"
-        reliability_reason = "No ERPNext warehouse stock record exists yet"
+        reliability_reason = "No stock amount has been saved for this item at this outlet yet"
     elif freshness == "stale":
         reliability = "Please check"
-        reliability_reason = "The warehouse stock evidence is older than the configured freshness limit"
+        reliability_reason = "This stock amount is older than the allowed time limit"
     elif any(bool(hold.get("stale")) for hold in holds):
         freshness = "stale"
         reliability = "Please check"
-        reliability_reason = "An automation hold needs a fresh stock check"
+        reliability_reason = "Selling is paused until a manager checks the latest stock amount"
     if is_catalog_target and capacity is not None and not capacity.reliable:
         freshness = "stale"
         reliability = "Not ready"
@@ -660,13 +660,13 @@ def _operational_target(
         reliability_reason = capacity.reason
     if raw_actual is None and not (is_catalog_target and capacity is not None and capacity.reliable):
         reliability = "Not ready"
-        reliability_reason = "ERPNext did not return complete stock quantities"
+        reliability_reason = "The store system did not return all required stock amounts"
     if warning:
-        reasons.append("Stock is at or below the usable quantity threshold")
+        reasons.append("The amount available to use is at or below the alert level")
     if is_catalog_target and capacity is not None and not capacity.reliable:
         reasons.append(capacity.reason)
     if any(bool(hold.get("stale")) for hold in holds):
-        reasons.append("Stock check overdue; selling remains held until evidence is refreshed")
+        reasons.append("The stock check is overdue. Selling stays paused until a manager refreshes it")
     return {
         "target_id": target_id,
         "label": label,
@@ -689,7 +689,7 @@ def _operational_target(
         "holds": holds,
         "reasons": reasons,
         "runout": None,
-        "runout_reason": "Runout is available only after a current reliable forecast is proven",
+        "runout_reason": "JiJi can estimate when this may sell out only after it has current stock and enough recent sales information",
     }
 
 
@@ -747,13 +747,13 @@ def _reliable_forecasts(
     max_age_minutes: int,
 ) -> tuple[dict[str, Decimal], str]:
     if not policy or not cstr(policy.get("cutover_token")).strip() or not policy.get("cutover_at"):
-        return {}, "Runout is unavailable until this warehouse has an active inventory cutover"
+        return {}, "JiJi cannot estimate when items may sell out until stock tracking starts for this outlet"
     if _critical_exception_exists(warehouse):
-        return {}, "Runout is unavailable while a critical inventory exception is open"
+        return {}, "JiJi cannot estimate when items may sell out while an urgent stock problem is open"
     if _projection_backlog_exists(warehouse):
-        return {}, "Runout is unavailable while ingredient projection work is pending"
+        return {}, "JiJi cannot estimate when items may sell out while completed sales are still updating ingredient stock"
     if not frappe.db.exists("DocType", "FB Inventory Plan"):
-        return {}, "Runout is unavailable because no inventory plan is installed"
+        return {}, "JiJi cannot estimate when items may sell out because stock planning is not installed"
     rows = frappe.get_all(
         "FB Inventory Plan",
         filters={
@@ -767,17 +767,17 @@ def _reliable_forecasts(
         limit_page_length=1,
     )
     if not rows:
-        return {}, "Runout is unavailable until a reliable forecast is available"
+        return {}, "JiJi needs more complete recent sales information before estimating when items may sell out"
     age = _source_age_minutes(rows[0].get("modified"), now)
     if age is None or age > max_age_minutes:
-        return {}, "Runout is unavailable because the reliable forecast is stale"
+        return {}, "The recent sales estimate is too old to estimate when items may sell out"
     raw_evidence = rows[0].get("forecast_evidence")
     try:
         evidence = json.loads(raw_evidence) if isinstance(raw_evidence, str) else raw_evidence
     except (TypeError, ValueError):
         evidence = None
     if not isinstance(evidence, Mapping) or not isinstance(evidence.get("items"), list):
-        return {}, "Runout is unavailable because forecast arithmetic is incomplete"
+        return {}, "The recent sales estimate is incomplete"
     forecast: dict[str, Decimal] = {}
     for row in evidence["items"]:
         if not isinstance(row, Mapping) or cstr(row.get("forecast_state")).strip() != "Reliable":
@@ -787,7 +787,7 @@ def _reliable_forecasts(
         if item and value is not None and value > Decimal("0"):
             forecast[item] = value
     if not forecast:
-        return {}, "Runout is unavailable because no Item has reliable positive demand"
+        return {}, "There is not enough recent sales information for any item"
     return forecast, ""
 
 
@@ -806,17 +806,17 @@ def _attach_runout(
     if demand is None:
         target["runout"] = None
         target["runout_reason"] = forecast_reason or (
-            "Runout is unavailable for this Item until its forecast is reliable"
+            "JiJi needs more complete recent sales information for this item"
         )
         return
     usable = _decimal_value(target.get("usable_qty"))
     if usable is None:
         target["runout"] = None
-        target["runout_reason"] = "Runout is unavailable because usable stock is incomplete"
+        target["runout_reason"] = "The amount available to use is incomplete"
         return
     target["runout"] = {
         "days": _decimal_string(usable / demand),
-        "basis": "latest reliable post-cutover forecast",
+        "basis": "latest reliable sales and stock information",
     }
     target["runout_reason"] = None
 
@@ -828,22 +828,22 @@ def _overall_reliability(
     warehouse: str,
 ) -> tuple[str, str, str]:
     if not policy:
-        return "stale", "Not ready", "Inventory policy is not configured for this warehouse"
+        return "stale", "Not ready", "The stock settings are not finished for this outlet"
     if not cstr(policy.get("cutover_token")).strip() or not policy.get("cutover_at"):
-        return "current", "Not ready", "Inventory cutover is not active for this warehouse"
+        return "current", "Not ready", "Stock tracking has not started for this outlet"
     if not item_targets:
-        return "stale", "Not ready", "No stock Items are configured for this warehouse"
+        return "stale", "Not ready", "No stock items are set up for this outlet"
     if cstr(policy.get("automation_state")).strip() == "Paused":
-        return "current", "Please check", "Inventory automation is paused for this warehouse"
+        return "current", "Please check", "Automatic stock work is paused for this outlet"
     if _critical_exception_exists(warehouse):
-        return "stale", "Please check", "A critical inventory exception requires attention"
+        return "stale", "Please check", "An urgent stock problem needs attention"
     if _projection_backlog_exists(warehouse):
-        return "stale", "Please check", "Inventory projection work is still pending"
+        return "stale", "Please check", "Completed sales are still updating ingredient stock"
     if any(target.get("freshness") == "stale" for target in item_targets):
-        return "stale", "Please check", "One or more stock sources are older than the freshness limit"
+        return "stale", "Please check", "One or more stock amounts are older than the allowed time limit"
     if any(target.get("reliability") == "Not ready" for target in item_targets):
-        return "current", "Not ready", "One or more stock targets are missing required setup"
-    return "current", "Reliable", "Current warehouse stock evidence is available"
+        return "current", "Not ready", "One or more stock items are missing required setup"
+    return "current", "Reliable", "The latest outlet stock amounts are available"
 
 
 def _critical_exception_exists(warehouse: str) -> bool:
@@ -858,6 +858,25 @@ def _critical_exception_exists(warehouse: str) -> bool:
 def _projection_backlog_exists(warehouse: str) -> bool:
     if not frappe.db.exists("DocType", "FB Projection Log") or not frappe.db.exists("DocType", "FB Order"):
         return False
+    cutover_at = None
+    if frappe.db.exists("DocType", "FB Inventory Policy"):
+        cutover_at = frappe.db.get_value(
+            "FB Inventory Policy",
+            {"warehouse": warehouse},
+            "cutover_at",
+        )
+    if cutover_at and frappe.db.exists(
+        "FB Order",
+        {
+            "booth_warehouse": warehouse,
+            "status": "Submitted",
+            "stock_status": ["in", ["Pending", "Failed"]],
+            "sale_datetime": [">=", cutover_at],
+        },
+    ):
+        # A submitted sale can be visible before its projection log is created.
+        # The order is the durable bridge across that short queue boundary.
+        return True
     rows = frappe.db.sql(
         """
         SELECT pl.name

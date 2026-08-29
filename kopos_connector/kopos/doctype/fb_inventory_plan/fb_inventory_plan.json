@@ -8,17 +8,17 @@
  "field_order": ["company", "warehouse", "planning_date", "status", "input_hash", "policy_hash", "forecast_state", "forecast_evidence", "gate_results", "execution_fingerprint", "created_documents", "lines"],
  "fields": [
   {"fieldname":"company","fieldtype":"Link","label":"Company","options":"Company","reqd":1},
-  {"fieldname":"warehouse","fieldtype":"Link","label":"Warehouse","options":"Warehouse","reqd":1},
-  {"fieldname":"planning_date","fieldtype":"Date","label":"Planning Date","reqd":1},
+	{"fieldname":"warehouse","fieldtype":"Link","label":"Outlet stock location","options":"Warehouse","reqd":1},
+	{"fieldname":"planning_date","fieldtype":"Date","label":"Plan date","reqd":1},
   {"fieldname":"status","fieldtype":"Select","label":"Status","options":"Review First\nReady\nExecuted\nBlocked\nExpired","default":"Review First","reqd":1},
-  {"fieldname":"input_hash","fieldtype":"Data","label":"Input Snapshot Hash","reqd":1,"read_only":1},
-  {"fieldname":"policy_hash","fieldtype":"Data","label":"Policy Hash","read_only":1},
-  {"fieldname":"forecast_state","fieldtype":"Select","label":"Forecast State","options":"Reliable\nPlease check\nNot ready","default":"Not ready","reqd":1},
-  {"fieldname":"forecast_evidence","fieldtype":"Long Text","label":"Forecast Evidence","read_only":1},
-  {"fieldname":"gate_results","fieldtype":"Long Text","label":"Gate Results","read_only":1},
-  {"fieldname":"execution_fingerprint","fieldtype":"Data","label":"Execution Fingerprint","read_only":1,"unique":1},
-  {"fieldname":"created_documents","fieldtype":"Long Text","label":"Created Documents","read_only":1},
-  {"fieldname":"lines","fieldtype":"Table","label":"Proposed Actions","options":"FB Inventory Plan Line"}
+	{"fieldname":"input_hash","fieldtype":"Data","label":"Information used for this plan","reqd":1,"read_only":1,"hidden":1},
+	{"fieldname":"policy_hash","fieldtype":"Data","label":"Stock settings used for this plan","read_only":1,"hidden":1},
+	{"fieldname":"forecast_state","fieldtype":"Select","label":"Can JiJi rely on the sales estimate?","description":"Reliable means the recent sales information is complete enough to use. Please check means a director should review it. Not ready means JiJi will not create stock actions.","options":"Reliable\nPlease check\nNot ready","default":"Not ready","reqd":1},
+	{"fieldname":"forecast_evidence","fieldtype":"Long Text","label":"Why JiJi trusts or does not trust the sales estimate","read_only":1},
+	{"fieldname":"gate_results","fieldtype":"Long Text","label":"Safety checks","read_only":1},
+	{"fieldname":"execution_fingerprint","fieldtype":"Data","label":"Created-action safety check","read_only":1,"unique":1,"hidden":1},
+	{"fieldname":"created_documents","fieldtype":"Long Text","label":"Restock or buying drafts created","read_only":1},
+	{"fieldname":"lines","fieldtype":"Table","label":"Suggested restock actions","options":"FB Inventory Plan Line"}
  ],
  "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]
 }

@@ -45,7 +45,7 @@ class KoPOSProvisioningPage {
 							<button class="btn btn-primary kopos-generate">${__("Generate QR")}</button>
 							<button class="btn btn-default kopos-copy-link" style="display:none">${__("Copy Link")}</button>
 						</div>
-						<p class="text-muted small kopos-status">${__("Generate a one-time QR using a dedicated per-device API identity.")}</p>
+						<p class="text-muted small kopos-status">${__("Generates a one-time QR. The tablet gets its own login, used by nothing else.")}</p>
 					</div>
 					<div class="kopos-provisioning-card kopos-provisioning-preview">
 						<div class="kopos-preview-empty">
@@ -89,7 +89,7 @@ class KoPOSProvisioningPage {
 					<div class="kopos-provisioning-actions">
 						<button class="btn btn-danger kopos-authorization-generate">${__("Generate or Reissue Approval QR")}</button>
 					</div>
-					<p class="text-muted small kopos-authorization-status">${__("Load a safe reset ID to verify its immutable evidence before issuing a QR.")}</p>
+					<p class="text-muted small kopos-authorization-status">${__("Load a safe reset ID and check its recorded evidence before you issue a QR.")}</p>
 					<div class="kopos-cancellation-panel">
 						<h4>${__("Abandon before credential rotation")}</h4>
 						<p class="text-muted small">${__("Use this when a requested or authorized reset will not be completed, including credential recovery where the old tablet API credential is unavailable. This never rotates credentials or changes the device configuration.")}</p>
@@ -98,7 +98,7 @@ class KoPOSProvisioningPage {
 						<div class="kopos-provisioning-actions">
 							<button class="btn btn-danger kopos-authorization-cancel">${__("Cancel Safe Reset")}</button>
 						</div>
-						<p class="text-muted small kopos-cancellation-status">${__("Load the record, then type the exact cancellation confirmation and a reason.")}</p>
+						<p class="text-muted small kopos-cancellation-status">${__("Load it, then type the exact cancellation text and say why.")}</p>
 					</div>
 				</div>
 			</div>
@@ -147,11 +147,11 @@ class KoPOSProvisioningPage {
 		this.recovery_fields = {};
 		const defs = [
 			{ fieldname: "recovery_code", label: __("Tablet Credential Recovery Code"), fieldtype: "Long Text", reqd: 1 },
-			{ fieldname: "recovery_confirmation", label: __("Type RECOVER + Device ID"), fieldtype: "Data", reqd: 1 },
-			{ fieldname: "allow_stale_export", label: __("Override 30-minute export window"), fieldtype: "Check", default: 0 },
-			{ fieldname: "stale_export_override_reason", label: __("Stale Export Override Reason (20-500 characters)"), fieldtype: "Small Text" },
-			{ fieldname: "migration_recovery_confirmation", label: __("Migration Recovery ACK (required only when recovery points exist)"), fieldtype: "Data" },
-			{ fieldname: "migration_recovery_acknowledgement_reason", label: __("Migration Recovery Reconciliation Reason (20-500 characters)"), fieldtype: "Small Text" },
+			{ fieldname: "recovery_confirmation", label: __("Type RECOVER followed by the device ID"), fieldtype: "Data", reqd: 1 },
+			{ fieldname: "allow_stale_export", label: __("Accept export evidence older than 30 minutes"), fieldtype: "Check", default: 0 },
+			{ fieldname: "stale_export_override_reason", label: __("Why the older export is acceptable (20-500 characters)"), fieldtype: "Small Text" },
+			{ fieldname: "migration_recovery_confirmation", label: __("Migration recovery acknowledgement (only when recovery points exist)"), fieldtype: "Data" },
+			{ fieldname: "migration_recovery_acknowledgement_reason", label: __("Why the recovery points can be reconciled (20-500 characters)"), fieldtype: "Small Text" },
 		];
 
 		defs.forEach((df) => {
@@ -167,10 +167,10 @@ class KoPOSProvisioningPage {
 		this.authorization_fields = {};
 		const defs = [
 			{ fieldname: "reset_id", label: __("Safe Reset ID"), fieldtype: "Data", reqd: 1 },
-			{ fieldname: "migration_recovery_confirmation", label: __("Exact Migration Recovery ACK"), fieldtype: "Data" },
-			{ fieldname: "migration_recovery_acknowledgement_reason", label: __("Reconciliation Reason (20-500 characters)"), fieldtype: "Small Text" },
-			{ fieldname: "cancellation_confirmation", label: __("Type CANCEL SAFE RESET + Safe Reset ID"), fieldtype: "Data" },
-			{ fieldname: "cancellation_reason", label: __("Cancellation Reason (1-500 characters)"), fieldtype: "Small Text" },
+			{ fieldname: "migration_recovery_confirmation", label: __("Type the exact acknowledgement text"), fieldtype: "Data" },
+			{ fieldname: "migration_recovery_acknowledgement_reason", label: __("Reason (20-500 characters)"), fieldtype: "Small Text" },
+			{ fieldname: "cancellation_confirmation", label: __("Type CANCEL SAFE RESET followed by the safe reset ID"), fieldtype: "Data" },
+			{ fieldname: "cancellation_reason", label: __("Why this is being cancelled (1-500 characters)"), fieldtype: "Small Text" },
 		];
 		defs.forEach((df) => {
 			const parent = this.page.body.find(`[data-authorization-field="${df.fieldname}"]`).get(0);
@@ -183,7 +183,7 @@ class KoPOSProvisioningPage {
 	make_fields() {
 		this.fields = {};
 		const defs = [
-			{ fieldname: "erpnext_url", label: __("Device ERP URL"), fieldtype: "Data", reqd: 1, default: window.location.origin },
+			{ fieldname: "erpnext_url", label: __("ERP address the tablet will use"), fieldtype: "Data", reqd: 1, default: window.location.origin },
 			{ fieldname: "device", label: __("KoPOS Device"), fieldtype: "Link", options: "KoPOS Device", reqd: 1 },
 			{ fieldname: "pos_profile", label: __("POS Profile"), fieldtype: "Link", options: "POS Profile", read_only: 1 },
 			{ fieldname: "device_name", label: __("Device Name"), fieldtype: "Data" },
@@ -191,7 +191,7 @@ class KoPOSProvisioningPage {
 			{ fieldname: "company", label: __("Company"), fieldtype: "Link", options: "Company" },
 			{ fieldname: "warehouse", label: __("Warehouse"), fieldtype: "Link", options: "Warehouse" },
 			{ fieldname: "currency", label: __("Currency"), fieldtype: "Link", options: "Currency" },
-			{ fieldname: "expires_in_seconds", label: __("Expires In (seconds)"), fieldtype: "Int", default: 900 },
+			{ fieldname: "expires_in_seconds", label: __("Expires in (seconds)"), fieldtype: "Int", default: 900 },
 		];
 
 		defs.forEach((df) => {
@@ -269,7 +269,7 @@ class KoPOSProvisioningPage {
 	async generate() {
 		const values = this.get_values();
 		if (!values.device) {
-			frappe.msgprint({ title: __("Missing fields"), message: __("KoPOS Device is required."), indicator: "red" });
+			frappe.msgprint({ title: __("Something is missing"), message: __("KoPOS Device is required."), indicator: "red" });
 			return;
 		}
 

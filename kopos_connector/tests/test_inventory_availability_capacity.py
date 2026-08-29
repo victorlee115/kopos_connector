@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from unittest import TestCase
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
@@ -24,6 +24,120 @@ from kopos_connector.kopos.services.inventory_autopilot import holds
 
 
 class InventoryAvailabilityCapacityTests(TestCase):
+    def test_create_hold_replay_requires_the_same_payload_hash(self) -> None:
+        import frappe
+
+        document = SimpleNamespace(
+            target_type="Item",
+            target_id="MATCHA-LATTE",
+            company="JiJi Sdn Bhd",
+            warehouse="Outlet A",
+            source="manual",
+            reason_code="manual_manager_pause",
+            reason_label="Pause this item",
+            actor="manager@example.com",
+            pos_profile="Outlet A POS",
+            originating_doctype="KoPOS Device",
+            originating_name="TABLET-A",
+            create_payload_hash="a" * 64,
+            status="Active",
+        )
+        meta = SimpleNamespace(has_field=lambda fieldname: fieldname == "create_payload_hash")
+        with (
+            patch.object(frappe.db, "get_value", return_value="HOLD-A"),
+            patch.object(frappe, "get_doc", return_value=document),
+            patch.object(frappe, "get_meta", return_value=meta),
+        ):
+            self.assertEqual(
+                holds.create_hold(
+                    target_type="Item",
+                    target_id="MATCHA-LATTE",
+                    company="JiJi Sdn Bhd",
+                    warehouse="Outlet A",
+                    source="manual",
+                    reason_code="manual_manager_pause",
+                    reason_label="Pause this item",
+                    actor="manager@example.com",
+                    pos_profile="Outlet A POS",
+                    originating_doctype="KoPOS Device",
+                    originating_name="TABLET-A",
+                    idempotency_key="pause-attempt-1",
+                    command_payload_hash="a" * 64,
+                ),
+                "HOLD-A",
+            )
+            with self.assertRaisesRegex(
+                frappe.ValidationError,
+                "reused with different content",
+            ):
+                holds.create_hold(
+                    target_type="Item",
+                    target_id="MATCHA-LATTE",
+                    company="JiJi Sdn Bhd",
+                    warehouse="Outlet A",
+                    source="manual",
+                    reason_code="manual_manager_pause",
+                    reason_label="Pause this item",
+                    actor="manager@example.com",
+                    pos_profile="Outlet A POS",
+                    originating_doctype="KoPOS Device",
+                    originating_name="TABLET-A",
+                    idempotency_key="pause-attempt-1",
+                    command_payload_hash="b" * 64,
+                )
+
+    def test_replayed_manager_override_does_not_extend_its_window(self) -> None:
+        import frappe
+
+        document = SimpleNamespace(
+            source="automation",
+            status="Active",
+            expires_at=None,
+            actor="manager@example.com",
+            last_release_command_id=None,
+            last_release_payload_hash=None,
+            save=Mock(),
+        )
+        meta = SimpleNamespace(has_field=lambda fieldname: fieldname in {
+            "manager_override_reason",
+            "manager_override_at",
+            "last_release_command_id",
+            "last_release_payload_hash",
+        })
+        with (
+            patch.object(frappe, "get_doc", return_value=document),
+            patch.object(frappe, "get_meta", return_value=meta),
+        ):
+            holds.manager_override_automation_hold(
+                "HOLD-A",
+                actor="manager@example.com",
+                reason="Stock checked",
+                command_id="restore-attempt-1",
+                payload_hash="a" * 64,
+            )
+            first_expiry = document.expires_at
+            holds.manager_override_automation_hold(
+                "HOLD-A",
+                actor="manager@example.com",
+                reason="Stock checked",
+                command_id="restore-attempt-1",
+                payload_hash="a" * 64,
+            )
+            with self.assertRaisesRegex(
+                frappe.ValidationError,
+                "reused with different content",
+            ):
+                holds.manager_override_automation_hold(
+                    "HOLD-A",
+                    actor="manager@example.com",
+                    reason="Stock checked",
+                    command_id="restore-attempt-1",
+                    payload_hash="b" * 64,
+                )
+
+        self.assertEqual(document.expires_at, first_expiry)
+        document.save.assert_called_once_with(ignore_permissions=True)
+
     def test_recipe_capacity_uses_the_lowest_component_whole_servings(self) -> None:
         result = calculate_capacity(
             {"MILK": Decimal("0.25"), "FOAM": Decimal("0.5")},

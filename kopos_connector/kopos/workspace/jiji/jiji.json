@@ -1,0 +1,209 @@
+{
+ "charts": [],
+ "content": "[{\"type\":\"header\",\"data\":{\"text\":\"Your caf\\u00e9\",\"level\":4,\"col\":12}},{\"type\":\"paragraph\",\"data\":{\"text\":\"Start at Home. It shows the one thing that needs you and where the rest is waiting.\",\"col\":12}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Home\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Money\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Menu\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Stock\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Supplies\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Staff\",\"col\":4}},{\"type\":\"spacer\",\"data\":{\"col\":12}},{\"type\":\"header\",\"data\":{\"text\":\"Advanced\",\"level\":4,\"col\":12}},{\"type\":\"paragraph\",\"data\":{\"text\":\"Where every number above came from. If you never open this, you can still run your caf\\u00e9.\",\"col\":12}},{\"type\":\"card\",\"data\":{\"card_name\":\"Reports\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Where the numbers come from\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Support tools\",\"col\":4}}]",
+ "creation": "2026-08-29 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "coffee",
+ "idx": 0,
+ "is_hidden": 0,
+ "label": "JiJi",
+ "links": [
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Reports",
+   "link_count": 0,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Shift audit (technical)",
+   "link_count": 0,
+   "link_to": "KoPOS Shift Reconciliation",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Tablet health (technical)",
+   "link_count": 0,
+   "link_to": "KoPOS Device Health",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "The books",
+   "link_count": 0,
+   "link_to": "Sales Invoice",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Where the numbers come from",
+   "link_count": 0,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "People who can use a tablet",
+   "link_count": 0,
+   "link_to": "KoPOS Staff Access",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Orders to suppliers",
+   "link_count": 0,
+   "link_to": "Purchase Order",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Shifts",
+   "link_count": 0,
+   "link_to": "FB Shift",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Sales",
+   "link_count": 0,
+   "link_to": "FB Order",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Stock counts",
+   "link_count": 0,
+   "link_to": "Stock Entry",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Support tools",
+   "link_count": 0,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Tablets",
+   "link_count": 0,
+   "link_to": "KoPOS Device",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Tablet setup",
+   "link_count": 0,
+   "link_to": "kopos_provisioning",
+   "link_type": "Page",
+   "onboard": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-08-29 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "KoPOS",
+ "name": "JiJi",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "restrict_to_domain": "",
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "Company Director"
+  }
+ ],
+ "sequence_id": 1,
+ "shortcuts": [
+  {
+   "color": "Orange",
+   "format": "",
+   "label": "Home",
+   "link_to": "jiji_home",
+   "stats_filter": "[]",
+   "type": "Page"
+  },
+  {
+   "color": "Green",
+   "format": "",
+   "label": "Money",
+   "link_to": "jiji_money",
+   "stats_filter": "[]",
+   "type": "Page"
+  },
+  {
+   "color": "Blue",
+   "format": "",
+   "label": "Menu",
+   "link_to": "jiji_menu_recipes",
+   "stats_filter": "[]",
+   "type": "Page"
+  },
+  {
+   "color": "Yellow",
+   "format": "",
+   "label": "Stock",
+   "link_to": "jiji_stock_autopilot",
+   "stats_filter": "[]",
+   "type": "Page"
+  },
+  {
+   "color": "Purple",
+   "format": "",
+   "label": "Supplies",
+   "link_to": "jiji_supplies",
+   "stats_filter": "[]",
+   "type": "Page"
+  },
+  {
+   "color": "Grey",
+   "format": "",
+   "label": "Staff",
+   "link_to": "jiji_staff",
+   "stats_filter": "[]",
+   "type": "Page"
+  }
+ ],
+ "title": "JiJi"
+}

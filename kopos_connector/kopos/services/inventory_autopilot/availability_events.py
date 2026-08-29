@@ -21,6 +21,7 @@ from kopos_connector.kopos.services.inventory_autopilot.holds import (
 
 DEBOUNCE_SECONDS = 60
 DEBOUNCE_KEY_PREFIX = "kopos:inventory-availability:v1"
+DEFERRED_WAREHOUSES_KEY = "kopos:inventory-availability:deferred:v1"
 HEALTH_MARKER_PREFIX = "kopos:inventory-autopilot:health:last_availability"
 COMPARE_AND_DELETE_LUA = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
@@ -52,7 +53,14 @@ def schedule_warehouse_availability_recheck(warehouse: str) -> bool:
         return False
     key = f"{DEBOUNCE_KEY_PREFIX}:{hashlib.sha256(resolved_warehouse.encode('utf-8')).hexdigest()}"
     token = uuid4().hex
+    if hasattr(redis_client, "srem"):
+        redis_client.srem(DEFERRED_WAREHOUSES_KEY, resolved_warehouse)
     if not redis_client.set(key, token, ex=DEBOUNCE_SECONDS, nx=True):
+        # The first change in a busy window already owns the immediate check.
+        # Remember later changes so the scheduler performs one trailing check
+        # after the debounce window instead of silently losing the final sale.
+        if hasattr(redis_client, "sadd"):
+            redis_client.sadd(DEFERRED_WAREHOUSES_KEY, resolved_warehouse)
         return False
     try:
         frappe.enqueue(
@@ -70,6 +78,28 @@ def schedule_warehouse_availability_recheck(warehouse: str) -> bool:
         redis_client.eval(COMPARE_AND_DELETE_LUA, 1, key, token)
         raise
     return True
+
+
+def flush_deferred_availability_rechecks() -> dict[str, int]:
+    """Schedule one trailing check for warehouses changed during a busy window."""
+
+    redis_client = _redis_client()
+    if redis_client is None or not hasattr(redis_client, "smembers") or not hasattr(redis_client, "srem"):
+        return {"warehouses": 0, "scheduled": 0, "deferred": 0}
+    raw_members = redis_client.smembers(DEFERRED_WAREHOUSES_KEY) or set()
+    warehouses = sorted({
+        member.decode("utf-8") if isinstance(member, bytes) else cstr(member).strip()
+        for member in raw_members
+        if (member.decode("utf-8") if isinstance(member, bytes) else cstr(member).strip())
+    })
+    scheduled = deferred = 0
+    for warehouse in warehouses:
+        redis_client.srem(DEFERRED_WAREHOUSES_KEY, warehouse)
+        if schedule_warehouse_availability_recheck(warehouse):
+            scheduled += 1
+        else:
+            deferred += 1
+    return {"warehouses": len(warehouses), "scheduled": scheduled, "deferred": deferred}
 
 
 def reevaluate_warehouse_availability(warehouse: str) -> dict[str, int | str]:
@@ -195,6 +225,10 @@ def _redis_client() -> Any | None:
     redis_client = getattr(cache, "redis_client", None)
     if callable(redis_client):
         redis_client = redis_client()
+    if redis_client is None:
+        # Frappe v16 returns RedisWrapper directly. Older test/runtime adapters
+        # may expose the underlying client through ``redis_client`` instead.
+        redis_client = cache
     if redis_client is None or not hasattr(redis_client, "set") or not hasattr(redis_client, "eval"):
         return None
     return redis_client

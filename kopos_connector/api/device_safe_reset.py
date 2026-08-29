@@ -629,7 +629,7 @@ def register_device_credential_recovery(
     device_doc = get_device_doc(device_id=device_id_value)
     if device_doc is None or not cint(getattr(device_doc, "enabled", 0)):
         frappe.throw(
-            _("Credential recovery requires an enabled registered KoPOS Device"),
+            _("Credential recovery requires an enabled registered KoPOS Device; register or enable it first"),
             frappe.ValidationError,
         )
     api_user = _credential_recovery_target_api_user(device_doc)
@@ -768,7 +768,7 @@ def _prepare_safe_reset_request_evidence(
     ).strip()
     if not api_user:
         frappe.throw(
-            _("KoPOS Device has no dedicated API user"),
+            _("KoPOS Device has no dedicated API user; re-run provisioning for this device"),
             frappe.ValidationError,
         )
 
@@ -972,7 +972,7 @@ def _register_safe_reset_request(
         active = None
     if active is not None:
         frappe.throw(
-            _("KoPOS Device already has an active safe reset request"),
+            _("KoPOS Device already has an active safe reset request; resolve or cancel that one first"),
             frappe.ValidationError,
         )
 
@@ -1511,7 +1511,7 @@ def _require_safe_reset_https(base_url: str) -> None:
     }:
         return
     frappe.throw(
-        _("Safe reset approval requires an HTTPS ERP origin"),
+        _("Safe reset approval requires an HTTPS ERP origin; serve this site over HTTPS before issuing approvals"),
         frappe.ValidationError,
     )
 
@@ -1519,7 +1519,7 @@ def _require_safe_reset_https(base_url: str) -> None:
 def _validate_recovery_approval_binding(reset_doc: Any, device_doc: Any) -> None:
     if device_doc is None or not cint(getattr(device_doc, "enabled", 0)):
         frappe.throw(
-            _("Safe reset requires an enabled registered KoPOS Device"),
+            _("Safe reset requires an enabled registered KoPOS Device; register or enable it first"),
             frappe.ValidationError,
         )
     if not hmac.compare_digest(
@@ -1763,7 +1763,7 @@ def _retry_redeemed_result(
         if not current_idempotency:
             if _is_expired(getattr(reset_doc, "approval_expires_at", None)):
                 frappe.throw(
-                    _("Safe reset approval challenge expired"),
+                    _("Safe reset approval challenge expired; ask a System Manager to reissue it"),
                     frappe.ValidationError,
                 )
             should_bind_current_challenge = True
@@ -3151,7 +3151,7 @@ def _validate_reset_scope(
 ) -> dict[str, str]:
     if device_doc is None or not cint(getattr(device_doc, "enabled", 0)):
         frappe.throw(
-            _("Safe reset requires an enabled registered KoPOS Device"),
+            _("Safe reset requires an enabled registered KoPOS Device; register or enable it first"),
             frappe.ValidationError,
         )
 
@@ -3817,7 +3817,7 @@ def _validate_existing_prepared_request_evidence(
 
 def _validate_reset_device_binding(reset_doc: Any, device_doc: Any) -> None:
     if not cint(getattr(device_doc, "enabled", 0)):
-        frappe.throw(_("KoPOS Device is disabled"), frappe.ValidationError)
+        frappe.throw(_("KoPOS Device is disabled; enable it on the KoPOS Device record before retrying"), frappe.ValidationError)
     if not hmac.compare_digest(
         cstr(getattr(reset_doc, "device_id", None)).strip(),
         cstr(getattr(device_doc, "device_id", None)).strip(),
@@ -4315,7 +4315,7 @@ def _rotate_device_api_credentials(
     api_user = cstr(getattr(device_doc, "api_user", None)).strip()
     if not api_user:
         frappe.throw(
-            _("KoPOS Device has no dedicated API user"),
+            _("KoPOS Device has no dedicated API user; re-run provisioning for this device"),
             frappe.ValidationError,
         )
     ensure_unique_device_api_user(
@@ -4324,7 +4324,7 @@ def _rotate_device_api_credentials(
     )
     if not frappe.db.exists("User", api_user):
         frappe.throw(
-            _("KoPOS Device dedicated API user is missing"),
+            _("KoPOS Device dedicated API user is missing; re-run provisioning for this device"),
             frappe.ValidationError,
         )
     old_api_key = cstr(frappe.db.get_value("User", api_user, "api_key")).strip()
@@ -4383,7 +4383,7 @@ def _read_current_device_api_credentials(device_doc: Any) -> dict[str, str]:
     api_user = cstr(getattr(device_doc, "api_user", None)).strip()
     if not api_user:
         frappe.throw(
-            _("KoPOS Device has no dedicated API user"),
+            _("KoPOS Device has no dedicated API user; re-run provisioning for this device"),
             frappe.ValidationError,
         )
     ensure_unique_device_api_user(

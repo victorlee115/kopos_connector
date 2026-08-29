@@ -93,18 +93,46 @@ def ensure_standard_pages() -> None:
 
     pages = (
         {
+            "name": "jiji_home",
+            "title": "JiJi Home",
+            "roles": ("System Manager", "Company Director"),
+        },
+        {
+            "name": "jiji_money",
+            "title": "JiJi Money",
+            "roles": ("System Manager", "Company Director"),
+        },
+        {
+            "name": "jiji_supplies",
+            "title": "JiJi Supplies",
+            "roles": ("System Manager", "Company Director"),
+        },
+        {
+            "name": "jiji_staff",
+            "title": "JiJi Staff",
+            "roles": ("System Manager", "Company Director"),
+        },
+        {
             "name": "jiji_menu_recipes",
-            "title": "JiJi Menu & Recipes",
+            "title": "JiJi Menu, Recipes & Offers",
             "roles": ("System Manager", "Company Director"),
         },
         {
             "name": "jiji_stock_autopilot",
-            "title": "JiJi Stock Autopilot",
+            "title": "JiJi Stock Overview",
             "roles": ("System Manager", "Company Director"),
         },
     )
     for page in pages:
         if frappe.db.exists("Page", page["name"]):
+            if frappe.db.get_value("Page", page["name"], "title") != page["title"]:
+                frappe.db.set_value(
+                    "Page",
+                    page["name"],
+                    "title",
+                    page["title"],
+                    update_modified=False,
+                )
             continue
         previous_developer_mode = getattr(frappe.conf, "developer_mode", 0)
         frappe.conf.developer_mode = 1
@@ -171,6 +199,11 @@ OPERATIONAL_INDEX_SPECS = (
         "idx_kopos_fb_order_device_qr_state",
     ),
     (
+        "FB Order",
+        ["booth_warehouse", "company", "status", "stock_status", "sale_datetime"],
+        "idx_kopos_fb_order_warehouse_stock_status",
+    ),
+    (
         "FB Projection Log",
         ["source_doctype", "source_name", "state", "projection_type"],
         "idx_kopos_projection_source_state",
@@ -179,6 +212,11 @@ OPERATIONAL_INDEX_SPECS = (
         "FB Projection Log",
         ["state", "next_retry_at", "lease_expires_at"],
         "idx_kopos_projection_retry_due",
+    ),
+    (
+        "FB Projection Log",
+        ["projection_type", "state", "source_doctype", "last_attempt_at", "source_name"],
+        "idx_kopos_projection_stock_completed",
     ),
     (
         "Maybank QR Transaction",

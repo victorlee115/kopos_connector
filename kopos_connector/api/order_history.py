@@ -811,6 +811,7 @@ def query_fb_order_items_by_order(
                     "name",
                     "parent",
                     "idx",
+                    "line_id",
                     "item",
                     "item_name_snapshot",
                     "qty",
@@ -820,6 +821,7 @@ def query_fb_order_items_by_order(
                     "line_total",
                     "commercial_modifier_snapshot_json",
                     "resolved_sale",
+                    "remade_qty",
                     "remarks",
                 ],
             ),
@@ -842,6 +844,8 @@ def query_fb_order_items_by_order(
         modifiers = commercial_modifier_rows or []
         grouped.setdefault(parent, []).append(
             {
+                "id": row.get("line_id") or row.get("name"),
+                "line_id": row.get("line_id") or row.get("name"),
                 "idx": row.get("idx"),
                 "item_code": row.get("item"),
                 "item_name": row.get("item_name_snapshot"),
@@ -856,6 +860,7 @@ def query_fb_order_items_by_order(
                 "warehouse": None,
                 "custom_kopos_modifier_total": row.get("modifier_total"),
                 "custom_kopos_modifiers": serialize_fb_modifiers_snapshot(modifiers),
+                "remade_qty": row.get("remade_qty"),
             }
         )
     return grouped

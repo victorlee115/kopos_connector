@@ -702,7 +702,7 @@ def test_completed_refund_retry_is_verified_before_token_consumption(
     monkeypatch.setattr(
         api,
         "_return_request_fingerprint",
-        lambda value, approval_scope: "f" * 64,
+        lambda value, approval_scope, **_kwargs: "f" * 64,
     )
     monkeypatch.setattr(api, "lock_and_validate_return_quantities", lambda *args: None)
     monkeypatch.setattr(
@@ -766,7 +766,7 @@ def test_new_refund_consumes_token_with_exact_server_scope(
     monkeypatch.setattr(
         api,
         "_return_request_fingerprint",
-        lambda value, approval_scope: "f" * 64,
+        lambda value, approval_scope, **_kwargs: "f" * 64,
     )
     monkeypatch.setattr(api, "lock_and_validate_return_quantities", lambda *args: None)
     monkeypatch.setattr(api, "_get_existing_return_name_current", lambda key: None)
@@ -942,7 +942,7 @@ def test_success_and_duplicate_api_responses_expose_same_settlement_proof(
         assert response["settlement_document"] == "JV-REFUND-1"
         assert response["settlement_status"] == "Posted"
         assert response["return_to_stock"] == 0
-        assert response["inventory_evaluation"] == "excluded_not_evaluated"
+        assert response["inventory_evaluation"] == "included_evaluated"
         assert response["reversal_stock_entries"] == []
     assert verified == ["FB-RETURN-1", "FB-RETURN-1"]
 

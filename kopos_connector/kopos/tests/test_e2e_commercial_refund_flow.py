@@ -71,7 +71,7 @@ class TestEndToEndCommercialRefundFlow(FrappeTestCase):
         self.assertEqual(result["return_to_stock"], 0)
         self.assertEqual(
             result["inventory_evaluation"],
-            "excluded_not_evaluated",
+            "included_evaluated",
         )
         self.assertEqual(result["reversal_stock_entries"], [])
 

@@ -13,6 +13,9 @@ from zoneinfo import ZoneInfo
 
 import frappe
 from frappe.utils import cint, cstr, flt, now_datetime, nowdate
+from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
+    central_staff_access_exists_for_device,
+)
 
 from kopos_connector.kopos.api.money_contract import (
     persisted_money_to_sen,
@@ -79,6 +82,8 @@ SMOKE_MOCK_PRINTER_HOST_ENV = "KOPOS_SMOKE_MOCK_PRINTER_HOST"
 SMOKE_MOCK_PRINTER_PORT_ENV = "KOPOS_SMOKE_MOCK_PRINTER_PORT"
 SMOKE_INVENTORY_ACCEPTANCE_ENV = "KOPOS_CAMPAIGN_INVENTORY_ACCEPTANCE"
 SMOKE_INVENTORY_EVALUATION_ENV = "KOPOS_CAMPAIGN_INVENTORY_EVALUATION"
+SMOKE_INVENTORY_OPENING_REMARKS = "KoPOS included-inventory smoke cutover v1"
+SMOKE_INVENTORY_DIRECTOR = "manager@smoke.kopos.local"
 SMOKE_MOCK_PRINTER_DEFAULT_HOST = "127.0.0.1"
 SMOKE_MOCK_PRINTER_DEFAULT_PORT = 19100
 SUPPORT_REDACTED_VALUE = "[redacted]"
@@ -241,7 +246,9 @@ def _ensure_smoke_base_data(
         "item_code": item,
         "recipe": demo_recipe,
         "inventory_evaluation": (
-            "inventory_regression" if include_inventory_regression else "excluded_not_evaluated"
+            "included_evaluated"
+            if include_inventory_regression
+            else "excluded_not_evaluated"
         ),
     }
 
@@ -456,8 +463,216 @@ def set_demo_ingredient_quantities(
     _set_qty(DEMO_STRAWBERRY_ITEM, strawberry_qty)
     _set_qty(DEMO_MILK_ITEM, milk_qty)
     _set_qty(DEMO_CUP_ITEM, cup_qty)
+
+    # Promotion economics refuses to publish against valuation evidence older
+    # than the policy's source-age window. _set_qty only posts a Stock Entry
+    # when the quantity actually moves, so re-seeding a site whose quantities
+    # already match left every Bin untouched and the seed failed on its own
+    # stale evidence. The seeder has just re-established these quantities and
+    # rates, so stamping the observation time is accurate, not a fudge.
+    for item_code in (
+        DEMO_MATCHA_ITEM,
+        DEMO_STRAWBERRY_ITEM,
+        DEMO_MILK_ITEM,
+        DEMO_CUP_ITEM,
+    ):
+        bin_name = frappe.db.get_value(
+            "Bin", {"item_code": item_code, "warehouse": warehouse}, "name"
+        )
+        if bin_name:
+            frappe.db.set_value(
+                "Bin", bin_name, "modified", now_datetime(), update_modified=False
+            )
     frappe.db.commit()
     return get_demo_ingredient_state()
+
+
+def _ensure_smoke_inventory_policy(
+    *,
+    company: str,
+    warehouse: str,
+    expense_account: str,
+    preparation_device: str,
+) -> str:
+    """Commission the isolated smoke outlet after its opening quantities exist.
+
+    Included-inventory campaigns must exercise the same immutable cutover and
+    explicit exception ownership required in production. The commercial-only
+    smoke path never calls this helper and remains independent of inventory.
+    """
+
+    policies = frappe.get_all(
+        "FB Inventory Policy",
+        filters={"company": company, "warehouse": warehouse},
+        fields=["name"],
+        order_by="name asc",
+        limit_page_length=0,
+    )
+    if len(policies) > 1:
+        frappe.throw(
+            f"Smoke warehouse {warehouse} has multiple inventory policies",
+            frappe.ValidationError,
+        )
+    if policies:
+        policy = frappe.get_doc("FB Inventory Policy", policies[0]["name"])
+        opening_name = cstr(
+            getattr(policy, "opening_stock_reconciliation", None)
+        ).strip()
+        opening_status = (
+            frappe.db.get_value("Stock Reconciliation", opening_name, "docstatus")
+            if opening_name
+            else None
+        )
+        expected = {
+            "automation_state": "Active",
+            "inventory_contract_version": "inventory-autopilot-v1",
+            "permitted_actions": "stock_projection",
+            "expense_account": expense_account,
+            "preparation_device": preparation_device,
+            "inventory_exception_owner": SMOKE_INVENTORY_DIRECTOR,
+            "purchase_review_owner": SMOKE_INVENTORY_DIRECTOR,
+        }
+        mismatched = [
+            fieldname
+            for fieldname, value in expected.items()
+            if cstr(getattr(policy, fieldname, None)).strip() != value
+        ]
+        token = cstr(getattr(policy, "cutover_token", None)).strip().lower()
+        if (
+            mismatched
+            or not re.fullmatch(r"[0-9a-f]{64}", token)
+            or not getattr(policy, "cutover_at", None)
+            or opening_status != 1
+        ):
+            frappe.throw(
+                "Existing smoke inventory policy does not match the immutable "
+                f"included-inventory fixture: {', '.join(mismatched) or 'cutover evidence'}",
+                frappe.ValidationError,
+            )
+        return cstr(policy.name)
+
+    director = frappe.get_doc("User", SMOKE_INVENTORY_DIRECTOR)
+    director_roles = {
+        cstr(getattr(row, "role", None)).strip()
+        for row in getattr(director, "roles", None) or []
+    }
+    if "Company Director" not in director_roles:
+        director.append("roles", {"role": "Company Director"})
+        director.save(ignore_permissions=True)
+
+    opening_accounts = frappe.get_all(
+        "Account",
+        filters={
+            "company": company,
+            "root_type": ["in", ["Asset", "Liability"]],
+            "is_group": 0,
+            "disabled": 0,
+        },
+        fields=["name", "account_type"],
+        order_by="name asc",
+        limit_page_length=0,
+    )
+    opening_difference_account = ""
+    for account_type in ("Temporary", "Stock"):
+        matches = [
+            cstr(row.get("name")).strip()
+            for row in opening_accounts
+            if cstr(row.get("account_type")).strip() == account_type
+        ]
+        if len(matches) == 1:
+            opening_difference_account = matches[0]
+            break
+        if len(matches) > 1:
+            frappe.throw(
+                f"Smoke company has multiple enabled {account_type} opening accounts",
+                frappe.ValidationError,
+            )
+    if not opening_difference_account:
+        frappe.throw(
+            "Smoke company has no unique Temporary or Stock opening account",
+            frappe.ValidationError,
+        )
+
+    reconciliation_rows = []
+    reconciliation_meta = frappe.get_meta("Stock Reconciliation")
+    if reconciliation_meta.has_field("remarks"):
+        reconciliation_rows = frappe.get_all(
+            "Stock Reconciliation",
+            filters={
+                "company": company,
+                "remarks": SMOKE_INVENTORY_OPENING_REMARKS,
+                "docstatus": 1,
+            },
+            fields=["name"],
+            order_by="creation asc, name asc",
+            limit_page_length=0,
+        )
+    if len(reconciliation_rows) > 1:
+        frappe.throw(
+            "Smoke warehouse has multiple submitted opening reconciliations",
+            frappe.ValidationError,
+        )
+
+    if reconciliation_rows:
+        opening_name = cstr(reconciliation_rows[0]["name"])
+    else:
+        reconciliation = frappe.new_doc("Stock Reconciliation")
+        reconciliation.company = company
+        reconciliation.purpose = "Opening Stock"
+        opening_posted_at = now_datetime() - timedelta(minutes=5)
+        reconciliation.posting_date = opening_posted_at.date()
+        if reconciliation_meta.has_field("set_posting_time"):
+            reconciliation.set_posting_time = 1
+        if reconciliation_meta.has_field("posting_time"):
+            reconciliation.posting_time = opening_posted_at.time()
+        if reconciliation_meta.has_field("expense_account"):
+            reconciliation.expense_account = opening_difference_account
+        if reconciliation_meta.has_field("remarks"):
+            reconciliation.remarks = SMOKE_INVENTORY_OPENING_REMARKS
+        target_quantities = {
+            DEMO_MATCHA_ITEM: SMOKE_ACCEPTANCE_MATCHA_TARGET_QTY,
+            DEMO_STRAWBERRY_ITEM: SMOKE_ACCEPTANCE_STRAWBERRY_TARGET_QTY,
+            DEMO_MILK_ITEM: SMOKE_ACCEPTANCE_MILK_TARGET_QTY,
+            DEMO_CUP_ITEM: SMOKE_ACCEPTANCE_CUP_TARGET_QTY,
+        }
+        for item_code, target_qty in target_quantities.items():
+            reconciliation.append(
+                "items",
+                {
+                    "item_code": item_code,
+                    "warehouse": warehouse,
+                    "qty": target_qty,
+                    "stock_uom": frappe.db.get_value("Item", item_code, "stock_uom"),
+                    "valuation_rate": DEMO_INGREDIENT_VALUATION_RATES[item_code],
+                },
+            )
+        reconciliation.insert(ignore_permissions=True)
+        reconciliation.submit()
+        if cint(getattr(reconciliation, "docstatus", 0)) != 1:
+            frappe.throw(
+                "Smoke opening Stock Reconciliation did not submit",
+                frappe.ValidationError,
+            )
+        opening_name = cstr(reconciliation.name)
+
+    policy = frappe.new_doc("FB Inventory Policy")
+    policy.company = company
+    policy.warehouse = warehouse
+    policy.automation_state = "Active"
+    policy.inventory_contract_version = "inventory-autopilot-v1"
+    policy.cutover_token = hashlib.sha256(
+        f"smoke-inventory-v1|{company}|{warehouse}|{opening_name}".encode("utf-8")
+    ).hexdigest()
+    policy.cutover_at = now_datetime()
+    policy.opening_stock_reconciliation = opening_name
+    policy.max_source_age_minutes = 30
+    policy.preparation_device = preparation_device
+    policy.permitted_actions = "stock_projection"
+    policy.expense_account = expense_account
+    policy.inventory_exception_owner = SMOKE_INVENTORY_DIRECTOR
+    policy.purchase_review_owner = SMOKE_INVENTORY_DIRECTOR
+    policy.insert(ignore_permissions=True)
+    return cstr(policy.name)
 
 
 def ensure_demo_fb_shift(shift_code: str = "smoke-shift-001") -> dict[str, Any]:
@@ -2128,8 +2343,11 @@ def dump_smoke_json(
 
 def assert_smoke_business_state_json(
     expected_idempotency_keys: list[str] | None = None,
+    include_inventory_regression: int | str | bool = False,
 ) -> dict[str, Any]:
-    state = dump_smoke_state()
+    state = dump_smoke_state(
+        include_inventory_regression=bool(cint(include_inventory_regression))
+    )
     return build_smoke_business_assertions(
         state,
         expected_idempotency_keys=expected_idempotency_keys,
@@ -2520,16 +2738,79 @@ def _build_smoke_device_printers() -> list[dict[str, Any]]:
     ]
 
 
+def _ensure_smoke_staff_access(device_doc: Any, users: list[dict[str, Any]]) -> None:
+    """Give the smoke staff a central access record with a linked Employee.
+
+    Every guided inventory task -- waste, receiving, transfers, count submission
+    -- is refused unless the signed-in user resolves to an Employee. That
+    identity comes only from KoPOS Staff Access; the legacy device_users child
+    table has no employee field at all, so without this the smoke tablet can
+    sign in and sell but cannot exercise a single inventory action.
+
+    Called after the device is saved: assigning central access locks the legacy
+    rows, so it must not run before they are written.
+    """
+
+    for required in ("KoPOS Staff Access", "KoPOS Staff Outlet", "Employee"):
+        if not frappe.db.exists("DocType", required):
+            return
+
+    profile = frappe.get_doc("POS Profile", device_doc.pos_profile)
+    company = cstr(getattr(profile, "company", None)).strip()
+    warehouse = cstr(getattr(profile, "warehouse", None)).strip()
+    outlet = cstr(getattr(profile, "name", None)).strip()
+    if not company or not warehouse or not outlet:
+        return
+
+    for row in users:
+        user = cstr(row.get("user")).strip()
+        if not user:
+            continue
+        employee = frappe.db.get_value("Employee", {"user_id": user}, "name")
+        if not employee:
+            employee_doc = frappe.new_doc("Employee")
+            employee_doc.employee_name = row.get("display_name") or user
+            employee_doc.first_name = cstr(row.get("display_name") or user).split()[0]
+            employee_doc.company = company
+            employee_doc.date_of_joining = "2026-01-01"
+            employee_doc.date_of_birth = "1995-01-01"
+            employee_doc.status = "Active"
+            employee_doc.user_id = user
+            employee_doc.insert(ignore_permissions=True, ignore_mandatory=True)
+            employee = employee_doc.name
+
+        existing = frappe.db.get_value("KoPOS Staff Access", {"user": user}, "name")
+        access = (
+            frappe.get_doc("KoPOS Staff Access", existing)
+            if existing
+            else frappe.new_doc("KoPOS Staff Access")
+        )
+        access.user = user
+        access.employee = employee
+        access.active = 1
+        access.access_level = "Manager" if cint(row.get("can_manager_override")) else "Staff"
+        access.pin_hash = row.get("pin_hash")
+        access.set("outlet_assignments", [])
+        access.append(
+            "outlet_assignments",
+            {"company": company, "outlet": outlet, "warehouse": warehouse},
+        )
+        if existing:
+            access.save(ignore_permissions=True)
+        else:
+            access.insert(ignore_permissions=True)
+
+
 def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
     from kopos_connector.utils.pin import hash_pin
 
-    _ensure_frappe_user("staff@smoke.kopos.local", "Staff Ahmad")
-    _ensure_frappe_user("manager@smoke.kopos.local", "Manager Siti")
+    _ensure_frappe_user("staff@smoke.kopos.local", "Aisyah Rahman")
+    _ensure_frappe_user("manager@smoke.kopos.local", "Farid Hassan")
 
     users = [
         {
             "user": "staff@smoke.kopos.local",
-            "display_name": "Staff Ahmad",
+            "display_name": "Aisyah Rahman",
             "active": 1,
             "default_cashier": 1,
             "pin_hash": hash_pin("1234"),
@@ -2541,7 +2822,7 @@ def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
         },
         {
             "user": "manager@smoke.kopos.local",
-            "display_name": "Manager Siti",
+            "display_name": "Farid Hassan",
             "active": 1,
             "default_cashier": 0,
             "pin_hash": hash_pin("2345"),
@@ -2560,13 +2841,18 @@ def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
         doc = frappe.get_doc("KoPOS Device", existing)
         doc.pos_profile = pos_profile
         doc.allow_training_mode = SMOKE_ALLOW_TRAINING_MODE
-        doc.device_users = []
+        # Assigning central staff access makes the legacy rows read-only, and
+        # hash_pin salts every call, so re-appending them would always look like
+        # an edit and be rejected. Leave them exactly as stored once locked.
+        if not central_staff_access_exists_for_device(doc):
+            doc.device_users = []
+            for row in users:
+                doc.append("device_users", row)
         doc.printers = []
-        for row in users:
-            doc.append("device_users", row)
         for row in printers:
             doc.append("printers", row)
         doc.save(ignore_permissions=True)
+        _ensure_smoke_staff_access(doc, users)
         return doc
 
     doc = frappe.get_doc(
@@ -2585,6 +2871,7 @@ def _ensure_kopos_device(device_id: str, pos_profile: str, company: str) -> Any:
         }
     )
     doc.insert(ignore_permissions=True)
+    _ensure_smoke_staff_access(doc, users)
     return doc
 
 
@@ -2628,7 +2915,14 @@ def setup_full_smoke_data(
         expires_in_seconds=86400,
     )
 
+    inventory_policy = None
     if inventory_regression:
+        inventory_policy = _ensure_smoke_inventory_policy(
+            company=company,
+            warehouse=base["warehouse"],
+            expense_account=base["expense_account"],
+            preparation_device=device_doc.name,
+        )
         set_demo_ingredient_quantities()
     promotion_name = _ensure_demo_promotion(base["pos_profile"])
     if inventory_regression:
@@ -2666,18 +2960,19 @@ def setup_full_smoke_data(
         "users": [
             {
                 "id": "staff@smoke.kopos.local",
-                "display_name": "Staff Ahmad",
+                "display_name": "Aisyah Rahman",
                 "pin": "1234",
             },
             {
                 "id": "manager@smoke.kopos.local",
-                "display_name": "Manager Siti",
+                "display_name": "Farid Hassan",
                 "pin": "2345",
             },
         ],
     }
     if inventory_regression:
         result["stock_item_code"] = DEMO_MATCHA_ITEM
+        result["inventory_policy"] = inventory_policy
     return result
 
 
@@ -3483,8 +3778,8 @@ def _collect_inventory_mutation_audit(
 ) -> dict[str, Any]:
     """Read a complete, zero-write inventory mutation window for acceptance.
 
-    This does not test or accept inventory behavior. It proves that the current
-    non-inventory campaign did not mutate inventory while registering sales.
+    This captures the exact standard ERP inventory documents and balances used
+    by both included-inventory acceptance and excluded-inventory diagnostics.
     All four inventory reads share one MariaDB repeatable-read, read-only
     snapshot established at or after the database capture boundary.
     """
@@ -3837,7 +4132,7 @@ def _collect_smoke_business_state(
                 site_timezone=cstr(site_timezone).strip(),
                 window_start_utc=inventory_window_start_utc,
             ),
-            "inventory_evaluation": "inventory_regression",
+            "inventory_evaluation": "included_evaluated",
         }
     shift_fields = [
         "name",
@@ -4046,6 +4341,12 @@ def build_smoke_business_assertions(
     order_history = data.get("order_history")
     order_history_data = order_history if isinstance(order_history, dict) else {}
     device_state = state.get("device") if isinstance(state, dict) else None
+    inventory_evaluation = str(
+        data.get("inventory_evaluation") or "excluded_not_evaluated"
+    )
+    inventory_acceptance = inventory_evaluation == "included_evaluated"
+    ingredient_stock_entries = _list(data.get("ingredient_stock_entries"))
+    ingredient_bin_balances = _list(data.get("ingredient_bin_balances"))
 
     failed_projections = _list(projection_statuses.get("failed"))
     failed_commercial_projections = [
@@ -4240,11 +4541,100 @@ def build_smoke_business_assertions(
         and all(order.get("sales_invoice") for order in submitted_orders),
         {
             "orders": submitted_orders,
-            "inventory_acceptance": False,
-            "inventory_evaluation": data.get("inventory_evaluation")
-            or "excluded_not_evaluated",
+            "inventory_acceptance": inventory_acceptance,
+            "inventory_evaluation": inventory_evaluation,
         },
     )
+    if inventory_acceptance:
+        inventory_orders = [
+            row
+            for row in fb_orders
+            if row.get("status") in {"Submitted", "Cancelled"}
+        ]
+        stock_entries_by_name = {
+            row.get("name"): row
+            for row in ingredient_stock_entries
+            if isinstance(row, dict) and row.get("name")
+        }
+        linked_entries = [
+            stock_entries_by_name.get(order.get("ingredient_stock_entry"))
+            for order in inventory_orders
+        ]
+        expect(
+            "inventory_stock_issue_links_proven",
+            bool(inventory_orders)
+            and len(stock_entries_by_name) == len(inventory_orders)
+            and all(
+                order.get("stock_status") == "Posted"
+                and isinstance(entry, dict)
+                and entry.get("docstatus") == 1
+                and entry.get("purpose") == "Material Issue"
+                and entry.get("stock_entry_type") == "Material Issue"
+                and entry.get("custom_fb_order") == order.get("name")
+                for order, entry in zip(inventory_orders, linked_entries)
+            ),
+            {"orders": inventory_orders, "stock_entries": ingredient_stock_entries},
+        )
+        expect(
+            "inventory_stock_entry_details_proven",
+            bool(linked_entries)
+            and all(
+                isinstance(entry, dict)
+                and bool(_list(entry.get("items")))
+                and all(
+                    item.get("item_code")
+                    and item.get("stock_uom")
+                    and item.get("s_warehouse")
+                    and not item.get("t_warehouse")
+                    and _exact_quantity_has_sign(item.get("qty"), 1)
+                    and _exact_quantity_has_sign(item.get("transfer_qty"), 1)
+                    for item in _list(entry.get("items"))
+                )
+                for entry in linked_entries
+            ),
+            ingredient_stock_entries,
+        )
+        expect(
+            "inventory_stock_ledger_movements_proven",
+            bool(linked_entries)
+            and all(
+                isinstance(entry, dict)
+                and bool(_list(entry.get("stock_ledger_entries")))
+                and all(
+                    ledger.get("voucher_type") == "Stock Entry"
+                    and ledger.get("voucher_no") == entry.get("name")
+                    and ledger.get("item_code")
+                    and ledger.get("warehouse")
+                    and ledger.get("is_cancelled") is False
+                    and _exact_quantity_has_sign(ledger.get("actual_qty"), -1)
+                    for ledger in _list(entry.get("stock_ledger_entries"))
+                )
+                for entry in linked_entries
+            ),
+            ingredient_stock_entries,
+        )
+        expect(
+            "inventory_stock_projection_sale_datetime_preserved",
+            bool(inventory_orders)
+            and all(
+                isinstance(entry, dict)
+                and _projection_posts_at_sale_datetime(order, entry)
+                for order, entry in zip(inventory_orders, linked_entries)
+            ),
+            {"orders": inventory_orders, "stock_entries": ingredient_stock_entries},
+        )
+        expect(
+            "inventory_bin_balances_proven",
+            bool(ingredient_bin_balances)
+            and all(
+                balance.get("name")
+                and balance.get("item_code")
+                and balance.get("warehouse")
+                and _exact_quantity_has_sign(balance.get("actual_qty"), 1)
+                for balance in ingredient_bin_balances
+            ),
+            ingredient_bin_balances,
+        )
     expect("refund_return_record_proven", bool(returns), returns)
     expect("refund_return_sales_invoice_proven", bool(submitted_return_invoices), invoices)
     expect(
@@ -4335,9 +4725,8 @@ def build_smoke_business_assertions(
             "fb_shifts": len(fb_shifts),
             "fb_orders": len(fb_orders),
             "sales_invoices": len(invoices),
-            "inventory_acceptance": False,
-            "inventory_evaluation": data.get("inventory_evaluation")
-            or "excluded_not_evaluated",
+            "inventory_acceptance": inventory_acceptance,
+            "inventory_evaluation": inventory_evaluation,
             "return_records": len(returns),
             "void_records": len(voids),
             "duplicate_qr_incidents": len(duplicate_qr_incidents),
@@ -5646,6 +6035,16 @@ def _projection_posts_at_sale_datetime(
         sale_datetime.date().isoformat() == posting_date
         and sale_datetime.strftime("%H:%M:%S") == posting_time
     )
+
+
+def _exact_quantity_has_sign(value: Any, sign: int) -> bool:
+    try:
+        quantity = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return False
+    if not quantity.is_finite():
+        return False
+    return quantity > 0 if sign > 0 else quantity < 0
 
 
 def _shift_timestamps_in_order(shift: dict[str, Any]) -> bool:

@@ -19,7 +19,8 @@ def test_versioned_agent_rules_preserve_real_service_methodology() -> None:
         "Build once",
         "complete catalog",
         "running process set",
-        "Current inventory exclusion",
+        "Current inventory scope",
+        "Inventory is included and evaluated",
     ):
         assert required in rules
 

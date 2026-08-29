@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import unittest
+from decimal import Decimal
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
@@ -69,7 +70,7 @@ class InventoryCountConfirmationTests(unittest.TestCase):
         with self.assertRaisesRegex(frappe.ValidationError, "explicit UTC offset"):
             inventory._parse_count_confirmation_payload(payload)
 
-    def test_safe_observation_creates_draft_but_waits_for_manager_confirmation(self) -> None:
+    def test_safe_variance_creates_draft_but_waits_for_manager_confirmation(self) -> None:
         value = {
             "schema_version": "inventory-command-v1",
             "command_id": "inventory-count-observation:TASK-1:3",
@@ -129,7 +130,12 @@ class InventoryCountConfirmationTests(unittest.TestCase):
         ), patch.object(
             inventory, "_validate_count_assignment", return_value={"employee": "EMP-1"}
         ), patch.object(
-            inventory, "_count_variance", return_value={"percent": 0, "value": 0, "valuation_complete": 1}
+            inventory, "_count_variance", return_value={
+                "absolute_quantity": Decimal("1"),
+                "percent": Decimal("1"),
+                "value": Decimal("1"),
+                "valuation_complete": Decimal("1"),
+            }
         ), patch.object(inventory, "_count_requires_director_review", return_value=False), patch.object(
             inventory, "_count_review_projection", return_value={"observation_id": "OBS-1", "status": "review_required", "lines": []}
         ), patch.object(
@@ -149,6 +155,26 @@ class InventoryCountConfirmationTests(unittest.TestCase):
         self.assertTrue(result["reconciliation"].startswith("KOPOS-COUNT-"))
         self.assertEqual(observation_document.status, "Review")
         self.assertEqual(reconciliation_document.items[0]["uom"], "L")
+
+    def test_exact_observation_is_recognized_without_a_stock_document(self) -> None:
+        observation = {
+            "lines_json": '[{"item_id":"MILK","quantity":"10","uom":"L"}]',
+        }
+        with patch.object(
+            inventory,
+            "_count_variance",
+            return_value={
+                "absolute_quantity": Decimal("0"),
+                "percent": Decimal("0"),
+                "value": Decimal("0"),
+                "valuation_complete": Decimal("1"),
+            },
+        ):
+            self.assertFalse(inventory._count_observation_stock_change_required(
+                observation=observation,
+                company="JiJi Sdn Bhd",
+                warehouse="Outlet - A",
+            ))
 
     def test_parser_rejects_financial_or_expected_quantity_fields(self) -> None:
         payload = self._payload()
@@ -293,7 +319,7 @@ class InventoryCountConfirmationTests(unittest.TestCase):
         for forbidden in ("expected", "valuation", "cogs", "rate", "threshold", "value"):
             self.assertNotIn(forbidden, serialized)
 
-    def test_count_task_lines_include_server_resolved_item_name_only(self) -> None:
+    def test_count_task_lines_include_server_resolved_item_name_and_scan_code_only(self) -> None:
         with patch.object(
             inventory.frappe,
             "get_all",
@@ -301,6 +327,10 @@ class InventoryCountConfirmationTests(unittest.TestCase):
                 [{"item_id": "MILK", "uom": "L"}],
                 [{"name": "MILK", "item_name": "Whole Milk", "item_code": "MILK"}],
             ],
+        ), patch.object(
+            inventory,
+            "get_item_barcodes_map",
+            return_value={"MILK": "955000000001"},
         ):
             response = inventory._count_task_response({
                 "name": "TASK-1",
@@ -309,7 +339,12 @@ class InventoryCountConfirmationTests(unittest.TestCase):
                 "assignee": "staff@example.com",
                 "stock_watermark": "watermark",
             })
-        self.assertEqual(response["lines"], [{"item_id": "MILK", "item_name": "Whole Milk", "uom": "L"}])
+        self.assertEqual(response["lines"], [{
+            "item_id": "MILK",
+            "item_name": "Whole Milk",
+            "uom": "L",
+            "barcode": "955000000001",
+        }])
         self.assertNotIn("expected_quantity", response["lines"][0])
         self.assertNotIn("valuation", response["lines"][0])
 
@@ -320,6 +355,26 @@ class InventoryCountConfirmationTests(unittest.TestCase):
             "status": "Review",
             "lines_json": '[{"item_id":"MILK","quantity":"8.5","uom":"L"}]',
             "reconciliation": "KOPOS-COUNT-1",
+        }
+        with patch.object(inventory.frappe.db, "exists", return_value=True), patch.object(
+            inventory.frappe, "get_all", return_value=[observation]
+        ), patch.object(inventory.frappe.db, "get_value", return_value="10"):
+            review = inventory._count_review_projection(
+                task_name="TASK-1",
+                task_revision=3,
+                warehouse="Outlet - A",
+                assignee="staff@example.com",
+            )
+        self.assertIsNotNone(review)
+        self.assertEqual(review["status"], "review_required")
+
+    def test_exact_review_without_an_empty_reconciliation_is_manager_ready(self) -> None:
+        observation = {
+            "name": "OBS-ROW-1",
+            "observation_id": "OBS-1",
+            "status": "Review",
+            "lines_json": '[{"item_id":"MILK","quantity":"10","uom":"L"}]',
+            "reconciliation": None,
         }
         with patch.object(inventory.frappe.db, "exists", return_value=True), patch.object(
             inventory.frappe, "get_all", return_value=[observation]

@@ -613,7 +613,7 @@ def _modifier_catalog_snapshot(
                 "min_selections": 0,
                 "max_selections": 1,
             },
-            "must require at least one selection",
+            "must require at least one choice",
             id="required-minimum-zero",
         ),
         pytest.param(
@@ -649,7 +649,7 @@ def _modifier_catalog_snapshot(
                 "min_selections": 2,
                 "max_selections": 1,
             },
-            "cannot exceed maximum",
+            "cannot be larger than the maximum",
             id="minimum-over-maximum",
         ),
         pytest.param(
@@ -661,7 +661,7 @@ def _modifier_catalog_snapshot(
                 "min_selections": 0,
                 "max_selections": 2,
             },
-            "cannot allow more than one selection",
+            "cannot allow more than one choice",
             id="single-maximum-over-one",
         ),
     ],

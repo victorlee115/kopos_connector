@@ -4,9 +4,9 @@
  "module": "KoPOS",
  "istable": 1,
  "fields": [
-  {"fieldname":"company","fieldtype":"Link","label":"Company","options":"Company","reqd":1},
-  {"fieldname":"outlet","fieldtype":"Data","label":"Outlet","reqd":1},
-  {"fieldname":"warehouse","fieldtype":"Link","label":"Warehouse","options":"Warehouse","reqd":1}
+  {"fieldname":"company","fieldtype":"Link","label":"Company","options":"Company","reqd":1,"in_list_view":1,"columns":3},
+  {"fieldname":"outlet","fieldtype":"Data","label":"Outlet","reqd":1,"in_list_view":1,"columns":3},
+  {"fieldname":"warehouse","fieldtype":"Link","label":"Warehouse","options":"Warehouse","reqd":1,"in_list_view":1,"columns":4}
  ],
  "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]
 }

@@ -10,6 +10,7 @@ from kopos_connector.acceptance.restored_outlet_matrix import (
     EVIDENCE_LEVEL,
     REQUIRED_CATEGORIES,
     _items,
+    _site_setup,
     _suppliers_and_quotations,
     _uoms,
     run_v1,
@@ -83,6 +84,71 @@ class TestRestoredOutletMatrix(unittest.TestCase):
         del value["permissionAudit"]
         with self.assertRaisesRegex(ValueError, "permissionAudit"):
             validate_outlet_matrix_report(value)
+
+    def test_site_setup_blocks_a_stale_setup_wizard_home_page(self) -> None:
+        class Meta:
+            @staticmethod
+            def has_field(fieldname: str) -> bool:
+                return fieldname in {
+                    "app_name",
+                    "has_setup_wizard",
+                    "is_setup_complete",
+                }
+
+        class Database:
+            @staticmethod
+            def get_default(fieldname: str) -> str:
+                return {
+                    "setup_complete": "1",
+                    "desktop:home_page": "setup-wizard",
+                }[fieldname]
+
+            @staticmethod
+            def get_single_value(_doctype: str, _fieldname: str) -> str:
+                return "1"
+
+        class FakeFrappe:
+            db = Database()
+
+            @staticmethod
+            def is_setup_complete() -> bool:
+                return True
+
+            @staticmethod
+            def get_meta(_doctype: str) -> Meta:
+                return Meta()
+
+            @staticmethod
+            def get_all(_doctype: str, **_kwargs: object) -> list[dict[str, object]]:
+                return [
+                    {
+                        "name": "frappe",
+                        "app_name": "frappe",
+                        "has_setup_wizard": 1,
+                        "is_setup_complete": 1,
+                    },
+                    {
+                        "name": "erpnext",
+                        "app_name": "erpnext",
+                        "has_setup_wizard": 1,
+                        "is_setup_complete": 1,
+                    },
+                ]
+
+        from kopos_connector.acceptance import restored_outlet_matrix as matrix
+
+        ctx: dict[str, object] = {
+            "missing": [],
+            "sourceCounts": {},
+            "fixtureCounts": {},
+            "fixtureHashes": {},
+        }
+        with patch.object(matrix, "frappe", FakeFrappe()):
+            setup = _site_setup(ctx)
+
+        self.assertEqual(setup["ready"], False)
+        self.assertEqual(setup["desktopHomePageReady"], False)
+        self.assertIn("desktop_home_page_still_setup_wizard", setup["missingReasons"])
 
     def test_source_has_no_mutating_frappe_operations(self) -> None:
         source = Path(__file__).parents[1] / "acceptance" / "restored_outlet_matrix.py"
@@ -214,7 +280,15 @@ class TestRestoredOutletMatrix(unittest.TestCase):
 
         class Database:
             def get_single_value(self, _doctype: str, _fieldname: str) -> str:
-                return "Asia/Kuala_Lumpur"
+                if _fieldname == "time_zone":
+                    return "Asia/Kuala_Lumpur"
+                return "1"
+
+            def get_default(self, fieldname: str) -> str:
+                return {
+                    "setup_complete": "1",
+                    "desktop:home_page": "workspace",
+                }[fieldname]
 
         class FakeFrappe:
             db = Database()
@@ -227,7 +301,25 @@ class TestRestoredOutletMatrix(unittest.TestCase):
                 "Item": [{"name": "Coffee", "is_sales_item": 1, "is_stock_item": 1, "disabled": 0}],
                 "UOM": [{"name": "Nos"}],
                 "FB Order": [{"name": "ORD", "sale_datetime": "2026-08-10T10:00:00+08:00"}],
+                "Installed Application": [
+                    {
+                        "name": "frappe",
+                        "app_name": "frappe",
+                        "has_setup_wizard": 1,
+                        "is_setup_complete": 1,
+                    },
+                    {
+                        "name": "erpnext",
+                        "app_name": "erpnext",
+                        "has_setup_wizard": 1,
+                        "is_setup_complete": 1,
+                    },
+                ],
             }
+
+            @staticmethod
+            def is_setup_complete() -> bool:
+                return True
 
             def get_meta(self, doctype: str) -> Meta:
                 fields = {"name"}

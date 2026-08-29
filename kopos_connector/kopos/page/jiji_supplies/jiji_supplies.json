@@ -1,17 +1,17 @@
 {
  "content": null,
- "creation": "2026-08-15 00:00:00.000000",
+ "creation": "2026-08-29 00:00:00.000000",
  "docstatus": 0,
  "doctype": "Page",
- "modified": "2026-08-15 00:00:00.000000",
+ "modified": "2026-08-29 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "KoPOS",
- "name": "jiji_menu_recipes",
+ "name": "jiji_supplies",
  "owner": "Administrator",
- "page_name": "jiji_menu_recipes",
+ "page_name": "jiji_supplies",
  "roles": [{"role": "System Manager"}, {"role": "Company Director"}],
  "script": null,
  "standard": "Yes",
  "style": null,
- "title": "JiJi Menu & Recipes"
+ "title": "JiJi Supplies"
 }

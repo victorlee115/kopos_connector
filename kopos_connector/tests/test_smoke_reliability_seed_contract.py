@@ -134,6 +134,130 @@ def test_smoke_asserts_sale_datetime_on_invoice_and_stock_projection() -> None:
     assert result["summary"]["inventory_acceptance"] is False
 
 
+@pytest.mark.inventory_regression
+def test_included_smoke_gate_proves_standard_inventory_documents_and_balances() -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    state = {
+        "inventory_evaluation": "included_evaluated",
+        "fb_shifts": [],
+        "fb_orders": [
+            {
+                "name": "FB-ORDER-INV-1",
+                "status": "Submitted",
+                "stock_status": "Posted",
+                "sale_datetime": datetime(2026, 7, 12, 0, 30, 45),
+                "sales_invoice": "SINV-INV-1",
+                "ingredient_stock_entry": "STE-INV-1",
+            }
+        ],
+        "sales_invoices": [
+            {
+                "name": "SINV-INV-1",
+                "docstatus": 1,
+                "is_return": False,
+                "posting_date": "2026-07-12",
+                "posting_time": "00:30:45",
+                "items": [{}],
+                "payments": [{}],
+            }
+        ],
+        "ingredient_stock_entries": [
+            {
+                "name": "STE-INV-1",
+                "docstatus": 1,
+                "purpose": "Material Issue",
+                "stock_entry_type": "Material Issue",
+                "posting_date": "2026-07-12",
+                "posting_time": timedelta(minutes=30, seconds=45),
+                "custom_fb_order": "FB-ORDER-INV-1",
+                "items": [
+                    {
+                        "item_code": "SMOKE-MATCHA-POWDER",
+                        "qty": "18.0",
+                        "transfer_qty": "18.0",
+                        "stock_uom": "Gram",
+                        "s_warehouse": "KoPOS Store - KMY",
+                        "t_warehouse": None,
+                    }
+                ],
+                "stock_ledger_entries": [
+                    {
+                        "voucher_type": "Stock Entry",
+                        "voucher_no": "STE-INV-1",
+                        "item_code": "SMOKE-MATCHA-POWDER",
+                        "warehouse": "KoPOS Store - KMY",
+                        "actual_qty": "-18.0",
+                        "is_cancelled": False,
+                    }
+                ],
+            }
+        ],
+        "ingredient_bin_balances": [
+            {
+                "name": "BIN-INV-1",
+                "item_code": "SMOKE-MATCHA-POWDER",
+                "warehouse": "KoPOS Store - KMY",
+                "actual_qty": "17982.0",
+            }
+        ],
+        "return_records": [],
+        "void_records": [],
+        "projection_statuses": {"failed": []},
+        "legacy_active_paths": {},
+        "idempotency": {},
+        "order_history": {},
+    }
+
+    result = smoke.build_smoke_business_assertions(state)
+
+    for assertion in (
+        "inventory_stock_issue_links_proven",
+        "inventory_stock_entry_details_proven",
+        "inventory_stock_ledger_movements_proven",
+        "inventory_stock_projection_sale_datetime_preserved",
+        "inventory_bin_balances_proven",
+    ):
+        assert result["assertions"][assertion] is True
+    assert result["summary"]["inventory_acceptance"] is True
+    assert result["summary"]["inventory_evaluation"] == "included_evaluated"
+
+    state["ingredient_stock_entries"][0]["stock_ledger_entries"] = []
+    failed_result = smoke.build_smoke_business_assertions(state)
+    assert failed_result["assertions"]["inventory_stock_ledger_movements_proven"] is False
+
+
+def test_business_state_endpoint_forwards_inventory_evaluation_mode(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        smoke,
+        "dump_smoke_state",
+        lambda **kwargs: calls.append(kwargs) or {"data": {}},
+    )
+    monkeypatch.setattr(
+        smoke,
+        "build_smoke_business_assertions",
+        lambda state, expected_idempotency_keys=None: {
+            "state": state,
+            "keys": expected_idempotency_keys,
+        },
+    )
+
+    result = smoke.assert_smoke_business_state_json(
+        expected_idempotency_keys=["sale-1"],
+        include_inventory_regression=1,
+    )
+
+    assert calls == [{"include_inventory_regression": True}]
+    assert result["keys"] == ["sale-1"]
+
+
 def test_smoke_business_gate_requires_myr_device_invoice_payment_and_gl() -> None:
     install_fake_frappe_modules()
 

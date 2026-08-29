@@ -55,13 +55,21 @@ def test_workspace_is_manager_support_only_and_uses_canonical_links() -> None:
         "FB Order",
         "Sales Invoice",
         "FB Projection Log",
-        "projection_status",
         "KoPOS Device Health",
         "KoPOS Projection Support Queue",
     ):
         assert expected in serialized
     for forbidden in FORBIDDEN_ACTIVE_LEGACY_TERMS:
         assert forbidden not in serialized
+
+    assert "Need help?" in serialized
+    assert "Sales updates needing help" in serialized
+    assert "projection_status" not in serialized
+    assert "Use this page when a tablet, sale, or shift needs help." in serialized
+    assert "Minimum admin/support entry point" not in serialized
+
+    patch_entries = (CONNECTOR_ROOT / "patches.txt").read_text().splitlines()
+    assert "kopos_connector.patches.simplify_kopos_support_workspace_copy" in patch_entries
 
 
 def test_provisioning_page_and_buttons_stay_system_manager_only() -> None:

@@ -298,7 +298,7 @@ def test_legacy_offline_refund_payload_is_rebuilt_from_sales_invoice(
 
     assert rebuilds == [("SINV-1", None)]
     assert validated["return_to_stock"] == 0
-    assert validated["inventory_evaluation"] == "excluded_not_evaluated"
+    assert validated["inventory_evaluation"] == "included_evaluated"
     assert validated["legacy_return_to_stock_normalized"] is True
     assert validated["lines"] == [
         {
@@ -335,7 +335,7 @@ def test_new_commercial_refund_rejects_stock_return_claim_before_database_work(
                 "fb_order": "FB-ORDER-1",
                 "refund_method": "cash",
                 "return_to_stock": 1,
-                "inventory_evaluation": "excluded_not_evaluated",
+                "inventory_evaluation": "included_evaluated",
             }
         )
 
@@ -361,7 +361,8 @@ def test_exact_legacy_stock_flag_retry_remains_idempotent() -> None:
     )
     validated = {
         "request_fingerprint": "current-fingerprint",
-        "legacy_request_fingerprint": "legacy-fingerprint",
+        "legacy_request_fingerprint": "legacy-current-fingerprint",
+        "legacy_stock_request_fingerprint": "legacy-fingerprint",
         "original_sales_invoice": "SINV-1",
         "fb_order": "FB-ORDER-1",
         "return_to_stock": 0,
@@ -370,6 +371,100 @@ def test_exact_legacy_stock_flag_retry_remains_idempotent() -> None:
     }
 
     api._validate_existing_return_matches(validated, existing)
+
+
+def test_exact_legacy_no_stock_fingerprint_retry_remains_idempotent() -> None:
+    api = importlib.import_module("kopos_connector.api.fb_returns")
+    line = FakeDoc(
+        original_sales_invoice_item="SINV-ITEM-1",
+        original_fb_order_line_ref="LINE-1",
+        original_resolved_sale=None,
+        qty_returned=1,
+        commercial_modifier_snapshot_json="",
+    )
+    existing = FakeDoc(
+        request_fingerprint="legacy-current-fingerprint",
+        original_sales_invoice="SINV-1",
+        fb_order="FB-ORDER-1",
+        return_to_stock=0,
+        refund_method="cash",
+        lines=[line],
+    )
+    validated = {
+        "request_fingerprint": "current-included-fingerprint",
+        "legacy_request_fingerprint": "legacy-current-fingerprint",
+        "legacy_stock_request_fingerprint": "legacy-stock-fingerprint",
+        "original_sales_invoice": "SINV-1",
+        "fb_order": "FB-ORDER-1",
+        "return_to_stock": 0,
+        "refund_method": "cash",
+        "lines": [line],
+    }
+
+    api._validate_existing_return_matches(validated, existing)
+
+
+def test_refund_approval_context_keeps_inventory_policy_server_owned() -> None:
+    api = importlib.import_module("kopos_connector.api.fb_returns")
+    context = api._return_approval_context(
+        {
+            "reason_code": "Quality Issue",
+            "reason_text": "Prepared drink returned",
+            "refund_method": "cash",
+            "return_to_stock": 0,
+            "inventory_evaluation": "included_evaluated",
+            "lines": [
+                {
+                    "original_sales_invoice_item": "SINV-ITEM-1",
+                    "original_fb_order_line_ref": "LINE-1",
+                    "original_resolved_sale": None,
+                    "qty_returned": 1,
+                    "commercial_modifier_snapshot_json": "[]",
+                }
+            ],
+        }
+    )
+
+    assert "inventory_evaluation" not in context
+    assert context["return_to_stock"] == 0
+
+
+def test_refund_request_fingerprint_binds_included_inventory_evaluation() -> None:
+    api = importlib.import_module("kopos_connector.api.fb_returns")
+    validated = {
+        "return_id": "RETURN-1",
+        "reason_code": "Quality Issue",
+        "reason_text": "Prepared drink returned",
+        "refund_method": "cash",
+        "return_to_stock": 0,
+        "inventory_evaluation": "included_evaluated",
+        "lines": [
+            {
+                "original_sales_invoice_item": "SINV-ITEM-1",
+                "original_fb_order_line_ref": "LINE-1",
+                "original_resolved_sale": None,
+                "qty_returned": 1,
+                "commercial_modifier_snapshot_json": "[]",
+            }
+        ],
+    }
+    scope = {
+        "device_id": "DEVICE-1",
+        "staff_id": "STAFF-1",
+        "shift_id": "SHIFT-1",
+        "resource_id": "SINV-1",
+        "amount_sen": 1000,
+        "fb_order": "FB-ORDER-1",
+    }
+
+    current = api._return_request_fingerprint(validated, scope)
+    legacy = api._return_request_fingerprint(
+        validated,
+        scope,
+        include_inventory_evaluation=False,
+    )
+
+    assert current != legacy
 
 
 def test_commercial_return_guard_locks_invoice_items_not_resolved_sales(

@@ -95,13 +95,19 @@ class TestFBServiceContracts(unittest.TestCase):
         self.assertIn("lock_and_validate_return_quantities", controller)
 
     @pytest.mark.inventory_regression
-    def test_transfer_service_uses_resolved_basic_rate(self):
-        content = (
-            ERP_ROOT / "kopos" / "services" / "inventory" / "transfer_service.py"
-        ).read_text()
-        self.assertIn("_resolve_basic_rate", content)
-        self.assertIn("valuation_rate", content)
-        self.assertIn("standard_rate", content)
+    def test_no_float_valuation_helper_survives_outside_the_guided_path(self):
+        """Guided transfers are the only supported POS stock movement.
+
+        The former transfer_service.py had no production caller and valued stock
+        with float(valuation_rate); the only reference to it in the tree was a
+        test asserting the helper's own source text, which pinned the dead code
+        in place. Assert it stays deleted rather than asserting it exists.
+        """
+        self.assertFalse(
+            (ERP_ROOT / "kopos" / "services" / "inventory" / "transfer_service.py").exists(),
+            "transfer_service.py valued stock with float and had no caller; guided"
+            " transfers go through _create_transfer_entry with Decimal quantities",
+        )
 
     def test_fb_order_updates_shift_expected_cash(self):
         order_content = (

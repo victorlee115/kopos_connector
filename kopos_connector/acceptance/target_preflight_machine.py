@@ -656,23 +656,30 @@ def _scheduler_check(*, allow_paused_scheduler: bool = False) -> dict[str, Any]:
         )
         or []
     )
+    scheduler_paused = bool(cint(_config_value("pause_scheduler", 0)))
+    scheduler_enabled = bool(cint(frappe.get_system_settings("enable_scheduler")))
+    scheduler_runtime_blocked = bool(
+        cint(_config_value("maintenance_mode", 0))
+        or cint(_config_value("disable_scheduler", 0))
+        or not scheduler_enabled
+        or (scheduler_paused and not allow_paused_scheduler)
+    )
     if (
         invalid
         or obsolete
-        or (
-            cint(_config_value("pause_scheduler", 0))
-            and not allow_paused_scheduler
-        )
+        or scheduler_runtime_blocked
     ):
         _fail(
-            "Target ERP scheduler jobs are missing, duplicated, paused, "
-            "mis-timed, or obsolete"
+            "Target ERP scheduler jobs are missing, duplicated, inactive, "
+            "paused, mis-timed, or obsolete"
         )
     return {
         "passed": True,
         "requiredJobs": required,
         "activeJobs": required,
         "requiredFrequencies": observed,
+        "siteSchedulerEnabled": scheduler_enabled,
+        "siteSchedulerPaused": scheduler_paused,
         "missing": [],
         "obsolete": [],
         "observedDigest": canonical_json_sha256(observed),

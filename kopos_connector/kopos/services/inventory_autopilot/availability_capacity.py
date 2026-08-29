@@ -140,11 +140,11 @@ def target_capacity(
     resolved_company = cstr(company).strip()
     resolved_warehouse = cstr(warehouse).strip()
     if not resolved_type or not resolved_id or not resolved_company or not resolved_warehouse:
-        return _not_ready(resolved_type, resolved_id, "Availability capacity is missing its company or warehouse binding")
+        return _not_ready(resolved_type, resolved_id, "This stock check is missing its company or outlet stock location")
 
     policy = _policy(resolved_company, resolved_warehouse)
     if not policy or not cstr(policy.get("cutover_token")).strip() or not policy.get("cutover_at"):
-        return _not_ready(resolved_type, resolved_id, "Inventory cutover is not active for this warehouse")
+        return _not_ready(resolved_type, resolved_id, "Stock tracking has not started for this outlet")
 
     current_time = at_time or now_datetime()
     try:
@@ -165,13 +165,13 @@ def target_capacity(
                 cutover_at=policy.get("cutover_at"),
             )
     except (RecipeCompilerError, InvalidOperation, TypeError, ValueError) as error:
-        return _not_ready(resolved_type, resolved_id, f"Published recipe evidence is invalid: {error}")
+        return _not_ready(resolved_type, resolved_id, f"The approved recipe has a problem: {error}")
     except Exception:
         # Availability is optional to checkout.  A database/compiler failure
         # must fail closed for automation and be visible as a plain status,
         # rather than becoming a zero-capacity hold.
-        return _not_ready(resolved_type, resolved_id, "Published recipe or stock evidence could not be read")
-    return _not_ready(resolved_type, resolved_id, "This availability target type is unsupported")
+        return _not_ready(resolved_type, resolved_id, "JiJi could not read the approved recipe or current stock amount")
+    return _not_ready(resolved_type, resolved_id, "JiJi cannot check stock for this type of item")
 
 
 def _item_capacity(
@@ -192,7 +192,7 @@ def _item_capacity(
     elif is_stock_item:
         requirements = {item: Decimal("1")}
     else:
-        return _not_ready("Item", item, "This made-to-order Item has no active published recipe")
+        return _not_ready("Item", item, "This made-to-order item has no current approved recipe")
     evidence = _stock_evidence(
         requirements,
         warehouse=warehouse,
@@ -213,17 +213,17 @@ def _modifier_capacity(
         "FB Modifier", modifier, ["name", "active", "affects_stock"], as_dict=True
     ) or {}
     if not modifier_values:
-        return _not_ready("Modifier", modifier, "Modifier was not found")
+        return _not_ready("Modifier", modifier, "This customer choice was not found")
     if not _truthy(_value(modifier_values, "active")):
-        return CapacityResult("Modifier", modifier, None, True, "Modifier is inactive", {})
+        return CapacityResult("Modifier", modifier, None, True, "This customer choice is not in use", {})
     if not _truthy(_value(modifier_values, "affects_stock")):
         return CapacityResult(
-            "Modifier", modifier, None, True, "This modifier is instruction-only and does not consume stock", {}
+            "Modifier", modifier, None, True, "This customer choice changes instructions only and does not use stock", {}
         )
 
     recipes = _active_recipes_for_modifier(modifier, company, current_time)
     if not recipes:
-        return _not_ready("Modifier", modifier, "No active published recipe contains this stock modifier")
+        return _not_ready("Modifier", modifier, "No current approved recipe uses this customer choice")
 
     results: list[CapacityResult] = []
     for recipe in recipes:
@@ -246,7 +246,7 @@ def _modifier_capacity(
             calculate_capacity(requirements, evidence, target_type="Modifier", target_id=modifier)
         )
     if not results:
-        return _not_ready("Modifier", modifier, "The published modifier effect could not be resolved")
+        return _not_ready("Modifier", modifier, "JiJi could not calculate the ingredient change for this customer choice")
     if any(not result.reliable for result in results):
         first_unreliable = next(result for result in results if not result.reliable)
         return CapacityResult(
@@ -255,10 +255,10 @@ def _modifier_capacity(
     capacities = [result.capacity for result in results if result.capacity is not None]
     if not capacities:
         return CapacityResult(
-            "Modifier", modifier, None, True, "This modifier has no stock-affecting component after its frozen effect", {}
+            "Modifier", modifier, None, True, "This customer choice does not change any ingredient or supply amount", {}
         )
     return CapacityResult(
-        "Modifier", modifier, min(capacities), True, "Current stock evidence covers the frozen modifier effect", results[0].requirements
+        "Modifier", modifier, min(capacities), True, "Current stock information covers the ingredient change for this customer choice", results[0].requirements
     )
 
 
@@ -278,7 +278,7 @@ def _stock_evidence(
     if not item_codes:
         return {}
     if not frappe.db.exists("DocType", "Bin"):
-        return {item: {"current": False, "reason": "ERPNext warehouse stock evidence is not installed"} for item in item_codes}
+        return {item: {"current": False, "reason": "Outlet stock checking is not installed"} for item in item_codes}
     meta = frappe.get_meta("Bin")
     fields = ["item_code"]
     for fieldname in ("actual_qty", "reserved_qty"):
@@ -295,7 +295,7 @@ def _stock_evidence(
     for item in item_codes:
         row = by_item.get(item)
         if row is None or _value(row, "actual_qty") in (None, ""):
-            evidence[item] = {"current": False, "reason": "No complete ERPNext warehouse stock record exists"}
+            evidence[item] = {"current": False, "reason": "This item has no complete stock record for this location"}
             continue
         actual = _finite_decimal(_value(row, "actual_qty"))
         reserved = _finite_decimal(_value(row, "reserved_qty")) or Decimal("0")
@@ -340,6 +340,17 @@ def _unposted_consumption(*, item: str, warehouse: str, cutover_at: Any) -> Deci
 def _active_recipe(item: str, company: str, at_time: Any) -> Any | None:
     rows = _active_recipe_rows(item=item, company=company)
     return _first_effective_recipe(rows, at_time)
+
+
+def active_recipe_name(*, item: str, company: str, at_time: Any | None = None) -> str:
+    """Which recipe is in force for this drink right now.
+
+    Exposed because the menu desk needs the same answer this module already
+    uses to decide what a tablet may sell. A second reading of "active" would
+    let a director cost one recipe while the counter pours another.
+    """
+    document = _active_recipe(item, company, at_time or now_datetime())
+    return cstr(getattr(document, "name", "")).strip()
 
 
 def _active_recipes_for_modifier(modifier: str, company: str, at_time: Any) -> list[Any]:

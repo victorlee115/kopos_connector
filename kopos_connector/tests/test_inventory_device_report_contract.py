@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import nullcontext
 from copy import deepcopy
 import json
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
 
@@ -82,6 +84,15 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
                 }
             )
 
+    def test_count_claim_lock_serializes_competing_tablets(self) -> None:
+        with patch.object(inventory.frappe.db, "sql") as sql:
+            inventory._lock_count_task("COUNT-A")
+
+        query = sql.call_args.args[0]
+        self.assertIn("tabFB Inventory Count Task", query)
+        self.assertIn("FOR UPDATE", query)
+        self.assertEqual(sql.call_args.args[1], ("COUNT-A",))
+
     def test_device_current_helper_requires_exact_catalog_and_overlay_identity(self) -> None:
         row = {
             "name": "TAB-A",
@@ -146,6 +157,33 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
         missing.pop("employee")
         with self.assertRaises(frappe.ValidationError):
             inventory._parse_availability_hold_command(missing, action="create")
+
+    def test_hold_command_parser_accepts_the_overlay_hash_as_source_revision(self) -> None:
+        valid = {
+            "schema_version": "inventory-command-v1",
+            "command_id": "hold-overlay-1",
+            "action": "create",
+            "device_id": "TAB-A",
+            "device_config_version": 7,
+            "staff_user": "manager@example.com",
+            "employee": "EMP-1",
+            "company": "JiJi Foods",
+            "outlet": "Outlet POS",
+            "warehouse": "Outlet - WH",
+            "source_document": "overlay-version-9",
+            "source_revision": "f" * 64,
+            "observed_at": "2026-08-15T10:00:00+08:00",
+            "target_type": "Item",
+            "target_id": "MONT-BLANC",
+            "reason_code": "manual_manager_pause",
+            "reason_label": "Stock check required",
+        }
+        valid["payload_hash"] = inventory._payload_hash(valid)
+
+        parsed = inventory._parse_availability_hold_command(valid, action="create")
+
+        self.assertEqual(parsed["source_document"], "overlay-version-9")
+        self.assertEqual(parsed["source_revision"], "f" * 64)
 
     def test_guided_task_envelope_requires_schema_revision_and_exact_hash(self) -> None:
         value = {
@@ -228,6 +266,174 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
         self.assertEqual(revision, "2026-08-15T10:00:00+08:00")
         with self.assertRaises(ValueError):
             inventory._authoritative_document_revision({})
+
+    def test_guided_revision_accepts_only_the_equal_legacy_db_timestamp(self) -> None:
+        document = {"modified": "2026-08-15 10:00:00.123456"}
+
+        inventory._validate_guided_source_revision(
+            {"source_revision": "2026-08-15 10:00:00.123456"},
+            document,
+            "BOM",
+        )
+        inventory._validate_guided_source_revision(
+            {"source_revision": "2026-08-15T10:00:00.123456+08:00"},
+            document,
+            "BOM",
+        )
+        with self.assertRaisesRegex(frappe.ValidationError, "changed after"):
+            inventory._validate_guided_source_revision(
+                {"source_revision": "2026-08-15 10:00:01.123456"},
+                document,
+                "BOM",
+            )
+        with self.assertRaisesRegex(frappe.ValidationError, "changed after"):
+            inventory._validate_guided_source_revision(
+                {"source_revision": "2026-08-15"},
+                document,
+                "BOM",
+            )
+
+    def test_preparation_start_uses_direct_outlet_backflush(self) -> None:
+        document = SimpleNamespace(
+            doctype="Work Order",
+            name="MFG-WO-0001",
+            docstatus=0,
+            skip_transfer=0,
+            flags=SimpleNamespace(ignore_permissions=False),
+            submit=Mock(),
+        )
+        meta = SimpleNamespace(has_field=lambda field: field in {
+            "skip_transfer",
+            "custom_kopos_inventory_command_id",
+            "custom_kopos_inventory_payload_hash",
+            "custom_kopos_inventory_recorded_by",
+            "custom_kopos_inventory_confirmed_by",
+        })
+        value = {
+            "work_order": document.name,
+            "payload_hash": "a" * 64,
+            "recorded_by": "staff@example.com",
+            "staff_user": "manager@example.com",
+        }
+        with patch.object(inventory, "_lock_guided_source_document"), patch.object(
+            inventory.frappe, "get_doc", return_value=document
+        ), patch.object(inventory, "_validate_work_order_scope"), patch.object(
+            inventory, "_validate_guided_source_revision"
+        ), patch.object(inventory.frappe, "get_meta", return_value=meta):
+            result = inventory._submit_work_order(value, "command-1")
+
+        self.assertEqual(result, document.name)
+        self.assertEqual(document.skip_transfer, 1)
+        self.assertTrue(document.flags.ignore_permissions)
+        document.submit.assert_called_once_with()
+
+    def test_guided_stock_documents_run_as_the_dedicated_automation_user(self) -> None:
+        value = {
+            "command_id": "receipt-1",
+            "payload_hash": "a" * 64,
+            "device_config_version": 7,
+            "company": "JiJi Foods",
+            "warehouse": "Outlet - WH",
+            "source_document": "PO-1",
+            "purchase_order": "PO-1",
+        }
+        with patch.object(inventory, "require_device_context", return_value=SimpleNamespace()), patch.object(
+            inventory, "_parse_guided_task_payload", return_value=value
+        ), patch.object(inventory, "_validate_guided_task_actor"), patch.object(
+            inventory, "_validate_guided_task_scope"
+        ), patch.object(
+            inventory,
+            "lock_device_for_operational_mutation",
+            return_value=SimpleNamespace(config_version=7),
+        ), patch.object(
+            inventory, "_find_command_document", return_value=None
+        ), patch.object(
+            inventory, "inventory_automation_identity", return_value=nullcontext("automation@example.com")
+        ) as identity, patch.object(
+            inventory, "_create_purchase_receipt", return_value="MAT-PRE-0001"
+        ) as create_receipt, patch.object(inventory.frappe.db, "commit"):
+            result = inventory._handle_guided_task(
+                device_id="TAB-A",
+                payload={},
+                task_type="submit_purchase_receipt",
+            )
+
+        identity.assert_called_once_with(
+            company="JiJi Foods",
+            warehouse="Outlet - WH",
+            create_doctypes=("Purchase Receipt",),
+            submit_doctypes=("Purchase Receipt",),
+        )
+        create_receipt.assert_called_once_with(value, "receipt-1")
+        self.assertEqual(result["document"], "MAT-PRE-0001")
+
+    def test_guided_stock_document_refuses_an_unsafe_automation_identity(self) -> None:
+        value = {
+            "command_id": "transfer-1",
+            "payload_hash": "b" * 64,
+            "device_config_version": 7,
+            "company": "JiJi Foods",
+            "warehouse": "Outlet - WH",
+            "source_document": "MR-1",
+            "material_request": "MR-1",
+        }
+        with patch.object(inventory, "require_device_context", return_value=SimpleNamespace()), patch.object(
+            inventory, "_parse_guided_task_payload", return_value=value
+        ), patch.object(inventory, "_validate_guided_task_actor"), patch.object(
+            inventory, "_validate_guided_task_scope"
+        ), patch.object(
+            inventory,
+            "lock_device_for_operational_mutation",
+            return_value=SimpleNamespace(config_version=7),
+        ), patch.object(
+            inventory, "_find_command_document", return_value=None
+        ), patch.object(
+            inventory,
+            "inventory_automation_identity",
+            side_effect=inventory.AutomationIdentityError("Automation User lacks submit permission for Stock Entry"),
+        ), patch.object(inventory, "_create_transfer_entry") as create_transfer:
+            with self.assertRaisesRegex(
+                frappe.ValidationError,
+                "Guided inventory automation is not configured safely",
+            ):
+                inventory._handle_guided_task(
+                    device_id="TAB-A",
+                    payload={},
+                    task_type="submit_transfer_dispatch",
+                )
+
+        create_transfer.assert_not_called()
+
+    def test_guided_task_rejects_a_stale_locked_device_configuration(self) -> None:
+        value = {
+            "command_id": "receipt-stale",
+            "payload_hash": "c" * 64,
+            "device_config_version": 6,
+            "company": "JiJi Foods",
+            "warehouse": "Outlet - WH",
+            "source_document": "PO-1",
+            "purchase_order": "PO-1",
+        }
+        with patch.object(inventory, "require_device_context"), patch.object(
+            inventory, "_parse_guided_task_payload", return_value=value
+        ), patch.object(
+            inventory,
+            "lock_device_for_operational_mutation",
+            return_value=SimpleNamespace(config_version=7),
+        ), patch.object(
+            inventory, "_validate_guided_task_actor"
+        ) as validate_actor, patch.object(
+            inventory, "_execute_guided_task_mutation"
+        ) as mutate:
+            with self.assertRaisesRegex(frappe.ValidationError, "configuration changed"):
+                inventory._handle_guided_task(
+                    device_id="TAB-A",
+                    payload={},
+                    task_type="submit_purchase_receipt",
+                )
+
+        validate_actor.assert_not_called()
+        mutate.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -22,10 +22,27 @@ from kopos_connector.kopos.services.inventory_autopilot.edge_snapshot import (
     build_edge_inventory_snapshot,
     normalize_edge_query,
 )
+from kopos_connector.kopos.services.inventory_autopilot import edge_snapshot
 from kopos_connector.kopos.services.inventory_autopilot.availability_capacity import CapacityResult
 
 
 class InventoryEdgeSnapshotTest(unittest.TestCase):
+    def test_submitted_sale_is_unreliable_before_its_projection_log_exists(self) -> None:
+        with (
+            patch.object(frappe.db, "exists", return_value=True) as exists,
+            patch.object(frappe.db, "get_value", return_value="2026-08-28 09:00:00"),
+            patch.object(frappe.db, "sql") as sql,
+        ):
+            self.assertTrue(edge_snapshot._projection_backlog_exists("Outlet - J"))
+
+        sql.assert_not_called()
+        order_call = next(
+            call for call in exists.call_args_list
+            if call.args and call.args[0] == "FB Order" and len(call.args) > 1
+        )
+        self.assertEqual(order_call.args[1]["stock_status"], ["in", ["Pending", "Failed"]])
+        self.assertEqual(order_call.args[1]["sale_datetime"], [">=", "2026-08-28 09:00:00"])
+
     def test_query_is_bounded(self) -> None:
         self.assertEqual(normalize_edge_query("  milk  ", "100"), ("milk", 100))
         self.assertEqual(normalize_edge_query(), ("", 50))
@@ -255,6 +272,32 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         self.assertEqual(fallback["inventory_snapshot"]["tasks_status"], "unavailable")
         self.assertIsNone(fallback["inventory_snapshot"]["count_task"])
 
+    def test_stock_update_status_is_device_bound_and_uses_bounded_queries(self) -> None:
+        profile = type("Profile", (), {"company": "JiJi", "warehouse": "Outlet - J"})()
+        with (
+            patch.object(inventory, "require_device_operational_scope", return_value=(object(), profile)) as scope,
+            patch.object(inventory.frappe.db, "exists", return_value=True),
+            patch.object(
+                inventory.frappe.db,
+                "get_value",
+                return_value={"cutover_at": "2026-08-28 09:00:00"},
+            ),
+            patch.object(inventory.frappe.db, "sql", side_effect=[[], [], []]) as sql,
+            patch.object(inventory, "_health_marker", return_value=None),
+        ):
+            response = inventory.get_stock_update_status(device_id="DEVICE-1")
+
+        scope.assert_called_once_with(device_id="DEVICE-1")
+        self.assertEqual(response["state"], "current")
+        self.assertEqual(response["warehouse"], "Outlet - J")
+        self.assertEqual(sql.call_count, 3)
+        self.assertTrue(all("LIMIT" in call.args[0] for call in sql.call_args_list))
+
+    def test_director_stock_status_read_requires_policy_permission(self) -> None:
+        with patch.object(inventory.frappe, "has_permission", return_value=False, create=True):
+            with self.assertRaises(frappe.PermissionError):
+                inventory.get_stock_update_status(warehouse="Outlet - J")
+
     def test_inventory_task_reader_returns_count_task_alongside_task_list(self) -> None:
         count_task = {
             "name": "COUNT-0001",
@@ -272,11 +315,16 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
             inventory,
             "_get_count_task",
             return_value={"status": "ok", "task": count_task},
+        ), patch.object(
+            inventory,
+            "get_item_barcodes_map",
+            return_value={"MILK": "955000000001"},
         ):
             result = inventory._get_inventory_tasks(device_id="DEVICE-1")
 
         self.assertEqual(result["count_task"], count_task)
         self.assertEqual(result["tasks"][0]["kind"], "count")
+        self.assertEqual(result["count_task"]["lines"][0]["barcode"], "955000000001")
 
     def test_inventory_task_reader_keeps_blocked_preparation_setup_visible(self) -> None:
         blocked_alert = {
@@ -311,6 +359,35 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         self.assertEqual(result["tasks"][0]["document"], "Setup required")
         self.assertIn("setup is incomplete", result["tasks"][0]["blocked_reason"])
         self.assertTrue(result["tasks"][0]["revision"])
+
+    def test_inventory_task_reader_canonicalizes_bom_alert_revision(self) -> None:
+        alert = {
+            "kind": "preparation",
+            "status": "alert",
+            "document": "BOM-COLD-FOAM",
+            "bom_no": "BOM-COLD-FOAM",
+            "item_code": "COLD-FOAM",
+            "item_name": "Cold Foam",
+            "fingerprint": "preparation-fingerprint",
+            "revision": "2026-08-23 23:05:16.613240",
+        }
+        work_order_meta = SimpleNamespace(has_field=lambda field: field == "custom_kopos_preparation_fingerprint")
+        with patch.object(inventory, "require_device_context", return_value=SimpleNamespace(name="DEVICE-1")), patch.object(
+            inventory, "resolve_catalog_pos_profile", return_value={"company": "JiJi", "warehouse": "Outlet - J"}
+        ), patch.object(inventory, "_preparation_tasks_visible_to_device", return_value=True), patch.object(
+            inventory, "_get_count_task", return_value={"task": None}
+        ), patch.object(inventory, "derived_preparation_alerts", return_value=[alert]), patch.object(
+            inventory.frappe.db,
+            "exists",
+            side_effect=lambda doctype, name=None, *args, **kwargs: (
+                doctype == "Work Order" or (doctype == "DocType" and name == "Work Order")
+            ),
+        ), patch.object(inventory.frappe, "get_meta", return_value=work_order_meta), patch.object(
+            inventory.frappe, "get_all", return_value=[]
+        ):
+            result = inventory._get_inventory_tasks(device_id="DEVICE-1")
+
+        self.assertEqual(result["tasks"][0]["revision"], "2026-08-23T23:05:16.613240+08:00")
 
     def test_snapshot_is_bounded_and_contains_operational_values_only(self) -> None:
         with (

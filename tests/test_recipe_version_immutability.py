@@ -128,11 +128,11 @@ def test_active_recipe_rejects_nonpositive_serving_or_component_quantities(
     monkeypatch.setattr(frappe.db, "get_value", lambda *args, **kwargs: None)
     monkeypatch.setattr(frappe, "get_all", lambda *args, **kwargs: [])
 
-    with pytest.raises(Exception, match="Default Serving Qty"):
+    with pytest.raises(Exception, match="Amount in one serving"):
         recipe.validate_version()
 
     recipe.default_serving_qty = "1"
-    with pytest.raises(Exception, match="component 1 Qty"):
+    with pytest.raises(Exception, match="Amount on recipe row 1"):
         recipe.validate_version()
 
 
@@ -153,5 +153,5 @@ def test_active_stock_component_requires_item_stock_uom(
     monkeypatch.setattr(frappe.db, "get_value", get_value)
     monkeypatch.setattr(frappe, "get_all", lambda *args, **kwargs: [])
 
-    with pytest.raises(Exception, match="must match Item stock UOM ml"):
+    with pytest.raises(Exception, match="stock unit for MILK must be ml"):
         recipe.validate_version()

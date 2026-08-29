@@ -437,6 +437,7 @@ def test_included_campaign_seed_checks_real_economics_before_publish(
         "company": "KoPOS Malaysia",
         "pos_profile": "Smoke POS",
         "warehouse": "Store - KMY",
+        "expense_account": "Cost of Goods Sold - KMY",
         "item_code": smoke.DEMO_DRINK_ITEM,
         "recipe": smoke.DEMO_RECIPE_CODE,
         "inventory_evaluation": "included_evaluated",
@@ -470,6 +471,11 @@ def test_included_campaign_seed_checks_real_economics_before_publish(
     )
     monkeypatch.setattr(
         smoke,
+        "_ensure_smoke_inventory_policy",
+        lambda **kwargs: calls.append("policy") or "SMOKE-POLICY",
+    )
+    monkeypatch.setattr(
+        smoke,
         "_ensure_demo_promotion",
         lambda profile: calls.append("promotion") or "PROMO",
     )
@@ -494,7 +500,8 @@ def test_included_campaign_seed_checks_real_economics_before_publish(
     result = smoke.setup_full_smoke_data(erpnext_url="https://erp.example.com")
 
     assert result["inventory_evaluation"] == "included_evaluated"
-    assert calls == ["stock", "promotion", "economics", "publish"]
+    assert result["inventory_policy"] == "SMOKE-POLICY"
+    assert calls == ["policy", "stock", "promotion", "economics", "publish"]
 
 
 def test_default_smoke_reset_never_queries_optional_inventory_schema(

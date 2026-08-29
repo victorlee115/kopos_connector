@@ -9,3 +9,6 @@ coverage.xml
 build/
 dist/
 .DS_Store
+
+# Local test interpreter (project requires Python >=3.10; CI uses 3.11)
+.venv-test/

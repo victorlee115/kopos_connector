@@ -22,7 +22,7 @@ class TestRecipeModifierAuthoringContract(FrappeTestCase):
 
         with self.assertRaisesRegex(
             frappe.ValidationError,
-            "changes the selection rules.*Use a separate modifier group",
+            "changes the rules for customer choice group.*Use a separate customer choice group",
         ):
             recipe.insert(ignore_permissions=True, ignore_links=True)
 

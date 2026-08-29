@@ -107,7 +107,7 @@ def test_mixed_suites_keep_only_optional_behavior_behind_inventory_marker() -> N
             "test_ingredient_stock_service_uses_fb_order_sale_datetime",
             "test_return_service_updates_resolved_sale_status",
             "test_return_quantity_guard_locks_resolved_sales_before_validation",
-            "test_transfer_service_uses_resolved_basic_rate",
+            "test_no_float_valuation_helper_survives_outside_the_guided_path",
         },
         "tests/test_task6_shift_lifecycle.py": {
             "test_shift_stock_requirement_is_bulk_bounded_for_two_thousand_orders",

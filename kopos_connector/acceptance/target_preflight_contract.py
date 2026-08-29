@@ -233,12 +233,16 @@ REQUIRED_SCHEDULER_FREQUENCIES = {
         "kopos_connector.kopos.services.projection.retry_service."
         "retry_projection_failures"
     ): "All",
+    (
+        "kopos_connector.kopos.services.inventory_autopilot."
+        "availability_events.flush_deferred_availability_rechecks"
+    ): "All",
 }
 
-# Inventory recovery is deliberately isolated from the commercial retry
-# worker.  It is a five-minute cron job, not an ``all`` frequency hook; the
-# target preflight checks both groups independently so adding it cannot weaken
-# the commercial scheduler contract.
+# Inventory projection recovery is deliberately isolated from the commercial
+# retry worker. The target preflight checks both all-frequency and cron jobs so
+# the lightweight trailing availability check and slower recovery jobs remain
+# part of the reviewed production scheduler contract.
 REQUIRED_CRON_SCHEDULER_FREQUENCIES = {
     (
         "kopos_connector.kopos.services.inventory_autopilot."
