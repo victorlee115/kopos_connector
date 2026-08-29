@@ -75,11 +75,14 @@ def test_a_login_is_never_shown_as_a_person() -> None:
 
 
 def test_a_single_company_site_does_not_ask_which_company() -> None:
+    scope = (SOURCE.parent / "director_scope.py").read_text(encoding="utf-8")
     source = SOURCE.read_text(encoding="utf-8")
     # A director who never set a user default met an empty page on a site that
-    # only has one company.
-    assert 'frappe.get_all("Company"' in source
-    assert "len(companies) == 1" in source
+    # only has one company. One owner answers this for every director page, so
+    # two pages cannot disagree about which company is on screen.
+    assert 'frappe.get_all("Company"' in scope
+    assert "len(companies) == 1" in scope
+    assert "director_company()" in source
 
 
 def test_routes_are_segments_not_urls() -> None:
@@ -90,4 +93,5 @@ def test_routes_are_segments_not_urls() -> None:
     # 404'd on one and did nothing on the other.
     assert "/app/" not in source
     assert '["query-report", "KoPOS Shift Reconciliation"]' in source
-    assert "frappe.set_route.apply" in page
+    # The click itself is routed by the one desk owner; see test_jiji_desk.
+    assert "jiji.desk.routeLink" in page

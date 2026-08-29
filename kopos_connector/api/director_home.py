@@ -20,6 +20,7 @@ from typing import Any
 import frappe
 from frappe.utils import cint, cstr, flt, nowdate
 
+from kopos_connector.api.director_scope import director_company
 from kopos_connector.api.shift_money import closed_shifts, group_shifts
 
 
@@ -28,20 +29,6 @@ from kopos_connector.api.shift_money import closed_shifts, group_shifts
 # clicks rather than following an href, so a hard-coded prefix either 404s or
 # does nothing when clicked. frappe.set_route(...segments) is deployment
 # agnostic; the page builds an href from the same segments for middle-click.
-def _company() -> str:
-    """The company this director is looking at.
-
-    Most JiJi sites hold exactly one company, and a director who never set a
-    user default would otherwise meet an empty page. Fall back to the only
-    company there is, and ask only when the answer is genuinely ambiguous.
-    """
-    default = cstr(frappe.defaults.get_user_default("Company") or "")
-    if default:
-        return default
-    companies = frappe.get_all("Company", pluck="name", limit_page_length=2)
-    return cstr(companies[0]) if len(companies) == 1 else ""
-
-
 def _today_takings(company: str) -> dict[str, Any]:
     """Today's completed sales, from the Sales Invoice that already records them."""
     rows = frappe.get_all(
@@ -77,7 +64,7 @@ def _draft_supplier_orders(company: str) -> int:
 @frappe.whitelist(methods=["GET"])
 def get_director_home() -> dict[str, Any]:
     """One next step, five tiles, and whatever is queued behind them."""
-    company = _company()
+    company = director_company()
     if not company:
         return {"status": "no_company"}
 

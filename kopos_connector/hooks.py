@@ -34,7 +34,17 @@ requires_erpnext_version = ">=16.0.0,<17.0.0"
 # webform_include_css = {"doctype": "public/css/doctype.css"}
 
 # include js in page
-# page_js = {"page" : "public/js/file.js"}
+# The director-facing pages share one routing rule and one visual vocabulary.
+# page_js inlines the file into each page script, so it needs no bundler and a
+# bench without node still serves it.
+page_js = {
+    "jiji_home": "public/js/jiji_desk.js",
+    "jiji_money": "public/js/jiji_desk.js",
+    "jiji_supplies": "public/js/jiji_desk.js",
+    "jiji_staff": "public/js/jiji_desk.js",
+    "jiji_menu_recipes": "public/js/jiji_desk.js",
+    "jiji_stock_autopilot": "public/js/jiji_desk.js",
+}
 
 # include js in doctype views
 # POS Profile setup shortcut is injected via Client Script during migrate/install.

@@ -10,26 +10,10 @@
  * This page is read-only. It shows one next step, five quiet doors, and
  * whatever is queued behind that step. Every number comes from the service
  * that owns it, and every link goes to the real record.
- */
-
-/**
- * Follow a route the way the desk does.
  *
- * The desk is served at /app on some deployments and /desk on others, and its
- * router intercepts clicks rather than following an href, so a hard-coded URL
- * either 404s or silently does nothing. Route segments work on both.
+ * Routing and the shared look live in public/js/jiji_desk.js, so the five
+ * director pages cannot drift into five answers about how the desk behaves.
  */
-function routeLink(segments, label) {
-	const route = Array.isArray(segments) ? segments : [];
-	const link = $("<a>").attr("href", route.length ? `/app/${route.filter((part) => typeof part === "string").join("/")}` : "#");
-	if (label) link.text(label);
-	link.on("click", (event) => {
-		if (!route.length) return;
-		event.preventDefault();
-		frappe.set_route.apply(null, route);
-	});
-	return link;
-}
 
 frappe.pages["jiji_home"].on_page_load = function (wrapper) {
 	new JiJiHome(wrapper);
@@ -43,39 +27,9 @@ class JiJiHome {
 			single_column: true,
 		});
 		this.page.set_primary_action(__("Refresh"), () => this.load(), "refresh");
-		this.body = $('<div class="jiji-home"></div>').appendTo(this.page.body);
-		this.injectStyle();
+		this.body = $('<div class="jiji-page"></div>').appendTo(this.page.body);
+		jiji.desk.injectStyle();
 		this.load();
-	}
-
-	injectStyle() {
-		if (document.getElementById("jiji-home-style")) return;
-		const style = document.createElement("style");
-		style.id = "jiji-home-style";
-		style.textContent = `
-.jiji-home { display: flex; flex-direction: column; gap: 20px; padding: 4px 0 24px; }
-.jiji-home__label { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--text-muted); }
-/* A bar, not a filled block: a fill would read as the button to press. */
-.jiji-home__next { display: flex; gap: 20px; align-items: center; flex-wrap: wrap;
-  border-left: 3px solid var(--yellow-500, #e8952a); background: var(--fg-color, #fff);
-  border-radius: 0 8px 8px 0; padding: 18px 22px; box-shadow: var(--card-shadow); }
-.jiji-home__next-copy { flex: 1 1 320px; }
-.jiji-home__next-title { font-size: 18px; font-weight: 600; }
-.jiji-home__next-detail { color: var(--text-muted); margin-top: 2px; }
-.jiji-home__tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
-.jiji-home__tile { display: block; background: var(--fg-color, #fff); border: 1px solid var(--border-color);
-  border-radius: 8px; padding: 14px 16px; text-decoration: none; color: inherit; }
-.jiji-home__tile:hover { border-color: var(--yellow-500, #e8952a); text-decoration: none; color: inherit; }
-.jiji-home__tile-value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 4px; }
-.jiji-home__tile-value--attention { color: var(--yellow-600, #b4640e); }
-.jiji-home__tile-detail { color: var(--text-muted); font-size: 12px; }
-.jiji-home__waiting { border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
-.jiji-home__waiting a { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px;
-  border-bottom: 1px solid var(--border-color); text-decoration: none; color: inherit; }
-.jiji-home__waiting a:last-child { border-bottom: 0; }
-.jiji-home__advanced { color: var(--text-muted); font-size: 12px; }
-`;
-		document.head.appendChild(style);
 	}
 
 	load() {
@@ -89,11 +43,9 @@ class JiJiHome {
 
 	renderUnavailable() {
 		this.body.empty().append(
-			$("<div>").addClass("jiji-home__next").append(
-				$("<div>").addClass("jiji-home__next-copy").append(
-					$("<div>").addClass("jiji-home__next-title").text(__("JiJi could not check your outlets just now")),
-					$("<div>").addClass("jiji-home__next-detail").text(__("Nothing is wrong with your records. Try Refresh in a moment.")),
-				),
+			jiji.desk.notice(
+				__("JiJi could not check your outlets just now"),
+				__("Nothing is wrong with your records. Try Refresh in a moment."),
 			),
 		);
 	}
@@ -102,11 +54,9 @@ class JiJiHome {
 		this.body.empty();
 		if (data.status === "no_company") {
 			this.body.append(
-				$("<div>").addClass("jiji-home__next").append(
-					$("<div>").addClass("jiji-home__next-copy").append(
-						$("<div>").addClass("jiji-home__next-title").text(__("Choose a company to see your outlets")),
-						$("<div>").addClass("jiji-home__next-detail").text(__("Set your default company, then open JiJi Home again.")),
-					),
+				jiji.desk.notice(
+					__("Choose a company to see your outlets"),
+					__("Set your default company, then open JiJi Home again."),
 				),
 			);
 			return;
@@ -114,49 +64,42 @@ class JiJiHome {
 		if (data.status !== "ok") return this.renderUnavailable();
 
 		const next = data.next_step || {};
-		const nextBlock = $("<div>");
-		nextBlock.append($("<div>").addClass("jiji-home__label").text(__("Your next step")));
-		const card = $("<div>").addClass("jiji-home__next").appendTo(nextBlock);
-		const copy = $("<div>").addClass("jiji-home__next-copy").appendTo(card);
-		copy.append($("<div>").addClass("jiji-home__next-title").text(next.title || ""));
-		if (next.detail) copy.append($("<div>").addClass("jiji-home__next-detail").text(next.detail));
+		const nextBlock = $("<div>").append(jiji.desk.label(__("Your next step")));
+		const card = jiji.desk.notice(next.title || "", next.detail).appendTo(nextBlock);
 		if (next.action && (next.route || []).length) {
-			routeLink(next.route, next.action).addClass("btn btn-primary").appendTo(card);
+			jiji.desk.routeLink(next.route, next.action).addClass("btn btn-primary").appendTo(card);
 		}
 		this.body.append(nextBlock);
 
-		const tiles = $("<div>").addClass("jiji-home__tiles");
+		const tiles = $("<div>").addClass("jiji-tiles");
 		(data.tiles || []).forEach((tile) => {
-			const link = routeLink(tile.route).addClass("jiji-home__tile");
-			link.append($("<div>").addClass("jiji-home__label").text(tile.label || ""));
+			const link = jiji.desk.routeLink(tile.route).addClass("jiji-tile");
+			link.append(jiji.desk.label(tile.label || ""));
 			link.append(
 				$("<div>")
-					.addClass("jiji-home__tile-value" + (tile.attention ? " jiji-home__tile-value--attention" : ""))
+					.addClass("jiji-tile__value" + (tile.attention ? " jiji-tile__value--attention" : ""))
 					.text(tile.value || ""),
 			);
-			link.append($("<div>").addClass("jiji-home__tile-detail").text(tile.detail || ""));
+			link.append($("<div>").addClass("jiji-tile__detail").text(tile.detail || ""));
 			tiles.append(link);
 		});
 		this.body.append(tiles);
 
 		// Demoted on purpose: these are real, and none of them is the next step.
 		if ((data.waiting || []).length) {
-			const waitingBlock = $("<div>");
-			waitingBlock.append($("<div>").addClass("jiji-home__label").text(__("Waiting behind that")));
-			const list = $("<div>").addClass("jiji-home__waiting").appendTo(waitingBlock);
+			const waitingBlock = $("<div>").append(jiji.desk.label(__("Waiting behind that")));
+			const list = $("<div>").addClass("jiji-rows").appendTo(waitingBlock);
 			data.waiting.forEach((row) => {
-				routeLink(row.route)
-					.append($("<span>").text(row.title || ""))
+				jiji.desk
+					.routeLink(row.route)
+					.addClass("jiji-row")
+					.append($("<span>").addClass("jiji-row__main").text(row.title || ""))
 					.append($("<span>").text("›"))
 					.appendTo(list);
 			});
 			this.body.append(waitingBlock);
 		}
 
-		this.body.append(
-			$("<div>").addClass("jiji-home__advanced").text(
-				__("Advanced details · every number here opens the record it came from."),
-			),
-		);
+		this.body.append(jiji.desk.advanced(__("every number here opens the record it came from.")));
 	}
 }
