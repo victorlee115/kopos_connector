@@ -28,6 +28,23 @@ def test_director_home_never_writes() -> None:
     assert not (used & forbidden), f"director home must stay read-only, found {sorted(used & forbidden)}"
 
 
+def test_a_week_is_one_query_and_today_comes_out_of_it() -> None:
+    source = SOURCE.read_text(encoding="utf-8")
+    # "Did we make money today" almost always means "compared with what", and
+    # a second query for the same invoices could disagree with the first.
+    assert source.count('"Sales Invoice",') == 1
+    assert "TAKINGS_DAYS = 7" in source
+    assert '"week_total"' in source
+
+
+def test_someone_who_cannot_sign_in_reaches_the_queue() -> None:
+    source = SOURCE.read_text(encoding="utf-8")
+    # An active person with no verifier cannot open a shift. That is the one
+    # thing the staff area ever needs a director for, so it is never silent.
+    assert '"needs_pin"' in source
+    assert "cannot sign in until you set a PIN" in source
+
+
 def test_cash_variance_is_read_not_recomputed() -> None:
     source = SOURCE.read_text(encoding="utf-8")
     # FB Shift owns this number. Recomputing it here would create a second
@@ -44,10 +61,14 @@ def test_exactly_one_next_step_is_returned() -> None:
     assert "next_step.append" not in source
 
 
-def test_every_tile_links_to_the_record_it_came_from() -> None:
+def test_every_tile_opens_the_page_that_owns_the_number() -> None:
     source = SOURCE.read_text(encoding="utf-8")
-    for route in ('["List", "Sales Invoice"]', '["jiji_menu_recipes"]', '["List", "KoPOS Staff Access"]'):
-        assert route in source
+    # Home composes; it never becomes the owner. Each tile hands the director
+    # to the page that can act on that number, and only Today -- which no JiJi
+    # page owns -- still opens the ERP list.
+    for route in ('["List", "Sales Invoice"]', '["jiji_menu_recipes"]', '["jiji_supplies"]',
+                  '["jiji_staff"]', '["jiji_money"]'):
+        assert route in source, f"a tile is not routed to {route}"
 
 
 def test_the_page_is_registered_for_directors() -> None:
@@ -92,6 +113,5 @@ def test_routes_are_segments_not_urls() -> None:
     # router intercepts clicks rather than following an href. Hard-coded URLs
     # 404'd on one and did nothing on the other.
     assert "/app/" not in source
-    assert '["query-report", "KoPOS Shift Reconciliation"]' in source
     # The click itself is routed by the one desk owner; see test_jiji_desk.
     assert "jiji.desk.routeLink" in page

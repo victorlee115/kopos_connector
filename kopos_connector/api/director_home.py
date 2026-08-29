@@ -18,10 +18,13 @@ from __future__ import annotations
 from typing import Any
 
 import frappe
-from frappe.utils import cint, cstr, flt, nowdate
+from frappe.utils import add_days, cint, cstr, flt, getdate, nowdate
 
 from kopos_connector.api.director_scope import director_company
 from kopos_connector.api.shift_money import closed_shifts, group_shifts
+
+# Long enough to see a shape, short enough to still be this week.
+TAKINGS_DAYS = 7
 
 
 # Routes are returned as Frappe route segments, not URLs. The desk is served
@@ -29,17 +32,42 @@ from kopos_connector.api.shift_money import closed_shifts, group_shifts
 # clicks rather than following an href, so a hard-coded prefix either 404s or
 # does nothing when clicked. frappe.set_route(...segments) is deployment
 # agnostic; the page builds an href from the same segments for middle-click.
-def _today_takings(company: str) -> dict[str, Any]:
-    """Today's completed sales, from the Sales Invoice that already records them."""
+def _recent_takings(company: str) -> dict[str, Any]:
+    """Today, and the six days behind it, from the Sales Invoices that record them.
+
+    One query answers both. A director asking "did we make money today" almost
+    always means "compared with what", and a single number cannot say.
+    """
+    today = getdate(nowdate())
+    first = add_days(today, -(TAKINGS_DAYS - 1))
     rows = frappe.get_all(
         "Sales Invoice",
-        filters={"company": company, "docstatus": 1, "posting_date": nowdate()},
-        fields=["name", "grand_total"],
+        filters={"company": company, "docstatus": 1, "posting_date": [">=", first]},
+        fields=["posting_date", "grand_total"],
         limit_page_length=0,
     )
+
+    days = [add_days(first, offset) for offset in range(TAKINGS_DAYS)]
+    totals = {cstr(day): 0.0 for day in days}
+    orders = {cstr(day): 0 for day in days}
+    for row in rows:
+        key = cstr(getdate(row.get("posting_date")))
+        if key in totals:
+            totals[key] += flt(row.get("grand_total"))
+            orders[key] += 1
+
     return {
-        "orders": len(rows),
-        "total": flt(sum(flt(row.get("grand_total")) for row in rows), 2),
+        "orders": orders[cstr(today)],
+        "total": flt(totals[cstr(today)], 2),
+        "week_total": flt(sum(totals.values()), 2),
+        "days": [
+            {
+                "day": "Today" if day == today else getdate(day).strftime("%a"),
+                "total": flt(totals[cstr(day)], 2),
+                "today": day == today,
+            }
+            for day in days
+        ],
     }
 
 
@@ -53,8 +81,22 @@ def _shifts_needing_review(company: str) -> list[dict[str, Any]]:
     return group_shifts(closed_shifts(company))["needs_review"]
 
 
-def _staff_count() -> int:
-    return cint(frappe.db.count("KoPOS Staff Access", {"active": 1}))
+def _staff_access() -> dict[str, int]:
+    """Who can use a tablet, and who is still waiting for a PIN.
+
+    Someone active without a verifier cannot sign in, which is the one thing
+    this area ever needs a director for.
+    """
+    rows = frappe.get_all(
+        "KoPOS Staff Access",
+        filters={"active": 1},
+        fields=["pin_hash"],
+        limit_page_length=0,
+    )
+    return {
+        "people": len(rows),
+        "needs_pin": sum(1 for row in rows if not cstr(row.get("pin_hash")).strip()),
+    }
 
 
 def _draft_supplier_orders(company: str) -> int:
@@ -68,10 +110,10 @@ def get_director_home() -> dict[str, Any]:
     if not company:
         return {"status": "no_company"}
 
-    takings = _today_takings(company)
+    takings = _recent_takings(company)
     unmatched_shifts = _shifts_needing_review(company)
     drafts = _draft_supplier_orders(company)
-    staff = _staff_count()
+    staff = _staff_access()
 
     try:
         from kopos_connector.api.inventory import get_menu_authoring_summary
@@ -96,7 +138,7 @@ def get_director_home() -> dict[str, Any]:
             ),
             "detail": f"Start with {cstr(first.get('person'))}.",
             "action": "Review money",
-            "route": ["query-report", "KoPOS Shift Reconciliation"],
+            "route": ["jiji_money"],
         }
     elif drafts:
         next_step = {
@@ -108,7 +150,7 @@ def get_director_home() -> dict[str, Any]:
             ),
             "detail": "Nothing is sent until you say so.",
             "action": "Review supplies",
-            "route": ["List", "Purchase Order", {"docstatus": 0}],
+            "route": ["jiji_supplies"],
         }
     elif items_missing_recipe:
         next_step = {
@@ -139,7 +181,16 @@ def get_director_home() -> dict[str, Any]:
                 if drafts == 1
                 else f"{drafts} supplier orders to review"
             ),
-            "route": ["List", "Purchase Order", {"docstatus": 0}],
+            "route": ["jiji_supplies"],
+        })
+    if staff["needs_pin"]:
+        waiting.append({
+            "title": (
+                "1 person cannot sign in until you set a PIN"
+                if staff["needs_pin"] == 1
+                else f"{staff['needs_pin']} people cannot sign in until you set a PIN"
+            ),
+            "route": ["jiji_staff"],
         })
     if next_step["area"] != "menu" and items_missing_recipe:
         waiting.append({
@@ -156,11 +207,22 @@ def get_director_home() -> dict[str, Any]:
         "company": company,
         "next_step": next_step,
         "waiting": waiting,
+        "week": {"total": f"RM {takings['week_total']:,.2f}", "days": takings["days"]},
         "tiles": [
             {"key": "today", "label": "Today", "value": f"RM {takings['total']:,.2f}", "detail": f"{takings['orders']} orders", "route": ["List", "Sales Invoice"]},
             {"key": "menu", "label": "Menu", "value": str(items_ready), "detail": "on sale", "route": ["jiji_menu_recipes"]},
-            {"key": "stock", "label": "Stock", "value": str(drafts), "detail": "orders to review", "route": ["jiji_stock_autopilot"], "attention": drafts > 0},
-            {"key": "staff", "label": "Staff", "value": str(staff), "detail": "can use tablets", "route": ["List", "KoPOS Staff Access"]},
-            {"key": "money", "label": "Money", "value": str(len(unmatched_shifts)), "detail": "shifts to review", "route": ["query-report", "KoPOS Shift Reconciliation"], "attention": bool(unmatched_shifts)},
+            {"key": "supplies", "label": "Supplies", "value": str(drafts), "detail": "orders to review", "route": ["jiji_supplies"], "attention": drafts > 0},
+            {
+                "key": "staff",
+                "label": "Staff",
+                "value": str(staff["people"]),
+                "detail": (
+                    "can use tablets"
+                    if not staff["needs_pin"]
+                    else f"{staff['needs_pin']} waiting for a PIN"
+                ),
+                "route": ["jiji_staff"],
+            },
+            {"key": "money", "label": "Money", "value": str(len(unmatched_shifts)), "detail": "shifts to review", "route": ["jiji_money"], "attention": bool(unmatched_shifts)},
         ],
     }

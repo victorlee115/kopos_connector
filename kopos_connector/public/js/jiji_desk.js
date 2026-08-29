@@ -79,6 +79,30 @@ frappe.provide("jiji.desk");
 		return $("<span>").addClass(`jiji-pill${suffix}`).text(text);
 	};
 
+	/**
+	 * A week of takings, drawn.
+	 *
+	 * Seven numbers in a row are a table; seven bars are a shape, and the
+	 * shape is the answer to "compared with what". Heights are relative to the
+	 * best day, so an empty week draws nothing rather than seven full bars.
+	 */
+	desk.weekBars = function weekBars(days) {
+		const rows = Array.isArray(days) ? days : [];
+		const peak = rows.reduce((high, row) => Math.max(high, Number(row.total) || 0), 0);
+		const chart = $("<div>").addClass("jiji-week");
+		rows.forEach((row) => {
+			const column = $("<div>").addClass("jiji-week__day").appendTo(chart);
+			const height = peak > 0 ? Math.round(((Number(row.total) || 0) / peak) * 100) : 0;
+			$("<div>")
+				.addClass("jiji-week__bar" + (row.today ? " jiji-week__bar--today" : ""))
+				.css("height", `${height}%`)
+				.attr("title", `${row.day}: ${row.total}`)
+				.appendTo(column);
+			$("<div>").addClass("jiji-week__label").text(row.day || "").appendTo(column);
+		});
+		return chart;
+	};
+
 	desk.injectStyle = function injectStyle() {
 		if (document.getElementById(STYLE_ID)) return;
 		const style = document.createElement("style");
@@ -135,6 +159,15 @@ a.jiji-row:hover { text-decoration: none; color: inherit; background: var(--bg-c
   background: var(--bg-gray, #ededf0); flex: 0 0 auto; }
 .jiji-meter > span { display: block; height: 100%; border-radius: 3px; background: var(--yellow-600, #b4640e); }
 .jiji-meter--calm > span { background: var(--gray-400, #cfcfd6); }
+
+.jiji-week { display: flex; align-items: flex-end; gap: 10px; height: 132px;
+  border-bottom: 1px solid var(--border-color); }
+.jiji-week__day { flex: 1 1 0; display: flex; flex-direction: column; justify-content: flex-end;
+  align-items: center; gap: 8px; height: 100%; }
+.jiji-week__bar { width: 100%; max-width: 44px; min-height: 2px; border-radius: 4px 4px 0 0;
+  background: var(--bg-gray, #e7e2da); }
+.jiji-week__bar--today { background: var(--yellow-600, #b4640e); }
+.jiji-week__label { font-size: 12px; color: var(--text-muted); }
 
 .jiji-advanced { color: var(--text-muted); font-size: 12px; }
 `;

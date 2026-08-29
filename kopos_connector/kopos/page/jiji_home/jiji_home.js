@@ -100,6 +100,18 @@ class JiJiHome {
 			this.body.append(waitingBlock);
 		}
 
+		// The shape behind today's number: a week is what "compared with what"
+		// means, and it is the same query today already came out of.
+		const week = data.week || {};
+		if ((week.days || []).length) {
+			const card = $("<div>").addClass("jiji-card");
+			const head = $("<div>").addClass("jiji-head").appendTo(card);
+			head.append(jiji.desk.label(__("Last seven days")));
+			head.append($("<span>").addClass("jiji-muted jiji-num").text(__("{0} taken", [week.total || ""])));
+			card.append(jiji.desk.weekBars(week.days).css("margin-top", "16px"));
+			this.body.append(card);
+		}
+
 		this.body.append(jiji.desk.advanced(__("every number here opens the record it came from.")));
 	}
 }

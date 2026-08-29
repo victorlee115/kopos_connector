@@ -79,6 +79,14 @@ def test_the_shared_style_is_injected_once() -> None:
     assert "if (desk.routeLink) return;" in shared
 
 
+def test_an_empty_week_draws_nothing_rather_than_seven_full_bars() -> None:
+    shared = SHARED.read_text(encoding="utf-8")
+    # Heights are relative to the best day. Dividing by a peak of zero would
+    # draw a café that took nothing as a café that took the same every day.
+    assert "peak > 0 ?" in shared
+    assert "Math.max(high," in shared
+
+
 def test_the_status_pill_carries_the_four_levels_the_tablet_uses() -> None:
     shared = SHARED.read_text(encoding="utf-8")
     for level in ("jiji-pill--attention", "jiji-pill--ok", "jiji-pill--stop"):
