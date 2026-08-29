@@ -104,6 +104,10 @@ class JiJiSupplies {
 			);
 		}
 
+		if ((data.detailed || []).length) {
+			// Every other page names its first block. This one began mid-air.
+			this.body.append(jiji.desk.label(__("Waiting for you to send")));
+		}
 		(data.detailed || []).forEach((draft) => {
 			this.body.append(this.renderDraft(draft));
 			// The supplier's record is its own block. Folded into the decision
@@ -147,7 +151,7 @@ class JiJiSupplies {
 
 		this.body.append(
 			jiji.desk
-				.routeLink(data.orders_route, __("More detail · the order itself, where you send it"))
+				.routeLink(data.orders_route, __("More detail · the order itself, where you send it from"))
 				.addClass("jiji-advanced"),
 		);
 	}

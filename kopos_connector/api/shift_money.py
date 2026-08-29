@@ -141,6 +141,13 @@ def _money_next_step(grouped: dict[str, list[dict[str, Any]]]) -> dict[str, Any]
             ),
             "detail": "There is nothing to compare against for these.",
         }
+    if not grouped["matched"]:
+        # Nothing has closed yet. "Accounted for" would be a positive result
+        # drawn from an absence of shifts, which is not the same thing.
+        return {
+            "title": "No shift has been counted yet",
+            "detail": "When a shift closes, JiJi compares the cash to what it expected and says so here.",
+        }
     return {
         "title": "The cash is accounted for",
         "detail": "Every shift counted the same money JiJi expected.",

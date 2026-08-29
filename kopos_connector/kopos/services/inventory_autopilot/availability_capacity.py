@@ -144,7 +144,7 @@ def target_capacity(
 
     policy = _policy(resolved_company, resolved_warehouse)
     if not policy or not cstr(policy.get("cutover_token")).strip() or not policy.get("cutover_at"):
-        return _not_ready(resolved_type, resolved_id, "Stock tracking has not started for this outlet location")
+        return _not_ready(resolved_type, resolved_id, "Stock tracking has not started for this outlet")
 
     current_time = at_time or now_datetime()
     try:

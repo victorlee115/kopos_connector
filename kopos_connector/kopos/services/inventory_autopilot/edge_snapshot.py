@@ -630,10 +630,10 @@ def _operational_target(
     reliability_reason = "The latest stock amounts are available"
     if not policy:
         reliability = "Not ready"
-        reliability_reason = "The stock settings are not finished for this outlet location"
+        reliability_reason = "The stock settings are not finished for this outlet"
     elif not cstr(policy.get("cutover_token")).strip() or not policy.get("cutover_at"):
         reliability = "Not ready"
-        reliability_reason = "Stock tracking has not started for this outlet location"
+        reliability_reason = "Stock tracking has not started for this outlet"
     elif not is_catalog_target and not stock_item:
         reliability = "Not ready"
         reliability_reason = "This item or customer choice is not linked to a stock item"
@@ -828,11 +828,11 @@ def _overall_reliability(
     warehouse: str,
 ) -> tuple[str, str, str]:
     if not policy:
-        return "stale", "Not ready", "The stock settings are not finished for this outlet location"
+        return "stale", "Not ready", "The stock settings are not finished for this outlet"
     if not cstr(policy.get("cutover_token")).strip() or not policy.get("cutover_at"):
-        return "current", "Not ready", "Stock tracking has not started for this outlet location"
+        return "current", "Not ready", "Stock tracking has not started for this outlet"
     if not item_targets:
-        return "stale", "Not ready", "No stock items are set up for this outlet location"
+        return "stale", "Not ready", "No stock items are set up for this outlet"
     if cstr(policy.get("automation_state")).strip() == "Paused":
         return "current", "Please check", "Automatic stock work is paused for this outlet"
     if _critical_exception_exists(warehouse):

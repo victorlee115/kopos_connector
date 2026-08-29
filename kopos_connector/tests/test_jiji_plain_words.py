@@ -130,3 +130,27 @@ def test_a_control_and_its_note_do_not_contradict_each_other() -> None:
     # "Nothing is sent from this page", which cannot both be acted on.
     assert "Open this order" in supplies
     assert "JiJi never sends an order. You send it." in supplies
+
+
+def test_no_page_claims_a_result_it_drew_from_an_absence() -> None:
+    """Three times now, a screen has reported a positive result from no data.
+
+    "Running low: 0 · nothing short" on an outlet with no runout estimate.
+    "The cash is accounted for" on a café where no shift had ever closed.
+    Both read as reassurance and neither was earned. The fix is the same each
+    time: an empty list and an unanswerable question are different facts and
+    must not produce the same sentence.
+    """
+    money = (ROOT / "api" / "shift_money.py").read_text(encoding="utf-8")
+    stock = (ROOT / "api" / "stock_desk.py").read_text(encoding="utf-8")
+
+    # Money distinguishes "every shift matched" from "no shift has closed".
+    assert '"No shift has been counted yet"' in money
+    assert 'if not grouped["matched"]:' in money
+    accounted = money.index('"The cash is accounted for"')
+    guard = money.index('if not grouped["matched"]:')
+    assert guard < accounted, "the reassurance must sit behind the check for any data at all"
+
+    # Stock distinguishes "nothing is short" from "JiJi cannot say yet".
+    assert '"JiJi cannot say yet"' in stock
+    assert "if low or not no_estimate" in stock

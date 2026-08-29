@@ -114,7 +114,7 @@ class JiJiMoney {
 
 		this.body.append(
 			jiji.desk
-				.routeLink(data.report_route, __("More detail · every shift, one by one"))
+				.routeLink(data.report_route, __("More detail · the shift audit, with every technical column"))
 				.addClass("jiji-advanced"),
 		);
 	}
