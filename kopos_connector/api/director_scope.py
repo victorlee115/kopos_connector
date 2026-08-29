@@ -49,3 +49,16 @@ def director_warehouse(company: str) -> str:
         limit_page_length=2,
     )
     return cstr(warehouses[0]) if len(warehouses) == 1 else ""
+
+
+@frappe.whitelist(methods=["GET"])
+def get_director_outlet() -> dict[str, str]:
+    """The company and outlet store to open a page on, before anyone chooses.
+
+    The stock page opens with a required outlet filter and shows nothing until
+    it is filled. A café with one outlet store has already answered that
+    question, and a director who set a default has answered it too. Returning
+    an empty warehouse is a real answer -- it means "genuinely ambiguous, ask".
+    """
+    company = director_company()
+    return {"company": company, "warehouse": director_warehouse(company) if company else ""}

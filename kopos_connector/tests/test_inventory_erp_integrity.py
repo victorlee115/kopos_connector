@@ -206,7 +206,10 @@ class DeskPagePackagingTests(TestCase):
             "Available stock will not change until an authorized person approves it.",
             "Finish the stock settings for this outlet before starting stock tracking.",
             "No additional stock problems",
-            "Choose an outlet. JiJi will show what needs your attention.",
+            # The page now opens on the outlet the director has. When the answer
+            # is genuinely ambiguous it still asks -- in the filter's own help
+            # line rather than a banner explaining a chore.
+            "Choose an outlet.",
             "Updates automatically.",
             "Updating automatically.",
             "Stock needs a manager.",

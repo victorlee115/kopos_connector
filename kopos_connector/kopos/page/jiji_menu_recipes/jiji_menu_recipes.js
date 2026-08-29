@@ -66,7 +66,9 @@ class JiJiMenuRecipesPage {
 				<div class="card mb-4"><div class="card-body">
 					<div class="d-flex flex-wrap justify-content-between align-items-start mb-3"><div><h4 class="mb-1">${__("Set up one menu item")}</h4><p class="text-muted mb-0">${__("Nothing is saved until you choose Save draft. A draft does not change what outlet staff can sell.")}</p></div><div class="small text-muted" data-company-status>${__("Choose a company, then a menu item")}</div></div>
 					<div class="row mb-3"><div class="col-md-4"><div data-company-link></div></div><div class="col-md-4"><div data-menu-item-link></div></div><div class="col-md-4"><div data-catalog-profile-link></div></div></div>
-					<div class="row"><div class="col-lg-8"><ol class="mb-0 pl-3"><li>${__("Choose what kind of item it is and whether it uses stock.")}</li><li>${__("Enter the amount of every ingredient, prepared item, and piece of packaging used.")}</li><li>${__("Save the recipe as a draft, check it, then make it available to outlets.")}</li></ol></div><div class="col-lg-4 mt-3 mt-lg-0 d-flex flex-wrap align-content-start gap-2"><button class="btn btn-sm btn-default" type="button" data-menu-commission="item" disabled>${__("1. Choose item type")}</button><button class="btn btn-sm btn-primary" type="button" data-menu-commission="recipe" disabled>${__("2. Enter recipe")}</button><button class="btn btn-sm btn-default" type="button" data-menu-commission="recipes">${__("Copy or change a recipe")}</button><button class="btn btn-sm btn-default" type="button" data-menu-catalog-preview disabled>${__("Check what the outlet will see")}</button></div></div>
+					<div class="d-flex flex-wrap align-items-center gap-2"><button class="btn btn-sm btn-default" type="button" data-menu-commission="item" disabled>${__("1. Choose item type")}</button><button class="btn btn-sm btn-primary" type="button" data-menu-commission="recipe" disabled>${__("2. Enter recipe")}</button><button class="btn btn-sm btn-default" type="button" data-menu-catalog-preview disabled>${__("3. Check what the outlet will see")}</button></div>
+					<p class="text-muted small mt-2 mb-0" data-sequence-waiting></p>
+					<p class="small mt-2 mb-0"><button class="btn btn-link btn-sm p-0" type="button" data-menu-commission="recipes">${__("Copy or change a recipe")}</button> <span class="text-muted">${__("— for an item that already has one.")}</span></p>
 					<pre class="small bg-light p-2 mt-3 mb-0 d-none" data-menu-catalog-results></pre><div class="small mt-2" data-guided-editor-status></div>
 				</div></div>
 				<div class="card mb-4"><div class="card-body"><div class="d-flex flex-wrap justify-content-between align-items-center mb-2"><div><h4 class="mb-1">${__("Make approved recipes available")}</h4><p class="text-muted mb-0">${__("JiJi checks every selected recipe first. If one has a problem, nothing changes.")}</p></div><button class="btn btn-sm btn-primary" type="button" data-publish-selected disabled>${__("Make selected recipes available")}</button></div><div data-publish-queue class="small text-muted">${__("Choose a company to see saved recipe drafts.")}</div></div></div>
@@ -117,12 +119,21 @@ class JiJiMenuRecipesPage {
 	}
 
 	updateActionState() {
+		const company = Boolean(this.companyControl?.get_value?.());
 		const item = Boolean(this.menuItemControl?.get_value?.());
-		const companyAndItem = item && Boolean(this.companyControl?.get_value?.());
+		const companyAndItem = item && company;
 		const profile = Boolean(this.catalogProfileControl?.get_value?.());
-		this.page.body.find('[data-menu-commission="item"]').prop("disabled", !Boolean(this.companyControl?.get_value?.()));
+		this.page.body.find('[data-menu-commission="item"]').prop("disabled", !company);
 		this.page.body.find('[data-menu-commission="recipe"]').prop("disabled", !companyAndItem);
 		this.page.body.find("[data-menu-catalog-preview]").prop("disabled", !profile);
+
+		// A greyed step that never says why is the same as a broken one. Name
+		// what the sequence is waiting for, in the order it needs it.
+		let waiting = "";
+		if (!company) waiting = __("Step 1 is waiting for a company.");
+		else if (!item) waiting = __("Step 2 is waiting for a menu item.");
+		else if (!profile) waiting = __("Step 3 is waiting for the outlet catalogue to check against.");
+		this.page.body.find("[data-sequence-waiting]").text(waiting);
 	}
 
 	updatePromotionActionState() {

@@ -30,6 +30,7 @@ class JiJiStockAutopilotPage {
 		});
 		this.warehouseControl.refresh();
 		this.warehouseControl.$input.on("change awesomplete-selectcomplete", () => this.onWarehouseChanged());
+		this.chooseOutletForDirector();
 		this.page.set_primary_action(__("Check now"), () => this.refresh({ showMissingOutlet: true }));
 		this.page.add_inner_button(__("Start using stock tracking"), () => this.activateCutover());
 		this.page.body.on("click", "[data-primary-route]", (event) => {
@@ -70,9 +71,6 @@ class JiJiStockAutopilotPage {
 	render() {
 		$(this.page.body).html(`
 			<div class="jiji-stock-autopilot">
-				<div class="alert alert-info mb-4">
-					${__("Choose an outlet. JiJi will show what needs your attention.")}
-				</div>
 				${this.stakeholderWorkflowHtml()}
 				<div class="row align-items-end mb-4">
 					<div class="col-sm-5"><div data-warehouse></div></div>
@@ -86,6 +84,30 @@ class JiJiStockAutopilotPage {
 				<div data-exceptions class="mt-4"></div>
 			</div>`);
 		this.updateWarehouseHelp();
+	}
+
+	/**
+	 * Open on the outlet the director actually has.
+	 *
+	 * The filter is required, so until it was filled this page showed nothing
+	 * but an instruction to fill it. A café with one outlet store, or a
+	 * director with a default, has already answered the question. When the
+	 * answer is genuinely ambiguous the filter stays empty and asks.
+	 */
+	chooseOutletForDirector() {
+		if (this.warehouseControl.get_value()) return;
+		frappe.call({
+			method: "kopos_connector.api.director_scope.get_director_outlet",
+			type: "GET",
+			callback: (response) => {
+				const warehouse = (response.message || {}).warehouse;
+				if (!warehouse || this.warehouseControl.get_value()) return;
+				this.warehouseControl.set_value(warehouse);
+				this.onWarehouseChanged();
+			},
+			// One outlet still beats no page: leave the filter for the director.
+			error: () => this.updateWarehouseHelp(),
+		});
 	}
 
 	onWarehouseChanged() {
