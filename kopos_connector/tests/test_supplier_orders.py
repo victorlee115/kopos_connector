@@ -90,3 +90,20 @@ def test_the_page_degrades_instead_of_blanking() -> None:
     page = PAGE.read_text(encoding="utf-8")
     assert "could not read your supplier orders just now" in page
     assert "Nothing has been sent or changed" in page
+
+
+def test_a_thousand_of_the_small_unit_is_said_as_the_big_one() -> None:
+    source = SOURCE.read_text(encoding="utf-8")
+    # A real draft printed "6 cartons · 1000 ml each". Nobody says that about
+    # a litre of milk. The scale only applies when it stays exact, so 1500 ml
+    # is never rounded into 2 L.
+    assert "_SCALED_UNITS" in source
+    assert "% 1000 == 0" in source
+
+
+def test_an_order_still_in_the_air_is_not_history() -> None:
+    source = SOURCE.read_text(encoding="utf-8")
+    # A real site showed the same sent order under both "Last orders from" and
+    # "Already on the way". Two names for one order on one screen is exactly
+    # the duplication this page exists to undo.
+    assert 'for row in record if row["late_days"] is not None' in source

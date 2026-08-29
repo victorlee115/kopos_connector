@@ -72,8 +72,17 @@ def _unit_words(unit: str) -> tuple[str, str]:
     return singular, f"{singular}s"
 
 
+# A thousand of the small unit is the big one, and people say the big one.
+# Only ever exact: 1500 ml stays 1500 ml rather than becoming a rounded 2 L.
+_SCALED_UNITS = {"millilitre": "litre", "milliliter": "litre", "gram": "kg"}
+
+
 def _amount_phrase(qty: float, unit: str) -> str:
-    """"12 bags", "1 carton", "250 g" -- an amount someone can picture."""
+    """"12 bags", "1 carton", "1 L", "250 g" -- an amount someone can picture."""
+    name = cstr(unit).strip().lower()
+    bigger = _SCALED_UNITS.get(name)
+    if bigger and flt(qty) >= 1000 and flt(qty) % 1000 == 0:
+        qty, unit = flt(qty) / 1000, bigger
     singular, plural = _unit_words(unit)
     rounded = round(flt(qty), 3)
     whole = int(rounded)
@@ -339,15 +348,18 @@ def get_supplier_orders() -> dict[str, Any]:
                 }
                 for line in lines
             ],
+            # Only orders that finished. One still in the air is not history,
+            # and it is already named under "Already on the way" -- saying it
+            # twice on one screen is the duplication this page exists to undo.
             "history": [
                 {
                     "when": _short_date(entry.get("transaction_date")),
                     "arrival": _arrival_words(entry),
-                    "on_time": entry["late_days"] is not None and entry["late_days"] <= 0,
+                    "on_time": entry["late_days"] <= 0,
                     "total": _money(entry.get("grand_total"), cstr(entry.get("currency"))),
                     "route": ["Form", "Purchase Order", cstr(entry.get("name"))],
                 }
-                for entry in record[:HISTORY_LIMIT]
+                for entry in [row for row in record if row["late_days"] is not None][:HISTORY_LIMIT]
             ],
             "route": ["Form", "Purchase Order", cstr(row["name"])],
         })
