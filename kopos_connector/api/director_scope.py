@@ -17,6 +17,25 @@ import frappe
 from frappe.utils import cstr
 
 
+def _user_default(key: str) -> str:
+    """One director's default for a key, or "" when there is no single answer.
+
+    ``frappe.defaults.get_user_default`` is the obvious reader and the wrong
+    one here. For a key that also scopes User Permissions -- Company and
+    Warehouse both do -- it only returns a stored string when that string
+    arrived as a single-item list, and otherwise looks for a lower-cased key
+    that is usually absent. Reading it returned an empty warehouse on a site
+    whose Administrator had one set, which is how this was found.
+
+    The merged defaults hold the value directly. A list means the director is
+    permitted several, which is a genuinely ambiguous answer, not a default.
+    """
+    value = frappe.defaults.get_defaults().get(key)
+    if isinstance(value, (list, tuple)):
+        return cstr(value[0]).strip() if len(value) == 1 else ""
+    return cstr(value or "").strip()
+
+
 def director_company() -> str:
     """The company this director is looking at.
 
@@ -24,7 +43,7 @@ def director_company() -> str:
     user default would otherwise meet an empty page. Fall back to the only
     company there is, and ask only when the answer is genuinely ambiguous.
     """
-    default = cstr(frappe.defaults.get_user_default("Company") or "")
+    default = _user_default("Company")
     if default:
         return default
     companies = frappe.get_all("Company", pluck="name", limit_page_length=2)
@@ -34,21 +53,36 @@ def director_company() -> str:
 def director_warehouse(company: str) -> str:
     """The outlet store this director is looking at.
 
-    The stock page currently opens with an empty required filter, so a
-    director sees nothing until they name a warehouse they did not choose.
-    A café with one outlet store has already answered this question.
+    The stock page opens with an empty required filter, so a director sees
+    nothing until they name a warehouse they did not choose.
+
+    The answer already exists: a POS Profile names the warehouse its tablets
+    sell from, which is the outlet store the café means by "stock". Reading it
+    here means the desk and the tablet cannot disagree about which stock the
+    numbers describe.
+
+    Counting warehouses would not work -- ERPNext creates Stores, Work In
+    Progress, Finished Goods and Goods In Transit for every company, so a
+    single-outlet café already has four and never looks like one.
+
+    An empty answer is a real answer: it means two outlets sell from different
+    stores, and choosing one for the director would show them the wrong café
+    without saying so.
     """
-    default = cstr(frappe.defaults.get_user_default("Warehouse") or "")
+    default = _user_default("Warehouse")
     if default:
         return default
-    warehouses = frappe.get_all(
-        "Warehouse",
-        filters={"company": company, "is_group": 0, "disabled": 0},
-        pluck="name",
-        order_by="creation asc",
-        limit_page_length=2,
-    )
-    return cstr(warehouses[0]) if len(warehouses) == 1 else ""
+    warehouses = {
+        cstr(name).strip()
+        for name in frappe.get_all(
+            "POS Profile",
+            filters={"company": company, "disabled": 0},
+            pluck="warehouse",
+            limit_page_length=0,
+        )
+        if cstr(name).strip()
+    }
+    return warehouses.pop() if len(warehouses) == 1 else ""
 
 
 @frappe.whitelist(methods=["GET"])

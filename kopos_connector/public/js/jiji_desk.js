@@ -89,6 +89,11 @@ frappe.provide("jiji.desk");
 	desk.weekBars = function weekBars(days) {
 		const rows = Array.isArray(days) ? days : [];
 		const peak = rows.reduce((high, row) => Math.max(high, Number(row.total) || 0), 0);
+		// A week with no sales has no shape. Seven empty columns look like a
+		// chart that failed to load; a sentence says which it is.
+		if (peak <= 0) {
+			return $("<div>").addClass("jiji-muted").text(__("Nothing was taken in the last seven days."));
+		}
 		const chart = $("<div>").addClass("jiji-week");
 		rows.forEach((row) => {
 			const column = $("<div>").addClass("jiji-week__day").appendTo(chart);

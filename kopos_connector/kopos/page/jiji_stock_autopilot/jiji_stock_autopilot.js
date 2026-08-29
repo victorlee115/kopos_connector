@@ -102,8 +102,15 @@ class JiJiStockAutopilotPage {
 			callback: (response) => {
 				const warehouse = (response.message || {}).warehouse;
 				if (!warehouse || this.warehouseControl.get_value()) return;
-				this.warehouseControl.set_value(warehouse);
-				this.onWarehouseChanged();
+				// set_value fills the input but does not fire the change the page
+				// listens for, and it resolves after its own link validation.
+				// Calling onWarehouseChanged directly read the field back before
+				// it held anything, so the outlet was filled in and the page went
+				// on asking for an outlet. Trigger the control's own change so a
+				// defaulted outlet and a chosen one take exactly the same path.
+				Promise.resolve(this.warehouseControl.set_value(warehouse)).then(() =>
+					this.warehouseControl.$input.trigger("change"),
+				);
 			},
 			// One outlet still beats no page: leave the filter for the director.
 			error: () => this.updateWarehouseHelp(),
@@ -256,17 +263,10 @@ class JiJiStockAutopilotPage {
 		));
 		this.renderNextStep(needs, overallCritical ? "critical" : overallWarning ? "warning" : "ok");
 
+		// The old first card repeated the next step -- same words, same button,
+		// directly under it. Six areas remain, and the one that produced the
+		// next step is marked as such rather than raising a second alarm.
 		const sections = [
-			{
-				key: "needs",
-					title: __("Needs your attention"),
-				icon: "⚠",
-				status: overallCritical ? "critical" : overallWarning ? "warning" : "ok",
-				value: needs.value,
-				detail: needs.detail,
-				action: needs.action,
-				route: needs.route,
-			},
 			{
 				key: "today",
 				title: __("Today"),
@@ -334,7 +334,9 @@ class JiJiStockAutopilotPage {
 				route: "settings",
 			},
 		];
-		this.page.body.find("[data-sections]").html(sections.map((section) => this.sectionHtml(section)).join(""));
+		this.page.body.find("[data-sections]").html(
+			sections.map((section) => this.sectionHtml(section, section.route === needs.route)).join(""),
+		);
 		this.renderCountReviews(countReviews);
 		this.renderExceptions(exceptions.top || [], overallCritical || overallWarning);
 	}
@@ -490,13 +492,25 @@ class JiJiStockAutopilotPage {
 		}, __("Review this stock count"), __("Save stock correction"));
 	}
 
-	sectionHtml(section) {
+	/**
+	 * One card of one area.
+	 *
+	 * ``isNextStep`` marks the area the next step came from. Six areas each
+	 * shouting "Action required" is how a director ends up unable to tell which
+	 * one to open first, so that area points at the step above instead of
+	 * repeating the alarm, and the other five stay quiet unless they are
+	 * urgent in their own right.
+	 */
+	sectionHtml(section, isNextStep = false) {
 		const action = section.route && section.action
 			? `<button type="button" class="btn btn-sm btn-default mt-auto align-self-start" data-primary-route="${this.escapeAttribute(section.route)}">${this.escape(section.action)}</button>`
 			: `<span class="text-success small font-weight-bold mt-auto">✓ ${__("No action needed")}</span>`;
-		return `<div class="col-sm-6 col-lg-4 mb-4"><div class="card h-100 border-${this.toneClass(section.status)}">
+		const badge = isNextStep
+			? `<span class="text-muted small font-weight-bold">${__("This is your next step")}</span>`
+			: this.statusBadge(section.status, this.statusLabel(section.status));
+		return `<div class="col-sm-6 col-lg-4 mb-4"><div class="card h-100 border-${this.toneClass(isNextStep ? "info" : section.status)}">
 			<div class="card-body d-flex flex-column"><h4>${section.icon} ${section.title}</h4>
-				<div class="mb-2">${this.statusBadge(section.status, this.statusLabel(section.status))}</div>
+				<div class="mb-2">${badge}</div>
 				<div class="font-weight-bold mb-1">${this.escape(section.value)}</div>
 				<p class="text-muted small mb-3">${this.escape(section.detail)}</p>
 				${action}

@@ -83,7 +83,8 @@ def test_an_empty_week_draws_nothing_rather_than_seven_full_bars() -> None:
     shared = SHARED.read_text(encoding="utf-8")
     # Heights are relative to the best day. Dividing by a peak of zero would
     # draw a café that took nothing as a café that took the same every day.
-    assert "peak > 0 ?" in shared
+    assert "if (peak <= 0)" in shared
+    assert "Nothing was taken in the last seven days." in shared
     assert "Math.max(high," in shared
 
 

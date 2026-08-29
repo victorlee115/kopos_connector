@@ -52,6 +52,12 @@ def test_stock_opens_on_the_outlet_the_director_has() -> None:
     # lookup leaves the filter usable instead of blanking the page.
     assert "if (this.warehouseControl.get_value()) return;" in page
     assert "error: () => this.updateWarehouseHelp()" in page
+    # set_value fills the input without firing the change the page listens for,
+    # and resolves after its own validation. Reading the field back directly
+    # left the outlet filled in and the page still asking for an outlet, so a
+    # defaulted outlet takes the same path a chosen one does.
+    assert "Promise.resolve(this.warehouseControl.set_value(warehouse))" in page
+    assert 'this.warehouseControl.$input.trigger("change")' in page
 
 
 def test_stock_no_longer_opens_with_an_instruction_to_fill_a_filter() -> None:
@@ -59,9 +65,35 @@ def test_stock_no_longer_opens_with_an_instruction_to_fill_a_filter() -> None:
     assert "Choose an outlet. JiJi will show what needs your attention." not in page
 
 
+def test_the_outlet_store_is_the_one_the_tablets_sell_from() -> None:
+    scope = SCOPE.read_text(encoding="utf-8")
+    # A POS Profile already names it. Counting warehouses cannot work: ERPNext
+    # creates four for every company, so a single-outlet café never looks like
+    # one -- verified on a real site, where the count rule never fired.
+    assert '"POS Profile"' in scope
+    assert 'pluck="warehouse"' in scope
+
+
 def test_an_ambiguous_outlet_is_still_asked_for() -> None:
     scope = SCOPE.read_text(encoding="utf-8")
-    # Two outlet stores is a real question. Guessing one would show a director
-    # the wrong café without saying so.
-    assert "limit_page_length=2" in scope
+    # Two outlets selling from different stores is a real question. Choosing
+    # one would show a director the wrong café without saying so.
     assert "len(warehouses) == 1" in scope
+
+
+def test_stock_says_the_urgent_thing_once() -> None:
+    page = STOCK.read_text(encoding="utf-8")
+    # The first area card repeated the next step word for word, directly under
+    # it: same value, same detail, same button, same route. Six areas remain,
+    # and the one the next step came from points at it instead of raising a
+    # second alarm.
+    assert "Needs your attention" not in page
+    assert "This is your next step" in page
+    assert "section.route === needs.route" in page
+
+
+def test_stock_keeps_all_six_areas() -> None:
+    page = STOCK.read_text(encoding="utf-8")
+    areas = [key for key in ("today", "stock", "counts", "plans", "finance", "settings")
+             if f'key: "{key}"' in page]
+    assert areas == ["today", "stock", "counts", "plans", "finance", "settings"]

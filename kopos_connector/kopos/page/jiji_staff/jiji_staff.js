@@ -49,9 +49,11 @@ class JiJiStaff {
 .jiji-staff__pin-title { font-size: 16px; font-weight: 600; }
 .jiji-staff__pin-detail { color: var(--text-muted); margin: 2px 0 14px; }
 .jiji-staff__pin-form { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.jiji-staff__pin-form input { width: 148px; height: 34px; border: 1px solid var(--border-color);
+.jiji-staff__pin-form input { width: 168px; height: 34px; border: 1px solid var(--border-color);
   border-radius: 7px; padding: 0 12px; background: var(--control-bg, #fff); color: inherit;
   font-variant-numeric: tabular-nums; letter-spacing: .3em; }
+/* The spacing is for four digits. On a sentence it clipped "Type it again". */
+.jiji-staff__pin-form input::placeholder { letter-spacing: normal; }
 .jiji-staff__pin-error { color: var(--red-600, #b3261e); }
 `;
 		document.head.appendChild(style);
