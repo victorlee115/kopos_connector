@@ -25,8 +25,7 @@ class JiJiSupplies {
 			single_column: true,
 		});
 		this.page.set_primary_action(__("Refresh"), () => this.load(), "refresh");
-		this.body = $('<div class="jiji-page"></div>').appendTo(this.page.body);
-		jiji.desk.injectStyle();
+		this.body = jiji.desk.page(this.page);
 		this.injectStyle();
 		this.load();
 	}
@@ -37,16 +36,16 @@ class JiJiSupplies {
 		style.id = "jiji-supplies-style";
 		style.textContent = `
 .jiji-supplies__head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
-.jiji-supplies__supplier { font-size: 20px; font-weight: 600; }
-.jiji-supplies__total { margin-left: auto; font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.jiji-supplies__why { border-left: 3px solid var(--yellow-500, #e8952a); padding: 12px 0 12px 16px; margin: 14px 0; }
+.jiji-supplies__supplier { font-size: 21px; font-weight: 600; letter-spacing: -.01em; }
+.jiji-supplies__total { margin-left: auto; font-size: 29px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.jiji-supplies__why { border-left: 3px solid var(--jiji-accent); padding: 12px 0 12px 16px; margin: 16px 0; }
 .jiji-supplies__why-title { font-weight: 600; }
-.jiji-supplies__why-detail { color: var(--text-muted); margin-top: 2px; }
+.jiji-supplies__why-detail { color: var(--jiji-ink-2); margin-top: 2px; }
 .jiji-supplies__actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
-.jiji-supplies__when { margin-left: auto; color: var(--text-muted); font-size: 12px; }
-.jiji-supplies__amount { color: var(--text-muted); }
-.jiji-supplies__cost { font-variant-numeric: tabular-nums; color: var(--text-muted); min-width: 92px; text-align: right; }
-.jiji-supplies__date { color: var(--text-muted); font-size: 12px; width: 74px; flex: 0 0 auto; }
+.jiji-supplies__when { margin-left: auto; color: var(--jiji-ink-3); font-size: 12px; }
+.jiji-supplies__amount { color: var(--jiji-ink-2); }
+.jiji-supplies__cost { font-variant-numeric: tabular-nums; color: var(--jiji-ink-3); min-width: 92px; text-align: right; }
+.jiji-supplies__date { color: var(--jiji-ink-3); font-size: 12px; width: 74px; flex: 0 0 auto; }
 .jiji-supplies__why + .jiji-supplies__actions { margin-top: 0; }
 .jiji-supplies__history-total { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 100px; text-align: right; }
 `;

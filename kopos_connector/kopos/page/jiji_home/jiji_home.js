@@ -27,8 +27,7 @@ class JiJiHome {
 			single_column: true,
 		});
 		this.page.set_primary_action(__("Refresh"), () => this.load(), "refresh");
-		this.body = $('<div class="jiji-page"></div>').appendTo(this.page.body);
-		jiji.desk.injectStyle();
+		this.body = jiji.desk.page(this.page);
 		this.load();
 	}
 

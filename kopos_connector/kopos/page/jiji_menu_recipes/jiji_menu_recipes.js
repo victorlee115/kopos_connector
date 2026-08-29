@@ -40,6 +40,8 @@ class JiJiMenuRecipesPage {
 			title: __("JiJi Menu, Recipes & Offers"),
 			single_column: true,
 		});
+		jiji.desk.injectStyle();
+		$(wrapper).addClass("jiji-desk");
 		this.render();
 		this.bindEvents();
 		this.setupControls();
@@ -57,7 +59,7 @@ class JiJiMenuRecipesPage {
 		];
 		$(this.page.body).html(`
 			<div class="jiji-menu-page">
-				<div class="alert alert-info"><strong>${__("New to running a food or drink business?")}</strong><br>${__("Start with one menu item and work from left to right. A recipe is the exact list of ingredients used. An item made in advance is something staff prepare before an order, such as cold foam. A draft is saved work that customers cannot order yet.")}</div>
+				<details class="card mb-4 jiji-help"><summary class="card-body py-3"><strong>${__("New to running a food or drink business?")}</strong></summary><div class="card-body pt-0 text-muted">${__("Start with one menu item and work from left to right. A recipe is the exact list of ingredients used. An item made in advance is something staff prepare before an order, such as cold foam. A draft is saved work that customers cannot order yet.")}</div></details>
 				<div class="card mb-4" data-completion-card><div class="card-body">
 					<div class="d-flex flex-wrap justify-content-between align-items-start"><div><h4 class="mb-1">${__("Setup progress")}</h4><p class="text-muted mb-0">${__("Choose a company to see what is ready, what is missing, and what to do next.")}</p></div><div class="small text-muted" data-progress-summary>${__("Choose a company")}</div></div>
 					<div class="progress mt-3" style="height: 8px" aria-label="${__("Menu setup progress")}"><div class="progress-bar" role="progressbar" data-progress-bar style="width: 0%"></div></div>

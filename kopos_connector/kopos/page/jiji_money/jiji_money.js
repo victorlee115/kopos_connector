@@ -42,8 +42,7 @@ class JiJiMoney {
 			single_column: true,
 		});
 		this.page.set_primary_action(__("Refresh"), () => this.load(), "refresh");
-		this.body = $('<div class="jiji-page"></div>').appendTo(this.page.body);
-		jiji.desk.injectStyle();
+		this.body = jiji.desk.page(this.page);
 		this.injectStyle();
 		this.load();
 	}
@@ -53,10 +52,10 @@ class JiJiMoney {
 		const style = document.createElement("style");
 		style.id = "jiji-money-style";
 		style.textContent = `
-.jiji-money__card--attention { border-left: 3px solid var(--yellow-500, #e8952a); }
+.jiji-money__card--attention { border-left: 3px solid var(--jiji-accent); }
 .jiji-money__who { font-weight: 600; flex: 1 1 240px; }
-.jiji-money__amounts { color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.jiji-money__difference { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--yellow-600, #b4640e); }
+.jiji-money__amounts { color: var(--jiji-ink-3); font-variant-numeric: tabular-nums; }
+.jiji-money__difference { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--jiji-accent); }
 `;
 		document.head.appendChild(style);
 	}

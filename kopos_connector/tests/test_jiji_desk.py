@@ -92,3 +92,33 @@ def test_the_status_pill_carries_the_four_levels_the_tablet_uses() -> None:
     shared = SHARED.read_text(encoding="utf-8")
     for level in ("jiji-pill--attention", "jiji-pill--ok", "jiji-pill--stop"):
         assert level in shared, f"{level} is missing from the desk vocabulary"
+
+
+def test_the_desk_owns_its_palette_rather_than_borrowing_one() -> None:
+    shared = SHARED.read_text(encoding="utf-8")
+    # Frappe's tokens cannot carry this look: --bg-color is white in the
+    # default theme, so a ground drawn from it is white on white, and
+    # --yellow-600 is a mustard rather than the amber the counter uses.
+    assert "--jiji-ground:" in shared and "--jiji-accent:" in shared
+    assert '[data-theme="dark"] .jiji-desk' in shared, "the desk palette must state both themes"
+    for borrowed in ("var(--bg-color", "var(--yellow-600", "var(--bg-gray"):
+        assert borrowed not in shared, f"{borrowed} means the palette is being inherited, not chosen"
+
+
+def test_every_desk_page_stands_on_the_same_ground() -> None:
+    shared = SHARED.read_text(encoding="utf-8")
+    for root in (".jiji-page", ".jiji-stock-autopilot", ".jiji-menu-page"):
+        assert root in shared, f"{root} is not painted, so one page would look like a different product"
+    # The ground is painted on the page's own containers as well, so a wrong
+    # header-height guess can shorten it but never leave a white seam.
+    assert ".jiji-desk .page-content" in shared
+
+
+def test_the_accent_reaches_the_header_button() -> None:
+    shared = SHARED.read_text(encoding="utf-8")
+    page_files = _existing_page_scripts()
+    assert ".jiji-desk .btn-primary" in shared
+    # Every page claims its wrapper, or its header button keeps Frappe's black
+    # while the page below it is amber.
+    for name, script in page_files.items():
+        assert "jiji.desk.page(this.page)" in script or 'addClass("jiji-desk")' in script, name

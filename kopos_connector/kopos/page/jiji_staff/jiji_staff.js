@@ -29,8 +29,7 @@ class JiJiStaff {
 			single_column: true,
 		});
 		this.page.set_primary_action(__("Refresh"), () => this.load(), "refresh");
-		this.body = $('<div class="jiji-page"></div>').appendTo(this.page.body);
-		jiji.desk.injectStyle();
+		this.body = jiji.desk.page(this.page);
 		this.injectStyle();
 		// Whose PIN the form at the bottom is for. Null means it is not shown.
 		this.setting = null;
@@ -44,17 +43,17 @@ class JiJiStaff {
 		style.textContent = `
 .jiji-staff__avatar { width: 30px; height: 30px; border-radius: 15px; flex: 0 0 auto;
   display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600;
-  background: var(--bg-gray, #efeff1); color: var(--text-muted); }
+  background: var(--jiji-quiet); color: var(--jiji-ink-2); }
 .jiji-staff__name { font-weight: 600; }
 .jiji-staff__pin-title { font-size: 16px; font-weight: 600; }
-.jiji-staff__pin-detail { color: var(--text-muted); margin: 2px 0 14px; }
+.jiji-staff__pin-detail { color: var(--jiji-ink-2); margin: 3px 0 16px; }
 .jiji-staff__pin-form { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.jiji-staff__pin-form input { width: 168px; height: 34px; border: 1px solid var(--border-color);
-  border-radius: 7px; padding: 0 12px; background: var(--control-bg, #fff); color: inherit;
+.jiji-staff__pin-form input { width: 168px; height: 36px; border: 1px solid var(--jiji-line);
+  border-radius: 8px; padding: 0 12px; background: var(--jiji-surface); color: inherit;
   font-variant-numeric: tabular-nums; letter-spacing: .3em; }
 /* The spacing is for four digits. On a sentence it clipped "Type it again". */
 .jiji-staff__pin-form input::placeholder { letter-spacing: normal; }
-.jiji-staff__pin-error { color: var(--red-600, #b3261e); }
+.jiji-staff__pin-error { color: var(--jiji-stop); }
 `;
 		document.head.appendChild(style);
 	}

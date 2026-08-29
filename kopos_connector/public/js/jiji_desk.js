@@ -60,6 +60,21 @@ frappe.provide("jiji.desk");
 		return card;
 	};
 
+	/**
+	 * Take over a desk page and hand back the container to draw in.
+	 *
+	 * Frappe hands a page an unpadded white canvas that runs flush to the
+	 * sidebar and off the right edge. A director's page is a desk: a calm
+	 * ground with white cards on it, room around the edges, and one accent
+	 * colour. Claiming the wrapper is what lets that reach the header button
+	 * too, so the page has one primary colour rather than two.
+	 */
+	desk.page = function page(frappePage) {
+		desk.injectStyle();
+		$(frappePage.wrapper).addClass("jiji-desk");
+		return $('<div class="jiji-page"></div>').appendTo(frappePage.body);
+	};
+
 	/** The uppercase line that names a block without competing with it. */
 	desk.label = function label(text) {
 		return $("<div>").addClass("jiji-label").text(text);
@@ -113,66 +128,121 @@ frappe.provide("jiji.desk");
 		const style = document.createElement("style");
 		style.id = STYLE_ID;
 		style.textContent = `
-.jiji-page { display: flex; flex-direction: column; gap: 20px; padding: 4px 0 24px; }
-.jiji-label { font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--text-muted); }
+/* ---------------------------------------------------------------------------
+   The desk palette.
+
+   Frappe's own tokens cannot carry this: --bg-color is white in the default
+   theme, so a ground drawn from it is white on white, and --yellow-600 is a
+   mustard rather than the amber the counter uses. The desk owns its six
+   colours and states them for both themes, so the two surfaces of one product
+   agree on what amber means.
+   --------------------------------------------------------------------------- */
+.jiji-desk {
+  --jiji-ground: #F6F6F7;
+  --jiji-surface: #FFFFFF;
+  --jiji-line: #E6E6E9;
+  --jiji-line-soft: #F0F0F2;
+  --jiji-ink: #17181A;
+  --jiji-ink-2: #62636A;
+  --jiji-ink-3: #97989F;
+  --jiji-accent: #B4640E;
+  --jiji-accent-soft: #FBF2E7;
+  --jiji-done: #1B6E45;
+  --jiji-done-soft: #EAF5EF;
+  --jiji-stop: #B3261E;
+  --jiji-stop-soft: #FDECEA;
+  --jiji-quiet: #F2F2F4;
+  --jiji-lift: 0 1px 2px rgba(23, 24, 26, .05);
+}
+[data-theme="dark"] .jiji-desk {
+  --jiji-ground: #16171A;
+  --jiji-surface: #1D1E22;
+  --jiji-line: #2C2E33;
+  --jiji-line-soft: #232529;
+  --jiji-ink: #EFEAE1;
+  --jiji-ink-2: #A6A7AE;
+  --jiji-ink-3: #74757C;
+  --jiji-accent: #E8952A;
+  --jiji-accent-soft: #2A2116;
+  --jiji-done: #6FCf9A;
+  --jiji-done-soft: #17251D;
+  --jiji-stop: #F09B94;
+  --jiji-stop-soft: #2A1A18;
+  --jiji-quiet: #24262A;
+  --jiji-lift: 0 1px 2px rgba(0, 0, 0, .35);
+}
+
+/* The page is a ground with cards on it, not a wall of white. The ground is
+   painted on the page's own containers rather than on the block inside them,
+   because a min-height guess leaves a white strip under short content. */
+.jiji-desk .page-content,
+.jiji-desk .layout-main,
+.jiji-desk .layout-main-section-wrapper,
+.jiji-desk .layout-main-section { background: var(--jiji-ground); }
+.jiji-page,
+.jiji-stock-autopilot,
+.jiji-menu-page {
+  background: var(--jiji-ground); padding: 26px 30px 44px; color: var(--jiji-ink);
+  /* Frappe's header is 49px, measured. If that ever changes the ground ends
+     short or scrolls a little; it can never leave a white seam mid-page,
+     because the containers above are painted too. */
+  min-height: calc(100vh - 49px);
+}
+.jiji-page { display: flex; flex-direction: column; gap: 20px; }
+
+/* One accent, reaching the header button so the page is not two-coloured. */
+.jiji-desk .btn-primary,
+.jiji-desk .btn-primary:hover,
+.jiji-desk .btn-primary:focus,
+.jiji-desk .btn-primary:active {
+  background-color: var(--jiji-accent); border-color: var(--jiji-accent);
+  color: #fff; box-shadow: none;
+}
+.jiji-desk .btn-primary:hover { filter: brightness(1.08); }
+
+.jiji-label { font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--jiji-ink-3); font-weight: 600; }
 .jiji-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .jiji-head .jiji-label { flex: 1 1 auto; }
-.jiji-muted { color: var(--text-muted); font-size: 12px; }
+.jiji-muted { color: var(--jiji-ink-3); font-size: 12px; }
+.jiji-num { font-variant-numeric: tabular-nums; }
 
 /* One next step: a bar, never a fill. A fill would read as the button to press. */
 .jiji-next { display: flex; gap: 20px; align-items: center; flex-wrap: wrap;
-  border-left: 3px solid var(--yellow-500, #e8952a); background: var(--fg-color, #fff);
-  border-radius: 0 8px 8px 0; padding: 18px 22px; box-shadow: var(--card-shadow); }
+  border: 1px solid var(--jiji-line); border-left: 3px solid var(--jiji-accent);
+  background: var(--jiji-surface); border-radius: 0 10px 10px 0; padding: 20px 24px;
+  box-shadow: var(--jiji-lift); }
 .jiji-next__copy { flex: 1 1 320px; }
-.jiji-next__title { font-size: 18px; font-weight: 600; }
-.jiji-next__detail { color: var(--text-muted); margin-top: 2px; }
+.jiji-next__title { font-size: 22px; line-height: 30px; font-weight: 600; letter-spacing: -.01em; }
+.jiji-next__detail { color: var(--jiji-ink-2); margin-top: 3px; }
 
-.jiji-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
-.jiji-tile { display: block; background: var(--fg-color, #fff); border: 1px solid var(--border-color);
-  border-radius: 8px; padding: 14px 16px; text-decoration: none; color: inherit; }
-.jiji-tile:hover { border-color: var(--yellow-500, #e8952a); text-decoration: none; color: inherit; }
-.jiji-tile__value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 4px; }
-.jiji-tile__value--attention { color: var(--yellow-600, #b4640e); }
-.jiji-tile__detail { color: var(--text-muted); font-size: 12px; }
+.jiji-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.jiji-tile { display: block; background: var(--jiji-surface); border: 1px solid var(--jiji-line);
+  border-radius: 10px; padding: 15px 17px; text-decoration: none; color: inherit;
+  box-shadow: var(--jiji-lift); }
+.jiji-tile:hover { border-color: var(--jiji-accent); text-decoration: none; color: inherit; }
+.jiji-tile__value { font-size: 27px; line-height: 34px; font-weight: 600;
+  font-variant-numeric: tabular-nums; margin-top: 3px; letter-spacing: -.01em; }
+.jiji-tile__value--attention { color: var(--jiji-accent); }
+.jiji-tile__detail { color: var(--jiji-ink-3); font-size: 12px; }
 
-.jiji-rows { background: var(--fg-color, #fff); border: 1px solid var(--border-color);
-  border-radius: 8px; overflow: hidden; }
-.jiji-row { display: flex; align-items: center; gap: 16px; padding: 13px 18px;
-  border-bottom: 1px solid var(--border-color); text-decoration: none; color: inherit; }
+.jiji-rows { background: var(--jiji-surface); border: 1px solid var(--jiji-line);
+  border-radius: 10px; overflow: hidden; box-shadow: var(--jiji-lift); }
+.jiji-row { display: flex; align-items: center; gap: 16px; padding: 14px 18px;
+  border-bottom: 1px solid var(--jiji-line-soft); text-decoration: none; color: inherit; }
 .jiji-row:last-child { border-bottom: 0; }
-a.jiji-row:hover { text-decoration: none; color: inherit; background: var(--bg-color, #f7f7f8); }
+a.jiji-row:hover { text-decoration: none; color: inherit; background: var(--jiji-ground); }
 .jiji-row__main { flex: 1 1 auto; min-width: 0; }
-.jiji-row__note { color: var(--text-muted); font-size: 12px; }
-.jiji-num { font-variant-numeric: tabular-nums; }
+.jiji-row__note { color: var(--jiji-ink-3); font-size: 12px; }
 
-.jiji-card { background: var(--fg-color, #fff); border: 1px solid var(--border-color);
-  border-radius: 8px; padding: 16px 18px; }
-.jiji-kv { display: flex; align-items: center; gap: 14px; padding: 9px 0;
-  border-bottom: 1px solid var(--border-color); }
+.jiji-card { background: var(--jiji-surface); border: 1px solid var(--jiji-line);
+  border-radius: 10px; padding: 17px 19px; box-shadow: var(--jiji-lift); }
+.jiji-desk .card { border-radius: 10px; border-color: var(--jiji-line);
+  box-shadow: var(--jiji-lift); }
+.jiji-kv { display: flex; align-items: center; gap: 14px; padding: 10px 0;
+  border-bottom: 1px solid var(--jiji-line-soft); }
 .jiji-kv:last-child { border-bottom: 0; padding-bottom: 0; }
 .jiji-kv__main { flex: 1 1 auto; min-width: 0; }
-
-.jiji-pill { display: inline-flex; align-items: center; height: 24px; padding: 0 10px;
-  border-radius: 12px; font-size: 12px; font-weight: 600; white-space: nowrap;
-  background: var(--bg-gray, #f2f2f4); color: var(--text-muted); }
-.jiji-pill--attention { background: var(--bg-yellow, #fbf2e7); color: var(--yellow-600, #b4640e); }
-.jiji-pill--ok { background: var(--bg-green, #eaf5ef); color: var(--green-600, #1b6e45); }
-.jiji-pill--stop { background: var(--bg-red, #fdecea); color: var(--red-600, #b3261e); }
-
-/* How long something lasts, drawn rather than only counted. */
-.jiji-meter { width: 96px; height: 6px; border-radius: 3px; overflow: hidden;
-  background: var(--bg-gray, #ededf0); flex: 0 0 auto; }
-.jiji-meter > span { display: block; height: 100%; border-radius: 3px; background: var(--yellow-600, #b4640e); }
-.jiji-meter--calm > span { background: var(--gray-400, #cfcfd6); }
-
-.jiji-week { display: flex; align-items: flex-end; gap: 10px; height: 132px;
-  border-bottom: 1px solid var(--border-color); }
-.jiji-week__day { flex: 1 1 0; display: flex; flex-direction: column; justify-content: flex-end;
-  align-items: center; gap: 8px; height: 100%; }
-.jiji-week__bar { width: 100%; max-width: 44px; min-height: 2px; border-radius: 4px 4px 0 0;
-  background: var(--bg-gray, #e7e2da); }
-.jiji-week__bar--today { background: var(--yellow-600, #b4640e); }
-.jiji-week__label { font-size: 12px; color: var(--text-muted); }
 
 .jiji-two { display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap; }
 .jiji-two > .jiji-card { flex: 1 1 340px; }
@@ -180,7 +250,38 @@ a.jiji-row:hover { text-decoration: none; color: inherit; background: var(--bg-c
 a.jiji-kv { text-decoration: none; color: inherit; }
 a.jiji-kv:hover { text-decoration: none; color: inherit; }
 
-.jiji-advanced { color: var(--text-muted); font-size: 12px; }
+/* Four levels, the same four the counter uses. */
+.jiji-pill { display: inline-flex; align-items: center; height: 24px; padding: 0 10px;
+  border-radius: 12px; font-size: 12px; font-weight: 600; white-space: nowrap;
+  background: var(--jiji-quiet); color: var(--jiji-ink-2); }
+.jiji-pill--attention { background: var(--jiji-accent-soft); color: var(--jiji-accent); }
+.jiji-pill--ok { background: var(--jiji-done-soft); color: var(--jiji-done); }
+.jiji-pill--stop { background: var(--jiji-stop-soft); color: var(--jiji-stop); }
+
+/* How long something lasts, drawn rather than only counted. */
+.jiji-meter { width: 96px; height: 6px; border-radius: 3px; overflow: hidden;
+  background: var(--jiji-quiet); flex: 0 0 auto; }
+.jiji-meter > span { display: block; height: 100%; border-radius: 3px; background: var(--jiji-accent); }
+.jiji-meter--calm > span { background: var(--jiji-ink-3); }
+
+/* A week of takings: bars against the best day, today picked out. */
+.jiji-week { display: flex; align-items: flex-end; gap: 10px; height: 132px;
+  border-bottom: 1px solid var(--jiji-line-soft); }
+.jiji-week__day { flex: 1 1 0; display: flex; flex-direction: column; justify-content: flex-end;
+  align-items: center; gap: 8px; height: 100%; }
+.jiji-week__bar { width: 100%; max-width: 44px; min-height: 2px; border-radius: 4px 4px 0 0;
+  background: var(--jiji-quiet); }
+.jiji-week__bar--today { background: var(--jiji-accent); }
+.jiji-week__label { font-size: 12px; color: var(--jiji-ink-3); }
+
+/* Help a first-timer needs once should not be furniture a director reads
+   every day. Offered the same way on every page: folded, and openable. */
+.jiji-desk details.jiji-help > summary { cursor: pointer; list-style: none; }
+.jiji-desk details.jiji-help > summary::-webkit-details-marker { display: none; }
+.jiji-desk details.jiji-help > summary::before { content: "▸"; margin-right: 8px; color: var(--jiji-ink-3); }
+.jiji-desk details.jiji-help[open] > summary::before { content: "▾"; }
+
+.jiji-advanced { color: var(--jiji-ink-3); font-size: 12px; margin-top: 4px; }
 `;
 		document.head.appendChild(style);
 	};

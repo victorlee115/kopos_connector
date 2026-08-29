@@ -32,6 +32,7 @@ class JiJiStockAutopilotPage {
 		this.warehouseControl.$input.on("change awesomplete-selectcomplete", () => this.onWarehouseChanged());
 		this.chooseOutletForDirector();
 		jiji.desk.injectStyle();
+		$(wrapper).addClass("jiji-desk");
 		this.page.set_primary_action(__("Check now"), () => this.refresh({ showMissingOutlet: true }));
 		this.page.add_inner_button(__("Start using stock tracking"), () => this.activateCutover());
 		this.page.body.on("click", "[data-primary-route]", (event) => {
@@ -476,10 +477,10 @@ class JiJiStockAutopilotPage {
 	}
 
 	chooseOutletNextStepHtml() {
-		return `<div class="card border-info"><div class="card-body">
-			<div class="text-muted small text-uppercase font-weight-bold mb-1">${__("Your next step")}</div>
-			<h3 class="mb-1">${__("Choose an outlet above")}</h3>
-			<p class="text-muted mb-0">${__("JiJi will show the first action that needs a person. Refreshing only checks information; it does not change stock.")}</p>
+		return `<div class="jiji-next"><div class="jiji-next__copy">
+			<div class="jiji-label">${__("Your next step")}</div>
+			<div class="jiji-next__title mt-1">${__("Choose an outlet above")}</div>
+			<div class="jiji-next__detail">${__("JiJi will show the first action that needs a person. Refreshing only checks information; it does not change stock.")}</div>
 		</div></div>`;
 	}
 
@@ -487,10 +488,15 @@ class JiJiStockAutopilotPage {
 		const action = nextStep.route && nextStep.action
 			? `<button type="button" class="btn btn-primary" data-primary-route="${this.escapeAttribute(nextStep.route)}">${this.escape(nextStep.action)}</button>`
 			: `<span class="text-success font-weight-bold">✓ ${__("Nothing to do right now")}</span>`;
-		this.page.body.find("[data-next-step]").html(`<div class="card border-${this.toneClass(status)}"><div class="card-body">
-			<div class="text-muted small text-uppercase font-weight-bold mb-1">${__("Your next step")}</div>
-			<div class="d-flex flex-wrap justify-content-between align-items-center gap-3"><div class="mr-3"><h3 class="mb-1">${this.escape(nextStep.value)}</h3><p class="text-muted mb-0">${this.escape(nextStep.detail)}</p></div>${action}</div>
-		</div></div>`);
+		// A bar, never a fill, and never an outline in the status colour: the
+		// same shape the counter and every other desk page use for one step.
+		this.page.body.find("[data-next-step]").html(`<div class="jiji-next">
+			<div class="jiji-next__copy">
+				<div class="jiji-label">${__("Your next step")}</div>
+				<div class="jiji-next__title mt-1">${this.escape(nextStep.value)}</div>
+				<div class="jiji-next__detail">${this.escape(nextStep.detail)}</div>
+			</div>${action}
+		</div>`);
 	}
 
 	renderCountReviews(summary) {
@@ -569,7 +575,10 @@ class JiJiStockAutopilotPage {
 		const badge = isNextStep
 			? `<span class="text-muted small font-weight-bold">${__("This is your next step")}</span>`
 			: this.statusBadge(section.status, this.statusLabel(section.status));
-		return `<div class="col-sm-6 col-lg-4 mb-4"><div class="card h-100 border-${this.toneClass(isNextStep ? "info" : section.status)}">
+		// The card stays quiet and the badge carries the status. Six coloured
+		// outlines at once is the same noise as six areas all saying "Action
+		// required": nothing is emphasised when everything is.
+		return `<div class="col-sm-6 col-lg-4 mb-4"><div class="card h-100">
 			<div class="card-body d-flex flex-column"><h4>${section.icon} ${section.title}</h4>
 				<div class="mb-2">${badge}</div>
 				<div class="font-weight-bold mb-1">${this.escape(section.value)}</div>
