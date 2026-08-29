@@ -107,14 +107,14 @@ def _recent_takings(company: str) -> dict[str, Any]:
     }
 
 
-def _shifts_needing_review(company: str) -> list[dict[str, Any]]:
-    """Closed shifts whose counted cash did not match.
+def _shift_money(company: str) -> dict[str, list[dict[str, Any]]]:
+    """Closed shifts, split the way the Money page splits them.
 
     Delegated to shift_money so Home and the Money page cannot disagree about
     how many shifts need a director. cash_variance is written by the shift
     close path and is never recomputed.
     """
-    return group_shifts(closed_shifts(company))["needs_review"]
+    return group_shifts(closed_shifts(company))
 
 
 def _staff_access() -> dict[str, int]:
@@ -147,7 +147,12 @@ def get_director_home() -> dict[str, Any]:
         return {"status": "no_company"}
 
     takings = _recent_takings(company)
-    unmatched_shifts = _shifts_needing_review(company)
+    shift_money = _shift_money(company)
+    unmatched_shifts = shift_money["needs_review"]
+    # A café that has never closed a shift has nothing to check, which is
+    # not the same as having checked everything. The Money page says so;
+    # the tile beside it must not say the opposite.
+    any_shift = bool(shift_money["matched"] or unmatched_shifts or shift_money["missing_count"])
     drafts = _draft_supplier_orders(company)
     staff = _staff_access()
 
@@ -264,6 +269,13 @@ def get_director_home() -> dict[str, Any]:
                 ),
                 "route": ["jiji_staff"],
             },
-            {"key": "money", "label": "Money", "value": str(len(unmatched_shifts)), "detail": "to check", "route": ["jiji_money"], "attention": bool(unmatched_shifts)},
+            {
+                "key": "money",
+                "label": "Money",
+                "value": str(len(unmatched_shifts)) if any_shift else "\u2014",
+                "detail": "to check" if any_shift else "no shift counted yet",
+                "route": ["jiji_money"],
+                "attention": bool(unmatched_shifts),
+            },
         ],
     }

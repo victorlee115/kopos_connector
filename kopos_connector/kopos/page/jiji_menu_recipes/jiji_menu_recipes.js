@@ -102,7 +102,7 @@ class JiJiMenuRecipesPage {
 	}
 
 	setupControls() {
-		this.companyControl = frappe.ui.form.make_control({ parent: this.page.body.find("[data-company-link]")[0], df: { fieldtype: "Link", fieldname: "company", options: "Company", label: __("Company"), onchange: () => this.onSelectionChanged(true) } });
+		this.companyControl = frappe.ui.form.make_control({ parent: this.page.body.find("[data-company-link]")[0], df: { fieldtype: "Link", fieldname: "company", options: "Company", label: __("Your café"), onchange: () => this.onSelectionChanged(true) } });
 		this.companyControl.refresh();
 		this.menuItemControl = frappe.ui.form.make_control({ parent: this.page.body.find("[data-menu-item-link]")[0], df: { fieldtype: "Link", fieldname: "menu_item", options: "Item", label: __("Menu item"), get_query: () => ({ filters: { is_sales_item: 1, disabled: 0 } }), onchange: () => this.onSelectionChanged(false) } });
 		this.menuItemControl.refresh();

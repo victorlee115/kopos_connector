@@ -154,3 +154,9 @@ def test_no_page_claims_a_result_it_drew_from_an_absence() -> None:
     # Stock distinguishes "nothing is short" from "JiJi cannot say yet".
     assert '"JiJi cannot say yet"' in stock
     assert "if low or not no_estimate" in stock
+
+    # And Home's Money tile, which read "0 · to check" beside a Money page
+    # already saying no shift had ever been counted.
+    home = (ROOT / "api" / "director_home.py").read_text(encoding="utf-8")
+    assert '"no shift counted yet"' in home
+    assert "any_shift = bool(" in home
