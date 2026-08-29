@@ -162,3 +162,29 @@ def test_the_menu_leads_with_the_drink_not_the_setup() -> None:
     assert 'find("[data-completion-card]").toggleClass("d-none", complete)' in page
     # And the warning bar about who sees cost is a footnote now.
     assert 'alert alert-warning mt-2' not in page
+
+
+def test_a_stock_problem_says_what_it_is() -> None:
+    """Four rows read "JiJi found a stock problem that needs you." and nothing else.
+
+    Three of them shared one cause, and none of the four named it. The reason
+    codes the demo outlet raises -- cutover_identity_missing,
+    inventory_count_before_cutover, inventory_plan_gate_failed -- matched no
+    branch, so every one fell through to a sentence that says nothing.
+    """
+    page = STOCK.read_text(encoding="utf-8")
+    assert 'reason.includes("cutover_identity")' in page
+    assert 'reason.includes("plan_gate")' in page
+    # And an unmapped code names itself, so a café owner ringing for help has
+    # something to read out.
+    assert "has no plain description for: {0}" in page
+
+
+def test_one_cause_is_one_alarm() -> None:
+    page = STOCK.read_text(encoding="utf-8")
+    # The same reason code raised four times was four identical rows.
+    assert "const grouped = new Map();" in page
+    assert '__("{0} times", [count])' in page
+    # And grouped by the sentence, not the code: two codes mapped to one
+    # sentence were still two identical rows.
+    assert "const key = this.plainExceptionMessage(row.reason_code);" in page

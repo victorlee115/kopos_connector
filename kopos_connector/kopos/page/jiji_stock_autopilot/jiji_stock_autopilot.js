@@ -644,17 +644,36 @@ class JiJiStockAutopilotPage {
 			target.html(`<div class="alert alert-${this.toneClass(status)}">${this.statusBadge(status, message)}</div>`);
 			return;
 		}
-		const cards = rows.map((row) => {
+		// One cause raised four times is one thing to fix, not four alarms.
+		// Grouped by what the reader is told, not by the code behind it: two
+		// codes that produce the same sentence are one thing to a person.
+		const grouped = new Map();
+		rows.forEach((row) => {
+			const key = this.plainExceptionMessage(row.reason_code);
+			const seen = grouped.get(key);
+			if (seen) {
+				seen.count += 1;
+				return;
+			}
+			grouped.set(key, { row, count: 1 });
+		});
+		const cards = [...grouped.values()].map(({ row, count }) => {
 			const severity = String(row.severity || "Warning").toLowerCase() === "critical" ? "critical" : "warning";
 			const route = row.source_doctype && row.source_name
 				? JSON.stringify(["Form", row.source_doctype, row.source_name])
 				: JSON.stringify(["Form", "FB Inventory Exception", row.name]);
-			return `<div class="border rounded p-3 mb-2"><div class="d-flex justify-content-between align-items-start gap-2">
-					<div><div class="mb-1">${this.statusBadge(severity, severity === "critical" ? __("Urgent") : __("Please check"))}</div><div class="font-weight-bold">${this.escape(this.plainExceptionMessage(row.reason_code))}</div><div class="text-muted small">${__("Open this problem and follow the one next step shown.")}</div></div>
+			const again = count > 1 ? ` · ${__("{0} times", [count])}` : "";
+			return `<div class="jiji-row"><span class="jiji-row__main">
+					<span class="jiji-pill jiji-pill--${severity === "critical" ? "stop" : "attention"}">${severity === "critical" ? __("Urgent") : __("Please check")}</span>
+					<div class="mt-2" style="font-weight:600">${this.escape(this.plainExceptionMessage(row.reason_code))}</div>
+					<div class="jiji-row__note">${__("Found {0}", [this.agePhrase(row.last_seen, this.health?.as_of)])}${again}</div>
+				</span>
 				<button type="button" class="btn btn-sm btn-default" data-exception-route='${this.escapeAttribute(route)}'>${__("Open")}</button>
-			</div><div class="text-muted small mt-2">${__("Seen {0}", [this.agePhrase(row.last_seen, this.health?.as_of)])}</div></div>`;
+			</div>`;
 		}).join("");
-		target.html(`<h3>${__("Open stock problems needing attention")}</h3>${cards}`);
+		target.html(`<div class="jiji-head mb-2"><div class="jiji-label">${__("Stock problems open now")}</div>
+			<span class="jiji-muted">${__("Each one, once, with what it is.")}</span></div>
+			<div class="jiji-rows">${cards}</div>`);
 	}
 
 	firstExceptionDetail(exceptions) {
@@ -669,10 +688,22 @@ class JiJiStockAutopilotPage {
 		if (reason.includes("scheduler") || reason.includes("projection")) {
 			return __("JiJi could not finish updating your stock. Nothing you saved is lost.");
 		}
+		if (reason.includes("cutover_identity") || reason.includes("before_cutover")) {
+			return __("Stock tracking has not been started for this outlet, so JiJi cannot do this yet.");
+		}
+		if (reason.includes("plan_gate")) {
+			return __("JiJi could not finish a suggested order because one of its safety checks did not pass.");
+		}
 		if (reason.includes("cost")) return __("One or more ingredient costs need checking.");
 		if (reason.includes("purchase") || reason.includes("outbound")) return __("Your buying limits need checking before JiJi can write another order.");
 		if (reason.includes("routing") || reason.includes("director")) return __("Choose who should receive urgent stock problems.");
-		return __("JiJi found a stock problem that needs you.");
+		// A sentence that names nothing is worse than a code. A café owner
+		// ringing for help can read a code out; "a stock problem" tells the
+		// person on the other end nothing either.
+		const code = String(reasonCode || "").trim();
+		return code
+			? __("JiJi found a stock problem it has no plain description for: {0}", [code])
+			: __("JiJi found a stock problem that needs you.");
 	}
 
 	oldestDeviceReportAge(devices, asOf) {
