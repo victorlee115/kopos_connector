@@ -66,7 +66,7 @@ class JiJiMenuRecipesPage {
 					<div class="d-flex flex-wrap justify-content-between align-items-center mt-3"><span class="small" data-next-action>${__("Next: choose your café")}</span><button class="btn btn-sm btn-primary" type="button" data-next-action-button disabled>${__("Choose your café")}</button></div>
 				</div></div>
 				<div class="card mb-4"><div class="card-body">
-					<div class="d-flex flex-wrap justify-content-between align-items-start mb-3"><div><h4 class="mb-1">${__("Set up one menu item")}</h4><p class="text-muted mb-0">${__("Nothing is saved until you press Save. Saving does not change what staff can sell.")}</p></div><div class="small text-muted" data-company-status>${__("Choose a café, then something on the menu")}</div></div>
+					<div class="d-flex flex-wrap justify-content-between align-items-start mb-3"><div><h4 class="mb-1">${__("Look at one thing on your menu")}</h4><p class="text-muted mb-0">${__("Nothing is saved until you press Save. Saving does not change what staff can sell.")}</p></div><div class="small text-muted" data-company-status>${__("Choose a café, then something on the menu")}</div></div>
 					<div class="row mb-3"><div class="col-md-4"><div data-company-link></div></div><div class="col-md-4"><div data-menu-item-link></div></div><div class="col-md-4"><div data-catalog-profile-link></div></div></div>
 					<div class="d-flex flex-wrap align-items-center gap-2"><button class="btn btn-sm btn-default" type="button" data-menu-commission="item" disabled>${__("1. Choose item type")}</button><button class="btn btn-sm btn-primary" type="button" data-menu-commission="recipe" disabled>${__("2. Enter recipe")}</button><button class="btn btn-sm btn-default" type="button" data-menu-catalog-preview disabled>${__("3. Check what the tablet will show")}</button></div>
 					<p class="text-muted small mt-2 mb-0" data-sequence-waiting></p>
@@ -75,17 +75,19 @@ class JiJiMenuRecipesPage {
 					<pre class="small bg-light p-2 mt-3 mb-0 d-none" data-menu-catalog-results></pre><div class="small mt-2" data-guided-editor-status></div>
 				</div></div>
 				<div class="card mb-4"><div class="card-body"><div class="d-flex flex-wrap justify-content-between align-items-center mb-2"><div><h4 class="mb-1">${__("Let staff start selling these")}</h4><p class="text-muted mb-0">${__("JiJi checks each one first. If any has a problem, nothing changes.")}</p></div><button class="btn btn-sm btn-primary" type="button" data-publish-selected disabled>${__("Let staff sell the ones you chose")}</button></div><div data-publish-queue class="small text-muted">${__("Choose a café to see the recipes you have saved.")}</div></div></div>
-				<div class="card mb-4"><div class="card-body">
-					<div class="d-flex flex-wrap justify-content-between align-items-start mb-2"><div><h4 class="mb-1">${__("Check a recipe spreadsheet")}</h4><p class="text-muted mb-0">${__("Paste rows from the JiJi template and JiJi will tell you what is missing or wrong. Nothing is saved or changed.")}</p></div><div class="small text-muted" data-csv-status>${__("No rows checked")}</div></div>
+				<details class="card mb-4 jiji-help"><summary class="card-body py-3"><strong>${__("Check a recipe spreadsheet")}</strong> <span class="text-muted small">${__("if you keep your recipes in a sheet")}</span></summary><div class="card-body pt-0">
+					<div class="d-flex flex-wrap justify-content-between align-items-start mb-2"><div><h4 class="mb-1 sr-only">${__("Check a recipe spreadsheet")}</h4><p class="text-muted mb-0">${__("Paste rows from the JiJi template and JiJi will tell you what is missing or wrong. Nothing is saved or changed.")}</p></div><div class="small text-muted" data-csv-status>${__("No rows checked")}</div></div>
 					<textarea class="form-control mb-2" rows="4" data-csv-input placeholder="${__("recipe_code,recipe_name,sellable_item,company,recipe_type,...")}"></textarea><div class="d-flex flex-wrap gap-2"><button class="btn btn-sm btn-default" type="button" data-csv-template>${__("Download template")}</button><button class="btn btn-sm btn-primary" type="button" data-csv-validate>${__("Check rows")}</button></div><pre class="small bg-light p-2 mt-3 mb-0 d-none" data-csv-results></pre>
-				</div></div>
-				<div class="card mb-4"><div class="card-body">
-					<div class="d-flex flex-wrap justify-content-between align-items-start mb-2"><div><h4 class="mb-1">${__("Check promotion cost and profit")}</h4><p class="text-muted mb-0">${__("See sales after the discount, ingredient cost, money left, and stock needed before turning on an offer. This check never orders stock or turns on the offer.")}</p></div><div class="small text-muted" data-promotion-status>${__("No offer checked")}</div></div>
+				</div></details>
+				<details class="card mb-4 jiji-help"><summary class="card-body py-3"><strong>${__("Check promotion cost and profit")}</strong> <span class="text-muted small">${__("before you turn an offer on")}</span></summary><div class="card-body pt-0">
+					<div class="d-flex flex-wrap justify-content-between align-items-start mb-2"><div><h4 class="mb-1 sr-only">${__("Check promotion cost and profit")}</h4><p class="text-muted mb-0">${__("See sales after the discount, ingredient cost, money left, and stock needed before turning on an offer. This check never orders stock or turns on the offer.")}</p></div><div class="small text-muted" data-promotion-status>${__("No offer checked")}</div></div>
 					<div class="row mb-3"><div class="col-md-6"><div data-promotion-link></div></div><div class="col-md-6"><div data-promotion-profile></div></div></div><div class="row mb-3"><div class="col-sm-4"><label class="text-muted small" for="jiji-promotion-low">${__("If sales are low")}</label><input id="jiji-promotion-low" class="form-control" type="number" min="1" step="1" value="10" data-promotion-low></div><div class="col-sm-4"><label class="text-muted small" for="jiji-promotion-base">${__("Expected sales")}</label><input id="jiji-promotion-base" class="form-control" type="number" min="1" step="1" value="25" data-promotion-base></div><div class="col-sm-4"><label class="text-muted small" for="jiji-promotion-high">${__("If sales are high")}</label><input id="jiji-promotion-high" class="form-control" type="number" min="1" step="1" value="50" data-promotion-high></div></div><p class="text-muted small">${__("Enter how many discounted items you may sell in each case.")}</p><button class="btn btn-sm btn-primary" type="button" data-promotion-check disabled>${__("Check cost and money left")}</button><div class="small mt-3 mb-0 d-none" role="status" aria-live="polite" data-promotion-results></div>
-				</div></div>
+				</div></details>
+				<details class="card mb-4 jiji-help"><summary class="card-body py-3"><strong>${__("Everything else on your menu")}</strong> <span class="text-muted small">${__("items made in advance, customer choices, offers, and the final checks")}</span></summary><div class="card-body pt-0">
 				<div class="row">${cards.map(([title, copy, action, primary]) => `
 					<div class="col-sm-6 col-lg-4 mb-3"><div class="card h-100" data-menu-card="${action}"><div class="card-body d-flex flex-column"><div class="d-flex justify-content-between align-items-start"><h4>${__(title)}</h4><span class="badge badge-light" data-card-state="${action}">${__("Not checked")}</span></div><p class="text-muted">${__(copy)}</p><div class="small text-muted mb-3" data-check="${action}">${__("Checking…")}</div><div class="mt-auto d-flex flex-wrap gap-2"><button class="btn btn-sm btn-primary" type="button" data-menu-create="${action}">${__(primary)}</button><button class="btn btn-sm btn-default" type="button" data-menu-action="${action}">${action === "validate" ? __("Open checklist") : __("Open records")}</button></div></div></div></div>`).join("")}</div>
-				<div class="alert alert-warning mt-2">${__("Only Company Directors can see ingredient cost and profit. Outlet staff and managers see only the stock amounts and tasks they need for daily work.")}</div>
+				</div></details>
+				<p class="text-muted small mb-0">${__("Only you see ingredient cost and profit. Staff and managers see the stock amounts and tasks they need, and nothing else.")}</p>
 			</div>`);
 	}
 
@@ -284,6 +286,9 @@ class JiJiMenuRecipesPage {
 		this.page.body.find("[data-company-status]").text(messages.length ? messages.join(" ") : __("You have everything you need to sell."));
 		this.page.body.find("[data-progress-bar]").removeClass("bg-success bg-warning").addClass(complete ? "bg-success" : "bg-warning").css("width", `${percent}%`).attr("aria-valuenow", percent);
 		this.page.body.find("[data-progress-summary]").text(__("{0} of the 4 things you need", [completedSteps]));
+		// Setup progress is onboarding. Once a café is set up it is a bar at
+		// 100% sitting above the work, every day, saying nothing.
+		this.page.body.find("[data-completion-card]").toggleClass("d-none", complete);
 		if (!companyReady) {
 			["item", "recipe", "bom", "modifier", "promotion", "validate"].forEach((action) => this.setCardState(action, __("Not checked"), "secondary"));
 		} else {

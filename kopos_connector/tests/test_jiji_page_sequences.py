@@ -10,6 +10,7 @@ nothing at all until it was filled.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -124,3 +125,40 @@ def test_an_area_button_says_where_it_goes() -> None:
     assert '__("See the tablets")' in page
     assert '__("See cost and value")' in page
     assert '__("Open finance view")' not in page
+
+
+def _template(page: str, root_class: str) -> str:
+    """The page's own markup template, from its opening tag to its close."""
+    start = page.index(f'<div class="{root_class}">')
+    return page[start:page.index("</div>`);", start)]
+
+
+def test_page_markup_closes_what_it_opens() -> None:
+    """A page that builds its own HTML can nest wrongly and still run.
+
+    Wrapping three sections in <details> left one </div> too many in each,
+    and the browser's error recovery swallowed two whole sections into a
+    third. Every test passed. Only opening the page showed it.
+    """
+    for path, root in (
+        (MENU, "jiji-menu-page"),
+        (STOCK, "jiji-stock-autopilot"),
+    ):
+        template = _template(path.read_text(encoding="utf-8"), root)
+        opens = len(re.findall(r"<(?:div|details)\b", template))
+        closes = len(re.findall(r"</(?:div|details)>", template))
+        # The template stops one short of its own closing tag, by construction.
+        assert opens - closes == 1, f"{path.name}: {opens} opened, {closes} closed"
+
+
+def test_the_menu_leads_with_the_drink_not_the_setup() -> None:
+    page = MENU.read_text(encoding="utf-8")
+    template = _template(page, "jiji-menu-page")
+    # Seven full cards competed on this page. The tools are folded, and the
+    # block holding the drink is named for what a person came to do.
+    assert '__("Look at one thing on your menu")' in page
+    assert template.count("<details") == 4, "the tools and the section map must stay folded"
+    # Setup progress is onboarding, not furniture.
+    assert 'find("[data-completion-card]").toggleClass("d-none", complete)' in page
+    # And the warning bar about who sees cost is a footnote now.
+    assert 'alert alert-warning mt-2' not in page
