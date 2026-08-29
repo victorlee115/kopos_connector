@@ -16,6 +16,8 @@ import frappe
 from frappe import _
 from frappe.utils import cint, cstr
 
+from kopos_connector.api.catalog import get_item_prices_map
+from kopos_connector.api.director_scope import director_price_list
 from kopos_connector.kopos.doctype.fb_recipe.fb_recipe import (
     _canonical_recipe_hash,
 )
@@ -227,9 +229,13 @@ def preview_menu_recipe(*, payload: str | dict[str, Any]) -> dict[str, Any]:
         modifier_effects=effects,
         require_prepared_bom=False,
     )
+    sellable = cstr(value.get("sellable_item")).strip()
     return {
         "status": "ok" if preview["valid"] else "blocked",
-        "preview": _public_preview(preview),
+        "preview": _public_preview(
+            preview,
+            price_sen=_selling_price_sen(sellable, cstr(value.get("company")).strip(), item_details),
+        ),
         "modifier_effects": _public_modifier_effects(effects),
         "prepared_boms": prepared,
     }
@@ -776,13 +782,40 @@ def _public_modifier_effects(rows: list[Mapping[str, Any]]) -> list[dict[str, An
     ]
 
 
-def _public_preview(preview: Mapping[str, Any]) -> dict[str, Any]:
+def _selling_price_sen(
+    item: str, company: str, item_details: Mapping[str, Mapping[str, Any]]
+) -> int | None:
+    """What one of these sells for, from the list the tablet charges from.
+
+    A recipe cost on its own answers "is this valid". Next to the price it
+    answers the question a director actually has, which is whether the drink
+    still makes money. Quoting a second price here would let the desk and the
+    counter disagree, so this reads the catalog owner.
+    """
+    if not item or not company:
+        return None
+    price_list = director_price_list(company)
+    if not price_list:
+        return None
+    stock_uom = cstr((item_details.get(item) or {}).get("stock_uom")).strip()
+    prices = get_item_prices_map([item], price_list, {item: stock_uom} if stock_uom else None)
+    return _money_to_sen(prices.get(item))
+
+
+def _public_preview(preview: Mapping[str, Any], *, price_sen: int | None = None) -> dict[str, Any]:
     result = json.loads(json.dumps(preview, default=str))
     for row in result.get("components", []):
         row["valuation_rate_sen"] = _money_to_sen(row.pop("valuation_rate", None))
         row["cost_per_batch_sen"] = _money_to_sen(row.pop("cost_per_batch", None))
     result["cost_per_batch_sen"] = _money_to_sen(result.pop("cost_per_batch", None))
     result["cost_per_serving_sen"] = _money_to_sen(result.pop("cost_per_serving", None))
+    result["price_sen"] = price_sen
+    # Integer sen throughout, so the margin cannot drift from the two numbers
+    # it is drawn from.
+    cost_sen = result["cost_per_serving_sen"]
+    result["keeps_sen"] = (
+        price_sen - cost_sen if price_sen is not None and cost_sen is not None else None
+    )
     return result
 
 

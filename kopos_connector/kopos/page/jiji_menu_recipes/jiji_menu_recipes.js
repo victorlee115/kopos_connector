@@ -493,8 +493,50 @@ class JiJiMenuRecipesPage {
 		const rows = (preview.components || []).map((row) => `${this.escape(row.item)}: ${this.escape(row.stock_qty_per_batch)} ${this.escape(row.stock_uom)} ${__("for the full recipe")} / ${this.escape(row.stock_qty_per_serving)} ${__("for one serving")}`).join("<br>");
 		const prep = (preview.components || []).filter((row) => row.component_type === "Prep Item").map((row) => row.prepared_bom ? `${this.escape(row.item)} → ${this.escape(row.prepared_bom.name || __("prepared-item recipe"))}, ${this.escape(row.prepared_bom.batch_qty || "?")} ${__("made at a time")}` : `${this.escape(row.item)} → ${__("an approved prepared-item recipe is required")}`).join("<br>");
 		const effects = (preview.modifier_effects || []).map((row) => `${this.escape(row.modifier_name || row.name)} (${this.escape(row.kind || __("ingredient change"))})`).join(", ");
-		const cost = preview.cost_per_batch_sen == null ? __("Ingredient cost is not available") : `${__("Ingredient cost for the full recipe")}: ${this.formatSen(preview.cost_per_batch_sen)} · ${__("for one serving")}: ${this.formatSen(preview.cost_per_serving_sen)}`;
-		dialog.$wrapper.find("[data-guided-preview]").html(`<div class="mb-2"><strong class="${response.status === "ok" ? "text-success" : "text-danger"}">${response.status === "ok" ? __("Amounts and cost look ready") : __("Fix these details before saving")}</strong></div>${errors}${warnings}<div class="mt-2">${rows || __("No ingredients or supplies added")}</div>${prep ? `<div class="mt-2"><strong>${__("Items made in advance")}</strong><br>${prep}</div>` : ""}<div class="mt-2"><strong>${this.escape(cost)}</strong></div><div class="mt-2 text-muted">${effects ? `${__("Changes from customer choices")}: ${effects}` : __("No customer choices selected")}</div>`);
+		const cost = this.moneyLineHtml(preview, response.status === "ok");
+		dialog.$wrapper.find("[data-guided-preview]").html(`<div class="mb-2"><strong class="${response.status === "ok" ? "text-success" : "text-danger"}">${response.status === "ok" ? __("Amounts and cost look ready") : __("Fix these details before saving")}</strong></div>${errors}${warnings}<div class="mt-2">${rows || __("No ingredients or supplies added")}</div>${prep ? `<div class="mt-2"><strong>${__("Items made in advance")}</strong><br>${prep}</div>` : ""}<div class="mt-3">${cost}</div><div class="mt-2 text-muted">${effects ? `${__("Changes from customer choices")}: ${effects}` : __("No customer choices selected")}</div>`);
+	}
+
+	/**
+	 * Does this drink still make money?
+	 *
+	 * The preview used to answer "is the recipe valid", which nobody asks. The
+	 * cost only means something beside the price the drink sells for, and both
+	 * numbers are already computed -- the cost by the recipe preview, the price
+	 * by the catalog the tablet charges from.
+	 */
+	moneyLineHtml(preview, valid) {
+		const cost = preview.cost_per_serving_sen;
+		if (cost == null) {
+			return `<div class="text-muted">${__("JiJi cannot cost this yet — one ingredient has no current value.")}</div>`;
+		}
+		// A drink that costs nothing is an absence, not a fact. Nothing was
+		// marked as counting towards cost, so there is no margin to report.
+		if (!cost) {
+			return `<div class="text-muted">${__("No ingredient on this recipe counts towards cost yet, so JiJi cannot say what it keeps.")}</div>`;
+		}
+		// An invalid recipe still has numbers; they just do not mean anything
+		// yet, and a confident margin over a broken recipe is worse than none.
+		if (!valid) {
+			return `<div class="text-muted">${__("Fix the details above before these figures mean anything.")}
+				<div>${__("Ingredients cost")} ${this.escape(this.formatSen(cost))}</div></div>`;
+		}
+		const price = preview.price_sen;
+		const keeps = preview.keeps_sen;
+		if (price == null) {
+			return `<div><strong>${__("Ingredients cost")} ${this.escape(this.formatSen(cost))}</strong>
+				<div class="text-muted small">${__("Set a selling price for this item to see what it keeps.")}</div></div>`;
+		}
+		// Selling below cost is not a rounding detail; it is the answer.
+		const tone = keeps > 0 ? "text-success" : "text-danger";
+		const verdict = keeps > 0
+			? __("Keeps {0}", [this.formatSen(keeps)])
+			: __("Loses {0} on every one sold", [this.formatSen(Math.abs(keeps))]);
+		return `<div class="d-flex flex-wrap align-items-baseline gap-3">
+			<span>${__("Sells for")} <strong>${this.escape(this.formatSen(price))}</strong></span>
+			<span>${__("Ingredients cost")} <strong>${this.escape(this.formatSen(cost))}</strong></span>
+			<span class="${tone}"><strong>${this.escape(verdict)}</strong></span>
+		</div>`;
 	}
 
 	saveGuidedDraft(dialog, editor, values) {

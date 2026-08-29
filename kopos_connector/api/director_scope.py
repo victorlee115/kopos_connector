@@ -85,6 +85,35 @@ def director_warehouse(company: str) -> str:
     return warehouses.pop() if len(warehouses) == 1 else ""
 
 
+def director_price_list(company: str) -> str:
+    """The price list this café actually sells at.
+
+    A recipe's cost only answers a director's question next to the price the
+    drink sells for, and a POS Profile already names where that price comes
+    from. Reading it means the desk quotes the price the tablet charges.
+
+    A café builds its menu before it sets up a counter, though, so a company
+    with no POS Profile yet falls back to the site's default selling price
+    list. Two profiles on two price lists stays a real ambiguity rather than a
+    coin toss between them.
+    """
+    price_lists = {
+        cstr(name).strip()
+        for name in frappe.get_all(
+            "POS Profile",
+            filters={"company": company, "disabled": 0},
+            pluck="selling_price_list",
+            limit_page_length=0,
+        )
+        if cstr(name).strip()
+    }
+    if len(price_lists) == 1:
+        return price_lists.pop()
+    if price_lists:
+        return ""
+    return cstr(frappe.db.get_single_value("Selling Settings", "selling_price_list") or "").strip()
+
+
 @frappe.whitelist(methods=["GET"])
 def get_director_outlet() -> dict[str, str]:
     """The company and outlet store to open a page on, before anyone chooses.

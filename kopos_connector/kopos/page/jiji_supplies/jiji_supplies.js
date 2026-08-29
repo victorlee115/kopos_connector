@@ -42,11 +42,12 @@ class JiJiSupplies {
 .jiji-supplies__why { border-left: 3px solid var(--yellow-500, #e8952a); padding: 12px 0 12px 16px; margin: 14px 0; }
 .jiji-supplies__why-title { font-weight: 600; }
 .jiji-supplies__why-detail { color: var(--text-muted); margin-top: 2px; }
-.jiji-supplies__actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.jiji-supplies__actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
 .jiji-supplies__when { margin-left: auto; color: var(--text-muted); font-size: 12px; }
 .jiji-supplies__amount { color: var(--text-muted); }
 .jiji-supplies__cost { font-variant-numeric: tabular-nums; color: var(--text-muted); min-width: 92px; text-align: right; }
 .jiji-supplies__date { color: var(--text-muted); font-size: 12px; width: 74px; flex: 0 0 auto; }
+.jiji-supplies__why + .jiji-supplies__actions { margin-top: 0; }
 .jiji-supplies__history-total { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 100px; text-align: right; }
 `;
 		document.head.appendChild(style);

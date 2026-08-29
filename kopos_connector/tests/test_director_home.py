@@ -32,9 +32,13 @@ def test_a_week_is_one_query_and_today_comes_out_of_it() -> None:
     source = SOURCE.read_text(encoding="utf-8")
     # "Did we make money today" almost always means "compared with what", and
     # a second query for the same invoices could disagree with the first.
-    assert source.count('"Sales Invoice",') == 1
+    # One read of Sales Invoice answers today, the week behind it, and the
+    # split between counters. A second query for the same invoices could
+    # disagree with the first.
+    assert source.count('frappe.get_all(\n        "Sales Invoice"') == 1
     assert "TAKINGS_DAYS = 7" in source
     assert '"week_total"' in source
+    assert '"outlets"' in source
 
 
 def test_someone_who_cannot_sign_in_reaches_the_queue() -> None:

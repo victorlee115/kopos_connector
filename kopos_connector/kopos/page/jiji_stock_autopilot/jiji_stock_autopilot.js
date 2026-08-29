@@ -31,6 +31,7 @@ class JiJiStockAutopilotPage {
 		this.warehouseControl.refresh();
 		this.warehouseControl.$input.on("change awesomplete-selectcomplete", () => this.onWarehouseChanged());
 		this.chooseOutletForDirector();
+		jiji.desk.injectStyle();
 		this.page.set_primary_action(__("Check now"), () => this.refresh({ showMissingOutlet: true }));
 		this.page.add_inner_button(__("Start using stock tracking"), () => this.activateCutover());
 		this.page.body.on("click", "[data-primary-route]", (event) => {
@@ -80,6 +81,8 @@ class JiJiStockAutopilotPage {
 				<div data-next-step class="mb-4">${this.chooseOutletNextStepHtml()}</div>
 				<div data-workflow class="mb-4"></div>
 				<div data-sections class="row"></div>
+				<div data-running-low class="mb-4"></div>
+				<div data-moved class="mb-4"></div>
 				<div data-count-reviews class="mt-2"></div>
 				<div data-exceptions class="mt-4"></div>
 			</div>`);
@@ -136,6 +139,55 @@ class JiJiStockAutopilotPage {
 		if (!warehouse) this.page.body.find("[data-auto-status]").text(__("Updates automatically after you choose an outlet."));
 	}
 
+	/**
+	 * Which things are running low, and what moved today.
+	 *
+	 * The area cards say "3 running low" and never say which three, and they
+	 * show a waste figure with no cause. Both are separate reads so a slow or
+	 * failing stock snapshot costs these two blocks and not the whole page.
+	 */
+	loadStockDesk(warehouse) {
+		frappe.call({
+			method: "kopos_connector.api.stock_desk.get_stock_desk",
+			type: "GET",
+			args: { warehouse },
+			callback: (response) => this.renderStockDesk(response.message || {}),
+			error: () => this.renderStockDesk({}),
+		});
+	}
+
+	renderStockDesk(data) {
+		const low = this.page.body.find("[data-running-low]");
+		const moved = this.page.body.find("[data-moved]");
+		low.empty();
+		moved.empty();
+		if (data.status !== "ok") return;
+
+		if ((data.running_low || []).length) {
+			const rows = data.running_low.map((row) => `
+				<div class="d-flex align-items-center gap-3 py-2 border-bottom">
+					<span class="flex-grow-1">${this.escape(row.name)}</span>
+					<span class="text-muted small" style="width: 120px; text-align: right">${this.escape(row.days)}</span>
+					<span class="jiji-meter${row.on_order ? " jiji-meter--calm" : ""}"><span style="width: ${Number(row.fill) || 0}%"></span></span>
+					<span class="jiji-pill${row.on_order ? "" : " jiji-pill--attention"}">${this.escape(row.state)}</span>
+				</div>`).join("");
+			low.html(`<div class="jiji-head mb-2"><div class="jiji-label">${__("Running low")}</div>
+				<span class="jiji-muted">${__("Bars show how long each lasts at this week's sales.")}</span></div>
+				<div class="card"><div class="card-body py-2">${rows}</div></div>`);
+		}
+
+		if ((data.moved || []).length) {
+			const rows = data.moved.map((row) => `
+				<div class="d-flex align-items-baseline gap-3 py-2 border-bottom">
+					<span class="flex-grow-1">${this.escape(row.title)}</span>
+					<span class="text-right">${this.escape(row.detail)}</span>
+				</div>`).join("");
+			moved.html(`<div class="jiji-head mb-2"><div class="jiji-label">${__("What moved today")}</div>
+				<span class="jiji-muted">${this.escape(data.moved_note || "")}</span></div>
+				<div class="card"><div class="card-body py-2">${rows}</div></div>`);
+		}
+	}
+
 	refresh(options = {}) {
 		const warehouse = this.warehouseControl && this.warehouseControl.get_value();
 		this.updateWarehouseHelp();
@@ -156,6 +208,7 @@ class JiJiStockAutopilotPage {
 				this.refreshing = false;
 				this.health = response.message || {};
 				this.loadedWarehouse = warehouse;
+				this.loadStockDesk(warehouse);
 				this.renderHealth();
 			},
 			error: () => {

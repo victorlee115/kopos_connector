@@ -43,7 +43,7 @@ def _recent_takings(company: str) -> dict[str, Any]:
     rows = frappe.get_all(
         "Sales Invoice",
         filters={"company": company, "docstatus": 1, "posting_date": [">=", first]},
-        fields=["posting_date", "grand_total"],
+        fields=["posting_date", "grand_total", "pos_profile"],
         limit_page_length=0,
     )
 
@@ -56,10 +56,34 @@ def _recent_takings(company: str) -> dict[str, Any]:
             totals[key] += flt(row.get("grand_total"))
             orders[key] += 1
 
+    # A café with one counter does not need its own total repeated back to it.
+    # Two do, because "we took RM 1,240" hides one of them having a quiet day.
+    outlets: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if cstr(getdate(row.get("posting_date"))) != cstr(today):
+            continue
+        outlet = cstr(row.get("pos_profile")).strip()
+        if not outlet:
+            continue
+        entry = outlets.setdefault(outlet, {"total": 0.0, "orders": 0})
+        entry["total"] += flt(row.get("grand_total"))
+        entry["orders"] += 1
+
     return {
         "orders": orders[cstr(today)],
         "total": flt(totals[cstr(today)], 2),
         "week_total": flt(sum(totals.values()), 2),
+        "outlets": [
+            {
+                "outlet": outlet,
+                "total": f"RM {flt(entry['total'], 2):,.2f}",
+                "orders": f"{entry['orders']} order" + ("" if entry["orders"] == 1 else "s"),
+                "route": ["List", "Sales Invoice", {"pos_profile": outlet}],
+            }
+            for outlet, entry in sorted(outlets.items(), key=lambda pair: -pair[1]["total"])
+        ]
+        if len(outlets) > 1
+        else [],
         "days": [
             {
                 "day": "Today" if day == today else getdate(day).strftime("%a"),
@@ -208,6 +232,7 @@ def get_director_home() -> dict[str, Any]:
         "next_step": next_step,
         "waiting": waiting,
         "week": {"total": f"RM {takings['week_total']:,.2f}", "days": takings["days"]},
+        "outlets": takings["outlets"],
         "tiles": [
             {"key": "today", "label": "Today", "value": f"RM {takings['total']:,.2f}", "detail": f"{takings['orders']} orders", "route": ["List", "Sales Invoice"]},
             {"key": "menu", "label": "Menu", "value": str(items_ready), "detail": "on sale", "route": ["jiji_menu_recipes"]},

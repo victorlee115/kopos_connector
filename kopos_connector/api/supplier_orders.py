@@ -31,6 +31,7 @@ from typing import Any
 import frappe
 from frappe.utils import cstr, flt, getdate
 
+from kopos_connector.api.cafe_units import amount_phrase
 from kopos_connector.api.director_scope import director_company
 
 # How many drafts get the full treatment. The design shows one decision at a
@@ -41,69 +42,19 @@ HISTORY_LIMIT = 3
 RELIABILITY_SAMPLE = 6
 ON_THE_WAY_LIMIT = 3
 
-# ERP unit names that are not words a café owner would say out loud. Anything
-# not listed keeps the name the ERP already uses.
-_UNIT_WORDS = {
-    "gram": ("g", "g"),
-    "millilitre": ("ml", "ml"),
-    "milliliter": ("ml", "ml"),
-    "litre": ("L", "L"),
-    "liter": ("L", "L"),
-    "kg": ("kg", "kg"),
-    "kilogram": ("kg", "kg"),
-    "nos": ("piece", "pieces"),
-    "unit": ("unit", "units"),
-}
-
-
-def _unit_words(unit: str) -> tuple[str, str]:
-    """Singular and plural words for one ERP unit of measure."""
-    name = cstr(unit).strip()
-    if not name:
-        return "", ""
-    known = _UNIT_WORDS.get(name.lower())
-    if known:
-        return known
-    singular = name.lower()
-    if singular.endswith("s"):
-        return singular, singular
-    if singular.endswith(("x", "ch", "sh")):
-        return singular, f"{singular}es"
-    return singular, f"{singular}s"
-
-
-# A thousand of the small unit is the big one, and people say the big one.
-# Only ever exact: 1500 ml stays 1500 ml rather than becoming a rounded 2 L.
-_SCALED_UNITS = {"millilitre": "litre", "milliliter": "litre", "gram": "kg"}
-
-
-def _amount_phrase(qty: float, unit: str) -> str:
-    """"12 bags", "1 carton", "1 L", "250 g" -- an amount someone can picture."""
-    name = cstr(unit).strip().lower()
-    bigger = _SCALED_UNITS.get(name)
-    if bigger and flt(qty) >= 1000 and flt(qty) % 1000 == 0:
-        qty, unit = flt(qty) / 1000, bigger
-    singular, plural = _unit_words(unit)
-    rounded = round(flt(qty), 3)
-    whole = int(rounded)
-    number = str(whole) if rounded == whole else f"{rounded:g}"
-    word = singular if rounded == 1 else plural
-    return f"{number} {word}".strip()
-
-
 def _line_amount(row: dict[str, Any]) -> str:
     """What is being bought, in packs and what is inside one.
 
     A Purchase Order stores 12 Bag with a conversion factor of 250 into Gram.
     "12 bags · 250 g each" is the same fact, said the way it is bought.
     """
-    ordered = _amount_phrase(flt(row.get("qty")), cstr(row.get("uom")))
+    ordered = amount_phrase(flt(row.get("qty")), cstr(row.get("uom")))
     factor = flt(row.get("conversion_factor"))
     stock_unit = cstr(row.get("stock_uom"))
     same_unit = cstr(row.get("uom")).strip().lower() == stock_unit.strip().lower()
     if same_unit or factor <= 0 or factor == 1:
         return ordered
-    return f"{ordered} · {_amount_phrase(factor, stock_unit)} each"
+    return f"{ordered} · {amount_phrase(factor, stock_unit)} each"
 
 
 def _money(value: Any, currency: str) -> str:
@@ -252,7 +203,11 @@ def _runout_days(company: str, warehouse: str, items: set[str]) -> dict[str, flo
             build_edge_inventory_snapshot,
         )
 
-        snapshot = build_edge_inventory_snapshot(company=company, warehouse=warehouse, limit=len(items) + 20)
+        # The snapshot contract refuses a limit above 100 rather than
+        # truncating it, so ask for a size it will accept.
+        snapshot = build_edge_inventory_snapshot(
+            company=company, warehouse=warehouse, limit=min(100, max(1, len(items) + 20))
+        )
     except Exception:
         frappe.log_error(title="JiJi supplies could not read the stock snapshot")
         return {}

@@ -103,13 +103,29 @@ class JiJiHome {
 		// The shape behind today's number: a week is what "compared with what"
 		// means, and it is the same query today already came out of.
 		const week = data.week || {};
+		const outlets = data.outlets || [];
 		if ((week.days || []).length) {
-			const card = $("<div>").addClass("jiji-card");
+			const row = $("<div>").addClass("jiji-two");
+			const card = $("<div>").addClass("jiji-card").appendTo(row);
 			const head = $("<div>").addClass("jiji-head").appendTo(card);
 			head.append(jiji.desk.label(__("Last seven days")));
 			head.append($("<span>").addClass("jiji-muted jiji-num").text(__("{0} taken", [week.total || ""])));
 			card.append(jiji.desk.weekBars(week.days).css("margin-top", "16px"));
-			this.body.append(card);
+
+			// Only when there is more than one counter: a café with one does not
+			// need today's total repeated back to it under another name.
+			if (outlets.length) {
+				const side = $("<div>").addClass("jiji-card jiji-two__side").appendTo(row);
+				side.append(jiji.desk.label(__("Your outlets, today")));
+				const list = $("<div>").css("margin-top", "8px").appendTo(side);
+				outlets.forEach((outlet) => {
+					const line = jiji.desk.routeLink(outlet.route).addClass("jiji-kv").appendTo(list);
+					line.append($("<span>").addClass("jiji-kv__main").text(outlet.outlet || ""));
+					line.append($("<span>").addClass("jiji-muted jiji-num").text(outlet.orders || ""));
+					line.append($("<span>").addClass("jiji-num").css("font-weight", "600").text(outlet.total || ""));
+				});
+			}
+			this.body.append(row);
 		}
 
 		this.body.append(jiji.desk.advanced(__("every number here opens the record it came from.")));

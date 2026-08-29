@@ -174,6 +174,12 @@ a.jiji-row:hover { text-decoration: none; color: inherit; background: var(--bg-c
 .jiji-week__bar--today { background: var(--yellow-600, #b4640e); }
 .jiji-week__label { font-size: 12px; color: var(--text-muted); }
 
+.jiji-two { display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap; }
+.jiji-two > .jiji-card { flex: 1 1 340px; }
+.jiji-two > .jiji-two__side { flex: 0 1 320px; }
+a.jiji-kv { text-decoration: none; color: inherit; }
+a.jiji-kv:hover { text-decoration: none; color: inherit; }
+
 .jiji-advanced { color: var(--text-muted); font-size: 12px; }
 `;
 		document.head.appendChild(style);

@@ -92,13 +92,17 @@ def test_the_page_degrades_instead_of_blanking() -> None:
     assert "Nothing has been sent or changed" in page
 
 
-def test_a_thousand_of_the_small_unit_is_said_as_the_big_one() -> None:
+def test_amounts_are_worded_by_one_owner() -> None:
     source = SOURCE.read_text(encoding="utf-8")
-    # A real draft printed "6 cartons · 1000 ml each". Nobody says that about
-    # a litre of milk. The scale only applies when it stays exact, so 1500 ml
-    # is never rounded into 2 L.
-    assert "_SCALED_UNITS" in source
-    assert "% 1000 == 0" in source
+    units = (ROOT / "api" / "cafe_units.py").read_text(encoding="utf-8")
+    # A real draft printed "6 cartons · 1000 ml each". Nobody says that about a
+    # litre of milk. The scale only applies when it stays exact, so 1500 ml is
+    # never rounded into 2 L. Two desk pages now show amounts, so the wording
+    # has one home rather than a copy in each.
+    assert "_SCALED_UNITS" in units
+    assert "% 1000 == 0" in units
+    assert "from kopos_connector.api.cafe_units import amount_phrase" in source
+    assert "_UNIT_WORDS" not in source
 
 
 def test_an_order_still_in_the_air_is_not_history() -> None:
