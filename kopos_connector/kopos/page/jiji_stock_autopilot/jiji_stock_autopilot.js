@@ -74,16 +74,19 @@ class JiJiStockAutopilotPage {
 		$(this.page.body).html(`
 			<div class="jiji-stock-autopilot">
 				${this.stakeholderWorkflowHtml()}
-				<div class="row align-items-end mb-4">
-					<div class="col-sm-5"><div data-warehouse></div></div>
-					<div class="col-sm-7"><p data-warehouse-help class="text-muted mb-1"></p><p data-auto-status class="text-muted small mb-0"></p></div>
+				<div class="jiji-outletbar mb-4">
+					<div data-warehouse></div>
+					<span data-warehouse-help class="jiji-muted"></span>
+					<span class="jiji-outletbar__sp"></span>
+					<span data-auto-status class="jiji-muted"></span>
 				</div>
 				<div data-overall class="mb-4"></div>
 				<div data-next-step class="mb-4">${this.chooseOutletNextStepHtml()}</div>
 				<div data-workflow class="mb-4"></div>
-				<div data-sections class="row"></div>
+				<div data-counted class="mb-4"></div>
 				<div data-running-low class="mb-4"></div>
 				<div data-moved class="mb-4"></div>
+				<div data-sections class="row"></div>
 				<div data-count-reviews class="mt-2"></div>
 				<div data-exceptions class="mt-4"></div>
 			</div>`);
@@ -138,6 +141,7 @@ class JiJiStockAutopilotPage {
 				: __("Choose an outlet.");
 		this.page.body.find("[data-warehouse-help]").text(message);
 		if (!warehouse) this.page.body.find("[data-auto-status]").text(__("Updates automatically after you choose an outlet."));
+		else if (this.checkedAt) this.page.body.find("[data-auto-status]").text(__("Checked {0}", [this.checkedAt]));
 	}
 
 	/**
@@ -158,11 +162,35 @@ class JiJiStockAutopilotPage {
 	}
 
 	renderStockDesk(data) {
+		const counted = this.page.body.find("[data-counted]");
 		const low = this.page.body.find("[data-running-low]");
 		const moved = this.page.body.find("[data-moved]");
+		counted.empty();
 		low.empty();
 		moved.empty();
 		if (data.status !== "ok") return;
+		this.checkedAt = data.checked_at || "";
+		this.updateWarehouseHelp();
+
+		// Six things a director counts. The six area cards below answer how the
+		// automatic work is behaving, which is support's question, so they are
+		// demoted beneath these rather than opening the page.
+		if ((data.tiles || []).length) {
+			const grid = $('<div class="jiji-tiles"></div>').appendTo(counted);
+			data.tiles.forEach((tile) => {
+				// Built through the desk's own routing owner rather than a
+				// second click handler on this page.
+				const link = jiji.desk.routeLink(tile.route).addClass("jiji-tile");
+				link.append(jiji.desk.label(tile.label || ""));
+				link.append(
+					$("<div>")
+						.addClass("jiji-tile__value" + (tile.attention ? " jiji-tile__value--attention" : ""))
+						.text(tile.value || ""),
+				);
+				link.append($("<div>").addClass("jiji-tile__detail").text(tile.detail || ""));
+				grid.append(link);
+			});
+		}
 
 		if (!(data.running_low || []).length && data.running_low_note) {
 			// Blank would read as "nothing to see"; it may mean "JiJi cannot
@@ -319,11 +347,19 @@ class JiJiStockAutopilotPage {
 			overallCritical ? __("Action needed") : overallWarning ? __("Review needed") : __("All clear"),
 			overallCritical ? "red" : overallWarning ? "orange" : "green",
 		);
-		this.page.body.find("[data-overall]").html(this.statusBanner(
+		// The consequence sits inside the one next step rather than above it.
+		// Two full-width alarms stacked on one screen is the pattern this page
+		// was redrawn to remove; the reader cannot tell which to act on.
+		this.page.body.find("[data-overall]").empty();
+		this.renderNextStep(
+			needs,
 			overallCritical ? "critical" : overallWarning ? "warning" : "ok",
-				overallCritical ? __("Automatic stock work is paused until the urgent problem is fixed.") : overallWarning ? __("Stock tracking is running, but one or more items need review.") : __("No urgent stock problem was found."),
-		));
-		this.renderNextStep(needs, overallCritical ? "critical" : overallWarning ? "warning" : "ok");
+			overallCritical
+				? __("Automatic stock work is paused until the urgent problem is fixed.")
+				: overallWarning
+					? __("Stock tracking is running, but one or more items need review.")
+					: __("No urgent stock problem was found."),
+		);
 
 		// The old first card repeated the next step -- same words, same button,
 		// directly under it. Six areas remain, and the one that produced the
@@ -397,6 +433,8 @@ class JiJiStockAutopilotPage {
 			},
 		];
 		this.page.body.find("[data-sections]").html(
+			`<div class="col-12"><div class="jiji-head mb-2"><div class="jiji-label">${__("How the automatic work is doing")}</div>
+				<span class="jiji-muted">${__("Six areas JiJi watches for you. Only one of them is ever your next step.")}</span></div></div>` +
 			sections.map((section) => this.sectionHtml(section, section.route === needs.route)).join(""),
 		);
 		this.renderCountReviews(countReviews);
@@ -484,7 +522,7 @@ class JiJiStockAutopilotPage {
 		</div></div>`;
 	}
 
-	renderNextStep(nextStep, status) {
+	renderNextStep(nextStep, status, consequence) {
 		const action = nextStep.route && nextStep.action
 			? `<button type="button" class="btn btn-primary" data-primary-route="${this.escapeAttribute(nextStep.route)}">${this.escape(nextStep.action)}</button>`
 			: `<span class="text-success font-weight-bold">✓ ${__("Nothing to do right now")}</span>`;
@@ -495,6 +533,7 @@ class JiJiStockAutopilotPage {
 				<div class="jiji-label">${__("Your next step")}</div>
 				<div class="jiji-next__title mt-1">${this.escape(nextStep.value)}</div>
 				<div class="jiji-next__detail">${this.escape(nextStep.detail)}</div>
+				${consequence ? `<div class="jiji-next__consequence">${this.escape(consequence)}</div>` : ""}
 			</div>${action}
 		</div>`);
 	}

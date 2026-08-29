@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 import frappe
-from frappe.utils import cstr, flt, nowdate
+from frappe.utils import add_days, cint, cstr, flt, format_datetime, getdate, now_datetime, nowdate
 
 from kopos_connector.api.cafe_units import amount_phrase
 
@@ -188,6 +188,86 @@ def _waste_today(company: str, warehouse: str) -> dict[str, Any] | None:
     }
 
 
+def _money(value: Any) -> str:
+    return f"RM {flt(value):,.2f}"
+
+
+def _counted_tiles(company: str, warehouse: str, low: list[dict[str, Any]], moved: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The six things a director counts, not the six areas support watches.
+
+    The page already reports how the automatic work is behaving, which is the
+    right question for support and the wrong one for a café. These are the
+    quantities: what is short, what is waiting, what is coming, what was made,
+    what was thrown away, what is in transit.
+    """
+    # The health cards on the same page count open tasks with this set. A
+    # second definition here would put two different numbers for one question
+    # on one screen, which is the failure this page exists to undo.
+    from kopos_connector.api.inventory import OPEN_COUNT_TASK_STATUSES
+
+    counts_waiting = cint(frappe.db.count(
+        "FB Inventory Count Task",
+        {"company": company, "warehouse": warehouse, "status": ["in", sorted(OPEN_COUNT_TASK_STATUSES)]},
+    ))
+    arriving = frappe.get_all(
+        "Purchase Order",
+        filters={"company": company, "docstatus": 1, "per_received": ["<", 100]},
+        fields=["name", "schedule_date"],
+        order_by="schedule_date asc",
+        limit_page_length=0,
+    )
+    batches = sum(1 for row in moved if row.get("title") == "Made in store")
+    week_start = add_days(nowdate(), -6)
+    waste_rows = frappe.get_all(
+        "Stock Entry",
+        filters={
+            "company": company, "docstatus": 1,
+            "posting_date": [">=", week_start],
+            "name": ["in", [
+                cstr(name) for name in frappe.get_all(
+                    "FB Waste Event",
+                    filters={"company": company, "warehouse": warehouse, "docstatus": ["<", 2]},
+                    pluck="stock_entry", limit_page_length=0,
+                ) if cstr(name).strip()
+            ] or [""]],
+        },
+        fields=["total_outgoing_value"],
+        limit_page_length=0,
+    )
+    in_transit = cint(frappe.db.count(
+        "Stock Entry",
+        {"company": company, "docstatus": 1, "purpose": "Material Transfer", "posting_date": nowdate()},
+    ))
+
+    first_arrival = next((row.get("schedule_date") for row in arriving if row.get("schedule_date")), None)
+    return [
+        {"label": "Running low", "value": str(len(low)),
+         "detail": ", ".join(row["name"] for row in low[:3]) or "nothing short",
+         "attention": bool(low), "route": ["List", "Item"]},
+        {"label": "Counts", "value": str(counts_waiting),
+         "detail": "waiting for your check" if counts_waiting else "nothing waiting",
+         "attention": counts_waiting > 0, "route": ["List", "FB Inventory Count Task"]},
+        {"label": "Deliveries", "value": str(len(arriving)),
+         "detail": (f"arriving {_weekday(first_arrival)}" if first_arrival else "nothing on the way"),
+         "attention": False, "route": ["List", "Purchase Order", {"docstatus": 1}]},
+        {"label": "Made in store", "value": str(batches),
+         "detail": "batches today" if batches else "nothing made today",
+         "attention": False, "route": ["List", "Stock Entry"]},
+        {"label": "Waste", "value": _money(sum(flt(row.get("total_outgoing_value")) for row in waste_rows)),
+         "detail": "this week", "attention": False, "route": ["List", "FB Waste Event"]},
+        {"label": "Transfers", "value": str(in_transit),
+         "detail": "moving today" if in_transit else "nothing moving",
+         "attention": False, "route": ["List", "Stock Entry", {"purpose": "Material Transfer"}]},
+    ]
+
+
+def _weekday(value: Any) -> str:
+    try:
+        return getdate(value).strftime("%A")
+    except (ValueError, TypeError):
+        return cstr(value)
+
+
 @frappe.whitelist(methods=["GET"])
 def get_stock_desk(*, warehouse: str | None = None) -> dict[str, Any]:
     """The two questions the six area cards do not answer."""
@@ -237,6 +317,8 @@ def get_stock_desk(*, warehouse: str | None = None) -> dict[str, Any]:
         "status": "ok",
         "company": company,
         "warehouse": store,
+        "tiles": _counted_tiles(company, store, low, moved),
+        "checked_at": format_datetime(now_datetime(), "HH:mm"),
         "running_low": low,
         # Empty because nothing is low, or empty because JiJi cannot say yet.
         # A director cannot tell those apart from a blank space.

@@ -106,3 +106,20 @@ def test_a_new_cafe_is_told_why_rather_than_shown_nothing() -> None:
     # all, by design, and the running-low list is empty for a good reason.
     assert "MIN_RELIABLE_DAYS = MIN_TRAINING_DAYS + MIN_TEST_DAYS" in forecast
     assert "MIN_TRAINING_DAYS = 14" in forecast and "MIN_TEST_DAYS = 14" in forecast
+
+
+def test_the_page_never_shows_two_numbers_for_one_question() -> None:
+    source = _source()
+    # The health cards below the tiles count open count tasks with
+    # OPEN_COUNT_TASK_STATUSES. A tile with its own idea of "waiting" showed 0
+    # beside a card showing 1, on the same screen.
+    assert "OPEN_COUNT_TASK_STATUSES" in source
+    assert '"Submitted", "Review"' not in source
+
+
+def test_the_counted_tiles_are_quantities_not_statuses() -> None:
+    source = _source()
+    # Six health paragraphs answer support's question. These six answer the
+    # café's: what is short, waiting, coming, made, wasted, in transit.
+    for label in ("Running low", "Counts", "Deliveries", "Made in store", "Waste", "Transfers"):
+        assert f'"label": "{label}"' in source, f"the counted tiles are missing {label}"

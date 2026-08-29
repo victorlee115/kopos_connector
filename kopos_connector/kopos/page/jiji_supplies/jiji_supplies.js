@@ -88,6 +88,13 @@ class JiJiSupplies {
 			return;
 		}
 
+		this.page.set_indicator(
+			data.draft_count === 1
+				? __("1 draft")
+				: __("{0} drafts", [data.draft_count || 0]),
+			data.draft_count ? "orange" : "green",
+		);
+
 		if (!data.draft_count) {
 			this.body.append(
 				jiji.desk.notice(
@@ -97,7 +104,13 @@ class JiJiSupplies {
 			);
 		}
 
-		(data.detailed || []).forEach((draft) => this.body.append(this.renderDraft(draft)));
+		(data.detailed || []).forEach((draft) => {
+			this.body.append(this.renderDraft(draft));
+			// The supplier's record is its own block. Folded into the decision
+			// card it read as a footnote to the order rather than as the
+			// evidence the decision is weighed against.
+			if ((draft.history || []).length) this.body.append(this.renderHistory(draft));
+		});
 
 		if ((data.other_drafts || []).length) {
 			const block = $("<div>").append(jiji.desk.label(__("Also waiting")));
@@ -139,6 +152,23 @@ class JiJiSupplies {
 		);
 	}
 
+	renderHistory(draft) {
+		const card = $("<div>").addClass("jiji-card");
+		const head = $("<div>").addClass("jiji-head").appendTo(card);
+		head.append(jiji.desk.label(__("Last orders from {0}", [draft.supplier || ""])));
+		// The reliability line belongs beside the decision, not repeated here.
+		head.append($("<span>").addClass("jiji-muted").text(__("What this record is drawn from")));
+		const list = $("<div>").css("margin-top", "8px").appendTo(card);
+		draft.history.forEach((entry) => {
+			const row = jiji.desk.routeLink(entry.route).addClass("jiji-kv").appendTo(list);
+			row.append($("<span>").addClass("jiji-supplies__date").text(entry.when || ""));
+			row.append($("<span>").addClass("jiji-kv__main"));
+			row.append(jiji.desk.pill(entry.arrival || "", entry.on_time ? "ok" : ""));
+			row.append($("<span>").addClass("jiji-supplies__history-total").text(entry.total || ""));
+		});
+		return card;
+	}
+
 	renderDraft(draft) {
 		const card = $("<div>").addClass("jiji-card");
 
@@ -170,23 +200,6 @@ class JiJiSupplies {
 		actions.append($("<span>").addClass("jiji-muted").text(__("Nothing is sent from this page.")));
 		if (draft.arrives) {
 			actions.append($("<span>").addClass("jiji-supplies__when").text(__("Arrives {0}", [draft.arrives])));
-		}
-
-		if ((draft.history || []).length) {
-			card.append(
-				$("<div>")
-					.addClass("jiji-head")
-					.css("margin-top", "18px")
-					.append(jiji.desk.label(__("Last orders from {0}", [draft.supplier || ""]))),
-			);
-			const history = $("<div>").appendTo(card);
-			draft.history.forEach((entry) => {
-				const row = $("<div>").addClass("jiji-kv").appendTo(history);
-				row.append($("<span>").addClass("jiji-supplies__date").text(entry.when || ""));
-				row.append($("<span>").addClass("jiji-kv__main"));
-				row.append(jiji.desk.pill(entry.arrival || "", entry.on_time ? "ok" : ""));
-				row.append($("<span>").addClass("jiji-supplies__history-total").text(entry.total || ""));
-			});
 		}
 
 		return card;

@@ -46,6 +46,12 @@ frappe.provide("jiji.desk");
 		return link;
 	};
 
+	/** Follow a route from something that is not a link, such as a button. */
+	desk.go = function go(segments) {
+		const route = Array.isArray(segments) ? segments : [];
+		if (route.length) frappe.set_route.apply(null, route);
+	};
+
 	/**
 	 * The one thing a page must never do is go blank.
 	 *
@@ -215,6 +221,8 @@ frappe.provide("jiji.desk");
 .jiji-next__copy { flex: 1 1 320px; }
 .jiji-next__title { font-size: 22px; line-height: 30px; font-weight: 600; letter-spacing: -.01em; }
 .jiji-next__detail { color: var(--jiji-ink-2); margin-top: 3px; }
+/* What follows from not doing it, said once and with the step it belongs to. */
+.jiji-next__consequence { color: var(--jiji-ink-3); font-size: 12px; margin-top: 8px; }
 
 .jiji-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
 .jiji-tile { display: block; background: var(--jiji-surface); border: 1px solid var(--jiji-line);
@@ -280,6 +288,13 @@ a.jiji-kv:hover { text-decoration: none; color: inherit; }
 .jiji-desk details.jiji-help > summary::-webkit-details-marker { display: none; }
 .jiji-desk details.jiji-help > summary::before { content: "▸"; margin-right: 8px; color: var(--jiji-ink-3); }
 .jiji-desk details.jiji-help[open] > summary::before { content: "▾"; }
+
+/* Where you are, on one line, instead of a form asking again every visit. */
+.jiji-outletbar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.jiji-outletbar__sp { flex: 1 1 auto; }
+.jiji-outletbar [data-warehouse] { min-width: 260px; }
+.jiji-outletbar .frappe-control { margin-bottom: 0 !important; }
+.jiji-outletbar .control-label, .jiji-outletbar .help-box { display: none !important; }
 
 .jiji-advanced { color: var(--jiji-ink-3); font-size: 12px; margin-top: 4px; }
 `;

@@ -111,3 +111,19 @@ def test_an_order_still_in_the_air_is_not_history() -> None:
     # "Already on the way". Two names for one order on one screen is exactly
     # the duplication this page exists to undo.
     assert 'for row in record if row["late_days"] is not None' in source
+
+
+def test_the_supplier_record_stands_on_its_own() -> None:
+    page = PAGE.read_text(encoding="utf-8")
+    # Folded into the decision card it read as a footnote to this order rather
+    # than the evidence the order is weighed against.
+    assert "renderHistory(draft)" in page
+    # And the reliability line is drawn in exactly one place, beside the
+    # decision. It appeared in both card headers, word for word, on one screen.
+    assert page.count(".text(draft.reliability)") == 1
+
+
+def test_how_many_are_waiting_is_said_where_the_page_is_named() -> None:
+    page = PAGE.read_text(encoding="utf-8")
+    assert "set_indicator" in page
+    assert '__("1 draft")' in page

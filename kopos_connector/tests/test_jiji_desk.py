@@ -40,6 +40,9 @@ def _existing_page_scripts() -> dict[str, str]:
 def test_routing_has_exactly_one_implementation() -> None:
     shared = SHARED.read_text(encoding="utf-8")
     assert "frappe.set_route.apply" in shared
+    # A link goes through routeLink and a button through go; neither page-level
+    # code nor a second click handler calls the router itself.
+    assert "desk.go = function go" in shared
     for name, script in _existing_page_scripts().items():
         assert "frappe.set_route.apply" not in script, f"{name} re-implements desk routing"
         assert "function routeLink" not in script, f"{name} carries its own routeLink"

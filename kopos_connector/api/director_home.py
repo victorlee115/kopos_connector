@@ -43,7 +43,7 @@ def _recent_takings(company: str) -> dict[str, Any]:
     rows = frappe.get_all(
         "Sales Invoice",
         filters={"company": company, "docstatus": 1, "posting_date": [">=", first]},
-        fields=["posting_date", "grand_total", "pos_profile"],
+        fields=["posting_date", "posting_time", "grand_total", "pos_profile"],
         limit_page_length=0,
     )
 
@@ -69,7 +69,19 @@ def _recent_takings(company: str) -> dict[str, Any]:
         entry["total"] += flt(row.get("grand_total"))
         entry["orders"] += 1
 
+    # When the café is busiest, from the same invoices. A week's total says
+    # how much; the hour says when to put someone on.
+    by_hour: dict[int, float] = {}
+    for row in rows:
+        stamp = cstr(row.get("posting_time"))
+        if len(stamp) < 2 or not stamp[:2].isdigit():
+            continue
+        hour = int(stamp[:2])
+        by_hour[hour] = by_hour.get(hour, 0.0) + flt(row.get("grand_total"))
+    busiest = max(by_hour, key=lambda hour: by_hour[hour]) if by_hour else None
+
     return {
+        "busiest_hour": (f"{busiest:02d}:00\u2013{(busiest + 1) % 24:02d}:00" if busiest is not None else ""),
         "orders": orders[cstr(today)],
         "total": flt(totals[cstr(today)], 2),
         "week_total": flt(sum(totals.values()), 2),
@@ -231,7 +243,11 @@ def get_director_home() -> dict[str, Any]:
         "company": company,
         "next_step": next_step,
         "waiting": waiting,
-        "week": {"total": f"RM {takings['week_total']:,.2f}", "days": takings["days"]},
+        "week": {
+            "total": f"RM {takings['week_total']:,.2f}",
+            "days": takings["days"],
+            "busiest": takings["busiest_hour"],
+        },
         "outlets": takings["outlets"],
         "tiles": [
             {"key": "today", "label": "Today", "value": f"RM {takings['total']:,.2f}", "detail": f"{takings['orders']} orders", "route": ["List", "Sales Invoice"]},

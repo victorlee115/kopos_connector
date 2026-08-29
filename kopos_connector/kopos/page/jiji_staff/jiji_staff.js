@@ -29,6 +29,11 @@ class JiJiStaff {
 			single_column: true,
 		});
 		this.page.set_primary_action(__("Refresh"), () => this.load(), "refresh");
+		// Adding a person is the one thing this page cannot do from a row, and
+		// the record is where it is correctly done.
+		this.page.add_inner_button(__("Add someone"), () =>
+			jiji.desk.go(["Form", "KoPOS Staff Access", "new"]),
+		);
 		this.body = jiji.desk.page(this.page);
 		this.injectStyle();
 		// Whose PIN the form at the bottom is for. Null means it is not shown.

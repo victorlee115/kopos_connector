@@ -108,7 +108,15 @@ class JiJiHome {
 			const card = $("<div>").addClass("jiji-card").appendTo(row);
 			const head = $("<div>").addClass("jiji-head").appendTo(card);
 			head.append(jiji.desk.label(__("Last seven days")));
-			head.append($("<span>").addClass("jiji-muted jiji-num").text(__("{0} taken", [week.total || ""])));
+			head.append(
+				$("<span>")
+					.addClass("jiji-muted jiji-num")
+					.text(
+						week.busiest
+							? __("{0} taken · busiest {1}", [week.total || "", week.busiest])
+							: __("{0} taken", [week.total || ""]),
+					),
+			);
 			card.append(jiji.desk.weekBars(week.days).css("margin-top", "16px"));
 
 			// Only when there is more than one counter: a café with one does not
