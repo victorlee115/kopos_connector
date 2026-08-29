@@ -87,7 +87,7 @@ def get_menu_recipe_editor(
         sellable_item or getattr(recipe_doc, "sellable_item", None)
     ).strip()
     if not selected_company or not selected_item:
-        frappe.throw(_("Choose a company and menu Item before opening the editor"), frappe.ValidationError)
+        frappe.throw(_("Choose a café and something on the menu first"), frappe.ValidationError)
     _require_existing_company(selected_company)
     # Costs and capacity are read against an outlet's own stock. A director
     # who has not named one is asking about the outlet they already have, and
@@ -96,7 +96,7 @@ def get_menu_recipe_editor(
     item_details = _load_item_details({selected_item}, warehouse=resolved_warehouse or None)
     item = item_details.get(selected_item)
     if not item or cint(item.get("disabled")) or not cint(item.get("is_sales_item")):
-        frappe.throw(_("Choose an enabled saleable Item"), frappe.ValidationError)
+        frappe.throw(_("Choose something that is for sale"), frappe.ValidationError)
 
     components = _recipe_components(recipe_doc) if recipe_doc else []
     component_items = {cstr(row.get("item")).strip() for row in components if cstr(row.get("item")).strip()}
@@ -207,18 +207,18 @@ def create_menu_item_draft(*, payload: str | dict[str, Any]) -> dict[str, Any]:
     stock_uom = _require(value.get("stock_uom"), "Stock UOM")
     role = _require(value.get("item_role"), "Item classification")
     if role not in ITEM_ROLES:
-        frappe.throw(_("Choose a valid Item classification"), frappe.ValidationError)
+        frappe.throw(_("Choose how this item is made"), frappe.ValidationError)
     _require_existing_company(company)
     if not frappe.db.exists("Item Group", item_group):
-        frappe.throw(_("Choose an existing Item Group"), frappe.ValidationError)
+        frappe.throw(_("Choose a group that exists"), frappe.ValidationError)
     if not frappe.db.exists("UOM", stock_uom):
-        frappe.throw(_("Choose an existing stock UOM"), frappe.ValidationError)
+        frappe.throw(_("Choose a unit JiJi already knows"), frappe.ValidationError)
     item_code = cstr(value.get("item_code")).strip()
     if item_code and frappe.db.exists("Item", item_code):
         frappe.throw(_("That Item Code already exists; choose another one"), frappe.ValidationError)
     meta = frappe.get_meta("Item")
     if not meta.has_field("custom_fb_item_role"):
-        frappe.throw(_("Run the inventory migration before classifying a new Item"), frappe.ValidationError)
+        frappe.throw(_("Ask whoever set up JiJi to finish the stock setup first"), frappe.ValidationError)
     item_payload: dict[str, Any] = {
         "doctype": "Item",
         "item_name": item_name,
@@ -409,7 +409,7 @@ def get_menu_recipe_publish_queue(*, company: str | None = None) -> dict[str, An
     _require_company_director("Recipe publishing")
     selected_company = cstr(company).strip()
     if not selected_company:
-        frappe.throw(_("Choose a Company before reviewing Draft recipes"), frappe.ValidationError)
+        frappe.throw(_("Choose a café before looking at saved recipes"), frappe.ValidationError)
     rows = frappe.get_all(
         "FB Recipe",
         filters={"company": selected_company, "status": "Draft"},
@@ -607,7 +607,7 @@ def _recipe_selection(raw: Any) -> list[str]:
             name = row.strip()
         elif isinstance(row, Mapping):
             if cstr(row.get("doctype")).strip() not in {"", "FB Recipe"}:
-                frappe.throw(_("Only FB Recipe records can be published here"), frappe.ValidationError)
+                frappe.throw(_("Only recipes can be put on sale here"), frappe.ValidationError)
             name = cstr(row.get("name")).strip()
         else:
             name = ""
@@ -619,11 +619,11 @@ def _recipe_selection(raw: Any) -> list[str]:
 
 def _normalized_components(raw: Any) -> list[dict[str, Any]]:
     if not isinstance(raw, list) or len(raw) > MAX_GUIDED_COMPONENTS:
-        frappe.throw(_("A recipe can contain at most {0} component rows").format(MAX_GUIDED_COMPONENTS), frappe.ValidationError)
+        frappe.throw(_("A recipe can hold at most {0} ingredients").format(MAX_GUIDED_COMPONENTS), frappe.ValidationError)
     rows: list[dict[str, Any]] = []
     for row in raw:
         if not isinstance(row, Mapping):
-            frappe.throw(_("Every component row must be an object"), frappe.ValidationError)
+            frappe.throw(_("One of the ingredient rows is not readable"), frappe.ValidationError)
         component_type = cstr(row.get("component_type") or "Ingredient").strip()
         if component_type not in COMPONENT_TYPES:
             frappe.throw(_("Choose a valid component type"), frappe.ValidationError)
@@ -643,17 +643,17 @@ def _normalized_modifier_groups(raw: Any) -> list[dict[str, Any]]:
     if raw in (None, ""):
         return []
     if not isinstance(raw, list) or len(raw) > MAX_GUIDED_MODIFIER_GROUPS:
-        frappe.throw(_("A recipe can include at most {0} modifier groups").format(MAX_GUIDED_MODIFIER_GROUPS), frappe.ValidationError)
+        frappe.throw(_("A recipe can hold at most {0} customer choices").format(MAX_GUIDED_MODIFIER_GROUPS), frappe.ValidationError)
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in raw:
         if isinstance(row, str):
             row = {"modifier_group": row}
         if not isinstance(row, Mapping):
-            frappe.throw(_("Every modifier group row must be an object"), frappe.ValidationError)
+            frappe.throw(_("One of the customer choice rows is not readable"), frappe.ValidationError)
         group = _require(row.get("modifier_group"), "Modifier group")
         if group in seen:
-            frappe.throw(_("A modifier group can only appear once"), frappe.ValidationError)
+            frappe.throw(_("The same customer choice is listed twice"), frappe.ValidationError)
         seen.add(group)
         result.append({field: row.get(field) for field in ALLOWED_MODIFIER_FIELDS if field in row} | {"modifier_group": group})
     return result
@@ -665,7 +665,7 @@ def _validate_recipe_identity(value: Mapping[str, Any]) -> None:
     _require_existing_company(cstr(value.get("company")).strip())
     item_row = frappe.db.get_value("Item", item, ["is_sales_item", "disabled"], as_dict=True)
     if not item_row or cint(item_row.get("disabled")) or not cint(item_row.get("is_sales_item")):
-        frappe.throw(_("Choose an enabled saleable Item"), frappe.ValidationError)
+        frappe.throw(_("Choose something that is for sale"), frappe.ValidationError)
     if cstr(value.get("recipe_type") or "Finished Drink") not in RECIPE_TYPES:
         frappe.throw(_("Choose a valid recipe type"), frappe.ValidationError)
 
@@ -1017,7 +1017,7 @@ def _non_negative(value: Any, label: str) -> str:
 
 def _require_existing_company(company: str) -> None:
     if not frappe.db.exists("Company", company):
-        frappe.throw(_("Choose an existing Company"), frappe.ValidationError)
+        frappe.throw(_("Choose a café that exists"), frappe.ValidationError)
 
 
 def _require_company_director(action: str) -> None:

@@ -55,28 +55,28 @@ class JiJiMenuRecipesPage {
 			["Items made in advance", "Set up cold foam, juice, syrup, or anything else staff make before an order arrives.", "bom", "Set up a prepared item"],
 			["Customer choices", "Set up choices such as milk type, size, or an extra shot, then add them to a recipe.", "modifier", "Set up customer choices"],
 			["Offers", "See sales after the discount, ingredient cost, and money left before turning on an offer.", "promotion", "Create an offer"],
-			["Final checks", "Fix anything missing, review saved recipes, and make the approved recipes available to outlets.", "validate", "Review final checks"],
+			["Final checks", "Fix anything missing, review saved recipes, and make the approved recipes on sale.", "validate", "Review final checks"],
 		];
 		$(this.page.body).html(`
 			<div class="jiji-menu-page">
 				<details class="card mb-4 jiji-help"><summary class="card-body py-3"><strong>${__("New to running a food or drink business?")}</strong></summary><div class="card-body pt-0 text-muted">${__("Start with one menu item and work from left to right. A recipe is the exact list of ingredients used. An item made in advance is something staff prepare before an order, such as cold foam. A draft is saved work that customers cannot order yet.")}</div></details>
 				<div class="card mb-4" data-completion-card><div class="card-body">
-					<div class="d-flex flex-wrap justify-content-between align-items-start"><div><h4 class="mb-1">${__("Setup progress")}</h4><p class="text-muted mb-0">${__("Choose a company to see what is ready, what is missing, and what to do next.")}</p></div><div class="small text-muted" data-progress-summary>${__("Choose a company")}</div></div>
-					<div class="progress mt-3" style="height: 8px" aria-label="${__("Menu setup progress")}"><div class="progress-bar" role="progressbar" data-progress-bar style="width: 0%"></div></div>
-					<div class="d-flex flex-wrap justify-content-between align-items-center mt-3"><span class="small" data-next-action>${__("Next: choose a company")}</span><button class="btn btn-sm btn-primary" type="button" data-next-action-button disabled>${__("Choose a company")}</button></div>
+					<div class="d-flex flex-wrap justify-content-between align-items-start"><div><h4 class="mb-1">${__("How far you have got")}</h4><p class="text-muted mb-0">${__("Choose a café to see what is ready, what is missing, and what to do next.")}</p></div><div class="small text-muted" data-progress-summary>${__("Choose your café")}</div></div>
+					<div class="progress mt-3" style="height: 8px" aria-label="${__("How far you have got")}"><div class="progress-bar" role="progressbar" data-progress-bar style="width: 0%"></div></div>
+					<div class="d-flex flex-wrap justify-content-between align-items-center mt-3"><span class="small" data-next-action>${__("Next: choose your café")}</span><button class="btn btn-sm btn-primary" type="button" data-next-action-button disabled>${__("Choose your café")}</button></div>
 				</div></div>
 				<div class="card mb-4"><div class="card-body">
-					<div class="d-flex flex-wrap justify-content-between align-items-start mb-3"><div><h4 class="mb-1">${__("Set up one menu item")}</h4><p class="text-muted mb-0">${__("Nothing is saved until you choose Save draft. A draft does not change what outlet staff can sell.")}</p></div><div class="small text-muted" data-company-status>${__("Choose a company, then a menu item")}</div></div>
+					<div class="d-flex flex-wrap justify-content-between align-items-start mb-3"><div><h4 class="mb-1">${__("Set up one menu item")}</h4><p class="text-muted mb-0">${__("Nothing is saved until you press Save. Saving does not change what staff can sell.")}</p></div><div class="small text-muted" data-company-status>${__("Choose a café, then something on the menu")}</div></div>
 					<div class="row mb-3"><div class="col-md-4"><div data-company-link></div></div><div class="col-md-4"><div data-menu-item-link></div></div><div class="col-md-4"><div data-catalog-profile-link></div></div></div>
-					<div class="d-flex flex-wrap align-items-center gap-2"><button class="btn btn-sm btn-default" type="button" data-menu-commission="item" disabled>${__("1. Choose item type")}</button><button class="btn btn-sm btn-primary" type="button" data-menu-commission="recipe" disabled>${__("2. Enter recipe")}</button><button class="btn btn-sm btn-default" type="button" data-menu-catalog-preview disabled>${__("3. Check what the outlet will see")}</button></div>
+					<div class="d-flex flex-wrap align-items-center gap-2"><button class="btn btn-sm btn-default" type="button" data-menu-commission="item" disabled>${__("1. Choose item type")}</button><button class="btn btn-sm btn-primary" type="button" data-menu-commission="recipe" disabled>${__("2. Enter recipe")}</button><button class="btn btn-sm btn-default" type="button" data-menu-catalog-preview disabled>${__("3. Check what the tablet will show")}</button></div>
 					<p class="text-muted small mt-2 mb-0" data-sequence-waiting></p>
 					<div data-drink class="mt-4"></div>
 					<p class="small mt-2 mb-0"><button class="btn btn-link btn-sm p-0" type="button" data-menu-commission="recipes">${__("Copy or change a recipe")}</button> <span class="text-muted">${__("— for an item that already has one.")}</span></p>
 					<pre class="small bg-light p-2 mt-3 mb-0 d-none" data-menu-catalog-results></pre><div class="small mt-2" data-guided-editor-status></div>
 				</div></div>
-				<div class="card mb-4"><div class="card-body"><div class="d-flex flex-wrap justify-content-between align-items-center mb-2"><div><h4 class="mb-1">${__("Make approved recipes available")}</h4><p class="text-muted mb-0">${__("JiJi checks every selected recipe first. If one has a problem, nothing changes.")}</p></div><button class="btn btn-sm btn-primary" type="button" data-publish-selected disabled>${__("Make selected recipes available")}</button></div><div data-publish-queue class="small text-muted">${__("Choose a company to see saved recipe drafts.")}</div></div></div>
+				<div class="card mb-4"><div class="card-body"><div class="d-flex flex-wrap justify-content-between align-items-center mb-2"><div><h4 class="mb-1">${__("Let staff start selling these")}</h4><p class="text-muted mb-0">${__("JiJi checks each one first. If any has a problem, nothing changes.")}</p></div><button class="btn btn-sm btn-primary" type="button" data-publish-selected disabled>${__("Let staff sell the ones you chose")}</button></div><div data-publish-queue class="small text-muted">${__("Choose a café to see the recipes you have saved.")}</div></div></div>
 				<div class="card mb-4"><div class="card-body">
-					<div class="d-flex flex-wrap justify-content-between align-items-start mb-2"><div><h4 class="mb-1">${__("Check a recipe spreadsheet")}</h4><p class="text-muted mb-0">${__("Paste rows from the JiJi template to find missing or incorrect details. This check does not save or change anything.")}</p></div><div class="small text-muted" data-csv-status>${__("No rows checked")}</div></div>
+					<div class="d-flex flex-wrap justify-content-between align-items-start mb-2"><div><h4 class="mb-1">${__("Check a recipe spreadsheet")}</h4><p class="text-muted mb-0">${__("Paste rows from the JiJi template and JiJi will tell you what is missing or wrong. Nothing is saved or changed.")}</p></div><div class="small text-muted" data-csv-status>${__("No rows checked")}</div></div>
 					<textarea class="form-control mb-2" rows="4" data-csv-input placeholder="${__("recipe_code,recipe_name,sellable_item,company,recipe_type,...")}"></textarea><div class="d-flex flex-wrap gap-2"><button class="btn btn-sm btn-default" type="button" data-csv-template>${__("Download template")}</button><button class="btn btn-sm btn-primary" type="button" data-csv-validate>${__("Check rows")}</button></div><pre class="small bg-light p-2 mt-3 mb-0 d-none" data-csv-results></pre>
 				</div></div>
 				<div class="card mb-4"><div class="card-body">
@@ -106,7 +106,7 @@ class JiJiMenuRecipesPage {
 		this.companyControl.refresh();
 		this.menuItemControl = frappe.ui.form.make_control({ parent: this.page.body.find("[data-menu-item-link]")[0], df: { fieldtype: "Link", fieldname: "menu_item", options: "Item", label: __("Menu item"), get_query: () => ({ filters: { is_sales_item: 1, disabled: 0 } }), onchange: () => this.onSelectionChanged(false) } });
 		this.menuItemControl.refresh();
-		this.catalogProfileControl = frappe.ui.form.make_control({ parent: this.page.body.find("[data-catalog-profile-link]")[0], df: { fieldtype: "Link", fieldname: "catalog_profile", options: "POS Profile", label: __("Outlet"), description: __("Choose an outlet to check what its tablet will receive."), get_query: () => ({ filters: { disabled: 0 } }), onchange: () => this.onSelectionChanged(false) } });
+		this.catalogProfileControl = frappe.ui.form.make_control({ parent: this.page.body.find("[data-catalog-profile-link]")[0], df: { fieldtype: "Link", fieldname: "catalog_profile", options: "POS Profile", label: __("Outlet"), description: __("Choose an outlet to see what its tablet will show."), get_query: () => ({ filters: { disabled: 0 } }), onchange: () => this.onSelectionChanged(false) } });
 		this.catalogProfileControl.refresh();
 		this.promotionControl = frappe.ui.form.make_control({ parent: this.page.body.find("[data-promotion-link]")[0], df: { fieldtype: "Link", fieldname: "promotion", options: "KoPOS Promotion", label: __("Promotion"), onchange: () => this.updatePromotionActionState() } });
 		this.promotionControl.refresh();
@@ -223,7 +223,7 @@ class JiJiMenuRecipesPage {
 		let waiting = "";
 		if (!company) waiting = __("Step 1 is waiting for a company.");
 		else if (!item) waiting = __("Step 2 is waiting for a menu item.");
-		else if (!profile) waiting = __("Step 3 is waiting for the outlet catalogue to check against.");
+		else if (!profile) waiting = __("Step 3 is waiting for an outlet to check against.");
 		this.page.body.find("[data-sequence-waiting]").text(waiting);
 	}
 
@@ -238,57 +238,57 @@ class JiJiMenuRecipesPage {
 				this.companyControl.set_value(summary.selected_company);
 			}
 			if (summary.company_selection_required) {
-				this.page.body.find("[data-check]").text(__("Choose a company to check this area."));
+				this.page.body.find("[data-check]").text(__("Choose a café to see this."));
 			} else {
 				this.page.body.find('[data-check="item"]').text(`${summary.items_ready || 0}/${summary.saleable_items || 0} ${__("ready")} · ${summary.items_missing_recipe || 0} ${__("missing recipe")} · ${summary.approved_exclusions || 0} ${__("excluded")}`);
-				this.page.body.find('[data-check="recipe"]').text(`${summary.published_recipes || 0} ${__("available to outlets")} · ${summary.draft_recipes || 0} ${__("draft")}`);
+				this.page.body.find('[data-check="recipe"]').text(`${summary.published_recipes || 0} ${__("on sale")} · ${summary.draft_recipes || 0} ${__("draft")}`);
 				this.page.body.find('[data-check="bom"]').text(this.countLabel(summary.boms, __("prepared-item recipe"), __("prepared-item recipes")));
 				this.page.body.find('[data-check="modifier"]').text(this.countLabel(summary.modifier_groups, __("customer choice group"), __("customer choice groups")));
 				this.page.body.find('[data-check="promotion"]').text(this.countLabel(summary.active_promotions, __("active promotion"), __("active promotions")));
-				this.page.body.find('[data-check="validate"]').text(summary.ready ? __("Ready for the final review") : __("Complete the missing steps first"));
+				this.page.body.find('[data-check="validate"]').text(summary.ready ? __("Ready for your last check") : __("Finish the missing pieces first"));
 			}
 			this.renderCommissioningStatus(summary);
-			this.page.set_indicator(summary.ready ? __("Ready") : __("Needs review"), summary.ready ? "green" : "orange");
+			this.page.set_indicator(summary.ready ? __("Ready") : __("Needs you"), summary.ready ? "green" : "orange");
 			this.refreshPublishQueue();
-		}, error: () => { this.page.body.find("[data-company-status]").text(__("The checklist could not be loaded")); this.page.set_indicator(__("Needs attention"), "red"); } });
+		}, error: () => { this.page.body.find("[data-company-status]").text(__("JiJi could not load this list")); this.page.set_indicator(__("Needs attention"), "red"); } });
 	}
 
 	refreshPublishQueue() {
 		const company = this.companyControl?.get_value?.() || "";
 		const output = this.page.body.find("[data-publish-queue]");
-		if (!company) { output.text(__("Choose a company to see saved recipe drafts.")); this.page.body.find("[data-publish-selected]").prop("disabled", true); return; }
+		if (!company) { output.text(__("Choose a café to see the recipes you have saved.")); this.page.body.find("[data-publish-selected]").prop("disabled", true); return; }
 		frappe.call({ method: "kopos_connector.api.menu_authoring.get_menu_recipe_publish_queue", type: "GET", args: { company }, callback: (response) => {
 			const recipes = response.message?.recipes || [];
-			if (!recipes.length) { output.text(__("No draft recipes yet.")); this.page.body.find("[data-publish-selected]").prop("disabled", true); return; }
-			output.html(recipes.map((row) => `<label class="d-flex align-items-start mb-2"><input class="mr-2 mt-1" type="checkbox" data-publish-recipe="${this.escape(row.name)}" ${row.valid ? "" : "disabled"}><span><strong>${this.escape(row.recipe_name || row.recipe_code || row.name)}</strong> <span class="text-muted">${__("version")} ${row.version_no || "?"} · ${row.component_count || 0} ${__("ingredients or supplies")}</span><br><span class="${row.valid ? "text-success" : "text-danger"}">${row.valid ? __("Ready for final review") : this.escape((row.errors || []).join("; "))}</span></span></label>`).join(""));
+			if (!recipes.length) { output.text(__("You have not saved any recipes yet.")); this.page.body.find("[data-publish-selected]").prop("disabled", true); return; }
+			output.html(recipes.map((row) => `<label class="d-flex align-items-start mb-2"><input class="mr-2 mt-1" type="checkbox" data-publish-recipe="${this.escape(row.name)}" ${row.valid ? "" : "disabled"}><span><strong>${this.escape(row.recipe_name || row.recipe_code || row.name)}</strong> <span class="text-muted">${__("version")} ${row.version_no || "?"} · ${row.component_count || 0} ${__("ingredients or supplies")}</span><br><span class="${row.valid ? "text-success" : "text-danger"}">${row.valid ? __("Ready for your last check") : this.escape((row.errors || []).join("; "))}</span></span></label>`).join(""));
 			this.page.body.find("[data-publish-selected]").prop("disabled", !output.find("[data-publish-recipe]").length);
-		}, error: () => { output.text(__("Draft recipes could not be loaded.")); this.page.body.find("[data-publish-selected]").prop("disabled", true); } });
+		}, error: () => { output.text(__("JiJi could not load your saved recipes.")); this.page.body.find("[data-publish-selected]").prop("disabled", true); } });
 	}
 
 	renderCommissioningStatus(summary) {
 		const messages = [];
-		if (summary.company_selection_required) messages.push(__("Choose a company to check its menu setup."));
-		if (!summary.item_fields_ready || !summary.recipe_schema_ready) messages.push(__("Ask an administrator to finish the stock-system update before setting up recipes."));
+		if (summary.company_selection_required) messages.push(__("Choose a café to see how its menu is doing."));
+		if (!summary.item_fields_ready || !summary.recipe_schema_ready) messages.push(__("Ask whoever set up JiJi to finish the stock setup before you add recipes."));
 		const hasSaleableItems = Number(summary.saleable_items || 0) > 0;
 		const companyReady = Boolean(summary.selected_company) && !summary.company_selection_required;
 		if (companyReady && !hasSaleableItems) messages.push(__("Add or import at least one menu item to begin."));
-		if (companyReady && summary.unclassified_items) messages.push(`${this.countLabel(summary.unclassified_items, __("menu item still needs"), __("menu items still need"))} ${__("an item type, such as made to order, packaged, or a service.")}`);
-		if (companyReady && summary.items_missing_recipe) messages.push(`${this.countLabel(summary.items_missing_recipe, __("menu item needs"), __("menu items need"))} ${__("an approved recipe or a recorded reason that no recipe is needed.")}`);
-		if (companyReady && summary.invalid_exclusions) messages.push(`${this.countLabel(summary.invalid_exclusions, __("no-recipe record needs"), __("no-recipe records need"))} ${__("a reason.")}`);
+		if (companyReady && summary.unclassified_items) messages.push(`${this.countLabel(summary.unclassified_items, __("menu item still needs"), __("menu items still need"))} ${__("to be marked as made to order, packaged, or a service.")}`);
+		if (companyReady && summary.items_missing_recipe) messages.push(`${this.countLabel(summary.items_missing_recipe, __("menu item needs"), __("menu items need"))} ${__("a recipe, or a note saying why it does not need one.")}`);
+		if (companyReady && summary.invalid_exclusions) messages.push(`${this.countLabel(summary.invalid_exclusions, __("item without a recipe needs"), __("items without a recipe need"))} ${__("a reason.")}`);
 		const migrationReady = Boolean(summary.item_fields_ready) && Boolean(summary.recipe_schema_ready);
 		const classificationReady = migrationReady && hasSaleableItems && !Number(summary.unclassified_items || 0);
 		const recipesReady = classificationReady && !Number(summary.items_missing_recipe || 0) && !Number(summary.invalid_exclusions || 0);
 		const complete = Boolean(summary.ready);
 		const completedSteps = companyReady ? [companyReady, migrationReady, classificationReady, recipesReady].filter(Boolean).length : 0;
 		const percent = complete ? 100 : Math.round((completedSteps / 4) * 100);
-		this.page.body.find("[data-company-status]").text(messages.length ? messages.join(" ") : __("The required menu setup is complete."));
+		this.page.body.find("[data-company-status]").text(messages.length ? messages.join(" ") : __("You have everything you need to sell."));
 		this.page.body.find("[data-progress-bar]").removeClass("bg-success bg-warning").addClass(complete ? "bg-success" : "bg-warning").css("width", `${percent}%`).attr("aria-valuenow", percent);
-		this.page.body.find("[data-progress-summary]").text(`${completedSteps}/4 ${__("required steps complete")}`);
+		this.page.body.find("[data-progress-summary]").text(__("{0} of the 4 things you need", [completedSteps]));
 		if (!companyReady) {
 			["item", "recipe", "bom", "modifier", "promotion", "validate"].forEach((action) => this.setCardState(action, __("Not checked"), "secondary"));
 		} else {
-			this.setCardState("item", classificationReady ? __("Ready") : hasSaleableItems ? __("Needs review") : __("Start here"), classificationReady ? "success" : "warning");
-			this.setCardState("recipe", recipesReady ? __("Ready") : __("Needs review"), recipesReady ? "success" : "warning");
+			this.setCardState("item", classificationReady ? __("Ready") : hasSaleableItems ? __("Needs you") : __("Start here"), classificationReady ? "success" : "warning");
+			this.setCardState("recipe", recipesReady ? __("Ready") : __("Needs you"), recipesReady ? "success" : "warning");
 			this.setCardState("bom", Number(summary.boms || 0) ? __("Configured") : __("Optional"), Number(summary.boms || 0) ? "success" : "secondary");
 			this.setCardState("modifier", Number(summary.modifier_groups || 0) ? __("Configured") : __("Optional"), Number(summary.modifier_groups || 0) ? "success" : "secondary");
 			this.setCardState("promotion", Number(summary.active_promotions || 0) ? __("Configured") : __("Optional"), Number(summary.active_promotions || 0) ? "success" : "secondary");
@@ -302,8 +302,8 @@ class JiJiMenuRecipesPage {
 	}
 
 	setNextAction(state) {
-		let message = __("Next: choose a company");
-		let label = __("Choose a company");
+		let message = __("Next: choose your café");
+		let label = __("Choose your café");
 		let action = "company";
 		let disabled = false;
 		if (!state.companyReady) {
@@ -313,8 +313,8 @@ class JiJiMenuRecipesPage {
 			return;
 		}
 		if (!state.migrationReady) {
-			message = __("Next: ask an administrator to finish the stock-system update.");
-			label = __("System update required");
+			message = __("Next: ask whoever set up JiJi to finish the stock setup.");
+			label = __("Stock setup unfinished");
 			action = "none";
 			disabled = true;
 		} else if (!state.hasSaleableItems) {
@@ -330,12 +330,12 @@ class JiJiMenuRecipesPage {
 			label = __("Enter a recipe");
 			action = "recipe";
 		} else if (state.recipesReady && !state.complete) {
-			message = __("Next: review the saved recipe drafts and make the approved ones available.");
-			label = __("Review saved recipes");
+			message = __("Next: check the recipes you saved, then let staff start selling them.");
+			label = __("Check your saved recipes");
 			action = "validate";
 		} else if (state.complete) {
-			message = __("The required menu setup is ready. You can also set up prepared items, customer choices, and offers below.");
-			label = __("Review saved recipes");
+			message = __("You have everything you need to sell. Below you can also set up things staff make in advance, customer choices, and offers.");
+			label = __("Check your saved recipes");
 			action = "validate";
 		}
 		this.nextAction = action;
@@ -379,24 +379,24 @@ class JiJiMenuRecipesPage {
 		const item = this.menuItemControl?.get_value?.() || "";
 		const company = this.companyControl?.get_value?.() || "";
 		if (action === "item") { if (!item) return this.openGuidedItemDialog(); frappe.set_route("Form", "Item", item); return; }
-		if (action === "recipe") { if (!item || !company) return this.showMessage(__("Choose both a company and menu item first.")); return this.openGuidedRecipeDialog({ item, company }); }
+		if (action === "recipe") { if (!item || !company) return this.showMessage(__("Choose a café and something on the menu first.")); return this.openGuidedRecipeDialog({ item, company }); }
 		if (action === "recipes") return this.openCopyDialog({ item, company });
 	}
 
 	openGuidedRecipeDialog({ item, company, recipe } = {}) {
 		item = item || this.menuItemControl?.get_value?.() || "";
 		company = company || this.companyControl?.get_value?.() || "";
-		if (!item || !company) return this.showMessage(__("Choose both a company and menu item first."));
+		if (!item || !company) return this.showMessage(__("Choose a café and something on the menu first."));
 		frappe.call({ method: "kopos_connector.api.menu_authoring.get_menu_recipe_editor", type: "GET", args: { company, sellable_item: item, recipe: recipe || "", warehouse: "" }, callback: (response) => {
 			const editor = response.message || {};
-			if (editor.status !== "ok") return this.showMessage(__("The guided editor could not be loaded."));
+			if (editor.status !== "ok") return this.showMessage(__("JiJi could not open the recipe form."));
 			this.showGuidedEditor(editor);
-		}, error: () => this.showMessage(__("The guided editor could not be loaded.")) });
+		}, error: () => this.showMessage(__("JiJi could not open the recipe form.")) });
 	}
 
 	openGuidedItemDialog() {
 		const company = this.companyControl?.get_value?.() || "";
-		if (!company) return this.showMessage(__("Choose a company before adding a menu item."));
+		if (!company) return this.showMessage(__("Choose a café before adding something to the menu."));
 		const dialog = new frappe.ui.Dialog({
 			title: __("Add a menu item"),
 			fields: [
@@ -518,7 +518,7 @@ class JiJiMenuRecipesPage {
 		const recipe = editor.recipe || {};
 		const itemOptions = (editor.items || []).map((row) => `<option value="${this.escape(row.name)}">${this.escape(row.item_name || row.name)}</option>`).join("");
 		const uomOptions = (editor.uoms || []).map((uom) => `<option value="${this.escape(uom)}">`).join("");
-		const dialog = new frappe.ui.Dialog({ title: recipe.name ? __("Change a recipe draft") : __("Enter a recipe step by step"), fields: [
+		const dialog = new frappe.ui.Dialog({ title: recipe.name ? __("Change a saved recipe") : __("Enter a recipe step by step"), fields: [
 			{ fieldtype: "HTML", fieldname: "help", options: `<p class="text-muted">${__("Measure every amount instead of guessing. JiJi converts counting units, such as grams and kilograms, and shows the ingredient cost before you save. An item made in advance must already have an approved recipe showing what goes into it.")}</p>` },
 			{ fieldtype: "Data", fieldname: "recipe_name", label: __("Recipe name"), reqd: 1, default: recipe.recipe_name || "" },
 			{ fieldtype: "Data", fieldname: "recipe_code", label: __("Recipe code (optional)"), default: recipe.recipe_code || "" },
@@ -533,7 +533,7 @@ class JiJiMenuRecipesPage {
 			{ fieldtype: "HTML", fieldname: "components", options: `<hr><h5>${__("What goes into this recipe")}</h5><datalist id="jiji-menu-items">${itemOptions}</datalist><datalist id="jiji-menu-uoms">${uomOptions}</datalist><div class="table-responsive"><table class="table table-bordered table-sm mb-2"><thead><tr><th>${__("Ingredient or supply")}</th><th>${__("What is it?")}</th><th>${__("Amount")}</th><th>${__("Counting unit")}</th><th>${__("Normal waste %")}</th><th>${__("Reduce stock?")}</th><th>${__("Include in cost?")}</th><th></th></tr></thead><tbody data-guided-rows></tbody></table></div><button class="btn btn-sm btn-default" type="button" data-guided-add-row>${__("Add another ingredient or supply")}</button>` },
 			{ fieldtype: "HTML", fieldname: "modifiers", options: `<hr><h5>${__("Customer choice groups")}</h5><div data-guided-modifiers></div><div class="small text-muted mt-2">${__("JiJi uses the latest approved amounts for each choice when this recipe is made available.")}</div>` },
 			{ fieldtype: "HTML", fieldname: "preview", options: `<hr><h5>${__("Check amounts and cost")}</h5><div data-guided-preview class="small text-muted">${__("Add the ingredients and supplies, then run the check.")}</div>` },
-		], primary_action_label: __("Save recipe draft"), primary_action: (values) => this.saveGuidedDraft(dialog, editor, values), secondary_action_label: __("Check amounts and cost"), secondary_action: () => this.previewGuidedDraft(dialog, editor) });
+		], primary_action_label: __("Save this recipe"), primary_action: (values) => this.saveGuidedDraft(dialog, editor, values), secondary_action_label: __("Check amounts and cost"), secondary_action: () => this.previewGuidedDraft(dialog, editor) });
 		dialog.show();
 		this.renderGuidedRows(dialog, recipe.components || []);
 		this.renderGuidedModifiers(dialog, editor, recipe.allowed_modifier_groups || []);
@@ -632,19 +632,19 @@ class JiJiMenuRecipesPage {
 
 	saveGuidedDraft(dialog, editor, values) {
 		const payload = this.readGuidedPayload(dialog, editor);
-		frappe.call({ method: "kopos_connector.api.menu_authoring.save_menu_recipe_draft", type: "POST", args: { payload: JSON.stringify(payload) }, callback: (response) => { const result = response.message || {}; if (result.status !== "ok") return this.showMessage(__("The recipe draft could not be saved. Nothing was changed. Try again.")); dialog.hide(); frappe.show_alert({ message: __("Recipe draft saved"), indicator: "green" }); this.refresh(); } });
+		frappe.call({ method: "kopos_connector.api.menu_authoring.save_menu_recipe_draft", type: "POST", args: { payload: JSON.stringify(payload) }, callback: (response) => { const result = response.message || {}; if (result.status !== "ok") return this.showMessage(__("The recipe could not be saved. Nothing was changed. Try again.")); dialog.hide(); frappe.show_alert({ message: __("Recipe saved"), indicator: "green" }); this.refresh(); } });
 	}
 
 	openCopyDialog({ item, company }) {
 		if (!company) return this.showMessage(__("Choose a company before copying a recipe."));
-		const dialog = new frappe.ui.Dialog({ title: __("Copy or revise a recipe"), fields: [{ fieldtype: "Link", fieldname: "recipe", label: __("Recipe to copy"), options: "FB Recipe", reqd: 1, get_query: () => ({ filters: { company, ...(item ? { sellable_item: item } : {}) } }) }, { fieldtype: "Data", fieldname: "recipe_name", label: __("New recipe name") }, { fieldtype: "Data", fieldname: "recipe_code", label: __("New recipe code") }], primary_action_label: __("Create recipe draft"), primary_action: (values) => frappe.call({ method: "kopos_connector.api.menu_authoring.copy_menu_recipe_revision", type: "POST", args: { payload: JSON.stringify(values) }, callback: (response) => { const result = response.message || {}; if (!result.recipe) return; dialog.hide(); frappe.show_alert({ message: __("Recipe draft created"), indicator: "green" }); this.openGuidedRecipeDialog({ company, item, recipe: result.recipe }); this.refresh(); } }) });
+		const dialog = new frappe.ui.Dialog({ title: __("Copy or revise a recipe"), fields: [{ fieldtype: "Link", fieldname: "recipe", label: __("Recipe to copy"), options: "FB Recipe", reqd: 1, get_query: () => ({ filters: { company, ...(item ? { sellable_item: item } : {}) } }) }, { fieldtype: "Data", fieldname: "recipe_name", label: __("New recipe name") }, { fieldtype: "Data", fieldname: "recipe_code", label: __("New recipe code") }], primary_action_label: __("Save this recipe"), primary_action: (values) => frappe.call({ method: "kopos_connector.api.menu_authoring.copy_menu_recipe_revision", type: "POST", args: { payload: JSON.stringify(values) }, callback: (response) => { const result = response.message || {}; if (!result.recipe) return; dialog.hide(); frappe.show_alert({ message: __("Recipe saved"), indicator: "green" }); this.openGuidedRecipeDialog({ company, item, recipe: result.recipe }); this.refresh(); } }) });
 		dialog.show();
 	}
 
 	publishSelected() {
 		const selected = this.page.body.find("[data-publish-recipe]:checked").map(function () { return $(this).attr("data-publish-recipe"); }).get();
 		if (!selected.length) return this.showMessage(__("Select at least one recipe marked ready for final review."));
-		frappe.call({ method: "kopos_connector.api.menu_authoring.publish_menu_recipe_selection", type: "POST", args: { payload: JSON.stringify({ recipes: selected }) }, callback: (response) => { const result = response.message || {}; if (result.status === "ok") { frappe.show_alert({ message: __(`${result.count || 0} recipe(s) made available to outlets`), indicator: "green" }); this.refresh(); } }, error: () => this.showMessage(__("No recipes were made available. Fix every selected recipe first.")) });
+		frappe.call({ method: "kopos_connector.api.menu_authoring.publish_menu_recipe_selection", type: "POST", args: { payload: JSON.stringify({ recipes: selected }) }, callback: (response) => { const result = response.message || {}; if (result.status === "ok") { frappe.show_alert({ message: __(`${result.count || 0} recipe(s) made on sale`), indicator: "green" }); this.refresh(); } }, error: () => this.showMessage(__("No recipes were made available. Fix every selected recipe first.")) });
 	}
 
 	previewCatalog() {

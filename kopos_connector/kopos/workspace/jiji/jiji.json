@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"type\":\"header\",\"data\":{\"text\":\"Your caf\\u00e9\",\"level\":4,\"col\":12}},{\"type\":\"paragraph\",\"data\":{\"text\":\"Start at Home. It shows the one thing that needs you and where the rest is waiting.\",\"col\":12}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Home\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Money\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Menu\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Stock\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Supplies\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Staff\",\"col\":4}},{\"type\":\"spacer\",\"data\":{\"col\":12}},{\"type\":\"header\",\"data\":{\"text\":\"Advanced\",\"level\":4,\"col\":12}},{\"type\":\"paragraph\",\"data\":{\"text\":\"The records every number above came from. A director who never opens this can still run the caf\\u00e9.\",\"col\":12}},{\"type\":\"card\",\"data\":{\"card_name\":\"Reports\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Records\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Support tools\",\"col\":4}}]",
+ "content": "[{\"type\":\"header\",\"data\":{\"text\":\"Your caf\\u00e9\",\"level\":4,\"col\":12}},{\"type\":\"paragraph\",\"data\":{\"text\":\"Start at Home. It shows the one thing that needs you and where the rest is waiting.\",\"col\":12}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Home\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Money\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Menu\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Stock\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Supplies\",\"col\":4}},{\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Staff\",\"col\":4}},{\"type\":\"spacer\",\"data\":{\"col\":12}},{\"type\":\"header\",\"data\":{\"text\":\"Advanced\",\"level\":4,\"col\":12}},{\"type\":\"paragraph\",\"data\":{\"text\":\"Where every number above came from. If you never open this, you can still run your caf\\u00e9.\",\"col\":12}},{\"type\":\"card\",\"data\":{\"card_name\":\"Reports\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Where the numbers come from\",\"col\":4}},{\"type\":\"card\",\"data\":{\"card_name\":\"Support tools\",\"col\":4}}]",
  "creation": "2026-08-29 00:00:00.000000",
  "docstatus": 0,
  "doctype": "Workspace",
@@ -22,7 +22,7 @@
   {
    "hidden": 0,
    "is_query_report": 1,
-   "label": "Shift checks",
+   "label": "Every shift, one by one",
    "link_count": 0,
    "link_to": "KoPOS Shift Reconciliation",
    "link_type": "Report",
@@ -42,7 +42,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "Sales accounting",
+   "label": "The books",
    "link_count": 0,
    "link_to": "Sales Invoice",
    "link_type": "DocType",
@@ -52,7 +52,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "Records",
+   "label": "Where the numbers come from",
    "link_count": 0,
    "onboard": 0,
    "type": "Card Break"
@@ -70,7 +70,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "Supplier orders",
+   "label": "Orders to suppliers",
    "link_count": 0,
    "link_to": "Purchase Order",
    "link_type": "DocType",

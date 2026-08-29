@@ -109,7 +109,7 @@ class JiJiMoney {
 		});
 		this.body.append(summary);
 
-		this.appendGroup(__("Need review"), data.needs_review || []);
+		this.appendGroup(__("Did not match"), data.needs_review || []);
 		this.appendGroup(__("Never counted"), data.missing_count || []);
 
 		this.body.append(

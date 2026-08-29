@@ -261,7 +261,7 @@ class JiJiStockAutopilotPage {
 			error: () => {
 				this.refreshing = false;
 				this.page.set_indicator(__("Could not refresh"), "red");
-				this.page.body.find("[data-auto-status]").text(__("Couldn’t check for new stock changes."));
+				this.page.body.find("[data-auto-status]").text(__("JiJi could not check for new stock changes."));
 				if (!options.quiet) {
 					frappe.msgprint({
 						title: __("Couldn’t check stock"),
@@ -305,7 +305,7 @@ class JiJiStockAutopilotPage {
 				}
 			},
 			error: () => {
-				this.page.body.find("[data-auto-status]").text(__("Couldn’t check for new stock changes."));
+				this.page.body.find("[data-auto-status]").text(__("JiJi could not check for new stock changes."));
 			},
 		});
 	}
@@ -328,7 +328,7 @@ class JiJiStockAutopilotPage {
 		const overallWarning = warningCount > 0 || stockNeedsReview || Number(countReviews.open || 0) > 0 || Number(health.planning?.open || 0) > 0;
 			let needs = {
 				value: __("Nothing needs your attention"),
-				detail: __("Stock work can continue. Check this page again later."),
+				detail: __("JiJi can carry on. Look again later."),
 				action: null,
 				route: null,
 			};
@@ -340,18 +340,18 @@ class JiJiStockAutopilotPage {
 				needs = { value: critical === 1 ? __("1 urgent stock problem") : __("{0} urgent stock problems", [critical]), detail: this.firstExceptionDetail(exceptions), action: __("Open stock problems"), route: "needs" };
 			} else if (Number(countReviews.open || 0) > 0) {
 				const openReviews = Number(countReviews.open || 0);
-				needs = { value: openReviews === 1 ? __("1 stock count needs review") : __("{0} stock counts need review", [openReviews]), detail: __("Check what staff counted, then create a saved stock correction for each count."), action: __("Review stock counts"), route: "counts" };
+				needs = { value: openReviews === 1 ? __("1 stock count needs your check") : __("{0} stock counts need your check", [openReviews]), detail: __("Check what your staff counted, then tell JiJi which amount is right."), action: __("See the stock counts"), route: "counts" };
 		} else if (schedulerState === "critical" || schedulerState === "warning") {
-				needs = { value: __("A stock update needs attention"), detail: __("JiJi needs to finish one stock update before this outlet starts using stock tracking."), action: __("Check stock updates"), route: "today" };
+				needs = { value: __("JiJi has not finished its first automatic update"), detail: __("JiJi keeps your stock in step with your sales on its own. It has to finish that once before you can rely on it."), action: __("See the automatic updates"), route: "today" };
 		} else if (health.draft_purchase_order_safety === "unsafe") {
-				needs = { value: __("Buying limits need review"), detail: __("New supplier order drafts stay paused until the limits are fixed. JiJi never sends or approves these orders."), action: __("Open stock settings"), route: "settings" };
+				needs = { value: __("Your buying limits need checking"), detail: __("JiJi will not write another order until the limits are fixed. It never sends one either way."), action: __("Open stock settings"), route: "settings" };
 			} else if ((exceptions.critical_reasons || []).length > 0 || warningCount > 0) {
-				needs = { value: __("Stock checks need review"), detail: this.firstExceptionDetail(exceptions), action: __("Open stock problems"), route: "needs" };
+				needs = { value: __("Something in your stock needs you"), detail: this.firstExceptionDetail(exceptions), action: __("Open stock problems"), route: "needs" };
 		} else if (stockNeedsReview) {
-			needs = { value: __("Tablet stock reports need review"), detail: stockReportAge, action: __("Open stock"), route: "stock" };
+			needs = { value: __("A tablet's stock report needs you"), detail: stockReportAge, action: __("Open stock"), route: "stock" };
 		} else if (Number(health.planning?.open || 0) > 0) {
 			const openPlans = Number(health.planning.open || 0);
-			needs = { value: openPlans === 1 ? __("1 restock plan needs review") : __("{0} restock plans need review", [openPlans]), detail: __("Check the suggested quantities and any supplier order draft before anything is sent."), action: __("Review restock plans"), route: "plans" };
+			needs = { value: openPlans === 1 ? __("1 suggested order needs your check") : __("{0} suggested orders need your check", [openPlans]), detail: __("Check the amounts and the order before anything is sent."), action: __("See the suggested orders"), route: "plans" };
 		}
 		this.page.set_indicator(
 			overallCritical ? __("Action needed") : overallWarning ? __("Review needed") : __("All clear"),
@@ -365,9 +365,9 @@ class JiJiStockAutopilotPage {
 			needs,
 			overallCritical ? "critical" : overallWarning ? "warning" : "ok",
 			overallCritical
-				? __("Automatic stock work is paused until the urgent problem is fixed.")
+				? __("JiJi has stopped updating your stock until this is fixed.")
 				: overallWarning
-					? __("Stock tracking is running, but one or more items need review.")
+					? __("JiJi is updating your stock, but some things need you.")
 					: __("No urgent stock problem was found."),
 		);
 
@@ -380,9 +380,9 @@ class JiJiStockAutopilotPage {
 				title: __("Today"),
 				icon: "◷",
 				status: schedulerState,
-					value: scheduler.last_success ? __("Stock last updated automatically {0} ago", [this.agePhrase(scheduler.last_success, health.as_of)]) : __("Stock has not updated automatically yet"),
-					detail: scheduler.next_success_deadline ? __("Next check is expected by {0}", [this.shortDate(scheduler.next_success_deadline)]) : __("Run one successful automatic stock update before using it at an outlet"),
-					action: __("Check stock updates"),
+					value: scheduler.last_success ? __("JiJi last updated your stock {0} ago", [this.agePhrase(scheduler.last_success, health.as_of)]) : __("JiJi has not updated your stock yet"),
+					detail: scheduler.next_success_deadline ? __("Next check is expected by {0}", [this.shortDate(scheduler.next_success_deadline)]) : __("It needs to finish once on its own before you rely on it"),
+					action: __("See the automatic updates"),
 				route: "today",
 			},
 			{
@@ -407,12 +407,12 @@ class JiJiStockAutopilotPage {
 			},
 			{
 				key: "plans",
-					title: __("Restocking & buying"),
+					title: __("Ordering"),
 				icon: "▥",
 				status: health.draft_purchase_order_safety === "unsafe" ? "critical" : this.summaryStatus(health.planning),
-					value: health.draft_purchase_order_safety === "unsafe" ? __("New supplier order drafts are paused") : this.summaryValue(health.planning, __("restock plan waiting"), __("restock plans waiting")),
-					detail: health.draft_purchase_order_safety === "unsafe" ? __("Review the buying limits before creating another supplier order draft") : this.summaryAge(health.planning, __("Oldest restock plan")),
-					action: __("Open restock plans"),
+					value: health.draft_purchase_order_safety === "unsafe" ? __("JiJi has stopped writing new orders") : this.summaryValue(health.planning, __("suggested order waiting"), __("suggested orders waiting")),
+					detail: health.draft_purchase_order_safety === "unsafe" ? __("Check your buying limits before JiJi writes another order") : this.summaryAge(health.planning, __("Oldest suggested order")),
+					action: __("See suggested orders"),
 				route: "plans",
 			},
 			{
@@ -463,33 +463,33 @@ class JiJiStockAutopilotPage {
 				step: "2",
 				title: __("Outlet manager"),
 				where: __("Tablet"),
-				detail: __("Check unusual amounts and confirm stock changes. If something is unclear, leave it for review instead of changing the answer."),
+				detail: __("Check unusual amounts and confirm the changes. If something is unclear, leave it rather than changing the answer."),
 			},
 			{
 				step: "3",
 				title: __("Company director"),
 				where: __("This page"),
-				detail: __("Follow Your next step. Review large count differences, urgent problems, restock plans, and supplier order drafts."),
+				detail: __("Follow Your next step. Check big count differences, urgent problems, suggested orders, and orders waiting to be sent."),
 			},
 			{
 				step: "4",
 				title: __("Buying"),
 				where: __("This page"),
-				detail: __("Check the restock plan, supplier quote, and supplier order draft. The order stays as a draft until a director checks and sends it."),
-				action: __("Open restock plans"),
+				detail: __("Check the amounts, the price, and the order. Nothing reaches the supplier until you send it."),
+				action: __("See suggested orders"),
 				route: "plans",
 			},
 			{
 				step: "5",
 				title: __("Supplier"),
 				where: __("Outside JiJi"),
-				detail: __("The supplier receives an order only after a director checks and sends it. JiJi never sends or approves a supplier order."),
+				detail: __("The supplier hears nothing until you send the order yourself. JiJi never sends one."),
 			},
 			{
 				step: "6",
 				title: __("Finance"),
 				where: __("This page"),
-				detail: __("Check ingredient cost, stock changes, and accounting after approved stock work is finished. Never change a finished accounting entry."),
+				detail: __("Check ingredient cost, stock changes, and the books once the work is approved. Never change a finished entry."),
 				action: __("Open detailed stock changes"),
 				route: "ledger",
 			},
@@ -497,15 +497,15 @@ class JiJiStockAutopilotPage {
 				step: "7",
 				title: __("Support"),
 				where: __("This page and system checks"),
-				detail: __("Fix the connection or stock update, then refresh. Keep all saved work; never delete it to hide a warning."),
-				action: __("Check stock updates"),
+				detail: __("Fix the connection or the automatic update, then refresh. Never delete saved work to make a warning go away."),
+				action: __("See the automatic updates"),
 				route: "today",
 			},
 			{
 				step: "8",
 				title: __("JiJi"),
 				where: __("Automatic"),
-				detail: __("Tries unfinished work again, saves stock work or drafts, and pauses risky work for a person to review."),
+				detail: __("Tries unfinished work again, saves what it can, and stops anything risky for a person to decide."),
 			},
 		];
 		const cards = stakeholders.map((stakeholder) => {
@@ -555,7 +555,7 @@ class JiJiStockAutopilotPage {
 			return;
 		}
 		if (summary.status === "unavailable") {
-			target.html(`<div class="alert alert-warning">${this.statusBadge("warning", __("Count reviews are temporarily unavailable. Refresh and try again."))}</div>`);
+			target.html(`<div class="alert alert-warning">${this.statusBadge("warning", __("JiJi cannot show the counts just now. Refresh and try again."))}</div>`);
 			return;
 		}
 		if (!Number(summary.open || 0)) {
@@ -572,14 +572,14 @@ class JiJiStockAutopilotPage {
 			}).join("");
 			const reviewId = this.escapeAttribute(review.observation_id);
 			return `<div class="card border-warning mb-3"><div class="card-body">
-				<div class="d-flex justify-content-between align-items-start gap-2"><div><div class="mb-1">${this.statusBadge("warning", __("Director review required"))}</div>
-					<h4 class="mb-1">${__("Help number")}: ${this.escape(review.observation_id)}</h4><p class="text-muted small mb-2">${__("The counted amount is very different from the saved amount, so a director must check it.")}</p></div>
-				<button type="button" class="btn btn-sm btn-primary" data-count-review="${reviewId}">${__("Review and create draft")}</button></div>
-					<table class="table table-sm mb-0"><thead><tr><th>${__("Item")}</th><th>${__("Count entered")}</th><th>${__("Difference from the saved amount")}</th></tr></thead><tbody>${lines}</tbody></table>
+				<div class="d-flex justify-content-between align-items-start gap-2"><div><div class="mb-1">${this.statusBadge("warning", __("You need to check this"))}</div>
+					<h4 class="mb-1">${__("Help number")}: ${this.escape(review.observation_id)}</h4><p class="text-muted small mb-2">${__("This count is a long way from what JiJi expected, so you need to look at it.")}</p></div>
+				<button type="button" class="btn btn-sm btn-primary" data-count-review="${reviewId}">${__("Check it and write the order")}</button></div>
+					<table class="table table-sm mb-0"><thead><tr><th>${__("Item")}</th><th>${__("Count entered")}</th><th>${__("Difference from what JiJi expected")}</th></tr></thead><tbody>${lines}</tbody></table>
 				<div class="text-muted small mt-2">${review.age_minutes == null ? __("Observed time unavailable") : __("Observed {0} ago", [this.ageMinutesPhrase(review.age_minutes)])}</div>
 			</div></div>`;
 		}).join("");
-		target.html(`<h3>${__("Stock counts needing your decision")}</h3><p class="text-muted">${__("Check what staff counted below. JiJi will save a stock correction for you to review. Available stock will not change until an authorized person approves it.")}</p>${cards}`);
+		target.html(`<h3>${__("Stock counts waiting for you")}</h3><p class="text-muted">${__("Check what staff counted below. JiJi will save the correction for you to check. What staff can sell does not change until someone approves it.")}</p>${cards}`);
 	}
 
 	reviewCount(observationId) {
@@ -587,11 +587,11 @@ class JiJiStockAutopilotPage {
 		const summary = this.health?.count_director_reviews || {};
 		const review = (Array.isArray(summary.items) ? summary.items : []).find((item) => String(item.observation_id || "") === id);
 		if (!review) {
-			frappe.msgprint({ title: __("Count review is no longer available"), message: __("Refresh the page and check the current count task.") });
+			frappe.msgprint({ title: __("This count is no longer waiting"), message: __("Refresh the page and check the current count task.") });
 			return;
 		}
 		frappe.prompt([
-			{ fieldname: "reason", fieldtype: "Small Text", label: __("Why are you accepting this count?"), description: __("Write a short reason. Do not enter a price or cost."), reqd: 1, default: __("I checked the physical amounts. Save this stock correction for final approval.") },
+			{ fieldname: "reason", fieldtype: "Small Text", label: __("Why are you accepting this count?"), description: __("Write a short reason. Do not enter a price or cost."), reqd: 1, default: __("I have checked the real amounts. Save this correction for approval.") },
 		], (values) => {
 			frappe.call({
 				method: "kopos_connector.api.inventory.create_count_reconciliation_after_director_review",
@@ -599,13 +599,13 @@ class JiJiStockAutopilotPage {
 				args: { payload: JSON.stringify({ observation_id: id, reason: values.reason }) },
 				callback: (response) => {
 					const result = response.message || {};
-					const message = result.status === "replayed" ? __("This saved stock correction already exists. JiJi did not create another one.") : __("Stock correction saved. Open it to review and approve the stock change.");
+					const message = result.status === "replayed" ? __("This correction already exists. JiJi did not make a second one.") : __("Correction saved. Open it to check and approve the change.");
 					frappe.show_alert({ message, indicator: "green" });
 					this.refresh();
 				},
-				error: () => frappe.msgprint({ title: __("Count review not completed"), message: __("Nothing was changed. Refresh the latest stock information and try again.") }),
+				error: () => frappe.msgprint({ title: __("The count was not saved"), message: __("Nothing was changed. Refresh the latest stock information and try again.") }),
 			});
-		}, __("Review this stock count"), __("Save stock correction"));
+		}, __("Check this stock count"), __("Save the corrected amount"));
 	}
 
 	/**
@@ -667,12 +667,12 @@ class JiJiStockAutopilotPage {
 	plainExceptionMessage(reasonCode) {
 		const reason = String(reasonCode || "").toLowerCase();
 		if (reason.includes("scheduler") || reason.includes("projection")) {
-			return __("JiJi could not finish a stock update. Your saved information is safe.");
+			return __("JiJi could not finish updating your stock. Nothing you saved is lost.");
 		}
 		if (reason.includes("cost")) return __("One or more ingredient costs need checking.");
-		if (reason.includes("purchase") || reason.includes("outbound")) return __("Buying settings need checking before another supplier order draft can be created.");
+		if (reason.includes("purchase") || reason.includes("outbound")) return __("Your buying limits need checking before JiJi can write another order.");
 		if (reason.includes("routing") || reason.includes("director")) return __("Choose who should receive urgent stock problems.");
-		return __("JiJi found a stock problem that needs review.");
+		return __("JiJi found a stock problem that needs you.");
 	}
 
 	oldestDeviceReportAge(devices, asOf) {
@@ -760,7 +760,7 @@ class JiJiStockAutopilotPage {
 		}
 		this.activeWorkflow = workflow;
 		const target = this.page.body.find("[data-workflow]");
-		target.html(`<div class="card"><div class="card-body"><span class="text-muted">${__("Loading this stock workflow…")}</span></div></div>`);
+		target.html(`<div class="card"><div class="card-body"><span class="text-muted">${__("Opening this…")}</span></div></div>`);
 		frappe.call({
 			method: "kopos_connector.api.inventory.get_autopilot_workflow",
 			type: "GET",
@@ -772,13 +772,13 @@ class JiJiStockAutopilotPage {
 			},
 			error: () => {
 				if (this.activeWorkflow !== workflow) return;
-				target.html(`<div class="alert alert-warning"><strong>${__("This stock workflow could not be loaded")}</strong><br>${__("Nothing was changed. Check the outlet and connection, then try again.")} <button type="button" class="btn btn-sm btn-default ml-2" data-primary-route="${this.escapeAttribute(workflow === "buying" ? "plans" : workflow === "updates" ? "today" : "ledger")}">${__("Try again")}</button></div>`);
+				target.html(`<div class="alert alert-warning"><strong>${__("This could not be opened")}</strong><br>${__("Nothing was changed. Check the outlet and connection, then try again.")} <button type="button" class="btn btn-sm btn-default ml-2" data-primary-route="${this.escapeAttribute(workflow === "buying" ? "plans" : workflow === "updates" ? "today" : "ledger")}">${__("Try again")}</button></div>`);
 			},
 		});
 	}
 
 	workflowHtml(data) {
-		const title = { buying: __("Restocking and buying"), updates: __("Stock updates"), finance: __("Stock for finance") }[data.workflow] || __("Stock work");
+		const title = { buying: __("Ordering"), updates: __("Stock updates"), finance: __("Stock for finance") }[data.workflow] || __("Stock");
 		const body = data.workflow === "buying"
 			? this.buyingWorkflowHtml(data)
 			: data.workflow === "updates"
@@ -788,19 +788,19 @@ class JiJiStockAutopilotPage {
 	}
 
 	buyingWorkflowHtml(data) {
-		const draftStatusLabel = __("Draft — not sent");
+		const draftStatusLabel = __("Written — not sent");
 		const cards = (Array.isArray(data.items) ? data.items : []).map((plan) => {
 			const lines = (Array.isArray(plan.lines) ? plan.lines : []).map((line) => `<tr><td>${this.escape(line.item_name || line.item)}</td><td>${this.escape(line.action)}</td><td>${this.escape(line.quantity)} ${this.escape(line.uom)}</td><td>${this.escape(line.reason || __("JiJi calculated this from current stock and expected use."))}</td></tr>`).join("");
-			const drafts = (Array.isArray(plan.draft_documents) ? plan.draft_documents : []).map((draft) => `<div class="alert alert-info mt-3 mb-0"><strong>${this.escape(draft.status || draftStatusLabel)}</strong> · ${this.escape(draft.name)} · ${this.escape(draft.supplier || __("Supplier not shown"))} · ${this.escape(this.moneyLabel(draft.total_sen, draft.currency))}<br><span class="small">${__("The Director reviews this draft, then sends it outside JiJi.")}</span> <button type="button" class="btn btn-sm btn-primary ml-2" data-doctype="Purchase Order" data-open-document="${this.escapeAttribute(draft.name)}">${__("Review draft")}</button></div>`).join("");
-			return `<div class="border rounded p-3 mb-3"><div class="d-flex justify-content-between"><strong>${__("Restock plan")}</strong><span class="badge badge-light">${this.escape(plan.status)}</span></div><div class="text-muted small mb-2">${__("Help number")}: ${this.escape(plan.name)} · ${this.escape(plan.planning_date)} · ${this.escape(plan.forecast_state)}</div><table class="table table-sm"><thead><tr><th>${__("Item")}</th><th>${__("Action")}</th><th>${__("Suggested amount")}</th><th>${__("Why")}</th></tr></thead><tbody>${lines || `<tr><td colspan="4">${__("No suggested items are saved in this plan.")}</td></tr>`}</tbody></table>${drafts || `<div class="text-muted small">${__("No supplier order draft has been added yet. Nothing has been sent.")}</div>`}</div>`;
+			const drafts = (Array.isArray(plan.draft_documents) ? plan.draft_documents : []).map((draft) => `<div class="alert alert-info mt-3 mb-0"><strong>${this.escape(draft.status || draftStatusLabel)}</strong> · ${this.escape(draft.name)} · ${this.escape(draft.supplier || __("Supplier not shown"))} · ${this.escape(this.moneyLabel(draft.total_sen, draft.currency))}<br><span class="small">${__("You check this order, then send it yourself.")}</span> <button type="button" class="btn btn-sm btn-primary ml-2" data-doctype="Purchase Order" data-open-document="${this.escapeAttribute(draft.name)}">${__("See the order")}</button></div>`).join("");
+			return `<div class="border rounded p-3 mb-3"><div class="d-flex justify-content-between"><strong>${__("Suggested order")}</strong><span class="badge badge-light">${this.escape(plan.status)}</span></div><div class="text-muted small mb-2">${__("Help number")}: ${this.escape(plan.name)} · ${this.escape(plan.planning_date)} · ${this.escape(plan.forecast_state)}</div><table class="table table-sm"><thead><tr><th>${__("Item")}</th><th>${__("Action")}</th><th>${__("Suggested amount")}</th><th>${__("Why")}</th></tr></thead><tbody>${lines || `<tr><td colspan="4">${__("Nothing is suggested in this order.")}</td></tr>`}</tbody></table>${drafts || `<div class="text-muted small">${__("No order has been written yet. Nothing has been sent.")}</div>`}</div>`;
 		}).join("");
-		return `${cards || `<div class="alert alert-light">${__("No restock plan is waiting. Nothing was created or sent.")}</div>`}<button type="button" class="btn btn-sm btn-default" data-advanced-route="plans">${__("Advanced: detailed restock records")}</button>`;
+		return `${cards || `<div class="alert alert-light">${__("No order is suggested. Nothing was created or sent.")}</div>`}<button type="button" class="btn btn-sm btn-default" data-advanced-route="plans">${__("More detail · the full suggested order")}</button>`;
 	}
 
 	updatesWorkflowHtml(data) {
 		const scheduler = data.scheduler || {};
 		const rows = (Array.isArray(data.items) ? data.items : []).map((row) => `<tr><td>${this.escape(row.name)}</td><td>${this.escape(row.state_label || __("Check status"))}</td><td>${this.escape(this.shortDate(row.last_attempt_at || row.created_at))}</td><td>${this.escape(row.failure_reason || __("No problem recorded"))}</td><td>${this.escape(row.next_action)}</td></tr>`).join("");
-		return `<div class="row mb-3"><div class="col-sm-4"><strong>${__("JiJi checks stock")}</strong><br>${__("About every {0} minutes", [this.escape(scheduler.expected_interval_minutes || 5)])}</div><div class="col-sm-4"><strong>${__("Last finished")}</strong><br>${this.escape(this.shortDate(scheduler.last_success))}</div><div class="col-sm-4"><strong>${__("Last problem")}</strong><br>${scheduler.last_failure ? this.escape(this.shortDate(scheduler.last_failure)) : __("No problem recorded")}</div></div><table class="table table-sm"><thead><tr><th>${__("Help number")}</th><th>${__("Status")}</th><th>${__("Last checked")}</th><th>${__("What happened")}</th><th>${__("What to do")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5">${__("JiJi has not finished a stock update for this outlet yet.")}</td></tr>`}</tbody></table><button type="button" class="btn btn-sm btn-primary" data-primary-route="today">${__("Refresh")}</button> <button type="button" class="btn btn-sm btn-default" data-advanced-route="updates">${__("Advanced: technical update history")}</button>`;
+		return `<div class="row mb-3"><div class="col-sm-4"><strong>${__("JiJi checks stock")}</strong><br>${__("About every {0} minutes", [this.escape(scheduler.expected_interval_minutes || 5)])}</div><div class="col-sm-4"><strong>${__("Last finished")}</strong><br>${this.escape(this.shortDate(scheduler.last_success))}</div><div class="col-sm-4"><strong>${__("Last problem")}</strong><br>${scheduler.last_failure ? this.escape(this.shortDate(scheduler.last_failure)) : __("No problem recorded")}</div></div><table class="table table-sm"><thead><tr><th>${__("Help number")}</th><th>${__("Status")}</th><th>${__("Last checked")}</th><th>${__("What happened")}</th><th>${__("What to do")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5">${__("JiJi has not updated this outlet's stock yet.")}</td></tr>`}</tbody></table><button type="button" class="btn btn-sm btn-primary" data-primary-route="today">${__("Refresh")}</button> <button type="button" class="btn btn-sm btn-default" data-advanced-route="updates">${__("Advanced: technical update history")}</button>`;
 	}
 
 	financeWorkflowHtml(data) {

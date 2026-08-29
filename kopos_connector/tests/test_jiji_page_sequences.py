@@ -23,7 +23,7 @@ def test_the_menu_has_one_numbered_sequence() -> None:
     # The prose list said the same three things in a different order and a
     # different voice. The chips are the sequence.
     assert "<ol " not in page and "<ol>" not in page
-    for step in ('1. Choose item type', '2. Enter recipe', '3. Check what the outlet will see'):
+    for step in ('1. Choose item type', '2. Enter recipe', '3. Check what the tablet will show'):
         assert step in page, f"the menu sequence is missing {step!r}"
 
 

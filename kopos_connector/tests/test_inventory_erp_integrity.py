@@ -195,15 +195,15 @@ class DeskPagePackagingTests(TestCase):
         ):
             self.assertNotIn(retired_copy, stock_page)
         for expected_copy in (
-            "Stock has not updated automatically yet",
+            "JiJi has not updated your stock yet",
             "JiJi setup checked",
-            "New supplier order drafts are paused",
+            "JiJi has stopped writing new orders",
             "Approval required",
-            "A stock update needs attention",
-            "Tablet stock reports need review",
+            "JiJi has not finished its first automatic update",
+            "A tablet's stock report needs you",
             "Start using stock tracking",
-            "Difference from the saved amount",
-            "Available stock will not change until an authorized person approves it.",
+            "Difference from what JiJi expected",
+            "What staff can sell does not change until someone approves it.",
             "Finish the stock settings for this outlet before starting stock tracking.",
             "No additional stock problems",
             # The page now opens on the outlet the director has. When the answer
@@ -225,20 +225,20 @@ class DeskPagePackagingTests(TestCase):
             "Support",
             "Your next step",
             "Nothing to do right now",
-            "Review restock plans",
+            "See the suggested orders",
             "Open detailed stock changes",
             "Open finance view",
             'ledger: ["query-report", "Stock Ledger"]',
             "Follow these steps",
             "Back to stock overview",
             "Advanced: detailed stock records",
-            "Draft — not sent",
+            "Written — not sent",
             "get_autopilot_workflow",
             "get_stock_update_status",
-            "JiJi never sends or approves a supplier order.",
+            "JiJi never sends one.",
             "Help number",
             "What to do",
-            "JiJi could not finish a stock update. Your saved information is safe.",
+            "JiJi could not finish updating your stock. Nothing you saved is lost.",
         ):
             self.assertIn(expected_copy, stock_page)
 
@@ -305,7 +305,7 @@ class DeskPagePackagingTests(TestCase):
             "New to running a food or drink business?",
             "How much the full recipe makes",
             "Extra items to sell to recover the discount",
-            "Choose a company to check this area.",
+            "Choose a café to see this.",
             "'Nos' means a count of whole items",
         ):
             self.assertIn(expected_copy, menu_page)

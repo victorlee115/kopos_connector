@@ -44,7 +44,7 @@ def test_every_destination_is_a_page_that_exists() -> None:
 def test_everything_erp_native_is_folded_under_advanced() -> None:
     workspace = _workspace()
     cards = [row["label"] for row in workspace["links"] if row["type"] == "Card Break"]
-    assert cards == ["Reports", "Records", "Support tools"]
+    assert cards == ["Reports", "Where the numbers come from", "Support tools"]
     content = json.loads(workspace["content"])
     headers = [block["data"]["text"] for block in content if block["type"] == "header"]
     assert headers == ["Your café", "Advanced"]

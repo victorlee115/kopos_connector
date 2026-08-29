@@ -17,21 +17,40 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SHARED = ROOT / "public" / "js" / "jiji_desk.js"
-PAGES = ("jiji_home", "jiji_money", "jiji_supplies", "jiji_staff")
+PAGES = (
+    "jiji_home",
+    "jiji_money",
+    "jiji_supplies",
+    "jiji_staff",
+    "jiji_menu_recipes",
+    "jiji_stock_autopilot",
+)
 APIS = ("director_home", "shift_money", "supplier_orders", "staff_desk", "stock_desk", "cafe_units")
 
-# Word -> what to say instead. The pages that predate the desk vocabulary are
-# not covered yet; they carry their own copy contract in
-# test_inventory_erp_integrity and are being moved over screen by screen.
+# Word -> what to say instead. Every JiJi page is covered. Words are banned
+# only after they have been seen on screen and found to need the system
+# explained first; a word that is fine in a query or a route is not on screen,
+# and the scanner below only reads what a person is shown.
 BANNED = {
     "reconciliation": "say what it is: every shift, one by one",
     "reconcile": "say whether the money matched",
-    "purchase order": "supplier order",
+    "purchase order": "supplier order, or just the order",
     "projection": "say what actually happened to the stock",
     "permlevel": "never appears on screen",
     "doctype": "never appears on screen",
     "idempotenc": "never appears on screen",
     "docstatus": "never appears on screen",
+    "restock plan": "suggested order",
+    "stock correction": "the corrected amount",
+    "stock work": "say which work: the automatic updates",
+    "needs review": "say who needs to do what",
+    "need review": "say who needs to do what",
+    "guided editor": "the recipe form",
+    "commissioning": "setting up",
+    "cutover": "starting stock tracking",
+    "schema": "never appears on screen",
+    "payload": "never appears on screen",
+    "endpoint": "never appears on screen",
 }
 
 # The response fields the desk pages actually render. Scanning every literal
