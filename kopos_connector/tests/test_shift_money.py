@@ -59,7 +59,7 @@ def test_home_and_money_share_one_reader() -> None:
 
 def test_the_raw_report_stays_reachable_as_advanced_detail() -> None:
     page = PAGE.read_text(encoding="utf-8")
-    assert "Advanced details" in page
+    assert "More detail" in page
     assert "report_route" in page
 
 

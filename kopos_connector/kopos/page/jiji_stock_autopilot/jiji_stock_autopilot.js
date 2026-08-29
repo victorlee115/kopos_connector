@@ -134,10 +134,20 @@ class JiJiStockAutopilotPage {
 		this.refresh({ showMissingOutlet: false });
 	}
 
+	/**
+	 * The name of a place, without the code the ERP appends to it.
+	 *
+	 * "Matcha & Bean Café - MBC" is a warehouse id. The café is called Matcha
+	 * & Bean Café, and the person reading this named it.
+	 */
+	placeName(value) {
+		return String(value || "").replace(/\s+-\s+[A-Z0-9]{2,6}$/, "");
+	}
+
 	updateWarehouseHelp() {
 		const warehouse = this.warehouseControl && this.warehouseControl.get_value();
 		const message = warehouse
-				? __("Showing {0}.", [warehouse])
+				? __("Showing {0}.", [this.placeName(warehouse)])
 				: __("Choose an outlet.");
 		this.page.body.find("[data-warehouse-help]").text(message);
 		if (!warehouse) this.page.body.find("[data-auto-status]").text(__("Updates automatically after you choose an outlet."));

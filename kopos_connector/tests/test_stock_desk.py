@@ -44,7 +44,7 @@ def test_how_long_something_lasts_has_one_owner() -> None:
 def test_the_item_nobody_ordered_is_the_one_that_needs_a_person() -> None:
     source = _source()
     page = PAGE.read_text(encoding="utf-8")
-    assert '"Not ordered yet"' in source and '"On the draft order"' in source
+    assert '"Not ordered yet"' in source and '"Already on an order"' in source
     # Attention is reserved for the one that is not covered; a draft order is
     # already waiting on the decision the supplies page is asking for.
     assert 'row.on_order ? "" : " jiji-pill--attention"' in page
@@ -121,7 +121,7 @@ def test_the_counted_tiles_are_quantities_not_statuses() -> None:
     source = _source()
     # Six health paragraphs answer support's question. These six answer the
     # café's: what is short, waiting, coming, made, wasted, in transit.
-    for label in ("Running low", "Counts", "Deliveries", "Made in store", "Waste", "Transfers"):
+    for label in ("Running low", "Stock checks", "Deliveries", "Made in store", "Waste", "Moved between shops"):
         assert f'"label": "{label}"' in source, f"the counted tiles are missing {label}"
 
 

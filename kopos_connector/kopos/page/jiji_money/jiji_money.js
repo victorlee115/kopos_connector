@@ -68,7 +68,7 @@ class JiJiMoney {
 			error: () =>
 				this.body.empty().append(
 					jiji.desk.notice(
-						__("JiJi could not read the shifts just now"),
+						__("JiJi could not read your shifts just now"),
 						__("Nothing is wrong with your records. Try Refresh in a moment."),
 					),
 				),
@@ -114,7 +114,7 @@ class JiJiMoney {
 
 		this.body.append(
 			jiji.desk
-				.routeLink(data.report_route, __("Advanced details · the full shift reconciliation report"))
+				.routeLink(data.report_route, __("More detail · every shift, one by one"))
 				.addClass("jiji-advanced"),
 		);
 	}

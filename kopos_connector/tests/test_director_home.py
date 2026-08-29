@@ -85,7 +85,7 @@ def test_the_page_degrades_instead_of_blanking() -> None:
     page = PAGE.read_text(encoding="utf-8")
     # One area failing must not take the home page down with it.
     assert "renderUnavailable" in page
-    assert "Nothing is wrong with your records" in page
+    assert "Nothing is wrong with your café" in page
 
 
 def test_a_login_is_never_shown_as_a_person() -> None:

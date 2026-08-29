@@ -88,7 +88,7 @@ frappe.provide("jiji.desk");
 
 	/** "Advanced details -- <where the real record is>", demoted to a footnote. */
 	desk.advanced = function advanced(text) {
-		return $("<div>").addClass("jiji-advanced").text(__("Advanced details · {0}", [text]));
+		return $("<div>").addClass("jiji-advanced").text(__("More detail · {0}", [text]));
 	};
 
 	/**
@@ -113,7 +113,7 @@ frappe.provide("jiji.desk");
 		// A week with no sales has no shape. Seven empty columns look like a
 		// chart that failed to load; a sentence says which it is.
 		if (peak <= 0) {
-			return $("<div>").addClass("jiji-muted").text(__("Nothing was taken in the last seven days."));
+			return $("<div>").addClass("jiji-muted").text(__("You have not sold anything in the last seven days."));
 		}
 		const chart = $("<div>").addClass("jiji-week");
 		rows.forEach((row) => {

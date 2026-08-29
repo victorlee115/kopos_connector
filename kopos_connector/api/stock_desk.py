@@ -258,7 +258,7 @@ def _counted_tiles(
              else ("nothing short" if not no_estimate else "JiJi cannot say yet")
          ),
          "attention": bool(low), "route": ["List", "Item"]},
-        {"label": "Counts", "value": str(counts_waiting),
+        {"label": "Stock checks", "value": str(counts_waiting),
          "detail": "waiting for your check" if counts_waiting else "nothing waiting",
          "attention": counts_waiting > 0, "route": ["List", "FB Inventory Count Task"]},
         {"label": "Deliveries", "value": str(len(arriving)),
@@ -269,7 +269,7 @@ def _counted_tiles(
          "attention": False, "route": ["List", "Stock Entry"]},
         {"label": "Waste", "value": _money(sum(flt(row.get("total_outgoing_value")) for row in waste_rows)),
          "detail": "this week", "attention": False, "route": ["List", "FB Waste Event"]},
-        {"label": "Transfers", "value": str(in_transit),
+        {"label": "Moved between shops", "value": str(in_transit),
          "detail": "moving today" if in_transit else "nothing moving",
          "attention": False, "route": ["List", "Stock Entry", {"purpose": "Material Transfer"}]},
     ]
@@ -309,7 +309,7 @@ def get_stock_desk(*, warehouse: str | None = None) -> dict[str, Any]:
             "days": _days_phrase(row["days"]),
             "fill": max(2, min(100, round(row["days"] / METER_FULL_DAYS * 100))),
             "on_order": row["item"] in ordered,
-            "state": "On the draft order" if row["item"] in ordered else "Not ordered yet",
+            "state": "Already on an order" if row["item"] in ordered else "Not ordered yet",
             "route": ["Form", "Item", row["item"]],
         }
         for row in runouts
@@ -343,5 +343,5 @@ def get_stock_desk(*, warehouse: str | None = None) -> dict[str, Any]:
         ),
         "moved": moved,
         "moved_empty_note": "Nothing has moved in or out of this outlet today.",
-        "moved_note": "Written by the tablets, not by hand",
+        "moved_note": "The tablets wrote this, nobody typed it",
     }

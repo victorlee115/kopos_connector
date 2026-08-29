@@ -88,7 +88,7 @@ def test_a_tablet_is_a_place_not_a_person() -> None:
     # Who is signed in comes from the open FB Shift, which already knows; the
     # device record never learns to answer it a second way.
     assert '"FB Shift"' in source and '"status": "Open"' in source
-    assert "A tablet is a place, not a person." in page
+    assert "Where each tablet is, and who is on it" in page
 
 
 def test_a_login_is_never_shown_as_a_person() -> None:
@@ -125,4 +125,4 @@ def test_the_page_is_registered_for_directors() -> None:
 def test_the_page_degrades_instead_of_blanking() -> None:
     page = PAGE.read_text(encoding="utf-8")
     assert "could not read your people just now" in page
-    assert "Nobody's access has changed" in page
+    assert "Nobody has been changed" in page

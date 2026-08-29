@@ -44,7 +44,7 @@ class JiJiHome {
 		this.body.empty().append(
 			jiji.desk.notice(
 				__("JiJi could not check your outlets just now"),
-				__("Nothing is wrong with your records. Try Refresh in a moment."),
+				__("Nothing is wrong with your café. Try Refresh in a moment."),
 			),
 		);
 	}
@@ -113,8 +113,8 @@ class JiJiHome {
 					.addClass("jiji-muted jiji-num")
 					.text(
 						week.busiest
-							? __("{0} taken · busiest {1}", [week.total || "", week.busiest])
-							: __("{0} taken", [week.total || ""]),
+							? __("{0} sold · busiest {1}", [week.total || "", week.busiest])
+							: __("{0} sold", [week.total || ""]),
 					),
 			);
 			card.append(jiji.desk.weekBars(week.days).css("margin-top", "16px"));
@@ -135,6 +135,6 @@ class JiJiHome {
 			this.body.append(row);
 		}
 
-		this.body.append(jiji.desk.advanced(__("every number here opens the record it came from.")));
+		this.body.append(jiji.desk.advanced(__("click any number to see where it came from.")));
 	}
 }

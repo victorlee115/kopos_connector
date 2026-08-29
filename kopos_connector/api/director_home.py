@@ -173,7 +173,7 @@ def get_director_home() -> dict[str, Any]:
                 else f"{len(unmatched_shifts)} shifts counted a different amount of cash"
             ),
             "detail": f"Start with {cstr(first.get('person'))}.",
-            "action": "Review money",
+            "action": "See the shifts",
             "route": ["jiji_money"],
         }
     elif drafts:
@@ -185,7 +185,7 @@ def get_director_home() -> dict[str, Any]:
                 else f"{drafts} supplier orders are waiting for you"
             ),
             "detail": "Nothing is sent until you say so.",
-            "action": "Review supplies",
+            "action": "See the order",
             "route": ["jiji_supplies"],
         }
     elif items_missing_recipe:
@@ -196,15 +196,15 @@ def get_director_home() -> dict[str, Any]:
                 if items_missing_recipe == 1
                 else f"{items_missing_recipe} menu items cannot go on sale yet"
             ),
-            "detail": "Each one needs a recipe, or a reason it does not need one.",
-            "action": "Open Menu & Recipes",
+            "detail": "JiJi needs to know what goes into it before it can go on sale.",
+            "action": "See the drink",
             "route": ["jiji_menu_recipes"],
         }
     else:
         next_step = {
             "area": "none",
             "title": "Nothing needs you right now",
-            "detail": "Today's sales and stock are behaving.",
+            "detail": "Your sales and your stock both look normal.",
             "action": "",
             "route": [],
         }
@@ -213,9 +213,9 @@ def get_director_home() -> dict[str, Any]:
     if unmatched_shifts and drafts:
         waiting.append({
             "title": (
-                "1 supplier order to review"
+                "1 supplier order waiting for you"
                 if drafts == 1
-                else f"{drafts} supplier orders to review"
+                else f"{drafts} supplier orders waiting for you"
             ),
             "route": ["jiji_supplies"],
         })
@@ -251,8 +251,8 @@ def get_director_home() -> dict[str, Any]:
         "outlets": takings["outlets"],
         "tiles": [
             {"key": "today", "label": "Today", "value": f"RM {takings['total']:,.2f}", "detail": f"{takings['orders']} orders", "route": ["List", "Sales Invoice"]},
-            {"key": "menu", "label": "Menu", "value": str(items_ready), "detail": "on sale", "route": ["jiji_menu_recipes"]},
-            {"key": "supplies", "label": "Supplies", "value": str(drafts), "detail": "orders to review", "route": ["jiji_supplies"], "attention": drafts > 0},
+            {"key": "menu", "label": "Menu", "value": str(items_ready), "detail": "things on sale", "route": ["jiji_menu_recipes"]},
+            {"key": "supplies", "label": "Supplies", "value": str(drafts), "detail": "orders waiting for you", "route": ["jiji_supplies"], "attention": drafts > 0},
             {
                 "key": "staff",
                 "label": "Staff",
@@ -264,6 +264,6 @@ def get_director_home() -> dict[str, Any]:
                 ),
                 "route": ["jiji_staff"],
             },
-            {"key": "money", "label": "Money", "value": str(len(unmatched_shifts)), "detail": "shifts to review", "route": ["jiji_money"], "attention": bool(unmatched_shifts)},
+            {"key": "money", "label": "Money", "value": str(len(unmatched_shifts)), "detail": "to check", "route": ["jiji_money"], "attention": bool(unmatched_shifts)},
         ],
     }

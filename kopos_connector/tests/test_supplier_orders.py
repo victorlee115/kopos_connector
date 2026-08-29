@@ -35,8 +35,8 @@ def test_sending_stays_in_erpnext() -> None:
     page = PAGE.read_text(encoding="utf-8")
     # A second submit path would put the accounting document's authority on a
     # page that cannot frame the consequence. The button says where it goes.
-    assert "Open the order to send it" in page
-    assert "Nothing is sent from this page." in page
+    assert "Open this order" in page
+    assert "JiJi never sends an order. You send it." in page
     # Every server call the page makes is a read, and says so.
     methods = re.findall(r'method:\s*"([^"]+)"', page)
     assert methods == ["kopos_connector.api.supplier_orders.get_supplier_orders"]
@@ -89,7 +89,7 @@ def test_the_page_is_registered_for_directors() -> None:
 def test_the_page_degrades_instead_of_blanking() -> None:
     page = PAGE.read_text(encoding="utf-8")
     assert "could not read your supplier orders just now" in page
-    assert "Nothing has been sent or changed" in page
+    assert "Nothing has been ordered or changed" in page
 
 
 def test_amounts_are_worded_by_one_owner() -> None:
@@ -126,4 +126,4 @@ def test_the_supplier_record_stands_on_its_own() -> None:
 def test_how_many_are_waiting_is_said_where_the_page_is_named() -> None:
     page = PAGE.read_text(encoding="utf-8")
     assert "set_indicator" in page
-    assert '__("1 draft")' in page
+    assert '__("1 waiting")' in page

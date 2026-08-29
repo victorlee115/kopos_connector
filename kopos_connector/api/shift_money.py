@@ -103,9 +103,9 @@ def get_shift_money(company: str | None = None) -> dict[str, Any]:
         # zeros and buried the good news underneath them.
         "next_step": _money_next_step(grouped),
         "summary": [
-            {"key": "matched", "label": "Cash matched", "count": len(grouped["matched"])},
-            {"key": "needs_review", "label": "Need review", "count": len(grouped["needs_review"]), "attention": bool(grouped["needs_review"])},
-            {"key": "missing_count", "label": "Never counted", "count": len(grouped["missing_count"]), "attention": bool(grouped["missing_count"])},
+            {"key": "matched", "label": "Matched", "count": len(grouped["matched"])},
+            {"key": "needs_review", "label": "Did not match", "count": len(grouped["needs_review"]), "attention": bool(grouped["needs_review"])},
+            {"key": "missing_count", "label": "Not counted", "count": len(grouped["missing_count"]), "attention": bool(grouped["missing_count"])},
         ],
         "needs_review": grouped["needs_review"],
         "missing_count": grouped["missing_count"],
@@ -135,13 +135,13 @@ def _money_next_step(grouped: dict[str, list[dict[str, Any]]]) -> dict[str, Any]
     if never:
         return {
             "title": (
-                "1 shift closed without counting the cash"
+                "1 shift ended without counting the cash"
                 if len(never) == 1
-                else f"{len(never)} shifts closed without counting the cash"
+                else f"{len(never)} shifts ended without counting the cash"
             ),
             "detail": "There is nothing to compare against for these.",
         }
     return {
         "title": "The cash is accounted for",
-        "detail": "Every closed shift counted what JiJi expected.",
+        "detail": "Every shift counted the same money JiJi expected.",
     }

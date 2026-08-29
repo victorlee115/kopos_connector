@@ -61,7 +61,7 @@ class JiJiSupplies {
 				this.body.empty().append(
 					jiji.desk.notice(
 						__("JiJi could not read your supplier orders just now"),
-						__("Nothing has been sent or changed. Try Refresh in a moment."),
+						__("Nothing has been ordered or changed. Try Refresh in a moment."),
 					),
 				),
 		});
@@ -82,7 +82,7 @@ class JiJiSupplies {
 			this.body.append(
 				jiji.desk.notice(
 					__("JiJi could not read your supplier orders just now"),
-					__("Nothing has been sent or changed. Try Refresh in a moment."),
+					__("Nothing has been ordered or changed. Try Refresh in a moment."),
 				),
 			);
 			return;
@@ -90,8 +90,8 @@ class JiJiSupplies {
 
 		this.page.set_indicator(
 			data.draft_count === 1
-				? __("1 draft")
-				: __("{0} drafts", [data.draft_count || 0]),
+				? __("1 waiting")
+				: __("{0} waiting", [data.draft_count || 0]),
 			data.draft_count ? "orange" : "green",
 		);
 
@@ -99,7 +99,7 @@ class JiJiSupplies {
 			this.body.append(
 				jiji.desk.notice(
 					__("Nothing is waiting to be ordered"),
-					__("JiJi drafts an order when stock is due to run out before a delivery could arrive."),
+					__("JiJi writes one when something will run out before a delivery could arrive."),
 				),
 			);
 		}
@@ -147,7 +147,7 @@ class JiJiSupplies {
 
 		this.body.append(
 			jiji.desk
-				.routeLink(data.orders_route, __("Advanced details · open the draft Purchase Order to send it"))
+				.routeLink(data.orders_route, __("More detail · the order itself, where you send it"))
 				.addClass("jiji-advanced"),
 		);
 	}
@@ -205,8 +205,8 @@ class JiJiSupplies {
 
 		const actions = $("<div>").addClass("jiji-supplies__actions").appendTo(card);
 		// One button, and it says where it goes. Sending stays in ERPNext.
-		jiji.desk.routeLink(draft.route, __("Open the order to send it")).addClass("btn btn-primary").appendTo(actions);
-		actions.append($("<span>").addClass("jiji-muted").text(__("Nothing is sent from this page.")));
+		jiji.desk.routeLink(draft.route, __("Open this order")).addClass("btn btn-primary").appendTo(actions);
+		actions.append($("<span>").addClass("jiji-muted").text(__("JiJi never sends an order. You send it.")));
 		if (draft.arrives) {
 			actions.append($("<span>").addClass("jiji-supplies__when").text(__("Arrives {0}", [draft.arrives])));
 		}

@@ -72,7 +72,7 @@ class JiJiStaff {
 				this.body.empty().append(
 					jiji.desk.notice(
 						__("JiJi could not read your people just now"),
-						__("Nobody's access has changed. Try Refresh in a moment."),
+						__("Nobody has been changed. Try Refresh in a moment."),
 					),
 				),
 		});
@@ -94,7 +94,7 @@ class JiJiStaff {
 			this.body.append(
 				jiji.desk.notice(
 					__("JiJi could not read your people just now"),
-					__("Nobody's access has changed. Try Refresh in a moment."),
+					__("Nobody has been changed. Try Refresh in a moment."),
 				),
 			);
 			return;
@@ -118,7 +118,7 @@ class JiJiStaff {
 			const block = $("<div>");
 			const head = $("<div>").addClass("jiji-head").appendTo(block);
 			head.append(jiji.desk.label(__("Tablets right now")));
-			head.append($("<span>").addClass("jiji-muted").text(__("A tablet is a place, not a person.")));
+			head.append($("<span>").addClass("jiji-muted").text(__("Where each tablet is, and who is on it")));
 			const tablets = $("<div>").addClass("jiji-rows").appendTo(block);
 			data.tablets.forEach((tablet) => {
 				const row = jiji.desk.routeLink(tablet.route).addClass("jiji-row");
@@ -131,7 +131,7 @@ class JiJiStaff {
 			this.body.append(block);
 		}
 
-		this.body.append(jiji.desk.advanced(__("employee record, outlet stores, change history")));
+		this.body.append(jiji.desk.advanced(__("the full staff record")));
 	}
 
 	renderPerson(person) {
