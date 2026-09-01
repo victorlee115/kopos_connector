@@ -89,9 +89,19 @@ SAFE_RESET_REQUEST_REJECTED_NO_COMMIT = (
     "SAFE_RESET_REQUEST_REJECTED_NO_COMMIT"
 )
 SAFE_RESET_REQUEST_LOOKUP_REQUIRED = "SAFE_RESET_REQUEST_LOOKUP_REQUIRED"
+OPERATIONAL_ERROR_CONTRACT_VERSION = "kopos.operational-error.v1"
 
 
 def _write_response(payload: dict[str, Any], http_status_code: int = 200) -> None:
+    if http_status_code >= 400:
+        # Every tablet-facing failure has a stable machine-readable reason.
+        # Human copy belongs to the tablet; ERP messages remain diagnostics and
+        # may change without silently changing what staff are told.
+        payload.setdefault("error_contract_version", OPERATIONAL_ERROR_CONTRACT_VERSION)
+        payload.setdefault(
+            "error_code",
+            "server_unavailable" if http_status_code >= 500 else "request_rejected",
+        )
     frappe.local.response.update(payload)
     frappe.local.response["http_status_code"] = http_status_code
     for key in ("_server_messages", "exc", "_debug_messages", "exception"):
@@ -114,10 +124,17 @@ def _set_sensitive_response_headers() -> None:
 
 
 def _validation_error_payload(exc: frappe.ValidationError) -> dict[str, Any]:
-    payload: dict[str, Any] = {"status": "error", "message": str(exc)}
+    payload: dict[str, Any] = {
+        "status": "error",
+        "message": str(exc),
+        "error_contract_version": OPERATIONAL_ERROR_CONTRACT_VERSION,
+    }
     error_code = frappe.utils.cstr(getattr(exc, "error_code", None)).strip()
-    if error_code:
-        payload["error_code"] = error_code
+    payload["error_code"] = error_code or (
+        "permission_denied"
+        if isinstance(exc, getattr(frappe, "PermissionError", ()))
+        else "request_rejected"
+    )
     if getattr(exc, "retryable_after_configuration", False):
         payload["retryable_after_configuration"] = True
     return payload
@@ -1187,7 +1204,7 @@ def open_shift(**kwargs: Any) -> None:
         _write_response(result)
     except frappe.ValidationError as exc:
         frappe.db.rollback()
-        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+        _write_response(_validation_error_payload(exc), http_status_code=400)
     except Exception as error:
         frappe.db.rollback()
         log_sanitized_error("KoPOS open_shift failed", error)
@@ -1214,7 +1231,7 @@ def close_shift(**kwargs: Any) -> None:
         _write_response(result)
     except frappe.ValidationError as exc:
         frappe.db.rollback()
-        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+        _write_response(_validation_error_payload(exc), http_status_code=400)
     except Exception as error:
         frappe.db.rollback()
         log_sanitized_error("KoPOS close_shift failed", error)
@@ -1924,7 +1941,7 @@ def request_shift_manager_approval(**kwargs: Any) -> None:
         )
     except frappe.ValidationError as exc:
         frappe.db.rollback()
-        _write_response({"status": "error", "message": str(exc)}, http_status_code=400)
+        _write_response(_validation_error_payload(exc), http_status_code=400)
     except Exception as error:
         frappe.db.rollback()
         log_sanitized_error("KoPOS request_shift_manager_approval failed", error)
@@ -1962,7 +1979,7 @@ def get_maybank_qr_readiness(device_id: str | None = None) -> None:
         _write_response(get_maybank_qr_readiness_payload(device_doc, profile_doc))
     except frappe.ValidationError as exc:
         _write_response(
-            {"status": "error", "message": str(exc)},
+            _validation_error_payload(exc),
             http_status_code=400,
         )
 

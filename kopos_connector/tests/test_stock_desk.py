@@ -58,6 +58,17 @@ def test_waste_is_shown_with_its_cause() -> None:
     assert "reason_text" in source
 
 
+def test_submitted_waste_is_reported_without_a_director_queue() -> None:
+    source = _source()
+    page = PAGE.read_text(encoding="utf-8")
+    assert 'filters={"company": company, "warehouse": warehouse, "docstatus": 1}' in source
+    assert "waste.docstatus = 1" in source
+    assert "_pending_waste_reviews" not in source
+    assert '"waste_reviews"' not in source
+    assert "reviewWaste" not in page
+    assert "data-waste-decision" not in page
+
+
 def test_a_failing_snapshot_costs_two_blocks_not_the_page() -> None:
     source = _source()
     page = PAGE.read_text(encoding="utf-8")
@@ -68,6 +79,21 @@ def test_a_failing_snapshot_costs_two_blocks_not_the_page() -> None:
 def test_a_transfer_between_two_of_your_own_stores_is_not_counted_twice() -> None:
     source = _source()
     assert 's_warehouse" if source else "t_warehouse' in source
+    assert "COUNT(DISTINCT entry.name)" in source
+
+
+def test_every_tile_is_scoped_to_the_selected_outlet() -> None:
+    source = _source()
+    assert "COALESCE(NULLIF(line.warehouse, ''), purchase_order.set_warehouse) = %s" in source
+    assert "(line.s_warehouse = %s OR line.t_warehouse = %s)" in source
+    assert "_delivery_summary(company, warehouse)" in source
+    assert "_stock_entry_count_today(company, warehouse, MADE_PURPOSES)" in source
+
+
+def test_selling_used_excludes_remakes_and_unrelated_material_issues() -> None:
+    source = _source()
+    assert "fb_order.ingredient_stock_entry = entry.name" in source
+    assert "_sale_issue_lines_today(context.company, store)" in source
 
 
 def test_the_meter_never_overflows_or_vanishes() -> None:
@@ -91,10 +117,11 @@ def test_an_empty_list_says_which_kind_of_empty_it_is() -> None:
     source = _source()
     page = PAGE.read_text(encoding="utf-8")
     # "Nothing is due to run out" and "JiJi cannot say yet" are different
-    # facts, and a blank space says neither. The snapshot already carries its
-    # own plain-language reason, so it is passed through rather than reworded.
+    # facts, and a blank space says neither. Internal reasons are translated
+    # once before the beginner page receives them.
     assert '"running_low_note"' in source
     assert "runout_reason" in source and "reliability_reason" in source
+    assert "_runout_note(no_estimate)" in source
     assert "data.running_low_note" in page
     assert "data.moved_empty_note" in page
 
@@ -132,3 +159,12 @@ def test_an_unanswerable_count_is_not_reported_as_zero() -> None:
     # same in a number and must not read the same.
     assert '"JiJi cannot say yet"' in source
     assert "if low or not no_estimate" in source
+
+
+def test_movement_amounts_name_the_item_in_cafe_words() -> None:
+    source = _source()
+    assert "amount_of_phrase" in source
+    assert "amount_phrase(row['qty'], unit)" not in source
+    assert '"Item"' in source and '["name", "item_name"]' in source
+    assert 'or "Ingredient or supply"' in source
+    assert 'cstr(line.get("item")),' not in source

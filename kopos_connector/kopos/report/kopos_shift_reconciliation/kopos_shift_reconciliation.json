@@ -10,9 +10,7 @@
  "report_name": "KoPOS Shift Reconciliation",
  "report_type": "Script Report",
  "roles": [
-  {"role": "System Manager"},
-  {"role": "KoPOS Manager"},
-  {"role": "POS Manager"}
+  {"role": "System Manager"}
  ],
  "timeout": 300
 }

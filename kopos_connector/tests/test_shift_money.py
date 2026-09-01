@@ -18,7 +18,11 @@ def _module():
     module = importlib.util.module_from_spec(spec)
     # Only the pure helpers are exercised; frappe is not importable here.
     source = SOURCE.read_text(encoding="utf-8")
-    namespace: dict = {"flt": float, "cstr": str}
+    namespace: dict = {
+        "flt": float,
+        "cstr": str,
+        "money_text": lambda value, currency="MYR": f"{'RM' if currency == 'MYR' else currency} {value / 100:,.2f}",
+    }
     body = source.split("def describe_difference", 1)[1]
     exec("def describe_difference" + body.split("def group_shifts", 1)[0], namespace)
     return namespace
@@ -27,8 +31,8 @@ def _module():
 def test_the_difference_is_stated_in_words_with_a_direction() -> None:
     describe = _module()["describe_difference"]
     # A signed number is not an instruction. "-12.0" tells a director nothing.
-    assert describe(-12) == "RM 12.00 short"
-    assert describe(12) == "RM 12.00 over"
+    assert describe(-1_200) == "RM 12.00 short"
+    assert describe(1_200) == "RM 12.00 over"
     assert describe(0) == "Matched"
 
 
@@ -50,6 +54,12 @@ def test_the_stored_variance_is_read_not_recomputed() -> None:
     assert "expected_cash -" not in source
 
 
+def test_a_missing_cash_count_is_not_called_a_match() -> None:
+    source = SOURCE.read_text(encoding="utf-8")
+    assert 'else "Not compared"' in source
+    assert 'row.get("cash_variance") or 0' not in source
+
+
 def test_home_and_money_share_one_reader() -> None:
     home = HOME.read_text(encoding="utf-8")
     # Two answers to "how many shifts need a director" is one too many.
@@ -57,10 +67,11 @@ def test_home_and_money_share_one_reader() -> None:
     assert 'frappe.get_all(\n        "FB Shift"' not in home
 
 
-def test_the_raw_report_stays_reachable_as_advanced_detail() -> None:
+def test_the_beginner_page_does_not_open_raw_shift_records_or_reports() -> None:
     page = PAGE.read_text(encoding="utf-8")
-    assert "More detail" in page
-    assert "report_route" in page
+    assert "More detail" not in page
+    assert "report_route" not in page
+    assert '["Form", "FB Shift"' not in page
 
 
 def test_a_person_has_the_same_name_everywhere() -> None:

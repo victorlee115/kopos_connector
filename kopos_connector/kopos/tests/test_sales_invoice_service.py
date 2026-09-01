@@ -18,6 +18,7 @@ from kopos_connector.kopos.services.accounting.sales_invoice_service import (
     _append_payment_rows,
     _build_modifier_snapshot,
     enforce_static_qr_payment_accounts,
+    _is_zero_total_paid_order,
     _resolve_line_rate,
     _resolve_customer,
     _resolve_mode_of_payment_context,
@@ -365,6 +366,129 @@ class TestSalesInvoiceService(unittest.TestCase):
         self.assertEqual(invoice["items"][1].amount, Decimal("0.00"))
         self.assertEqual(invoice["items"][1].is_free_item, 1)
         bind_qr.assert_called_once_with(order, "SINV-CASH-001")
+
+    def test_complimentary_invoice_keeps_full_price_discount_and_no_payment(self):
+        order = self.make_fb_order_stub()
+        order.completion_kind = "complimentary"
+        order.complimentary_reason = "Guest recovery"
+        order.complimentary_approved_by = "manager@example.test"
+        order.complimentary_value = Decimal("26.00")
+        order.net_total = Decimal("0.00")
+        order.tax_total = Decimal("0.00")
+        order.rounding_adjustment = Decimal("0.00")
+        order.grand_total = Decimal("0.00")
+        order.payments = []
+        order.items = [
+            frappe._dict(
+                {
+                    "item": "E2E-MATCHA-LATTE",
+                    "line_id": "LINE-COMP-1",
+                    "item_name_snapshot": "E2E Matcha Latte",
+                    "qty": 2,
+                    "uom": "Nos",
+                    "unit_price": Decimal("12.00"),
+                    "modifier_total": Decimal("1.00"),
+                    "discount_amount": Decimal("26.00"),
+                    "line_total": Decimal("0.00"),
+                    "remarks": None,
+                }
+            )
+        ]
+        order.booth_warehouse = "Booth - TC"
+
+        with (
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.frappe.new_doc"
+            ) as new_doc_mock,
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._coerce_doc"
+            ) as coerce_doc_mock,
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._resolve_pos_profile_context",
+                return_value={
+                    "pos_profile": "KoPOS Test Profile",
+                    "company": self.company,
+                },
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._set_if_present",
+                side_effect=lambda doc, fieldnames, value: setattr(
+                    doc, fieldnames[0], value
+                ),
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.privileged_device_api_operation",
+                return_value=nullcontext(),
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.bind_qr_payment_settlement"
+            ) as bind_qr,
+        ):
+            def append_invoice_row(field, value):
+                row = frappe._dict(value)
+                if field == "items":
+                    row.net_amount = row.amount
+                invoice[field].append(row)
+                return row
+
+            invoice = frappe._dict(
+                {
+                    "doctype": "Sales Invoice",
+                    "items": [],
+                    "payments": [],
+                    "taxes": [],
+                    "docstatus": 0,
+                    "is_return": 0,
+                    "net_total": Decimal("0.00"),
+                    "grand_total": Decimal("0.00"),
+                    "total_taxes_and_charges": Decimal("0.00"),
+                    "rounded_total": Decimal("0.00"),
+                    "disable_rounded_total": 0,
+                    "write_off_amount": Decimal("0.00"),
+                    "base_write_off_amount": Decimal("0.00"),
+                    "paid_amount": Decimal("0.00"),
+                    "change_amount": Decimal("0.00"),
+                    "outstanding_amount": Decimal("0.00"),
+                    "append": append_invoice_row,
+                    "set": lambda field, value: invoice.__setitem__(field, value),
+                    "insert": lambda **kwargs: None,
+                    "submit": lambda: invoice.__setitem__("docstatus", 1),
+                    "set_missing_values": lambda: None,
+                    "calculate_taxes_and_totals": lambda: None,
+                    "name": "SINV-COMP-001",
+                }
+            )
+            new_doc_mock.return_value = invoice
+            coerce_doc_mock.side_effect = (
+                lambda doctype, value: value
+                if getattr(value, "doctype", None) == doctype
+                else frappe._dict(
+                    {
+                        "name": value,
+                        "item_name": "E2E Matcha Latte",
+                        "stock_uom": "Nos",
+                        "description": None,
+                    }
+                )
+            )
+
+            result = create_sales_invoice(order)
+
+        self.assertEqual(result, "SINV-COMP-001")
+        self.assertEqual(invoice.grand_total, Decimal("0.00"))
+        self.assertEqual(invoice.paid_amount, Decimal("0.00"))
+        self.assertEqual(invoice.payments, [])
+        self.assertEqual(invoice["items"][0].price_list_rate, Decimal("13.00"))
+        self.assertEqual(invoice["items"][0].rate, Decimal("0.00"))
+        self.assertEqual(
+            invoice["items"][0].discount_percentage,
+            Decimal("100.00"),
+        )
+        self.assertEqual(invoice["items"][0].discount_amount, Decimal("13.00"))
+        self.assertEqual(invoice["items"][0].is_free_item, 0)
+        self.assertIn("Complimentary order", invoice.remarks)
+        self.assertIn("Guest recovery", invoice.remarks)
+        bind_qr.assert_called_once_with(order, "SINV-COMP-001")
 
     def test_projection_failure_logs_the_root_exception(self):
         order = self.make_fb_order_stub()
@@ -1001,6 +1125,53 @@ class TestSalesInvoiceService(unittest.TestCase):
         self.assertEqual(invoice.rounded_total, Decimal("0.00"))
         self.assertEqual(invoice.base_rounded_total, Decimal("0.00"))
         self.assertEqual(invoice.write_off_amount, Decimal("0.00"))
+
+    def test_rm0_paid_order_projects_without_a_payment_after_full_discount(self):
+        order = self.make_fb_order_stub()
+        order.completion_kind = "paid"
+        order.net_total = Decimal("0.00")
+        order.tax_total = Decimal("0.00")
+        order.rounding_adjustment = Decimal("0.00")
+        order.grand_total = Decimal("0.00")
+        order.payments = []
+        order.promotion_payload_json = "{}"
+        order.items = [
+            frappe._dict(
+                {
+                    "item": "WATER",
+                    "line_id": "LINE-ZERO",
+                    "qty": 1,
+                    "unit_price": Decimal("0.00"),
+                    "modifier_total": Decimal("0.00"),
+                    "discount_amount": Decimal("0.00"),
+                    "line_total": Decimal("0.00"),
+                    "promotion_allocations_json": "[]",
+                }
+            )
+        ]
+        invoice = frappe._dict(
+            {
+                "grand_total": Decimal("0.00"),
+                "rounded_total": Decimal("0.00"),
+                "disable_rounded_total": 0,
+            }
+        )
+
+        self.assertTrue(_is_zero_total_paid_order(order))
+        _apply_rounding(invoice, order)
+
+        self.assertEqual(invoice.disable_rounded_total, 1)
+        self.assertEqual(invoice.write_off_amount, Decimal("0.00"))
+
+        order["items"][0].unit_price = Decimal("5.00")
+        order["items"][0].discount_amount = Decimal("5.00")
+        self.assertTrue(_is_zero_total_paid_order(order))
+        _apply_rounding(invoice, order)
+
+        order["items"][0].discount_amount = Decimal("4.99")
+        self.assertFalse(_is_zero_total_paid_order(order))
+        with self.assertRaisesRegex(ValueError, "valid pricing"):
+            _apply_rounding(invoice, order)
 
     def test_line_rate_uses_decimal_without_float_rounding(self):
         line = frappe._dict(

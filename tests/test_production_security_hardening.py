@@ -79,7 +79,7 @@ def test_device_scoped_config_endpoint_remains_available() -> None:
     }
 
 
-def test_projection_logs_are_read_only_for_support_roles() -> None:
+def test_projection_logs_are_read_only_for_system_managers() -> None:
     projection_log = _doctype(
         "kopos_connector/kopos/doctype/fb_projection_log/fb_projection_log.json"
     )
@@ -87,13 +87,13 @@ def test_projection_logs_are_read_only_for_support_roles() -> None:
         permission["role"]: permission for permission in projection_log["permissions"]
     }
 
-    for role in ("System Manager", "KoPOS Manager"):
-        permission = permissions[role]
-        assert permission["read"] == 1
-        assert permission.get("create", 0) == 0
-        assert permission.get("write", 0) == 0
-        assert permission.get("delete", 0) == 0
-        assert permission.get("share", 0) == 0
+    assert set(permissions) == {"System Manager"}
+    permission = permissions["System Manager"]
+    assert permission["read"] == 1
+    assert permission.get("create", 0) == 0
+    assert permission.get("write", 0) == 0
+    assert permission.get("delete", 0) == 0
+    assert permission.get("share", 0) == 0
 
 
 def test_projection_log_controller_rejects_direct_mutation() -> None:

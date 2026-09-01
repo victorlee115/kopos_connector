@@ -14,6 +14,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint, cstr, get_datetime, now_datetime
 
+from kopos_connector.api.cafe_units import amount_phrase, difference_phrase
 from kopos_connector.api.devices import (
     lock_device_for_operational_mutation,
     require_device_context,
@@ -29,6 +30,11 @@ from kopos_connector.api.catalog import (
     resolve_catalog_pos_profile,
 )
 from kopos_connector.api.catalog import build_catalog_payload
+from kopos_connector.api.director_scope import (
+    director_pos_profiles,
+    require_director_role,
+    resolve_director_context,
+)
 from kopos_connector.kopos.services.inventory_autopilot.holds import (
     create_hold,
     manager_override_automation_hold,
@@ -90,6 +96,9 @@ from kopos_connector.kopos.services.inventory_autopilot.recipe_compiler import (
     RecipeCompilerError,
     compile_recipe_components,
 )
+from kopos_connector.kopos.services.inventory_autopilot.availability_capacity import (
+    resolve_made_item_waste,
+)
 from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
     find_staff_access_for_device,
     outlet_erp_role_failures,
@@ -142,13 +151,17 @@ def get_autopilot_health(warehouse: str | None = None) -> dict[str, Any]:
     monitor surface and never changes a policy, projection, hold, or document.
     """
 
+    _require_company_director("Stock health")
     resolved_warehouse = cstr(warehouse).strip()
     if not resolved_warehouse:
         frappe.throw(_("Warehouse is required"), frappe.ValidationError)
-    if not frappe.has_permission("FB Inventory Policy", ptype="read"):
-        frappe.throw(_("Inventory health requires manager permission"), frappe.PermissionError)
-
     policy = _get_policy(resolved_warehouse)
+    company = cstr((policy or {}).get("company")).strip() or cstr(
+        frappe.db.get_value("Warehouse", resolved_warehouse, "company")
+    ).strip()
+    if not company:
+        frappe.throw(_("This outlet is not linked to a café"), frappe.ValidationError)
+    resolve_director_context(company=company, warehouse=resolved_warehouse)
     now = now_datetime()
     max_age_minutes = int(policy.get("max_source_age_minutes") or 30) if policy else 30
     projection_rows = frappe.db.sql(
@@ -352,6 +365,7 @@ def get_autopilot_health(warehouse: str | None = None) -> dict[str, Any]:
         "warehouse": resolved_warehouse,
         "company": cstr(policy.get("company")).strip() if policy else None,
         "currency": cstr(frappe.db.get_value("Company", cstr(policy.get("company")).strip(), "default_currency")).strip() if policy else None,
+        "stock_tracking_started": _stock_tracking_started(policy),
         "as_of": _iso_with_offset(now),
         "automation_state": cstr(policy.get("automation_state")) if policy else "Review First",
         "max_source_age_minutes": max_age_minutes,
@@ -397,6 +411,7 @@ def get_autopilot_health(warehouse: str | None = None) -> dict[str, Any]:
 
 AUTOPILOT_WORKFLOWS = frozenset({"buying", "updates", "finance"})
 AUTOPILOT_PERIOD_DAYS = frozenset({7, 30, 90})
+AUTOPILOT_FINANCE_DETAIL_LIMIT = 100
 
 
 @frappe.whitelist(methods=["GET"])
@@ -407,16 +422,20 @@ def get_autopilot_workflow(
 ) -> dict[str, Any]:
     """Return one bounded, read-only workflow for the guided stock desk."""
 
+    _require_company_director("Stock workflow")
     resolved_warehouse = cstr(warehouse).strip()
     resolved_workflow = cstr(workflow).strip().lower()
     if not resolved_warehouse:
-        frappe.throw(_("Warehouse is required"), frappe.ValidationError)
+        frappe.throw(_("Choose an outlet first"), frappe.ValidationError)
     if resolved_workflow not in AUTOPILOT_WORKFLOWS:
-        frappe.throw(_("Stock workflow must be buying, updates, or finance"), frappe.ValidationError)
-    if not frappe.has_permission("FB Inventory Policy", ptype="read"):
-        frappe.throw(_("This stock workflow requires Company Director permission"), frappe.PermissionError)
-
+        frappe.throw(_("Choose Ordering, Stock updates, or Cost and value"), frappe.ValidationError)
     policy = _get_policy(resolved_warehouse)
+    scoped_company = cstr((policy or {}).get("company")).strip() or cstr(
+        frappe.db.get_value("Warehouse", resolved_warehouse, "company")
+    ).strip()
+    if not scoped_company:
+        frappe.throw(_("This outlet is not linked to a café"), frappe.ValidationError)
+    resolve_director_context(company=scoped_company, warehouse=resolved_warehouse)
     if not policy:
         return {
             "schema_version": "inventory-workflow-v1",
@@ -427,7 +446,7 @@ def get_autopilot_workflow(
             "as_of": _iso_with_offset(now_datetime()),
             "status": "setup_required",
             "headline": "Stock settings are not finished",
-            "next_action": "Create one active Inventory Policy for this outlet stock location.",
+            "next_action": "Ask Support to finish stock setup for this outlet.",
             "items": [],
         }
 
@@ -478,39 +497,47 @@ def _autopilot_buying_workflow(*, company: str, warehouse: str, currency: str) -
         for line in (getattr(document, "lines", None) or [])[:remaining_line_budget]:
             item = cstr(getattr(line, "item", None)).strip()
             exact_quantity = cstr(getattr(line, "quantity_decimal", None)).strip() or cstr(getattr(line, "quantity", None)).strip()
+            action = cstr(getattr(line, "action", None)).strip()
+            unit = cstr(getattr(line, "uom", None)).strip()
             lines.append({
-                "item": item,
-                "item_name": cstr(frappe.db.get_value("Item", item, "item_name")).strip() or item,
-                "action": cstr(getattr(line, "action", None)).strip(),
-                "quantity": exact_quantity,
-                "uom": cstr(getattr(line, "uom", None)).strip(),
-                "reason": cstr(getattr(line, "reason", None)).strip(),
+                "item_name": cstr(frappe.db.get_value("Item", item, "item_name")).strip()
+                or "Ingredient or supply",
+                "action_label": {
+                    "Purchase": "Order from supplier",
+                    "Manufacture": "Prepare in the café",
+                    "Transfer": "Move from another outlet",
+                }.get(action, "Check this"),
+                "quantity_display": amount_phrase(exact_quantity, unit),
+                "reason": _autopilot_human_plan_reason(getattr(line, "reason", None)),
             })
         remaining_line_budget -= len(lines)
         plans.append({
-            "name": cstr(row.get("name")),
-            "status": cstr(row.get("status")),
             "planning_date": cstr(row.get("planning_date")),
-            "forecast_state": cstr(row.get("forecast_state")),
-            "forecast_evidence": cstr(row.get("forecast_evidence"))[:500],
             "lines": lines,
-            "draft_documents": _autopilot_draft_purchase_orders(row.get("created_documents"), company=company, currency=currency),
+            "draft_documents": _autopilot_plan_documents(
+                row.get("created_documents"),
+                company=company,
+                warehouse=warehouse,
+                currency=currency,
+            ),
         })
         if remaining_line_budget <= 0:
             break
     last_plan = _health_marker("last_plan", warehouse=warehouse)
     return {
         "status": "ready" if plans else "empty",
-        "headline": f"{len(plans)} restock plan{'s' if len(plans) != 1 else ''} to review" if plans else "No restock plan is waiting",
-        "next_action": "Review each suggested amount and any draft supplier order. The Director sends it outside JiJi." if plans else (
-            f"JiJi last completed planning at {last_plan}. Refresh the stock overview after the next automatic run."
-            if last_plan else "No automatic restock plan has completed. Check Automatic updates for the blocking reason."
+        "headline": f"{len(plans)} suggested order{'s' if len(plans) != 1 else ''} to check" if plans else "No suggested order is waiting",
+        "next_action": "Review each suggested amount and the requests or supplier orders beside it. JiJi never sends an order." if plans else (
+            f"JiJi last checked what may be needed at {last_plan}. Look again after the next stock update."
+            if last_plan else "JiJi has not suggested an order yet. Open Stock updates to see what is happening."
         ),
         "items": plans,
     }
 
 
-def _autopilot_draft_purchase_orders(raw: Any, *, company: str, currency: str) -> list[dict[str, Any]]:
+def _autopilot_plan_documents(
+    raw: Any, *, company: str, warehouse: str, currency: str
+) -> list[dict[str, Any]]:
     try:
         references = json.loads(cstr(raw or "[]"))
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -522,24 +549,93 @@ def _autopilot_draft_purchase_orders(raw: Any, *, company: str, currency: str) -
         if not isinstance(reference, dict):
             continue
         doctype = cstr(reference.get("doctype")).strip()
-        name = cstr(reference.get("name") or reference.get("purchase_order")).strip()
-        if doctype not in {"", "Purchase Order"} or not name:
+        name = cstr(
+            reference.get("name")
+            or reference.get("purchase_order")
+            or reference.get("material_request")
+        ).strip()
+        if not name:
             continue
-        row = frappe.db.get_value(
-            "Purchase Order",
-            {"name": name, "company": company},
-            ["name", "supplier", "status", "docstatus", "grand_total", "currency"],
+        if doctype in {"", "Purchase Order"}:
+            rows = frappe.db.sql(
+                """
+                SELECT purchase_order.name, purchase_order.supplier,
+                       purchase_order.docstatus, purchase_order.grand_total,
+                       purchase_order.currency
+                FROM `tabPurchase Order` purchase_order
+                INNER JOIN `tabPurchase Order Item` line
+                  ON line.parent = purchase_order.name
+                 AND line.parenttype = 'Purchase Order'
+                WHERE purchase_order.name = %s AND purchase_order.company = %s
+                  AND purchase_order.docstatus = 0
+                  AND COALESCE(NULLIF(line.warehouse, ''), purchase_order.set_warehouse) = %s
+                GROUP BY purchase_order.name, purchase_order.supplier,
+                         purchase_order.docstatus, purchase_order.grand_total,
+                         purchase_order.currency
+                LIMIT 1
+                """,
+                (name, company, warehouse),
+                as_dict=True,
+            )
+            row = (rows or [None])[0]
+            if not row:
+                continue
+            result.append({
+                "document_label": "Supplier order",
+                "status": "Written — not sent",
+                "supplier": cstr(row.get("supplier")),
+                "total_sen": _autopilot_money_sen(row.get("grand_total")),
+                "currency": cstr(row.get("currency")).strip() or currency,
+                "next_action": "Open Supplies to check it. JiJi never sends an order.",
+            })
+            continue
+        if doctype != "Material Request":
+            continue
+        request_item_meta = frappe.get_meta("Material Request Item")
+        source_clause = " OR line.from_warehouse = %s" if request_item_meta.has_field("from_warehouse") else ""
+        params: tuple[Any, ...] = (
+            (name, company, warehouse, warehouse)
+            if source_clause
+            else (name, company, warehouse)
+        )
+        rows = frappe.db.sql(
+            f"""
+            SELECT request.name, request.material_request_type, request.docstatus
+            FROM `tabMaterial Request` request
+            INNER JOIN `tabMaterial Request Item` line
+              ON line.parent = request.name
+             AND line.parenttype = 'Material Request'
+            WHERE request.name = %s AND request.company = %s
+              AND request.docstatus IN (0, 1)
+              AND (line.warehouse = %s{source_clause})
+            GROUP BY request.name, request.material_request_type, request.docstatus
+            LIMIT 1
+            """,
+            params,
             as_dict=True,
         )
-        if not row or int(row.get("docstatus") or 0) != 0:
+        row = (rows or [None])[0]
+        if not row:
             continue
+        request_type = cstr(row.get("material_request_type")).strip()
+        submitted = cint(row.get("docstatus")) == 1
+        transfer = request_type == "Material Transfer"
         result.append({
-            "doctype": "Purchase Order",
-            "name": cstr(row.get("name")),
-            "status": "Draft — not sent",
-            "supplier": cstr(row.get("supplier")),
-            "total_sen": _autopilot_money_sen(row.get("grand_total")),
-            "currency": cstr(row.get("currency")).strip() or currency,
+            "document_label": "Stock transfer request" if transfer else "Supplier request",
+            "status": (
+                "Ready for the outlet team"
+                if transfer and submitted
+                else "Requested — waiting for an order"
+                if submitted
+                else "Written — waiting for a director"
+            ),
+            "next_action": (
+                "The outlet team can now move this stock."
+                if transfer and submitted
+                else "A supplier order can now be prepared from this request."
+                if submitted
+                else "A director checks and confirms this request."
+            ),
         })
     return result
 
@@ -564,31 +660,26 @@ def _autopilot_updates_workflow(*, warehouse: str) -> dict[str, Any]:
         (warehouse, warehouse),
         as_dict=True,
     )
+    states = [cstr(row.get("state")) for row in rows or []]
     items = [{
-        "name": cstr(row.get("name")),
-        "state": cstr(row.get("state")),
-        "retry_count": int(row.get("retry_count") or 0),
-        "created_at": _autopilot_iso(row.get("created_at")),
-        "last_attempt_at": _autopilot_iso(row.get("last_attempt_at")),
-        "next_retry_at": _autopilot_iso(row.get("next_retry_at")),
+        "checked_at": _autopilot_iso(row.get("last_attempt_at") or row.get("created_at")),
         "state_label": _autopilot_projection_state_label(cstr(row.get("state"))),
         "failure_reason": _autopilot_projection_plain_reason(cstr(row.get("state"))),
         "next_action": _autopilot_projection_next_action(cstr(row.get("state"))),
-        "source": {"doctype": cstr(row.get("source_doctype")), "name": cstr(row.get("source_name"))},
-        "target": {"doctype": cstr(row.get("target_doctype")), "name": cstr(row.get("target_name"))},
     } for row in rows or []]
-    scheduler = _scheduler_health()
-    failed = sum(1 for row in items if row["state"] in {"Failed", "Dead Letter"})
+    raw_update_health = _scheduler_health()
+    failed = sum(1 for state in states if state in {"Failed", "Dead Letter"})
     return {
         "status": "attention" if failed else ("ready" if items else "empty"),
         "headline": f"{failed} automatic stock update{'s' if failed != 1 else ''} need attention" if failed else (
             "Automatic stock updates are running" if items else "No automatic stock run has completed"
         ),
-        "next_action": "Follow the next step beside the update that needs help. Give Support its help number if asked." if failed else (
+        "next_action": "Follow the next step beside the update that needs help. Ask Support if it remains stuck." if failed else (
             "JiJi has not finished a stock update yet. Refresh in a few minutes. Nothing is changed by this page." if not items else "Nothing needs to be done by hand. Refresh to see the latest result."
         ),
         "scheduler": {
-            **scheduler,
+            "last_success": raw_update_health.get("last_success"),
+            "last_failure": raw_update_health.get("last_failure"),
             "expected_interval_minutes": INVENTORY_RECOVER_INTERVAL_MINUTES,
         },
         "items": items,
@@ -601,23 +692,41 @@ def _autopilot_finance_workflow(*, company: str, warehouse: str, period_days: in
         filters={"warehouse": warehouse},
         fields=["item_code", "actual_qty", "stock_value"],
         order_by="item_code asc",
-        limit_page_length=100,
+        limit_page_length=AUTOPILOT_FINANCE_DETAIL_LIMIT + 1,
     )
-    item_codes = [cstr(row.get("item_code")).strip() for row in bins or [] if cstr(row.get("item_code")).strip()]
-    item_names = {
-        cstr(row.get("name")): cstr(row.get("item_name"))
-        for row in frappe.get_all("Item", filters={"name": ["in", item_codes]}, fields=["name", "item_name"], limit_page_length=100)
-    } if item_codes else {}
-    balances = [{
-        "item": item,
-        "item_name": item_names.get(item) or item,
-        "quantity": _autopilot_decimal_text(row.get("actual_qty")),
-        "stock_value_sen": _autopilot_money_sen(row.get("stock_value")),
-    } for row in bins or [] if (item := cstr(row.get("item_code")).strip())]
+    balances_truncated = len(bins or []) > AUTOPILOT_FINANCE_DETAIL_LIMIT
+    visible_bins = (bins or [])[:AUTOPILOT_FINANCE_DETAIL_LIMIT]
     start_date = (now_datetime() - timedelta(days=period_days)).date().isoformat()
+    stock_value_rows = frappe.db.sql(
+        """
+        SELECT COALESCE(SUM(stock_value), 0) AS stock_value
+        FROM `tabBin`
+        WHERE warehouse = %s
+        """,
+        (warehouse,),
+        as_dict=True,
+    )
+    movement_totals = frappe.db.sql(
+        """
+        SELECT sle.voucher_type, se.purpose,
+               CASE WHEN se.custom_kopos_inventory_command_id LIKE 'fb-waste:%%' THEN 1 ELSE 0 END AS is_waste,
+               CASE WHEN sle.actual_qty > 0 THEN 1 ELSE 0 END AS has_positive_quantity,
+               CASE WHEN sle.stock_value_difference > 0 THEN 1 ELSE 0 END AS has_positive_value,
+               COALESCE(SUM(CASE WHEN sle.stock_value_difference > 0 THEN sle.stock_value_difference ELSE 0 END), 0) AS positive_value,
+               COALESCE(SUM(ABS(sle.stock_value_difference)), 0) AS absolute_value
+        FROM `tabStock Ledger Entry` sle
+        LEFT JOIN `tabStock Entry` se
+          ON sle.voucher_type = 'Stock Entry' AND se.name = sle.voucher_no
+        WHERE sle.company = %s AND sle.warehouse = %s AND sle.posting_date >= %s
+          AND sle.is_cancelled = 0
+        GROUP BY sle.voucher_type, se.purpose, is_waste, has_positive_quantity, has_positive_value
+        """,
+        (company, warehouse, start_date),
+        as_dict=True,
+    )
     movements = frappe.db.sql(
         """
-        SELECT sle.name, sle.posting_date, sle.posting_time, sle.item_code,
+        SELECT sle.name, sle.posting_date, sle.posting_time, sle.item_code, sle.stock_uom,
                sle.actual_qty, sle.qty_after_transaction, sle.stock_value_difference,
                sle.voucher_type, sle.voucher_no,
                se.purpose, se.custom_kopos_inventory_command_id
@@ -627,44 +736,86 @@ def _autopilot_finance_workflow(*, company: str, warehouse: str, period_days: in
         WHERE sle.company = %s AND sle.warehouse = %s AND sle.posting_date >= %s
           AND sle.is_cancelled = 0
         ORDER BY sle.posting_date DESC, sle.posting_time DESC, sle.name DESC
-        LIMIT 100
+        LIMIT %s
         """,
-        (company, warehouse, start_date),
+        (company, warehouse, start_date, AUTOPILOT_FINANCE_DETAIL_LIMIT + 1),
         as_dict=True,
     )
-    summary = {"received_sen": 0, "used_sen": 0, "transferred_sen": 0, "waste_sen": 0}
+    items_truncated = len(movements or []) > AUTOPILOT_FINANCE_DETAIL_LIMIT
+    visible_movements = (movements or [])[:AUTOPILOT_FINANCE_DETAIL_LIMIT]
+    item_codes = sorted({
+        item
+        for row in [*visible_bins, *visible_movements]
+        if (item := cstr(row.get("item_code")).strip())
+    })
+    item_details = {
+        cstr(row.get("name")): {
+            "name": cstr(row.get("item_name")).strip() or "Ingredient or supply",
+            "unit": cstr(row.get("stock_uom")).strip(),
+        }
+        for row in frappe.get_all(
+            "Item",
+            filters={"name": ["in", item_codes]},
+            fields=["name", "item_name", "stock_uom"],
+            limit_page_length=len(item_codes),
+        )
+    } if item_codes else {}
+    balances = [{
+        "item_name": item_details.get(item, {}).get("name") or "Ingredient or supply",
+        "quantity_display": amount_phrase(
+            _autopilot_decimal_text(row.get("actual_qty")),
+            cstr(item_details.get(item, {}).get("unit")),
+        ),
+        "stock_value_sen": _autopilot_money_sen(row.get("stock_value")),
+    } for row in visible_bins if (item := cstr(row.get("item_code")).strip())]
+    summary = _autopilot_movement_summary(movement_totals or [])
     movement_items = []
-    for row in movements or []:
+    for row in visible_movements:
         kind = _autopilot_movement_kind(row)
         value_sen = _autopilot_money_sen(row.get("stock_value_difference"))
-        if kind == "received":
-            summary["received_sen"] += max(0, value_sen)
-        elif kind == "transfer":
-            summary["transferred_sen"] += abs(value_sen)
-        elif kind == "waste":
-            summary["waste_sen"] += abs(value_sen)
-        else:
-            summary["used_sen"] += abs(value_sen)
         movement_items.append({
-            "name": cstr(row.get("name")),
             "posting_date": cstr(row.get("posting_date")),
-            "item": cstr(row.get("item_code")),
-            "item_name": item_names.get(cstr(row.get("item_code"))) or cstr(row.get("item_code")),
+            "item_name": item_details.get(cstr(row.get("item_code")), {}).get("name")
+            or "Ingredient or supply",
             "kind": kind,
-            "quantity": _autopilot_movement_quantity(row),
+            "quantity_display": amount_phrase(
+                _autopilot_movement_quantity(row),
+                cstr(row.get("stock_uom"))
+                or cstr(item_details.get(cstr(row.get("item_code")), {}).get("unit")),
+            ),
             "value_change_sen": value_sen,
-            "reference": {"doctype": cstr(row.get("voucher_type")), "name": cstr(row.get("voucher_no"))},
         })
-    total_stock_value_sen = sum(int(row["stock_value_sen"]) for row in balances)
+    total_stock_value_sen = _autopilot_money_sen(
+        (stock_value_rows or [{}])[0].get("stock_value")
+    )
     return {
         "status": "ready" if balances or movement_items else "empty",
         "headline": "Stock value and changes for finance" if balances or movement_items else "No stock change is recorded for this period",
-        "next_action": "Check the totals. Open the detailed stock records only when you need to check one stock change.",
+        "next_action": "Compare the totals with your café records. Ask your bookkeeper if something looks wrong.",
         "period_days": period_days,
         "summary": {"stock_value_sen": total_stock_value_sen, **summary},
         "balances": balances,
+        "balances_truncated": balances_truncated,
         "items": movement_items,
+        "items_truncated": items_truncated,
     }
+
+
+def _autopilot_movement_summary(rows: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {"received_sen": 0, "used_sen": 0, "transferred_sen": 0, "waste_sen": 0}
+    for row in rows:
+        kind = _autopilot_movement_kind({
+            "voucher_type": row.get("voucher_type"),
+            "purpose": row.get("purpose"),
+            "custom_kopos_inventory_command_id": "fb-waste:" if cint(row.get("is_waste")) else "",
+            "actual_qty": "1" if cint(row.get("has_positive_quantity")) else "0",
+            "stock_value_difference": "1" if cint(row.get("has_positive_value")) else "0",
+        })
+        value_sen = _autopilot_money_sen(
+            row.get("positive_value") if kind == "received" else row.get("absolute_value")
+        )
+        summary[f"{kind if kind != 'transfer' else 'transferred'}_sen"] += value_sen
+    return summary
 
 
 def _autopilot_projection_next_action(state: str) -> str:
@@ -695,6 +846,35 @@ def _autopilot_projection_state_label(state: str) -> str:
         "Failed": "Needs help",
         "Dead Letter": "Stopped for safety",
     }.get(state, "Check status")
+
+
+def _autopilot_human_plan_reason(value: Any) -> str:
+    """Return a short business reason, never a stored internal diagnostic."""
+
+    reason = " ".join(cstr(value).split())[:240]
+    lowered = reason.lower()
+    hidden_words = (
+        "api",
+        "bom",
+        "doctype",
+        "exception",
+        "hash",
+        "item code",
+        "json",
+        "policy",
+        "projection",
+        "queue",
+        "redis",
+        "scheduler",
+        "schema",
+        "stock entry",
+        "uom",
+        "warehouse",
+        "worker",
+    )
+    if not reason or any(word in lowered for word in hidden_words):
+        return "Based on current stock and expected use."
+    return reason
 
 
 def _autopilot_movement_kind(row: dict[str, Any]) -> str:
@@ -755,6 +935,24 @@ def activate_inventory_cutover(
     policy: str,
     opening_stock_reconciliation: str | None = None,
 ) -> dict[str, Any]:
+    """Support-only compatibility entry point for the detailed operation."""
+
+    if "System Manager" not in set(frappe.get_roles(frappe.session.user)):
+        frappe.throw(
+            _("Use the Stock page to start stock tracking."),
+            frappe.PermissionError,
+        )
+    return _activate_inventory_cutover(
+        policy=policy,
+        opening_stock_reconciliation=opening_stock_reconciliation,
+    )
+
+
+def _activate_inventory_cutover(
+    *,
+    policy: str,
+    opening_stock_reconciliation: str | None = None,
+) -> dict[str, Any]:
     """Record one outlet cutover identity after director preflight.
 
     This action is intentionally narrower than enabling automation.  It only
@@ -765,8 +963,6 @@ def activate_inventory_cutover(
     """
 
     _require_company_director("Inventory cutover activation")
-    if not frappe.has_permission("FB Inventory Policy", ptype="write"):
-        frappe.throw(_("Inventory cutover requires policy write permission"), frappe.PermissionError)
     policy_name = cstr(policy).strip()
     if not policy_name:
         frappe.throw(_("Inventory Policy is required"), frappe.ValidationError)
@@ -783,6 +979,7 @@ def activate_inventory_cutover(
     warehouse = cstr(getattr(policy_doc, "warehouse", None)).strip()
     if not company or not warehouse:
         frappe.throw(_("Inventory Policy needs a company and warehouse before cutover"), frappe.ValidationError)
+    resolve_director_context(company=company, warehouse=warehouse)
     requested_reconciliation = cstr(opening_stock_reconciliation).strip()
     stored_token = cstr(getattr(policy_doc, "cutover_token", None)).strip()
     stored_reconciliation = cstr(getattr(policy_doc, "opening_stock_reconciliation", None)).strip()
@@ -925,6 +1122,73 @@ def activate_inventory_cutover(
     return _cutover_identity_response(policy_doc, status="activated")
 
 
+@frappe.whitelist(methods=["POST"])
+def start_inventory_tracking(*, warehouse: str) -> dict[str, Any]:
+    """Start one outlet from its single checked opening count.
+
+    The beginner page never asks a director to choose an internal policy or
+    stock document. Ambiguous setup stays with Support rather than inviting a
+    guess at an irreversible starting point.
+    """
+
+    _require_company_director("Start stock tracking")
+    selected_warehouse = cstr(warehouse).strip()
+    context = resolve_director_context(warehouse=selected_warehouse)
+    if not context.company or context.warehouse != selected_warehouse:
+        frappe.throw(_("Choose an outlet you can manage"), frappe.PermissionError)
+    policies = frappe.get_all(
+        "FB Inventory Policy",
+        filters={"company": context.company, "warehouse": context.warehouse},
+        fields=["name", "cutover_token", "opening_stock_reconciliation"],
+        limit_page_length=2,
+    )
+    if len(policies) != 1:
+        frappe.throw(
+            _("Ask Support to finish this outlet's stock setup before you start."),
+            frappe.ValidationError,
+        )
+    policy = policies[0]
+    reconciliation_name = cstr(policy.get("opening_stock_reconciliation")).strip()
+    if not cstr(policy.get("cutover_token")).strip() and not reconciliation_name:
+        candidates = frappe.get_all(
+            "Stock Reconciliation",
+            filters={"company": context.company, "docstatus": 1},
+            fields=["name"],
+            order_by="posting_date desc, posting_time desc, modified desc",
+            limit_page_length=51,
+        )
+        valid = []
+        for row in candidates:
+            name = cstr(row.get("name")).strip()
+            if not name:
+                continue
+            document = frappe.get_doc("Stock Reconciliation", name)
+            if not opening_reconciliation_failure(
+                document,
+                company=context.company,
+                warehouse=context.warehouse,
+            ):
+                valid.append(name)
+        if len(valid) != 1:
+            frappe.throw(
+                _("Ask Support to check the opening stock count for this outlet before you start."),
+                frappe.ValidationError,
+            )
+        reconciliation_name = valid[0]
+    result = _activate_inventory_cutover(
+        policy=cstr(policy.get("name")).strip(),
+        opening_stock_reconciliation=reconciliation_name or None,
+    )
+    return {
+        "status": cstr(result.get("status")),
+        "message": (
+            _("Stock tracking was already on. Nothing changed.")
+            if result.get("status") == "already_active"
+            else _("Stock tracking has started.")
+        ),
+    }
+
+
 def _cutover_identity_response(policy_doc: Any, *, status: str) -> dict[str, Any]:
     return {
         "status": status,
@@ -939,8 +1203,23 @@ def _cutover_identity_response(policy_doc: Any, *, status: str) -> dict[str, Any
 
 
 def _throw_cutover_block(reason: str) -> None:
+    frappe.log_error(
+        message=cstr(reason)[:1000],
+        title="JiJi stock tracking start was blocked",
+    )
+    normalized = cstr(reason).casefold()
+    if "opening_stock" in normalized or "reconciliation" in normalized:
+        message = _("Ask Support to check the opening stock count for this outlet.")
+    elif "menu" in normalized or "recipe" in normalized:
+        message = _("Finish setting up every product's ingredients before starting stock tracking.")
+    elif "device" in normalized or "overlay" in normalized:
+        message = _("Connect every tablet and let it finish updating, then try again.")
+    elif "owner" in normalized or "routing" in normalized:
+        message = _("Ask Support to choose who receives urgent stock problems.")
+    else:
+        message = _("JiJi found a setup problem. Ask Support to check this outlet before you start.")
     frappe.throw(
-        _("Inventory cutover is blocked until this is fixed: {0}").format(cstr(reason).replace("_", " ")),
+        message,
         frappe.ValidationError,
     )
 
@@ -950,22 +1229,18 @@ def get_menu_authoring_summary(company: str | None = None) -> dict[str, Any]:
     """Return a non-financial completion checklist for Company Directors."""
 
     _require_company_director("Menu authoring")
-    if not frappe.has_permission("FB Recipe", ptype="read"):
-        frappe.throw(_("Menu authoring requires Company Director permission"), frappe.PermissionError)
-    selected_company = cstr(company).strip() or None
-    company_rows = frappe.get_all(
-        "Company",
-        filters={"is_group": 0},
-        fields=["name"],
-        order_by="name asc",
-        limit_page_length=100,
-    )
-    companies = [cstr(row.get("name")).strip() for row in company_rows if cstr(row.get("name")).strip()]
-    if selected_company and selected_company not in companies:
-        frappe.throw(_("Choose an active Company before reviewing menu commissioning"), frappe.ValidationError)
-    if not selected_company and len(companies) == 1:
-        selected_company = companies[0]
-    company_selection_required = len(companies) > 1 and not selected_company
+    context = resolve_director_context(company=cstr(company).strip() or None)
+    selected_company = context.company or None
+    companies = list(context.allowed_companies)
+    company_selection_required = bool(companies) and not selected_company
+    if not selected_company:
+        return {
+            "status": context.status,
+            "selected_company": None,
+            "company_selection_required": company_selection_required,
+            "companies": companies,
+            "ready": False,
+        }
 
     item_meta = frappe.get_meta("Item")
     required_item_fields = (
@@ -976,12 +1251,6 @@ def get_menu_authoring_summary(company: str | None = None) -> dict[str, Any]:
     item_fields_ready = all(item_meta.has_field(fieldname) for fieldname in required_item_fields)
     item_fields = ["name", "item_code", "item_name", "is_sales_item", "disabled"]
     item_fields.extend(fieldname for fieldname in required_item_fields if item_meta.has_field(fieldname))
-    item_rows = frappe.get_all(
-        "Item",
-        filters={"disabled": 0},
-        fields=item_fields,
-        limit_page_length=10_000,
-    )
     recipe_schema_ready = bool(
         frappe.db.exists("DocType", "FB Recipe")
         and frappe.get_meta("FB Recipe").has_field("canonical_hash")
@@ -989,16 +1258,77 @@ def get_menu_authoring_summary(company: str | None = None) -> dict[str, Any]:
     recipe_rows = (
         frappe.get_all(
             "FB Recipe",
+            filters={"company": selected_company},
             fields=["name", "status", "sellable_item", "company", "canonical_hash"],
-            limit_page_length=10_000,
+            limit_page_length=2_001,
         )
         if recipe_schema_ready
         else []
     )
-    bom_count = frappe.db.count("BOM", {"docstatus": 1}) if frappe.db.exists("DocType", "BOM") else 0
-    modifier_count = frappe.db.count("FB Modifier Group") if frappe.db.exists("DocType", "FB Modifier Group") else 0
-    promotion_count = frappe.db.count("KoPOS Promotion", {"is_active": 1}) if frappe.db.exists("DocType", "KoPOS Promotion") else 0
+    if len(recipe_rows) > 2_000:
+        raise RuntimeError("Menu recipe summary is larger than its safe page")
+    priced_items = frappe.get_all(
+        "Item Price",
+        filters={"price_list": ["in", list(context.allowed_price_lists) or [""]]},
+        pluck="item_code",
+        limit_page_length=2_001,
+    )
+    if len(priced_items) > 2_000:
+        raise RuntimeError("Menu item summary is larger than its safe page")
+    item_names = {
+        cstr(item).strip() for item in priced_items if cstr(item).strip()
+    } | {
+        cstr(row.get("sellable_item")).strip()
+        for row in recipe_rows
+        if cstr(row.get("sellable_item")).strip()
+    }
+    if len(item_names) > 2_000:
+        raise RuntimeError("Menu item summary is larger than its safe page")
+    item_rows = (
+        frappe.get_all(
+            "Item",
+            filters={"name": ["in", sorted(item_names)], "disabled": 0},
+            fields=item_fields,
+            limit_page_length=2_000,
+        )
+        if item_names
+        else []
+    )
+    bom_count = (
+        frappe.db.count("BOM", {"docstatus": 1, "item": ["in", sorted(item_names)]})
+        if item_names and frappe.db.exists("DocType", "BOM")
+        else 0
+    )
+    recipe_names = [cstr(row.get("name")) for row in recipe_rows]
+    modifier_rows = (
+        frappe.get_all(
+            "FB Recipe Modifier Effect",
+            filters={"parent": ["in", recipe_names], "parenttype": "FB Recipe"},
+            pluck="modifier_group",
+            limit_page_length=2_001,
+        )
+        if recipe_names
+        else []
+    )
+    if len(modifier_rows) > 2_000:
+        raise RuntimeError("Menu modifier summary is larger than its safe page")
+    modifier_count = len(set(modifier_rows))
+    profiles = director_pos_profiles(context)
+    promotion_rows = (
+        frappe.get_all(
+            "KoPOS Promotion POS Profile",
+            filters={"pos_profile": ["in", list(profiles)]},
+            pluck="parent",
+            limit_page_length=2_001,
+        )
+        if profiles
+        else []
+    )
+    if len(promotion_rows) > 2_000:
+        raise RuntimeError("Menu promotion summary is larger than its safe page")
+    promotion_count = len(set(promotion_rows))
     return {
+        "status": "ok",
         **summarize_menu_authoring(
             item_rows=item_rows,
             recipe_rows=recipe_rows,
@@ -1021,12 +1351,15 @@ def get_menu_catalog_preview(pos_profile: str) -> dict[str, Any]:
     _require_company_director("Menu catalog preview")
     profile_name = cstr(pos_profile).strip()
     if not profile_name:
-        frappe.throw(_("POS Profile is required for a menu catalog preview"), frappe.ValidationError)
+        frappe.throw(_("Choose an outlet first"), frappe.ValidationError)
     profile = frappe.get_cached_doc("POS Profile", profile_name)
     company = cstr(getattr(profile, "company", None)).strip()
     warehouse = cstr(getattr(profile, "warehouse", None)).strip()
     if not company or not warehouse:
-        frappe.throw(_("POS Profile needs a company and warehouse before preview"), frappe.ValidationError)
+        frappe.throw(_("Ask Support to finish setting up this outlet"), frappe.ValidationError)
+    context = resolve_director_context(company=company, warehouse=warehouse)
+    if profile_name not in director_pos_profiles(context):
+        frappe.throw(_("You do not have access to this outlet."), frappe.PermissionError)
     try:
         items = get_items(
             warehouse=warehouse,
@@ -1040,22 +1373,26 @@ def get_menu_catalog_preview(pos_profile: str) -> dict[str, Any]:
             recipe_snapshots_by_item=snapshots,
         )
     except Exception as error:
+        log_sanitized_error(
+            title="JiJi outlet menu preview failed",
+            error=error,
+        )
         return {
             "status": "blocked",
-            "reason": "The outlet catalog cannot be previewed until its recipe or modifier setup is valid.",
-            "diagnostic": cstr(error)[:500],
+            "reason": "The outlet menu cannot be checked until its recipes and customer choices are ready.",
         }
-    missing = [
-        cstr(item.get("name") or item.get("item_code") or item.get("id")).strip()
-        for item in items
-        if not cint(item.get("inventory_excluded"))
-        and cstr(item.get("id") or item.get("item_code")).strip() not in snapshots
-    ]
+    missing = []
+    for item in items:
+        item_id = cstr(item.get("id") or item.get("item_code")).strip()
+        if cint(item.get("inventory_excluded")) or item_id in snapshots:
+            continue
+        missing.append(
+            cstr(item.get("item_name") or item.get("label")).strip()
+            or cstr(frappe.db.get_value("Item", item_id, "item_name")).strip()
+            or "A product"
+        )
     return {
         "status": "ok",
-        "pos_profile": profile_name,
-        "company": company,
-        "warehouse": warehouse,
         "saleable_items": len(items),
         "recipe_ready_items": len(snapshots),
         "explicit_exclusions": sum(1 for item in items if cint(item.get("inventory_excluded"))),
@@ -1068,7 +1405,7 @@ def get_menu_catalog_preview(pos_profile: str) -> dict[str, Any]:
 def get_menu_recipe_csv_template() -> dict[str, str]:
     """Return the fixed director recipe template without exposing cost data."""
 
-    _require_company_director("Menu recipe template")
+    _require_system_manager_for_internal_tool()
     return {"filename": "jiji-recipe-components-template.csv", "content": csv_template()}
 
 
@@ -1076,7 +1413,7 @@ def get_menu_recipe_csv_template() -> dict[str, str]:
 def validate_menu_recipe_csv(*, csv_text: str) -> dict[str, Any]:
     """Dry-run a director spreadsheet and return row-level commissioning errors."""
 
-    _require_company_director("Menu recipe CSV validation")
+    _require_system_manager_for_internal_tool()
     result = validate_recipe_csv(csv_text)
     return {
         "schema_version": "jiji-menu-recipe-csv-v1",
@@ -1092,8 +1429,6 @@ def get_promotion_economics(*, payload: str | dict[str, Any]) -> dict[str, Any]:
     """Calculate exact director-only promotion economics; never expose it to POS."""
 
     _require_company_director("Promotion economics")
-    if not frappe.has_permission("KoPOS Promotion", ptype="read"):
-        frappe.throw(_("Promotion economics requires Company Director permission"), frappe.PermissionError)
     value = _parse_json_object(payload, "Promotion economics payload")
     promotion_name = cstr(value.get("promotion")).strip()
     if not promotion_name:
@@ -1114,6 +1449,7 @@ def get_promotion_economics(*, payload: str | dict[str, Any]) -> dict[str, Any]:
             promotion,
             cstr(value.get("pos_profile")).strip() or None,
         )
+        _require_director_pos_profile(profile_name)
         items = _build_promotion_economics_items(
             promotion_name=promotion_name,
             pos_profile=profile_name,
@@ -1154,6 +1490,7 @@ def get_promotion_economics(*, payload: str | dict[str, Any]) -> dict[str, Any]:
             promotion,
             cstr(value.get("pos_profile")).strip() or None,
         )
+        _require_director_pos_profile(profile_name)
         source_hash = _promotion_economics_source_hash(
             promotion,
             profile_name=profile_name,
@@ -1458,14 +1795,14 @@ def _promotion_actual_results(*, promotion: Any, pos_profile: str | None) -> dic
     if not warehouse:
         return {
             "status": "not_available",
-            "reason": "selected POS Profile has no warehouse for post-cutover evidence",
+            "reason": "The selected outlet is missing its stock location.",
         }
 
     cutover = _promotion_actual_cutover(warehouse, company=company)
     if cutover is None:
         return {
             "status": "not_available",
-            "reason": "inventory cutover is not active for the selected warehouse",
+            "reason": "Stock tracking has not started for the selected outlet.",
             "warehouse": warehouse,
         }
 
@@ -1518,7 +1855,7 @@ def _promotion_actual_results(*, promotion: Any, pos_profile: str | None) -> dic
                     "tax_rate": row.get("tax_rate"),
                     "actual_revenue_reason": "promotion allocation quantity evidence is missing or invalid",
                     "actual_cogs_status": "not_available",
-                    "actual_cogs_reason": "post-cutover resolved ingredient consumption is unavailable",
+                    "actual_cogs_reason": "Ingredient use is not available for this sale.",
                 })
             continue
         line_rows = _promotion_order_line_rows(cstr(row.get("name")))
@@ -1532,7 +1869,7 @@ def _promotion_actual_results(*, promotion: Any, pos_profile: str | None) -> dic
             "actual_revenue_payload": enriched_payload,
             "actual_revenue_reason": revenue_reason,
             "actual_cogs_status": "not_available",
-            "actual_cogs_reason": "post-cutover resolved ingredient consumption is unavailable",
+            "actual_cogs_reason": "Ingredient use is not available for this sale.",
             "tax_rate": row.get("tax_rate"),
         }
         reconciliation_status = cstr(row.get("promotion_reconciliation_status")).strip()
@@ -1567,7 +1904,7 @@ def _promotion_actual_results(*, promotion: Any, pos_profile: str | None) -> dic
         else:
             record["actual_cogs_reason"] = cstr(
                 cogs_evidence.get("reason")
-                or "post-cutover resolved ingredient consumption or ERP valuation is unavailable"
+                or "Ingredient use or its cost is not available for this sale."
             )
         evidence.append(record)
 
@@ -1707,7 +2044,7 @@ def _promotion_order_cogs_evidence(
         limit_page_length=5000,
     )
     if not sales_rows:
-        return {"status": "not_available", "reason": "post-cutover resolved ingredient consumption is not recorded"}
+        return {"status": "not_available", "reason": "Ingredient use has not been recorded for these sales yet."}
     if line_rows is None:
         line_rows = _promotion_order_line_rows(order_name)
     line_id_by_sale = {
@@ -2157,6 +2494,7 @@ def approve_promotion_economics_override(*, payload: str | dict[str, Any]) -> di
     if checked_by == actor:
         frappe.throw(_("A second Company Director must approve this override"), frappe.ValidationError)
     profile_name = _promotion_profile_name(promotion, cstr(value.get("pos_profile")).strip() or None)
+    _require_director_pos_profile(profile_name)
     try:
         items = _build_promotion_economics_items(
             promotion_name=promotion_name,
@@ -2413,12 +2751,10 @@ def get_edge_snapshot(
         log_sanitized_error("KoPOS edge catalog target lookup failed", error)
         catalog_item_ids, catalog_modifier_ids = set(), set()
     try:
-        snapshot_kwargs: dict[str, Any] = {}
-        if catalog_item_ids or catalog_modifier_ids:
-            snapshot_kwargs = {
-                "catalog_item_ids": catalog_item_ids,
-                "catalog_modifier_ids": catalog_modifier_ids,
-            }
+        snapshot_kwargs: dict[str, Any] = {
+            "catalog_item_ids": catalog_item_ids,
+            "catalog_modifier_ids": catalog_modifier_ids,
+        }
         profile_name = cstr(getattr(profile, "name", None)).strip()
         if profile_name:
             snapshot_kwargs["pos_profile"] = profile_name
@@ -2495,11 +2831,10 @@ def get_stock_update_status(
         company = cstr(getattr(profile, "company", None)).strip()
         resolved_warehouse = cstr(getattr(profile, "warehouse", None)).strip()
     else:
+        _require_company_director("Stock update status")
         resolved_warehouse = cstr(warehouse).strip()
         if not resolved_warehouse:
             frappe.throw(_("Outlet stock location is required"), frappe.ValidationError)
-        if not frappe.has_permission("FB Inventory Policy", ptype="read"):
-            frappe.throw(_("This stock check requires Company Director permission"), frappe.PermissionError)
         company = cstr(
             frappe.db.get_value(
                 "FB Inventory Policy",
@@ -2510,6 +2845,7 @@ def get_stock_update_status(
         ).strip()
         if not company:
             frappe.throw(_("This outlet stock location is not linked to a company"), frappe.ValidationError)
+        resolve_director_context(company=company, warehouse=resolved_warehouse)
     now = now_datetime()
     policy = frappe.db.get_value(
         "FB Inventory Policy",
@@ -2884,7 +3220,10 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
     company = cstr(profile.get("company")).strip()
     if not warehouse:
         frappe.throw(_("This device has no assigned inventory warehouse"), frappe.ValidationError)
+    task_kind_limit = 20
+    task_line_limit = 100
     tasks: list[dict[str, Any]] = []
+    tasks_truncated = False
     preparation_visible = _preparation_tasks_visible_to_device(
         device=device,
         company=company,
@@ -2916,7 +3255,7 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
         ]
         if work_order_meta.has_field("custom_kopos_preparation_fingerprint"):
             work_order_fields.append("custom_kopos_preparation_fingerprint")
-        work_orders = frappe.get_all(
+        work_order_rows = frappe.get_all(
             "Work Order",
             filters={
                 "company": company,
@@ -2926,8 +3265,11 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
             },
             fields=work_order_fields,
             order_by="modified asc",
-            limit_page_length=20,
+            limit_page_length=task_kind_limit + 1,
         )
+        if len(work_order_rows) > task_kind_limit:
+            tasks_truncated = True
+        work_orders = work_order_rows[:task_kind_limit]
         active_work_order_boms = {
             cstr(row.get("bom_no")).strip()
             for row in work_orders
@@ -2937,7 +3279,12 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
         # Preparation is a derived alert, not a scheduler-created document.
         # It remains visible until staff accepts it; the acceptance command
         # then creates the Draft Work Order under the same database lock.
-        for alert in derived_preparation_alerts(company=company, warehouse=warehouse):
+        preparation_alerts = derived_preparation_alerts(company=company, warehouse=warehouse)
+        available_preparation_slots = max(0, task_kind_limit - len(work_orders))
+        visible_alerts = preparation_alerts[: available_preparation_slots + 1]
+        if len(visible_alerts) > available_preparation_slots:
+            tasks_truncated = True
+        for alert in visible_alerts[:available_preparation_slots]:
             if alert.get("kind") != "preparation":
                 continue
             if cstr(alert.get("bom_no")).strip() in active_work_order_boms:
@@ -3001,28 +3348,57 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
             })
 
     if frappe.db.exists("DocType", "Purchase Order") and frappe.db.exists("DocType", "Purchase Order Item"):
-        purchase_orders = frappe.get_all(
-            "Purchase Order",
-            filters={"company": company, "docstatus": 1},
-            fields=["name", "company", "modified"],
-            order_by="modified asc",
-            limit_page_length=50,
+        purchase_order_rows = frappe.db.sql(
+            """
+            SELECT purchase_order.name, purchase_order.company, purchase_order.modified,
+                   purchase_order.set_warehouse
+            FROM `tabPurchase Order` purchase_order
+            INNER JOIN `tabPurchase Order Item` line ON line.parent = purchase_order.name
+            WHERE line.parenttype = 'Purchase Order'
+              AND purchase_order.company = %s
+              AND purchase_order.docstatus = 1
+              AND purchase_order.per_received < 100
+              AND purchase_order.status NOT IN ('Closed', 'Cancelled')
+              AND COALESCE(NULLIF(line.warehouse, ''), purchase_order.set_warehouse) = %s
+              AND line.qty > line.received_qty
+            GROUP BY purchase_order.name, purchase_order.company, purchase_order.modified,
+                     purchase_order.set_warehouse
+            ORDER BY purchase_order.modified ASC, purchase_order.name ASC
+            LIMIT %s
+            """,
+            (company, warehouse, task_kind_limit + 1),
+            as_dict=True,
         )
+        if len(purchase_order_rows) > task_kind_limit:
+            tasks_truncated = True
+        purchase_orders = purchase_order_rows[:task_kind_limit]
         for order in purchase_orders:
             purchase_item_meta = frappe.get_meta("Purchase Order Item")
             purchase_item_fields = ["name", "item_code", "item_name", "qty", "received_qty", "warehouse", "uom"]
             for optional_field in ("stock_qty", "conversion_factor", "stock_uom"):
                 if purchase_item_meta.has_field(optional_field):
                     purchase_item_fields.append(optional_field)
-            rows = frappe.get_all(
-                "Purchase Order Item",
-                filters={"parent": order["name"], "warehouse": warehouse},
-                fields=purchase_item_fields,
-                order_by="idx asc",
-                limit_page_length=200,
+            selected_purchase_fields = ", ".join(
+                f"line.`{fieldname}`" for fieldname in purchase_item_fields
             )
+            rows = frappe.db.sql(
+                f"""
+                SELECT {selected_purchase_fields}
+                FROM `tabPurchase Order Item` line
+                WHERE line.parent = %s AND line.parenttype = 'Purchase Order'
+                  AND COALESCE(NULLIF(line.warehouse, ''), %s) = %s
+                  AND line.qty > line.received_qty
+                ORDER BY line.idx ASC
+                LIMIT %s
+                """,
+                (order["name"], cstr(order.get("set_warehouse")).strip(), warehouse, task_line_limit + 1),
+                as_dict=True,
+            )
+            lines_truncated = len(rows) > task_line_limit
+            if lines_truncated:
+                tasks_truncated = True
             lines: list[dict[str, Any]] = []
-            for row in rows:
+            for row in rows[:task_line_limit]:
                 total_quantity = Decimal(str(row.get("qty") or 0))
                 received_quantity = Decimal(str(row.get("received_qty") or 0))
                 if total_quantity <= received_quantity:
@@ -3044,6 +3420,11 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
                     "stock_uom": authority["stock_uom"],
                 })
             if lines:
+                receiving_paused = _supplier_receiving_is_paused(
+                    company=company,
+                    warehouse=warehouse,
+                    purchase_order=cstr(order.get("name")),
+                )
                 tasks.append({
                     "kind": "receiving",
                     "document": cstr(order.get("name")),
@@ -3051,6 +3432,13 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
                     "revision": _authoritative_document_revision(order),
                     "warehouse": warehouse,
                     "lines": lines,
+                    "lines_truncated": lines_truncated,
+                    **({
+                        "blocked_reason": (
+                            "A manager is checking a difference in this delivery. "
+                            "Wait until it is cleared before recording more."
+                        )
+                    } if receiving_paused else {}),
                 })
 
     if frappe.db.exists("DocType", "Material Request") and frappe.db.exists("DocType", "Material Request Item"):
@@ -3060,7 +3448,7 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
         transfer_route_tracking_installed = _transfer_route_tracking_installed()
         request_item_meta = frappe.get_meta("Material Request Item")
         transfer_source_field_installed = request_item_meta.has_field("from_warehouse")
-        request_item_fields = ["name", "item_code", "item_name", "qty", "uom", "warehouse"]
+        request_item_fields = ["name", "idx", "item_code", "item_name", "qty", "uom", "warehouse"]
         if transfer_source_field_installed:
             request_item_fields.append("from_warehouse")
         if request_item_meta.has_field("stock_qty"):
@@ -3069,29 +3457,48 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
             request_item_fields.append("stock_uom")
         if request_item_meta.has_field("conversion_factor"):
             request_item_fields.append("conversion_factor")
-        requests = frappe.get_all(
-            "Material Request",
-            filters={"company": company, "docstatus": 1, "material_request_type": "Material Transfer"},
-            fields=request_fields,
-            order_by="modified asc",
-            limit_page_length=50,
+        request_rows = frappe.db.sql(
+            f"""
+            SELECT request.name, request.modified{', request.custom_kopos_transit_warehouse' if 'custom_kopos_transit_warehouse' in request_fields else ''}
+            FROM `tabMaterial Request` request
+            INNER JOIN `tabMaterial Request Item` line ON line.parent = request.name
+            WHERE line.parenttype = 'Material Request'
+              AND request.company = %s
+              AND request.docstatus = 1
+              AND request.material_request_type = 'Material Transfer'
+              AND request.status NOT IN ('Stopped', 'Cancelled', 'Transferred')
+              AND ({'line.from_warehouse = %s OR ' if transfer_source_field_installed else ''}line.warehouse = %s)
+            GROUP BY request.name, request.modified{', request.custom_kopos_transit_warehouse' if 'custom_kopos_transit_warehouse' in request_fields else ''}
+            ORDER BY request.modified ASC, request.name ASC
+            LIMIT %s
+            """,
+            (
+                (company, warehouse, warehouse, task_kind_limit + 1)
+                if transfer_source_field_installed
+                else (company, warehouse, task_kind_limit + 1)
+            ),
+            as_dict=True,
         )
+        if len(request_rows) > task_kind_limit:
+            tasks_truncated = True
+        requests = request_rows[:task_kind_limit]
         for request in requests:
             transit_warehouse = cstr(request.get("custom_kopos_transit_warehouse")).strip()
-            rows = (
-                frappe.get_all(
-                    "Material Request Item",
-                    filters={"parent": request["name"]},
-                    fields=request_item_fields,
-                    order_by="idx asc",
-                    limit_page_length=200,
-                )
-                if transfer_source_field_installed
-                else []
+            rows = _actionable_transfer_request_lines(
+                material_request=cstr(request.get("name")),
+                warehouse=warehouse,
+                transit_warehouse=transit_warehouse,
+                fields=request_item_fields,
+                source_field_installed=transfer_source_field_installed,
+                route_tracking_installed=transfer_route_tracking_installed,
+                limit=task_line_limit + 1,
             )
             dispatch_lines: list[dict[str, Any]] = []
             receipt_lines: list[dict[str, Any]] = []
-            for row in rows:
+            lines_truncated = len(rows) > task_line_limit
+            if lines_truncated:
+                tasks_truncated = True
+            for row in rows[:task_line_limit]:
                 item_code = cstr(row.get("item_code")).strip()
                 source_warehouse = cstr(row.get("from_warehouse")).strip()
                 destination_warehouse = cstr(row.get("warehouse")).strip()
@@ -3100,13 +3507,14 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
                     continue
                 uom_authority = _guided_uom_authority(row, item_code=item_code, label="Material Request line")
                 requested_qty = uom_authority["stock_qty"]
-                dispatched_qty, received_qty = _transfer_route_progress(
-                    material_request=cstr(request.get("name")),
-                    material_request_item=request_item,
-                    source_warehouse=source_warehouse,
-                    transit_warehouse=transit_warehouse,
-                    destination_warehouse=destination_warehouse,
-                ) if transfer_route_tracking_installed and transit_warehouse else (Decimal("0"), Decimal("0"))
+                dispatched_qty = _non_negative_decimal(
+                    row.get("kopos_dispatched_stock_qty"),
+                    "recorded dispatched stock quantity",
+                )
+                received_qty = _non_negative_decimal(
+                    row.get("kopos_received_stock_qty"),
+                    "recorded received stock quantity",
+                )
                 remaining_dispatched = max(requested_qty - dispatched_qty, Decimal("0"))
                 remaining_received = max(dispatched_qty - received_qty, Decimal("0"))
                 factor = uom_authority["conversion_factor"]
@@ -3163,6 +3571,7 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
                     "revision": _authoritative_document_revision(request),
                     "warehouse": warehouse,
                     "lines": dispatch_lines,
+                    "lines_truncated": lines_truncated,
                     **({"blocked_reason": route_blocked_reason} if route_blocked_reason else {}),
                 })
             if receipt_lines:
@@ -3173,6 +3582,7 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
                     "revision": _authoritative_document_revision(request),
                     "warehouse": warehouse,
                     "lines": receipt_lines,
+                    "lines_truncated": lines_truncated,
                     **({"blocked_reason": route_blocked_reason} if route_blocked_reason else {}),
                 })
 
@@ -3181,6 +3591,7 @@ def _get_inventory_tasks(*, device_id: str) -> dict[str, Any]:
         "status": "ok",
         "warehouse": warehouse,
         "tasks": tasks[:100],
+        "tasks_truncated": tasks_truncated or len(tasks) > 100,
         "count_task": safe_count_task,
         "generated_at": _iso_with_offset(now_datetime()),
     }
@@ -3199,11 +3610,20 @@ def preflight_legacy_inventory_values(
     _require_company_director("Legacy inventory migration")
     if not frappe.has_permission("Item", ptype="read"):
         frappe.throw(_("Legacy inventory preflight requires Item read permission"), frappe.PermissionError)
-    values = discover_legacy_values(company=cstr(company).strip() or None)
+    context = resolve_director_context(
+        company=cstr(company).strip() or None,
+        warehouse=(cstr(warehouse).strip() or None) if cint(apply) else None,
+    )
+    if not context.company:
+        return {
+            "status": context.status,
+            "companies": list(context.allowed_companies),
+        }
+    values = discover_legacy_values(company=context.company)
     if not cint(apply):
         return {"status": "dry_run", "input_digest": legacy_input_digest(values), "values": values, "unknown_count": sum(1 for value in values if value["availability_mode"].strip().lower() not in {"", "auto", "force_available", "force_unavailable"})}
-    resolved_company = cstr(company).strip()
-    resolved_warehouse = cstr(warehouse).strip()
+    resolved_company = context.company
+    resolved_warehouse = context.warehouse
     if not resolved_company or not resolved_warehouse:
         frappe.throw(_("Company and warehouse are required to apply legacy migration"), frappe.ValidationError)
     if not cstr(input_digest).strip():
@@ -3573,9 +3993,32 @@ def create_count_reconciliation_after_director_review(*, payload: str | dict[str
         frappe.throw(_("Count variance review requires observation_id and reason"), frappe.ValidationError)
     if len(reason) > 2_000:
         frappe.throw(_("Count variance review reason is too long"), frappe.ValidationError)
-    # Serialize competing clicks before reading the immutable observation. The
+    observation_fields = [
+        "name", "company", "task_id", "warehouse", "stock_watermark",
+        "observed_at", "lines_json", "status", "reconciliation",
+    ]
+    # Authorize before taking a row lock. A director must not be able to hold a
+    # row belonging to another company merely by guessing its public identity.
+    unlocked_observation = frappe.db.get_value(
+        "FB Inventory Count Observation",
+        {"observation_id": observation_id},
+        observation_fields,
+        as_dict=True,
+    )
+    if not unlocked_observation:
+        frappe.throw(_("The count observation does not exist"), frappe.ValidationError)
+    unlocked_company = cstr(unlocked_observation.get("company")).strip()
+    unlocked_warehouse = cstr(unlocked_observation.get("warehouse")).strip()
+    if not unlocked_company:
+        unlocked_task = frappe.get_doc(
+            "FB Inventory Count Task", cstr(unlocked_observation.get("task_id"))
+        )
+        unlocked_company = cstr(getattr(unlocked_task, "company", None)).strip()
+    resolve_director_context(company=unlocked_company, warehouse=unlocked_warehouse)
+
+    # Serialize competing clicks only after the first scope check. The
     # deterministic Stock Reconciliation name remains the final replay guard,
-    # while this row lock prevents two directors from both inserting it.
+    # while this row lock prevents two permitted directors from both inserting it.
     frappe.db.sql(
         "SELECT name FROM `tabFB Inventory Count Observation` WHERE observation_id = %s FOR UPDATE",
         (observation_id,),
@@ -3583,24 +4026,28 @@ def create_count_reconciliation_after_director_review(*, payload: str | dict[str
     observation = frappe.db.get_value(
         "FB Inventory Count Observation",
         {"observation_id": observation_id},
-        ["name", "company", "task_id", "warehouse", "stock_watermark", "observed_at", "lines_json", "status", "reconciliation"],
+        observation_fields,
         as_dict=True,
     )
     if not observation:
         frappe.throw(_("The count observation does not exist"), frappe.ValidationError)
     task = None
     company = cstr(observation.get("company")).strip()
+    warehouse = cstr(observation.get("warehouse")).strip()
+    if not company:
+        task = frappe.get_doc("FB Inventory Count Task", cstr(observation.get("task_id")))
+        company = cstr(getattr(task, "company", None)).strip()
+    # Recheck the locked row in case its scope changed between the first read
+    # and the lock. No mutation happens until this second check succeeds.
+    resolve_director_context(company=company, warehouse=warehouse)
     existing_reconciliation = cstr(observation.get("reconciliation")).strip()
     if existing_reconciliation:
         # Keep replay independent of the task row where possible.  The
         # observation already carries the company used to open the exception;
         # older rows may need the task as a compatibility fallback.
-        if not company:
-            task = frappe.get_doc("FB Inventory Count Task", cstr(observation.get("task_id")))
-            company = cstr(getattr(task, "company", None)).strip()
         _resolve_count_director_review_exception(
             company=company,
-            warehouse=cstr(observation.get("warehouse")).strip(),
+            warehouse=warehouse,
             observation_id=observation_id,
         )
         frappe.db.commit()
@@ -3613,7 +4060,6 @@ def create_count_reconciliation_after_director_review(*, payload: str | dict[str
         frappe.throw(_("This count does not require a director variance review"), frappe.ValidationError)
     task = frappe.get_doc("FB Inventory Count Task", cstr(observation.get("task_id")))
     company = company or cstr(getattr(task, "company", None)).strip()
-    warehouse = cstr(observation.get("warehouse")).strip()
     current_watermark = _stock_ledger_watermark(warehouse)
     if current_watermark and current_watermark != cstr(observation.get("stock_watermark")).strip():
         frappe.db.set_value("FB Inventory Count Observation", observation["name"], "status", "Conflict", update_modified=False)
@@ -3726,7 +4172,7 @@ def submit_transfer_receipt(*, device_id: str, payload: str | dict[str, Any]) ->
 
 @frappe.whitelist(methods=["POST"])
 def record_waste_event(*, device_id: str, payload: str | dict[str, Any]) -> dict[str, Any]:
-    """Record outlet waste as a Draft FB Waste Event a director must submit."""
+    """Record physical waste and issue its stock immediately and exactly once."""
 
     return _handle_guided_task(device_id=device_id, payload=payload, task_type="record_waste_event")
 
@@ -4524,9 +4970,9 @@ def _count_review_projection(
     """Return only the accepted local observation's operational review.
 
     The observation is the immutable local evidence.  This projection exposes
-    what a manager needs to confirm—counted quantities and signed percentage
-    variance—without returning the private expected quantity, valuation,
-    thresholds, or any other financial field.
+    what a manager needs to confirm—counted quantities and the signed amount
+    above or below the saved stock—without returning valuation, thresholds,
+    or any other financial field.
     """
 
     if not task_name or not warehouse or not frappe.db.exists("DocType", "FB Inventory Count Observation"):
@@ -4568,15 +5014,17 @@ def _count_review_projection(
             if not item_id or not uom or counted is None:
                 malformed = True
                 break
+            variance = _count_line_variance_details(
+                warehouse=warehouse,
+                item_id=item_id,
+                counted_quantity=counted,
+            )
             review_line: dict[str, Any] = {
                 "item_id": item_id,
                 "uom": uom,
                 "counted_quantity": counted,
-                "variance_percent": _count_line_variance_percent(
-                    warehouse=warehouse,
-                    item_id=item_id,
-                    counted_quantity=counted,
-                ),
+                "difference_quantity": variance["difference_quantity"] if variance else None,
+                "variance_percent": variance["variance_percent"] if variance else None,
             }
             # Pack breakdown is operational evidence only.  Keep legacy
             # observations readable while exposing the explicit units for new
@@ -4640,6 +5088,17 @@ def _safe_count_quantity(value: Any) -> str | None:
 def _count_line_variance_percent(
     *, warehouse: str, item_id: str, counted_quantity: str
 ) -> str | None:
+    details = _count_line_variance_details(
+        warehouse=warehouse,
+        item_id=item_id,
+        counted_quantity=counted_quantity,
+    )
+    return details["variance_percent"] if details else None
+
+
+def _count_line_variance_details(
+    *, warehouse: str, item_id: str, counted_quantity: str
+) -> dict[str, str] | None:
     expected_raw = frappe.db.get_value(
         "Bin", {"item_code": item_id, "warehouse": warehouse}, "actual_qty"
     )
@@ -4651,11 +5110,16 @@ def _count_line_variance_percent(
     if not expected.is_finite() or not counted.is_finite():
         return None
     denominator = max(abs(expected), Decimal("1"))
-    percent = ((counted - expected) / denominator * Decimal("100")).quantize(
+    difference = counted - expected
+    percent = (difference / denominator * Decimal("100")).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP
     )
-    normalized = percent.normalize()
-    return format(normalized, "f") if normalized else "0"
+    normalized_difference = difference.normalize()
+    normalized_percent = percent.normalize()
+    return {
+        "difference_quantity": format(normalized_difference, "f") if normalized_difference else "0",
+        "variance_percent": format(normalized_percent, "f") if normalized_percent else "0",
+    }
 
 
 def _count_variance(*, company: str, warehouse: str, lines: list[dict[str, Any]]) -> dict[str, Decimal]:
@@ -5021,10 +5485,37 @@ def _positive_menu_decimal(value: Any, label: str) -> Decimal:
     return parsed
 
 
+def _require_director_pos_profile(pos_profile: str | None) -> None:
+    profile_name = cstr(pos_profile).strip()
+    if not profile_name:
+        frappe.throw(_("Choose an outlet first"), frappe.ValidationError)
+    profile = frappe.db.get_value(
+        "POS Profile",
+        profile_name,
+        ["company", "warehouse"],
+        as_dict=True,
+    )
+    if not profile:
+        frappe.throw(_("Choose an outlet that exists"), frappe.ValidationError)
+    context = resolve_director_context(
+        company=cstr(profile.get("company")).strip(),
+        warehouse=cstr(profile.get("warehouse")).strip(),
+    )
+    if profile_name not in director_pos_profiles(context):
+        frappe.throw(_("You do not have access to this outlet."), frappe.PermissionError)
+
+
 def _require_company_director(action: str) -> None:
-    roles = set(frappe.get_roles(frappe.session.user))
-    if "Company Director" not in roles and "System Manager" not in roles:
-        frappe.throw(_("{0} requires Company Director permission").format(action), frappe.PermissionError)
+    del action
+    require_director_role()
+
+
+def _require_system_manager_for_internal_tool() -> None:
+    if "System Manager" not in set(frappe.get_roles(frappe.session.user)):
+        frappe.throw(
+            _("This tool is available to Support only."),
+            frappe.PermissionError,
+        )
 
 
 _GUIDED_TASK_COMMON_FIELDS = frozenset({
@@ -5043,7 +5534,10 @@ _GUIDED_TASK_FIELDS: dict[str, frozenset[str]] = {
     "submit_transfer_receipt": frozenset({"material_request", "lines", "quantity", "batch_no"}),
     # Waste has no counterparty document: the outlet observes it. The device
     # supplies its own identity so the command stays replay-safe.
-    "record_waste_event": frozenset({"waste_id", "lines", "reason_code", "reason_text"}),
+    "record_waste_event": frozenset({
+        "waste_id", "source_type", "source_item", "source_quantity",
+        "selected_modifiers", "lines", "reason_code", "reason_text",
+    }),
 }
 
 _GUIDED_TASK_MAX_PAYLOAD_BYTES = _DEVICE_MAX_PAYLOAD_BYTES
@@ -5171,7 +5665,7 @@ def _parse_guided_task_payload(
         "submit_purchase_receipt": ("purchase_order", "lines"),
         "submit_transfer_dispatch": ("material_request", "lines"),
         "submit_transfer_receipt": ("material_request", "lines"),
-        "record_waste_event": ("waste_id", "lines", "reason_code"),
+        "record_waste_event": ("waste_id", "reason_code"),
     }[task_type]
     for fieldname in required_task_fields:
         if fieldname not in value or value[fieldname] in (None, ""):
@@ -5186,6 +5680,41 @@ def _parse_guided_task_payload(
                 _("Preparation acceptance requires the assigned alert BOM and fingerprint"),
                 frappe.ValidationError,
             )
+    if task_type == "record_waste_event":
+        source_type = cstr(value.get("source_type") or "physical_item").strip()
+        if source_type not in {"physical_item", "made_item"}:
+            frappe.throw(_("Waste source is invalid"), frappe.ValidationError)
+        if source_type == "physical_item":
+            lines = value.get("lines")
+            if not isinstance(lines, list) or not lines:
+                frappe.throw(_("Add at least one item and amount"), frappe.ValidationError)
+            if any(fieldname in value for fieldname in ("source_item", "source_quantity", "selected_modifiers")):
+                frappe.throw(_("Physical waste contains made-product details"), frappe.ValidationError)
+        else:
+            if "lines" in value:
+                frappe.throw(_("Made-product waste cannot provide ingredient amounts"), frappe.ValidationError)
+            source_item = value.get("source_item")
+            if not isinstance(source_item, str) or not cstr(source_item).strip():
+                frappe.throw(_("Choose the made product"), frappe.ValidationError)
+            if len(source_item) > _GUIDED_TASK_MAX_STRING_LENGTH:
+                frappe.throw(_("The made product is invalid"), frappe.ValidationError)
+            raw_quantity = value.get("source_quantity")
+            if isinstance(raw_quantity, bool) or not isinstance(raw_quantity, (str, int)):
+                frappe.throw(_("Made-product amount is invalid"), frappe.ValidationError)
+            if len(cstr(raw_quantity)) > _GUIDED_TASK_MAX_DECIMAL_LENGTH:
+                frappe.throw(_("Made-product amount is invalid"), frappe.ValidationError)
+            if _non_negative_decimal(raw_quantity, "made-product amount") <= 0:
+                frappe.throw(_("Made-product amount must be greater than zero"), frappe.ValidationError)
+            selected_modifiers = value.get("selected_modifiers", [])
+            if not isinstance(selected_modifiers, list):
+                frappe.throw(_("Customer choices must be a list"), frappe.ValidationError)
+            if len(selected_modifiers) > _GUIDED_TASK_MAX_LINES:
+                frappe.throw(_("Too many customer choices were selected"), frappe.ValidationError)
+            for modifier in selected_modifiers:
+                if not isinstance(modifier, str) or not cstr(modifier).strip():
+                    frappe.throw(_("A customer choice is invalid"), frappe.ValidationError)
+                if len(modifier) > _GUIDED_TASK_MAX_STRING_LENGTH:
+                    frappe.throw(_("A customer choice is invalid"), frappe.ValidationError)
     return value
 
 
@@ -5217,6 +5746,16 @@ def _handle_guided_task(*, device_id: str, payload: str | dict[str, Any], task_t
         source_value = cstr(value.get("bom_no")).strip()
     if source_value != cstr(value.get("source_document")).strip():
         frappe.throw(_("Guided task source_document does not match the assigned standard document"), frappe.ValidationError)
+    _validate_guided_task_actionable_quantities(value, task_type=task_type)
+    requirements = _GUIDED_TASK_AUTOMATION_REQUIREMENTS.get(task_type)
+    receipt = _get_guided_command_receipt(value)
+    if receipt:
+        if task_type == "record_waste_event":
+            _submit_existing_waste_with_automation(
+                value,
+                cstr(receipt.get("result_document")).strip(),
+            )
+        return _guided_command_response(receipt, status="replayed")
     doctype = {
         "accept_preparation_task": "Work Order",
         "start_preparation_task": "Work Order",
@@ -5224,14 +5763,24 @@ def _handle_guided_task(*, device_id: str, payload: str | dict[str, Any], task_t
         "submit_purchase_receipt": "Purchase Receipt",
         "submit_transfer_dispatch": "Stock Entry",
         "submit_transfer_receipt": "Stock Entry",
-        # A Draft FB Waste Event, never a Stock Entry: the tablet records the
-        # observation and a director decides whether stock moves.
+        # The event is the audited source document; submitting it immediately
+        # creates the idempotent Material Issue that changes stock.
         "record_waste_event": "FB Waste Event",
     }[task_type]
     existing = _find_command_document(doctype, command_id, payload_hash=cstr(value.get("payload_hash")).strip())
     if existing:
-        return {"status": "replayed", "task_type": task_type, "document": existing}
-    requirements = _GUIDED_TASK_AUTOMATION_REQUIREMENTS.get(task_type)
+        if task_type == "record_waste_event":
+            _submit_existing_waste_with_automation(value, existing)
+        receipt = _create_guided_command_receipt(value)
+        _complete_guided_command_receipt(
+            receipt,
+            result_doctype=doctype,
+            result_document=existing,
+            outcome="Completed",
+        )
+        frappe.db.commit()
+        return _guided_command_response(receipt, status="replayed")
+    receipt = _create_guided_command_receipt(value)
     if requirements is None:
         document = _execute_guided_task_mutation(value, command_id=command_id, task_type=task_type)
     else:
@@ -5252,8 +5801,133 @@ def _handle_guided_task(*, device_id: str, payload: str | dict[str, Any], task_t
                 _("Guided inventory automation is not configured safely: {0}").format(error.reason),
                 frappe.ValidationError,
             )
+    result_doctype = _guided_result_doctype(task_type, document)
+    outcome = "Exception" if result_doctype == "FB Inventory Exception" else "Completed"
+    _complete_guided_command_receipt(
+        receipt,
+        result_doctype=result_doctype,
+        result_document=document,
+        outcome=outcome,
+    )
     frappe.db.commit()
-    return {"status": "accepted", "task_type": task_type, "document": document}
+    return _guided_command_response(receipt, status="accepted")
+
+
+def _validate_guided_task_actionable_quantities(value: dict[str, Any], *, task_type: str) -> None:
+    if task_type == "submit_purchase_receipt":
+        lines = value.get("lines")
+        if not isinstance(lines, list) or not lines:
+            frappe.throw(_("Receiving requires at least one item"), frappe.ValidationError)
+        total = Decimal("0")
+        for line in lines:
+            if not isinstance(line, dict):
+                frappe.throw(_("Receiving contains an invalid item"), frappe.ValidationError)
+            for fieldname in ("qty", "missing_qty", "damaged_qty", "excess_qty"):
+                total += _non_negative_decimal(line.get(fieldname, 0), f"receiving {fieldname}")
+        if total <= 0:
+            frappe.throw(
+                _("Enter at least one received, missing, damaged, or extra amount"),
+                frappe.ValidationError,
+            )
+    if task_type in {"submit_transfer_dispatch", "submit_transfer_receipt"}:
+        lines = value.get("lines")
+        if not isinstance(lines, list) or not lines:
+            frappe.throw(_("Transfer requires at least one item"), frappe.ValidationError)
+        for line in lines:
+            if not isinstance(line, dict) or _non_negative_decimal(line.get("qty", 0), "transfer quantity") <= 0:
+                frappe.throw(_("Every transfer amount must be greater than zero"), frappe.ValidationError)
+
+
+def _get_guided_command_receipt(value: dict[str, Any]) -> Any | None:
+    if not frappe.db.exists("DocType", "FB Inventory Command Receipt"):
+        frappe.throw(
+            _("Inventory command receipts are not installed; run bench migrate before using stock tasks"),
+            frappe.ValidationError,
+        )
+    receipt = frappe.db.get_value(
+        "FB Inventory Command Receipt",
+        {"command_id": cstr(value.get("command_id")).strip()},
+        [
+            "name", "command_id", "payload_hash", "task_type", "state", "outcome",
+            "device_id", "company", "warehouse", "source_document", "source_revision",
+            "result_doctype", "result_document",
+        ],
+        as_dict=True,
+    )
+    if not receipt:
+        return None
+    expected = {
+        "payload_hash": cstr(value.get("payload_hash")).strip(),
+        "task_type": cstr(value.get("task_type")).strip(),
+        "device_id": cstr(value.get("device_id")).strip(),
+        "company": cstr(value.get("company")).strip(),
+        "warehouse": cstr(value.get("warehouse")).strip(),
+        "source_document": cstr(value.get("source_document")).strip(),
+        "source_revision": cstr(value.get("source_revision")).strip(),
+    }
+    for fieldname, expected_value in expected.items():
+        if cstr(receipt.get(fieldname)).strip() != expected_value:
+            frappe.throw(_("Inventory command ID was reused with different content"), frappe.ValidationError)
+    if cstr(receipt.get("state")).strip() != "Completed":
+        frappe.throw(_("This stock update is still being saved. Try again."), frappe.ValidationError)
+    if not cstr(receipt.get("result_doctype")).strip() or not cstr(receipt.get("result_document")).strip():
+        frappe.throw(_("The saved stock update has no result document"), frappe.ValidationError)
+    return receipt
+
+
+def _create_guided_command_receipt(value: dict[str, Any]) -> Any:
+    receipt = frappe.new_doc("FB Inventory Command Receipt")
+    receipt.command_id = cstr(value.get("command_id")).strip()
+    receipt.payload_hash = cstr(value.get("payload_hash")).strip()
+    receipt.task_type = cstr(value.get("task_type")).strip()
+    receipt.state = "Processing"
+    receipt.device_id = cstr(value.get("device_id")).strip()
+    receipt.company = cstr(value.get("company")).strip()
+    receipt.warehouse = cstr(value.get("warehouse")).strip()
+    receipt.source_document = cstr(value.get("source_document")).strip()
+    receipt.source_revision = cstr(value.get("source_revision")).strip()
+    receipt.insert(ignore_permissions=True)
+    return receipt
+
+
+def _complete_guided_command_receipt(
+    receipt: Any,
+    *,
+    result_doctype: str,
+    result_document: str,
+    outcome: str,
+) -> None:
+    if not cstr(result_document).strip():
+        frappe.throw(_("This stock task did not create a result"), frappe.ValidationError)
+    receipt.state = "Completed"
+    receipt.outcome = outcome
+    receipt.result_doctype = result_doctype
+    receipt.result_document = cstr(result_document).strip()
+    receipt.completed_at = now_datetime()
+    receipt.save(ignore_permissions=True)
+
+
+def _guided_result_doctype(task_type: str, document: str) -> str:
+    if task_type == "submit_purchase_receipt":
+        return "Purchase Receipt" if frappe.db.exists("Purchase Receipt", document) else "FB Inventory Exception"
+    return {
+        "accept_preparation_task": "Work Order",
+        "start_preparation_task": "Work Order",
+        "complete_preparation_task": "Stock Entry",
+        "submit_transfer_dispatch": "Stock Entry",
+        "submit_transfer_receipt": "Stock Entry",
+        "record_waste_event": "FB Waste Event",
+    }[task_type]
+
+
+def _guided_command_response(receipt: Any, *, status: str) -> dict[str, Any]:
+    return {
+        "status": status,
+        "task_type": cstr(receipt.get("task_type") if isinstance(receipt, dict) else receipt.task_type).strip(),
+        "outcome": cstr(receipt.get("outcome") if isinstance(receipt, dict) else receipt.outcome).strip().lower(),
+        "document_type": cstr(receipt.get("result_doctype") if isinstance(receipt, dict) else receipt.result_doctype).strip(),
+        "document": cstr(receipt.get("result_document") if isinstance(receipt, dict) else receipt.result_document).strip(),
+    }
 
 
 _GUIDED_TASK_AUTOMATION_REQUIREMENTS = {
@@ -5278,6 +5952,12 @@ _GUIDED_TASK_AUTOMATION_REQUIREMENTS = {
         "submit_doctypes": ("Stock Entry",),
     },
     "submit_transfer_receipt": {
+        "create_doctypes": ("Stock Entry",),
+        "submit_doctypes": ("Stock Entry",),
+    },
+    "record_waste_event": {
+        # The authenticated device route owns the immutable waste audit record.
+        # The configured least-privilege ERP identity owns the stock movement.
         "create_doctypes": ("Stock Entry",),
         "submit_doctypes": ("Stock Entry",),
     },
@@ -5625,15 +6305,72 @@ def _apply_batch_completion_details(document: Any, value: dict[str, Any], *, ord
 WASTE_REASON_CODES = frozenset({"Expired", "Spoiled", "Damaged", "Prep Error", "Other"})
 
 
+def _submit_waste_document_now(document: Any) -> str:
+    """Submit one waste event and require its Material Issue before success."""
+
+    docstatus = cint(getattr(document, "docstatus", 0))
+    stock_entry = cstr(getattr(document, "stock_entry", None)).strip()
+    if docstatus == 1:
+        if not stock_entry:
+            frappe.throw(
+                _("This waste record is submitted but its stock update is missing"),
+                frappe.ValidationError,
+            )
+        return cstr(document.name).strip()
+    if docstatus != 0 or cstr(getattr(document, "status", None)).strip() != "Draft":
+        frappe.throw(_("This waste record cannot update stock"), frappe.ValidationError)
+    # Device authentication, staff attribution, outlet scope, and exact payload
+    # validation have already succeeded at this boundary. Do not require the
+    # automation user to hold a broad manager role merely to submit the audit
+    # wrapper; its Stock Entry permissions were checked before reaching here.
+    document.flags.ignore_permissions = True
+    document.submit()
+    document.reload()
+    if cint(getattr(document, "docstatus", 0)) != 1 or not cstr(
+        getattr(document, "stock_entry", None)
+    ).strip():
+        frappe.throw(_("Waste was not applied to stock"), frappe.ValidationError)
+    return cstr(document.name).strip()
+
+
+def _submit_existing_waste_with_automation(value: dict[str, Any], waste_event: str) -> str:
+    """Finish an exact pre-receipt waste replay under the outlet identity."""
+
+    name = cstr(waste_event).strip()
+    if not name:
+        frappe.throw(_("The saved waste record is missing"), frappe.ValidationError)
+    document = frappe.get_doc("FB Waste Event", name)
+    if cstr(getattr(document, "company", None)).strip() != cstr(value.get("company")).strip():
+        frappe.throw(_("The saved waste record belongs to another company"), frappe.PermissionError)
+    if cstr(getattr(document, "warehouse", None)).strip() != cstr(value.get("warehouse")).strip():
+        frappe.throw(_("The saved waste record belongs to another warehouse"), frappe.PermissionError)
+    if cint(getattr(document, "docstatus", 0)) == 1:
+        return _submit_waste_document_now(document)
+    requirements = _GUIDED_TASK_AUTOMATION_REQUIREMENTS["record_waste_event"]
+    try:
+        with inventory_automation_identity(
+            company=cstr(value.get("company")).strip(),
+            warehouse=cstr(value.get("warehouse")).strip(),
+            create_doctypes=requirements["create_doctypes"],
+            submit_doctypes=requirements["submit_doctypes"],
+        ):
+            return _submit_waste_document_now(document)
+    except AutomationIdentityError as error:
+        frappe.throw(
+            _("Guided inventory automation is not configured safely: {0}").format(error.reason),
+            frappe.ValidationError,
+        )
+        raise AssertionError("frappe.throw must raise") from error
+
+
 def _record_waste_event(value: dict[str, Any], command_id: str) -> str:
-    """Record outlet waste as a Draft FB Waste Event for director review.
+    """Record physical waste and post its Material Issue in one transaction.
 
     Waste is the one stock movement the outlet observes rather than being handed
     a document for, so there is no Purchase Order or Material Request to execute
-    against. It is still not a free-form ledger write: the tablet records what
-    was seen, and the event stays **Draft** until a director submits it, which is
-    the point at which stock actually moves. This mirrors how a count observation
-    produces at most one Draft Stock Reconciliation.
+    against. It is still not a free-form ledger write: the submitted FB Waste
+    Event preserves who recorded what and why, while its idempotent Material
+    Issue changes stock immediately when this queued command reaches ERP.
     """
 
     company = cstr(value.get("company")).strip()
@@ -5645,9 +6382,40 @@ def _record_waste_event(value: dict[str, Any], command_id: str) -> str:
     if reason_code not in WASTE_REASON_CODES:
         frappe.throw(_("Waste reason is not one of the approved reasons"), frappe.ValidationError)
 
-    lines = value.get("lines")
+    source_type = cstr(value.get("source_type") or "physical_item").strip()
+    resolved_recipe = ""
+    resolved_recipe_hash = ""
+    selected_modifiers: list[str] = []
+    if source_type == "made_item":
+        try:
+            made_waste = resolve_made_item_waste(
+                item=cstr(value.get("source_item")).strip(),
+                company=company,
+                quantity=value.get("source_quantity"),
+                selected_modifiers=value.get("selected_modifiers") or [],
+                at_time=value.get("observed_at"),
+            )
+        except (RecipeCompilerError, InvalidOperation, TypeError, ValueError) as error:
+            frappe.log_error(
+                message=cstr(error)[:1000],
+                title="JiJi made-product waste could not resolve ingredients",
+            )
+            frappe.throw(
+                _("JiJi could not work out this product's waste. Check its ingredients and customer choices, then try again."),
+                frappe.ValidationError,
+            )
+            raise AssertionError("frappe.throw must raise") from error
+        lines = made_waste["lines"]
+        resolved_recipe = cstr(made_waste.get("recipe")).strip()
+        resolved_recipe_hash = cstr(made_waste.get("recipe_hash")).strip()
+        selected_modifiers = [
+            cstr(modifier).strip()
+            for modifier in made_waste.get("selected_modifiers") or []
+        ]
+    else:
+        lines = value.get("lines")
     if not isinstance(lines, list) or not lines:
-        frappe.throw(_("Waste requires at least one line"), frappe.ValidationError)
+        frappe.throw(_("Waste requires at least one item and amount"), frappe.ValidationError)
 
     document = frappe.new_doc("FB Waste Event")
     document.waste_id = waste_id
@@ -5656,6 +6424,35 @@ def _record_waste_event(value: dict[str, Any], command_id: str) -> str:
     document.reason_code = reason_code
     document.reason_text = cstr(value.get("reason_text")).strip() or None
     document.status = "Draft"
+    document.payload_hash = cstr(value.get("payload_hash")).strip()
+    document.source_type = "Made Item" if source_type == "made_item" else "Physical Item"
+    document.source_item = cstr(value.get("source_item")).strip() or None
+    document.source_quantity_decimal = (
+        format(_non_negative_decimal(value.get("source_quantity"), "made-product amount"), "f")
+        if source_type == "made_item"
+        else None
+    )
+    document.selected_modifiers_json = (
+        json.dumps(selected_modifiers, separators=(",", ":"), ensure_ascii=True)
+        if source_type == "made_item"
+        else None
+    )
+    document.recipe = resolved_recipe or None
+    document.recipe_canonical_hash = resolved_recipe_hash or None
+    document.resolved_lines_json = json.dumps(
+        [
+            {
+                "item": cstr(line.get("item") or line.get("item_code")).strip(),
+                "qty": cstr(line.get("qty_decimal") or line.get("qty")).strip(),
+                "uom": cstr(line.get("uom")).strip(),
+            }
+            for line in lines
+            if isinstance(line, dict)
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
     _set_document_value(document, "custom_kopos_inventory_command_id", command_id)
     _set_document_value(document, "custom_kopos_inventory_payload_hash", cstr(value.get("payload_hash")).strip())
     _apply_guided_task_audit(document, value)
@@ -5663,10 +6460,10 @@ def _record_waste_event(value: dict[str, Any], command_id: str) -> str:
     for index, line in enumerate(lines):
         if not isinstance(line, dict):
             frappe.throw(_("Waste line {0} is invalid").format(index + 1), frappe.ValidationError)
-        item_code = cstr(line.get("item_code")).strip()
+        item_code = cstr(line.get("item_code") or line.get("item")).strip()
         if not item_code:
             frappe.throw(_("Waste line {0} needs an item").format(index + 1), frappe.ValidationError)
-        raw_qty = cstr(line.get("qty")).strip()
+        raw_qty = cstr(line.get("qty_decimal") or line.get("qty")).strip()
         quantity = _non_negative_decimal(
             raw_qty,
             _("Waste line {0} quantity").format(index + 1),
@@ -5683,7 +6480,7 @@ def _record_waste_event(value: dict[str, Any], command_id: str) -> str:
         })
 
     document.insert(ignore_permissions=True)
-    return document.name
+    return _submit_waste_document_now(document)
 
 
 def _create_purchase_receipt(value: dict[str, Any], command_id: str) -> str:
@@ -5700,6 +6497,15 @@ def _create_purchase_receipt(value: dict[str, Any], command_id: str) -> str:
         frappe.throw(_("Receiving requires the authenticated company and warehouse"), frappe.ValidationError)
     if cstr(getattr(po, "company", None)).strip() != company:
         frappe.throw(_("This Purchase Order belongs to another company"), frappe.PermissionError)
+    if _supplier_receiving_is_paused(
+        company=company,
+        warehouse=warehouse,
+        purchase_order=purchase_order,
+    ):
+        frappe.throw(
+            _("A manager is checking a difference in this delivery. Wait until it is cleared before recording more."),
+            frappe.ValidationError,
+        )
     _validate_guided_source_revision(value, po, "Purchase Order")
     document = frappe.new_doc("Purchase Receipt")
     _set_document_value(document, "supplier", po.supplier)
@@ -5806,6 +6612,25 @@ def _create_purchase_receipt(value: dict[str, Any], command_id: str) -> str:
         if not receipt_name:
             return exception_name
     return receipt_name
+
+
+def _supplier_receiving_is_paused(*, company: str, warehouse: str, purchase_order: str) -> bool:
+    """Stop duplicate delivery reports while the exact discrepancy is open."""
+
+    if not frappe.db.exists("DocType", "FB Inventory Exception"):
+        return False
+    return bool(frappe.db.get_value(
+        "FB Inventory Exception",
+        {
+            "reason_code": "supplier_receiving_discrepancy",
+            "status": "Open",
+            "company": cstr(company).strip(),
+            "warehouse": cstr(warehouse).strip(),
+            "source_doctype": "Purchase Order",
+            "source_name": cstr(purchase_order).strip(),
+        },
+        "name",
+    ))
 
 
 def _create_transfer_entry(value: dict[str, Any], command_id: str, *, dispatch: bool) -> str:
@@ -5979,6 +6804,118 @@ def _transfer_route_tracking_installed() -> bool:
         frappe.get_meta("Stock Entry").has_field("custom_kopos_transfer_material_request")
         and frappe.get_meta("Stock Entry Detail").has_field("custom_kopos_transfer_request_item")
     )
+
+
+def _actionable_transfer_request_lines(
+    *, material_request: str, warehouse: str, transit_warehouse: str,
+    fields: list[str], source_field_installed: bool,
+    route_tracking_installed: bool, limit: int,
+) -> list[dict[str, Any]]:
+    """Limit after route progress, so completed early rows cannot hide work.
+
+    A submitted Material Request can contain more lines than the tablet page.
+    Selecting the first rows and checking progress afterwards would return the
+    same completed rows forever. The tracked path derives dispatch and receipt
+    progress in SQL first, returns only actionable lines, and avoids one query
+    per line. A route whose custom fields are not installed remains visible to
+    its source outlet as blocked setup work and cannot create stock movement.
+    """
+
+    if not source_field_installed:
+        return []
+    if not route_tracking_installed or not transit_warehouse:
+        rows = frappe.get_all(
+            "Material Request Item",
+            filters={
+                "parent": material_request,
+                "parenttype": "Material Request",
+                "from_warehouse": warehouse,
+            },
+            fields=fields,
+            order_by="idx asc",
+            limit_page_length=limit,
+        )
+        return [
+            {
+                **dict(row),
+                "kopos_dispatched_stock_qty": Decimal("0"),
+                "kopos_received_stock_qty": Decimal("0"),
+            }
+            for row in rows
+        ]
+
+    selected_fields = ", ".join(f"line.`{fieldname}`" for fieldname in fields)
+    if "stock_qty" in fields:
+        fallback = (
+            "line.`qty` * COALESCE(NULLIF(line.`conversion_factor`, 0), 1)"
+            if "conversion_factor" in fields
+            else "line.`qty`"
+        )
+        requested_stock_quantity = (
+            f"CASE WHEN COALESCE(line.`stock_qty`, 0) > 0 "
+            f"THEN line.`stock_qty` ELSE {fallback} END"
+        )
+    elif "conversion_factor" in fields:
+        requested_stock_quantity = (
+            "line.`qty` * COALESCE(NULLIF(line.`conversion_factor`, 0), 1)"
+        )
+    else:
+        requested_stock_quantity = "line.`qty`"
+
+    dispatched_quantity = """
+        COALESCE((
+            SELECT COALESCE(SUM(detail.transfer_qty), SUM(detail.qty), 0)
+            FROM `tabStock Entry` entry
+            INNER JOIN `tabStock Entry Detail` detail ON detail.parent = entry.name
+            WHERE entry.docstatus = 1
+              AND entry.purpose = 'Material Transfer'
+              AND entry.custom_kopos_transfer_material_request = %s
+              AND detail.custom_kopos_transfer_request_item = line.name
+              AND detail.s_warehouse = line.from_warehouse
+              AND detail.t_warehouse = %s
+        ), 0)
+    """
+    received_quantity = """
+        COALESCE((
+            SELECT COALESCE(SUM(detail.transfer_qty), SUM(detail.qty), 0)
+            FROM `tabStock Entry` entry
+            INNER JOIN `tabStock Entry Detail` detail ON detail.parent = entry.name
+            WHERE entry.docstatus = 1
+              AND entry.purpose = 'Material Transfer'
+              AND entry.custom_kopos_transfer_material_request = %s
+              AND detail.custom_kopos_transfer_request_item = line.name
+              AND detail.s_warehouse = %s
+              AND detail.t_warehouse = line.warehouse
+        ), 0)
+    """
+    return frappe.db.sql(
+        f"""
+        SELECT scoped.*
+        FROM (
+            SELECT {selected_fields},
+                   {requested_stock_quantity} AS kopos_requested_stock_qty,
+                   {dispatched_quantity} AS kopos_dispatched_stock_qty,
+                   {received_quantity} AS kopos_received_stock_qty
+            FROM `tabMaterial Request Item` line
+            WHERE line.parent = %s AND line.parenttype = 'Material Request'
+        ) scoped
+        WHERE (
+            scoped.from_warehouse = %s
+            AND scoped.kopos_requested_stock_qty > scoped.kopos_dispatched_stock_qty
+        ) OR (
+            scoped.warehouse = %s
+            AND scoped.kopos_dispatched_stock_qty > scoped.kopos_received_stock_qty
+        )
+        ORDER BY scoped.idx ASC
+        LIMIT %s
+        """,
+        (
+            material_request, transit_warehouse,
+            material_request, transit_warehouse,
+            material_request, warehouse, warehouse, limit,
+        ),
+        as_dict=True,
+    ) or []
 
 
 def _material_request_stock_quantity(row: Any) -> Decimal:
@@ -6365,6 +7302,9 @@ def _get_policy(warehouse: str) -> dict[str, Any] | None:
         meta = frappe.get_meta("FB Inventory Policy")
         if meta.has_field("inventory_exception_owner"):
             fields.append("inventory_exception_owner")
+        for fieldname in ("cutover_token", "cutover_at", "opening_stock_reconciliation"):
+            if meta.has_field(fieldname):
+                fields.append(fieldname)
     names = frappe.get_all(
         "FB Inventory Policy",
         filters={"warehouse": warehouse},
@@ -6372,6 +7312,16 @@ def _get_policy(warehouse: str) -> dict[str, Any] | None:
         limit_page_length=1,
     )
     return names[0] if names else None
+
+
+def _stock_tracking_started(policy: dict[str, Any] | None) -> bool:
+    """True only when the immutable start identity is complete."""
+    if not policy:
+        return False
+    return all(
+        cstr(policy.get(fieldname)).strip()
+        for fieldname in ("cutover_token", "cutover_at", "opening_stock_reconciliation")
+    )
 
 
 def _work_order_component_lines(work_order_name: str) -> list[dict[str, Any]]:
@@ -6572,7 +7522,7 @@ def _health_count_director_reviews(warehouse: str, *, now: Any) -> dict[str, Any
     The manager page needs enough evidence to make one informed decision, but
     not the hidden valuation or monetary ceiling that caused the review.
     ``lines_json`` is immutable observation evidence; this helper only derives
-    the operational pack breakdown and signed variance percentage for display.
+    the operational pack breakdown and signed quantity difference for display.
     """
 
     if not frappe.db.exists("DocType", "FB Inventory Count Observation"):
@@ -6624,30 +7574,46 @@ def _health_count_director_reviews(warehouse: str, *, now: Any) -> dict[str, Any
             if not item_id or total is None:
                 continue
             try:
-                line_variance = _count_line_variance_percent(
+                line_variance = _count_line_variance_details(
                     warehouse=warehouse,
                     item_id=item_id,
                     counted_quantity=total,
                 )
             except Exception:
                 line_variance = None
+            uom = cstr(line.get("stock_uom") or line.get("uom") or "Nos").strip()
             safe_line: dict[str, Any] = {
                 "item_id": item_id,
                 "item_name": cstr(line.get("item_name")).strip() or item_id,
-                "uom": cstr(line.get("stock_uom") or line.get("uom") or "Nos").strip(),
+                "uom": uom,
                 "total_quantity": total,
-                "variance_percent": line_variance,
+                "counted_display": amount_phrase(total, uom),
+                "difference_quantity": line_variance["difference_quantity"] if line_variance else None,
+                "difference_display": (
+                    difference_phrase(line_variance["difference_quantity"], uom)
+                    if line_variance
+                    else None
+                ),
+                "variance_percent": line_variance["variance_percent"] if line_variance else None,
             }
             if all(
                 line.get(fieldname) not in (None, "")
                 for fieldname in ("full_packs", "loose_quantity", "purchase_uom", "conversion_factor")
             ):
+                purchase_uom = cstr(line.get("purchase_uom")).strip()
+                full_packs = _safe_count_quantity(line.get("full_packs"))
+                loose_quantity = _safe_count_quantity(line.get("loose_quantity"))
                 safe_line.update({
-                    "purchase_uom": cstr(line.get("purchase_uom")),
+                    "purchase_uom": purchase_uom,
                     "conversion_factor": cstr(line.get("conversion_factor")),
-                    "full_packs": _safe_count_quantity(line.get("full_packs")),
-                    "loose_quantity": _safe_count_quantity(line.get("loose_quantity")),
+                    "full_packs": full_packs,
+                    "loose_quantity": loose_quantity,
                 })
+                if purchase_uom and full_packs is not None and loose_quantity is not None:
+                    safe_line["pack_breakdown_display"] = (
+                        f"{amount_phrase(full_packs, purchase_uom)} + "
+                        f"{amount_phrase(loose_quantity, uom)}"
+                    )
             safe_lines.append(safe_line)
         if not safe_lines:
             continue

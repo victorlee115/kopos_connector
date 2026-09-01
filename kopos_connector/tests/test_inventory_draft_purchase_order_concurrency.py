@@ -20,6 +20,52 @@ from kopos_connector.kopos.services.inventory_autopilot import document_coordina
 PLAN = {"name": "PLAN-1", "warehouse": "Outlet - JiJi", "material_request": "MAT-1"}
 
 
+def _outbound_safety(doc_events):
+    with patch.object(document_coordinator, "frappe") as fake_frappe:
+        fake_frappe.db.exists.return_value = False
+        fake_frappe.get_hooks.side_effect = (
+            lambda hook: doc_events if hook == "doc_events" else {}
+        )
+        return document_coordinator.outbound_configuration_safe()
+
+
+def test_standard_frappe_wildcard_hooks_do_not_pause_supplier_orders() -> None:
+    assert _outbound_safety(
+        {
+            "*": {
+                "on_update": [
+                    "frappe.desk.notifications.clear_doctype_notifications",
+                    "frappe.workflow.doctype.workflow_action.workflow_action.process_workflow_actions",
+                    "frappe.automation.doctype.assignment_rule.assignment_rule.apply",
+                ]
+            }
+        }
+    ) == (True, "")
+
+
+def test_standard_erpnext_safety_checks_do_not_pause_supplier_orders() -> None:
+    assert _outbound_safety(
+        {
+            "*": {
+                "validate": [
+                    "erpnext.support.doctype.service_level_agreement.service_level_agreement.apply",
+                    "erpnext.setup.doctype.transaction_deletion_record.transaction_deletion_record.check_for_running_deletion_job",
+                ]
+            }
+        }
+    ) == (True, "")
+
+
+def test_custom_wildcard_or_purchase_order_hooks_still_fail_closed() -> None:
+    assert _outbound_safety({"*": {"on_update": ["custom_app.orders.send"]}}) == (
+        False,
+        "Disable or review: doc_events:*",
+    )
+    assert _outbound_safety(
+        {"Purchase Order": {"on_update": ["custom_app.orders.send"]}}
+    ) == (False, "Disable or review: doc_events:Purchase Order")
+
+
 class _PurchaseOrder:
     """Minimal Purchase Order that can be told to lose the insert race."""
 

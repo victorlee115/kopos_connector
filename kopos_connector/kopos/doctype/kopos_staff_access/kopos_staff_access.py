@@ -16,6 +16,7 @@ class KoPOSStaffAccess(Document):
     """Central POS access record; only a one-way PIN verifier is stored."""
 
     def validate(self) -> None:
+        self._validate_director_assignment_scope()
         if cstr(self.access_level).strip() not in {"Staff", "Manager"}:
             frappe.throw("POS access level must be Staff or Manager")
         if not self.user or not self.employee:
@@ -44,6 +45,32 @@ class KoPOSStaffAccess(Document):
             self.revision = max(1, cint(getattr(self, "revision", 0)))
         elif central_staff_access_signature(previous) != central_staff_access_signature(self):
             self.revision = max(1, cint(getattr(previous, "revision", 0))) + 1
+
+    def _validate_director_assignment_scope(self) -> None:
+        """A director may never move a global staff record outside their cafés."""
+
+        user = cstr(getattr(frappe.session, "user", None)).strip()
+        roles = {cstr(role).strip() for role in frappe.get_roles(user)}
+        if "System Manager" in roles or "Company Director" not in roles:
+            return
+        from kopos_connector.api.director_scope import allowed_companies
+
+        permitted = set(allowed_companies(user))
+        assigned = {
+            cstr(getattr(row, "company", None)).strip()
+            for row in list(self.outlet_assignments or ())
+            if cstr(getattr(row, "company", None)).strip()
+        }
+        employee_company = cstr(
+            frappe.db.get_value("Employee", cstr(self.employee).strip(), "company")
+        ).strip()
+        if not assigned or not assigned.issubset(permitted) or (
+            employee_company and employee_company not in permitted
+        ):
+            frappe.throw(
+                "You may give tablet access only within your permitted company.",
+                frappe.PermissionError,
+            )
 
     def after_insert(self) -> None:
         # A central record changes the authority source for every bound

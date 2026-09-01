@@ -24,7 +24,7 @@ class TestPromotionEconomicsContract(FrappeTestCase):
             }
         )
 
-    def test_review_fields_are_read_only_and_promotion_is_director_owned(self) -> None:
+    def test_review_fields_are_read_only_and_raw_promotion_is_system_owned(self) -> None:
         meta = frappe.get_meta("KoPOS Promotion")
         for fieldname in (
             "economics_status",
@@ -39,8 +39,9 @@ class TestPromotionEconomicsContract(FrappeTestCase):
         ):
             self.assertTrue(meta.get_field(fieldname).read_only, fieldname)
         roles = {permission.role for permission in meta.permissions}
-        self.assertIn("Company Director", roles)
+        self.assertIn("System Manager", roles)
         self.assertIn("KoPOS Device API", roles)
+        self.assertNotIn("Company Director", roles)
         self.assertNotIn("Item Manager", roles)
         self.assertNotIn("POS User", roles)
 

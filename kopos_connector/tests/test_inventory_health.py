@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from unittest import TestCase
+from unittest.mock import Mock, patch
 
 from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
 
@@ -15,6 +16,16 @@ from kopos_connector.kopos.services.inventory_autopilot.health_monitor import (
 
 
 class InventoryHealthReadModelTests(TestCase):
+    def test_stock_tracking_is_started_only_with_a_complete_identity(self) -> None:
+        complete = {
+            "cutover_token": "token",
+            "cutover_at": "2026-08-30 10:00:00",
+            "opening_stock_reconciliation": "MAT-RECO-1",
+        }
+        self.assertTrue(inventory._stock_tracking_started(complete))
+        self.assertFalse(inventory._stock_tracking_started({**complete, "cutover_at": ""}))
+        self.assertFalse(inventory._stock_tracking_started(None))
+
     def test_stock_update_status_moves_from_updating_to_attention_without_internal_terms(self) -> None:
         now = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
         recent = inventory._stock_update_status_response(
@@ -208,6 +219,85 @@ class InventoryHealthReadModelTests(TestCase):
             "custom_kopos_inventory_command_id": "",
             "purpose": "",
         }), "received")
+
+    def test_guided_finance_summary_uses_complete_aggregate_groups(self) -> None:
+        self.assertEqual(inventory._autopilot_movement_summary([
+            {
+                "voucher_type": "Stock Entry",
+                "purpose": "Material Receipt",
+                "is_waste": 0,
+                "has_positive_quantity": 1,
+                "has_positive_value": 1,
+                "positive_value": "15.005",
+                "absolute_value": "15.005",
+            },
+            {
+                "voucher_type": "Stock Entry",
+                "purpose": "Material Issue",
+                "is_waste": 1,
+                "has_positive_quantity": 0,
+                "has_positive_value": 0,
+                "positive_value": "0",
+                "absolute_value": "1.50",
+            },
+            {
+                "voucher_type": "Stock Entry",
+                "purpose": "Material Transfer",
+                "is_waste": 0,
+                "has_positive_quantity": 0,
+                "has_positive_value": 0,
+                "positive_value": "0",
+                "absolute_value": "4.25",
+            },
+            {
+                "voucher_type": "Stock Entry",
+                "purpose": "Manufacture",
+                "is_waste": 0,
+                "has_positive_quantity": 0,
+                "has_positive_value": 0,
+                "positive_value": "0",
+                "absolute_value": "8.00",
+            },
+        ]), {
+            "received_sen": 1501,
+            "used_sen": 800,
+            "transferred_sen": 425,
+            "waste_sen": 150,
+        })
+
+    def test_buying_workflow_keeps_outlet_scoped_requests_and_orders_visible(self) -> None:
+        purchase_order = [{
+            "name": "PO-1",
+            "supplier": "Tea Supplier",
+            "docstatus": 0,
+            "grand_total": "12.34",
+            "currency": "MYR",
+        }]
+        material_request = [{
+            "name": "MR-1",
+            "material_request_type": "Purchase",
+            "docstatus": 1,
+        }]
+        item_meta = Mock()
+        item_meta.has_field.return_value = True
+        references = '[{"doctype":"Purchase Order","name":"PO-1"},{"doctype":"Material Request","name":"MR-1"}]'
+        with patch.object(inventory.frappe.db, "sql", side_effect=[purchase_order, material_request]) as sql, patch.object(
+            inventory.frappe, "get_meta", return_value=item_meta
+        ):
+            documents = inventory._autopilot_plan_documents(
+                references,
+                company="Moonleaf",
+                warehouse="Cafe - ML",
+                currency="MYR",
+            )
+        self.assertEqual(
+            [row["document_label"] for row in documents],
+            ["Supplier order", "Supplier request"],
+        )
+        self.assertEqual(documents[0]["total_sen"], 1234)
+        self.assertEqual(documents[1]["status"], "Requested — waiting for an order")
+        self.assertTrue(all("doctype" not in row and "name" not in row for row in documents))
+        self.assertTrue(all("Cafe - ML" in call.args[1] for call in sql.call_args_list))
 
     def test_projection_next_steps_never_tell_users_to_recreate_work(self) -> None:
         self.assertIn("Do not delete this saved update", inventory._autopilot_projection_next_action("Dead Letter"))

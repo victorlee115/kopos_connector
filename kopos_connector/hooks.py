@@ -66,6 +66,9 @@ doctype_js = {
 # role_home_page = {
 # 	"Role": "home_page"
 # }
+get_website_user_home_page = (
+    "kopos_connector.api.director_scope.business_home_page"
+)
 
 # Generators
 # ----------
@@ -97,13 +100,13 @@ before_uninstall = "kopos_connector.uninstall.before_uninstall"
 # -----------
 # Permissions evaluated in scripted ways
 
-# permission_query_conditions = {
-# 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
-# }
-#
-# has_permission = {
-# 	"Event": "frappe.desk.doctype.event.event.has_permission",
-# }
+permission_query_conditions = {
+	"KoPOS Staff Access": "kopos_connector.api.director_scope.staff_access_permission_query",
+}
+
+has_permission = {
+	"KoPOS Staff Access": "kopos_connector.api.director_scope.has_staff_access_permission",
+}
 
 # DocType Class
 # ---------------

@@ -39,5 +39,5 @@
   {"fieldname":"confirmation_manager_id","fieldtype":"Link","label":"Confirmed By Manager","options":"User","read_only":1,"hidden":1,"no_copy":1},
   {"fieldname":"confirmed_at","fieldtype":"Datetime","label":"Confirmed At","read_only":1,"hidden":1,"no_copy":1}
  ],
- "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]
+ "permissions": [{"role":"System Manager","read":1,"write":1,"create":1}]
 }

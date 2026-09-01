@@ -117,6 +117,11 @@ def test_every_desk_page_stands_on_the_same_ground() -> None:
     assert ".jiji-desk .page-content" in shared
 
 
+def test_business_pages_do_not_link_back_to_the_technical_desktop() -> None:
+    shared = SHARED.read_text(encoding="utf-8")
+    assert ".navbar-breadcrumbs li:first-child { display: none; }" in shared
+
+
 def test_the_accent_reaches_the_header_button() -> None:
     shared = SHARED.read_text(encoding="utf-8")
     page_files = _existing_page_scripts()

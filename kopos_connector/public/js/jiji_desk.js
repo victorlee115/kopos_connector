@@ -109,7 +109,7 @@ frappe.provide("jiji.desk");
 	 */
 	desk.weekBars = function weekBars(days) {
 		const rows = Array.isArray(days) ? days : [];
-		const peak = rows.reduce((high, row) => Math.max(high, Number(row.total) || 0), 0);
+		const peak = rows.reduce((high, row) => Math.max(high, Number(row.total_sen) || 0), 0);
 		// A week with no sales has no shape. Seven empty columns look like a
 		// chart that failed to load; a sentence says which it is.
 		if (peak <= 0) {
@@ -118,7 +118,7 @@ frappe.provide("jiji.desk");
 		const chart = $("<div>").addClass("jiji-week");
 		rows.forEach((row) => {
 			const column = $("<div>").addClass("jiji-week__day").appendTo(chart);
-			const height = peak > 0 ? Math.round(((Number(row.total) || 0) / peak) * 100) : 0;
+			const height = peak > 0 ? Math.round(((Number(row.total_sen) || 0) / peak) * 100) : 0;
 			$("<div>")
 				.addClass("jiji-week__bar" + (row.today ? " jiji-week__bar--today" : ""))
 				.css("height", `${height}%`)
@@ -185,6 +185,12 @@ frappe.provide("jiji.desk");
 .jiji-desk .layout-main,
 .jiji-desk .layout-main-section-wrapper,
 .jiji-desk .layout-main-section { background: var(--jiji-ground); }
+/* The first breadcrumb opens Frappe's technical desktop. Business users land
+   on JiJi and navigate through its six plain-language pages, so that escape
+   hatch is both confusing and unnecessary here. */
+.jiji-desk .navbar-breadcrumbs li:first-child { display: none; }
+.jiji-desk .navbar-breadcrumbs li:nth-child(2)::before,
+.jiji-desk .navbar-breadcrumbs li:nth-child(2) > a::before { display: none; }
 .jiji-page,
 .jiji-stock-autopilot,
 .jiji-menu-page {
@@ -195,6 +201,14 @@ frappe.provide("jiji.desk");
   min-height: calc(100vh - 49px);
 }
 .jiji-page { display: flex; flex-direction: column; gap: 20px; }
+/* Frappe's current Bootstrap build has no gap utilities. These two classes
+   are used by the JiJi pages, so define them once instead of letting controls
+   and money figures run into each other. */
+.jiji-desk .gap-2 { gap: 8px; }
+.jiji-desk .gap-3 { gap: 16px; }
+/* Frappe moves dialogs outside the page root, so money shown in a recipe
+   check needs its own globally scoped JiJi class. */
+.jiji-money-line { gap: 16px; }
 
 /* One accent, reaching the header button so the page is not two-coloured. */
 .jiji-desk .btn-primary,

@@ -48,6 +48,12 @@
         "tax_rate",
         "rounding_adjustment",
         "grand_total",
+        "completion_section",
+        "completion_kind",
+        "complimentary_value",
+        "completion_column_break",
+        "complimentary_reason",
+        "complimentary_approved_by",
         "promotion_section",
         "pricing_mode",
         "promotion_snapshot_version",
@@ -319,6 +325,46 @@
             "fieldname": "grand_total",
             "fieldtype": "Currency",
             "label": "Grand Total"
+        },
+        {
+            "collapsible": 1,
+            "fieldname": "completion_section",
+            "fieldtype": "Section Break",
+            "label": "How This Order Was Completed"
+        },
+        {
+            "default": "paid",
+            "fieldname": "completion_kind",
+            "fieldtype": "Select",
+            "label": "Order Outcome",
+            "options": "paid\ncomplimentary",
+            "read_only": 1,
+            "reqd": 1,
+            "search_index": 1
+        },
+        {
+            "description": "The normal menu value before the order was made free",
+            "fieldname": "complimentary_value",
+            "fieldtype": "Currency",
+            "label": "Free Order Value",
+            "read_only": 1
+        },
+        {
+            "fieldname": "completion_column_break",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "complimentary_reason",
+            "fieldtype": "Small Text",
+            "label": "Why It Was Free",
+            "read_only": 1
+        },
+        {
+            "fieldname": "complimentary_approved_by",
+            "fieldtype": "Link",
+            "label": "Approved By",
+            "options": "User",
+            "read_only": 1
         },
         {
             "collapsible": 1,

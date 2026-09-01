@@ -25,6 +25,8 @@ class InventoryCountReviewTests(TestCase):
         task = SimpleNamespace(name="TASK-1", company="JiJi")
 
         with patch.object(inventory, "_require_company_director"), patch.object(
+            inventory, "resolve_director_context"
+        ), patch.object(
             inventory.frappe.db, "sql", return_value=[]
         ), patch.object(
             inventory.frappe.db, "get_value", return_value=observation
@@ -57,6 +59,8 @@ class InventoryCountReviewTests(TestCase):
         }
         task = SimpleNamespace(name="TASK-2", company="JiJi")
         with patch.object(inventory, "_require_company_director"), patch.object(
+            inventory, "resolve_director_context"
+        ), patch.object(
             inventory.frappe.db, "sql", side_effect=[[], [["new-watermark"]]]
         ), patch.object(
             inventory.frappe.db, "get_value", return_value=observation

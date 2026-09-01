@@ -1,0 +1,50 @@
+{
+  "allow_copy": 0,
+  "allow_import": 0,
+  "allow_rename": 0,
+  "creation": "2026-08-31 00:00:00.000000",
+  "doctype": "DocType",
+  "document_type": "Document",
+  "engine": "InnoDB",
+  "field_order": [
+    "command_id",
+    "payload_hash",
+    "task_type",
+    "state",
+    "outcome",
+    "device_id",
+    "company",
+    "warehouse",
+    "source_document",
+    "source_revision",
+    "result_doctype",
+    "result_document",
+    "completed_at"
+  ],
+  "fields": [
+    {"fieldname": "command_id", "fieldtype": "Data", "label": "Inventory Command ID", "length": 160, "reqd": 1, "read_only": 1, "unique": 1},
+    {"fieldname": "payload_hash", "fieldtype": "Data", "label": "Payload Hash", "reqd": 1, "read_only": 1},
+    {"fieldname": "task_type", "fieldtype": "Data", "label": "Task Type", "reqd": 1, "read_only": 1},
+    {"default": "Processing", "fieldname": "state", "fieldtype": "Select", "label": "State", "options": "Processing\nCompleted", "reqd": 1, "read_only": 1},
+    {"fieldname": "outcome", "fieldtype": "Select", "label": "Outcome", "options": "\nCompleted\nException", "read_only": 1},
+    {"fieldname": "device_id", "fieldtype": "Data", "label": "Device ID", "reqd": 1, "read_only": 1},
+    {"fieldname": "company", "fieldtype": "Link", "label": "Company", "options": "Company", "reqd": 1, "read_only": 1},
+    {"fieldname": "warehouse", "fieldtype": "Link", "label": "Warehouse", "options": "Warehouse", "reqd": 1, "read_only": 1},
+    {"fieldname": "source_document", "fieldtype": "Data", "label": "Source Document", "reqd": 1, "read_only": 1},
+    {"fieldname": "source_revision", "fieldtype": "Data", "label": "Source Revision", "reqd": 1, "read_only": 1},
+    {"fieldname": "result_doctype", "fieldtype": "Link", "label": "Result Type", "options": "DocType", "read_only": 1},
+    {"fieldname": "result_document", "fieldtype": "Dynamic Link", "label": "Result Document", "options": "result_doctype", "read_only": 1},
+    {"fieldname": "completed_at", "fieldtype": "Datetime", "label": "Completed At", "read_only": 1}
+  ],
+  "modified": "2026-08-31 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "KoPOS",
+  "name": "FB Inventory Command Receipt",
+  "owner": "Administrator",
+  "permissions": [
+    {"read": 1, "report": 1, "role": "System Manager"}
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "track_changes": 0
+}

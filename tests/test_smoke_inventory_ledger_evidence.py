@@ -437,7 +437,7 @@ def test_return_dump_carries_exact_lines_and_unique_reversal_ledger_evidence(
 
 
 @pytest.mark.inventory_regression
-def test_bin_dump_includes_exact_zero_baseline_for_each_tracked_ingredient(
+def test_bin_dump_includes_exact_zero_baseline_for_each_smoke_recipe_ingredient(
     monkeypatch: Any,
 ) -> None:
     import frappe
@@ -447,21 +447,12 @@ def test_bin_dump_includes_exact_zero_baseline_for_each_tracked_ingredient(
         filters: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
-        if doctype == "Item":
-            assert filters == {
-                "is_stock_item": 1,
-                "custom_kopos_track_stock": 1,
-            }
-            return [
-                {"item_code": "SMOKE-MATCHA-POWDER"},
-                {"item_code": "SMOKE-MILK"},
-            ]
         if doctype == "Bin":
             assert filters == {
                 "warehouse": "Store - K",
                 "item_code": [
                     "in",
-                    ["SMOKE-MATCHA-POWDER", "SMOKE-MILK"],
+                    list(smoke.SMOKE_INGREDIENT_ITEM_CODES),
                 ],
             }
             return [
@@ -478,6 +469,12 @@ def test_bin_dump_includes_exact_zero_baseline_for_each_tracked_ingredient(
 
     assert smoke._collect_ingredient_bin_balances("Store - K") == [
         {
+            "name": None,
+            "item_code": "SMOKE-CUP",
+            "warehouse": "Store - K",
+            "actual_qty": "0",
+        },
+        {
             "name": "BIN-MATCHA",
             "item_code": "SMOKE-MATCHA-POWDER",
             "warehouse": "Store - K",
@@ -486,6 +483,12 @@ def test_bin_dump_includes_exact_zero_baseline_for_each_tracked_ingredient(
         {
             "name": None,
             "item_code": "SMOKE-MILK",
+            "warehouse": "Store - K",
+            "actual_qty": "0",
+        },
+        {
+            "name": None,
+            "item_code": "SMOKE-STRAWBERRY-PUREE",
             "warehouse": "Store - K",
             "actual_qty": "0",
         },

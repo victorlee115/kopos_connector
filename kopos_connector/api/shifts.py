@@ -24,6 +24,12 @@ flt = frappe_utils.flt
 now_datetime = frappe_utils.now_datetime
 
 from kopos_connector.api.devices import elevate_device_api_user, get_device_doc
+from kopos_connector.api.operational_errors import (
+    ShiftAlreadyClosedError,
+    ShiftRequiredError,
+    StoreSetupIncompleteError,
+    TabletDisabledError,
+)
 from kopos_connector.kopos.api.money_contract import (
     MoneyContractValidationError,
     parse_sen,
@@ -469,7 +475,7 @@ def _get_cash_mode_of_payment(pos_profile: Any) -> str:
         _("POS Profile {0} must define at least one payment mode").format(
             pos_profile.name
         ),
-        frappe.ValidationError,
+        StoreSetupIncompleteError,
     )
     return ""
 
@@ -602,7 +608,7 @@ def _ensure_fb_shift_for_kopos_shift(
         if cstr(getattr(shift_doc, "status", None)).strip() != "Open":
             frappe.throw(
                 _("Existing FB Shift cannot be reopened through open_shift"),
-                frappe.ValidationError,
+                ShiftAlreadyClosedError,
             )
         _validate_shift_retry_proof(
             shift_doc,
@@ -888,21 +894,21 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not device_doc:
         frappe.throw(
             _("KoPOS Device {0} was not found").format(device_id),
-            frappe.ValidationError,
+            TabletDisabledError,
         )
 
     device_name = cstr(getattr(device_doc, "name", "")).strip()
     if not frappe.db.get_value("KoPOS Device", device_name, "enabled"):
         frappe.throw(
             _("KoPOS Device {0} is disabled").format(device_id),
-            frappe.ValidationError,
+            TabletDisabledError,
         )
 
     pos_profile_name = cstr(getattr(device_doc, "pos_profile", "")).strip()
     if not pos_profile_name:
         frappe.throw(
             _("KoPOS Device {0} has no POS Profile configured").format(device_id),
-            frappe.ValidationError,
+            StoreSetupIncompleteError,
         )
 
     pos_profile = frappe.get_cached_doc("POS Profile", pos_profile_name)
@@ -910,13 +916,13 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not company:
         frappe.throw(
             _("POS Profile {0} has no company configured").format(pos_profile_name),
-            frappe.ValidationError,
+            StoreSetupIncompleteError,
         )
     warehouse = cstr(getattr(pos_profile, "warehouse", None)).strip()
     if not warehouse:
         frappe.throw(
             _("POS Profile {0} has no warehouse configured").format(pos_profile_name),
-            frappe.ValidationError,
+            StoreSetupIncompleteError,
         )
 
     opening_amount = Decimal(opening_float_sen) / Decimal(100)
@@ -1187,21 +1193,21 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not device_doc:
         frappe.throw(
             _("KoPOS Device {0} was not found").format(device_id),
-            frappe.ValidationError,
+            TabletDisabledError,
         )
 
     device_name = cstr(getattr(device_doc, "name", "")).strip()
     if not frappe.db.get_value("KoPOS Device", device_name, "enabled"):
         frappe.throw(
             _("KoPOS Device {0} is disabled").format(device_id),
-            frappe.ValidationError,
+            TabletDisabledError,
         )
 
     pos_profile_name = cstr(getattr(device_doc, "pos_profile", "")).strip()
     if not pos_profile_name:
         frappe.throw(
             _("KoPOS Device {0} has no POS Profile configured").format(device_id),
-            frappe.ValidationError,
+            StoreSetupIncompleteError,
         )
 
     # Phase 1 & 2: Validate device user assignment, active status, ERP user enabled,
@@ -1212,7 +1218,7 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not fb_shift:
         frappe.throw(
             _("No open FB Shift found for device {0}").format(device_id),
-            frappe.ValidationError,
+            ShiftRequiredError,
         )
     close_request_fingerprint = _shift_request_fingerprint(
         "close",

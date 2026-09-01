@@ -10,6 +10,11 @@ from typing import Any
 frappe = importlib.import_module("frappe")
 frappe_utils = importlib.import_module("frappe.utils")
 
+from kopos_connector.api.operational_errors import (
+    ShiftAlreadyClosedError,
+    ShiftOwnedByOtherError,
+    ShiftRequiredError,
+)
 from kopos_connector.kopos.api.money_contract import (
     LEGACY_DECIMAL_MONEY_CONTRACT_VERSION,
     MAX_SAFE_INTEGER,
@@ -117,6 +122,81 @@ LOCALLY_SUPPORTED_PROMOTION_TYPES = {
     "nth_item_discount",
     "order_discount",
 }
+ORDER_COMPLETION_KINDS = {"paid", "complimentary"}
+
+
+def _items_are_valid_zero_total_paid(
+    items: list[dict[str, Any]],
+) -> bool:
+    return bool(items) and all(
+        row["discount_amount_sen"]
+        == (row["unit_price_sen"] + row["modifier_total_sen"]) * row["qty"]
+        and row["line_total_sen"] == 0
+        for row in items
+    )
+
+
+def _normalize_order_completion(order_payload: Mapping[str, Any]) -> dict[str, Any]:
+    raw_kind = order_payload.get("completion_kind", "paid")
+    if not isinstance(raw_kind, str):
+        frappe.throw(
+            "order.completion_kind must be paid or complimentary",
+            frappe.ValidationError,
+        )
+    completion_kind = raw_kind.strip().lower()
+    if completion_kind not in ORDER_COMPLETION_KINDS:
+        frappe.throw(
+            "order.completion_kind must be paid or complimentary",
+            frappe.ValidationError,
+        )
+
+    complimentary_fields = (
+        "complimentary_reason",
+        "complimentary_approved_by",
+        "complimentary_value_sen",
+    )
+    if completion_kind == "paid":
+        if any(fieldname in order_payload for fieldname in complimentary_fields):
+            frappe.throw(
+                "Paid orders cannot contain complimentary approval details",
+                frappe.ValidationError,
+            )
+        return {
+            "completion_kind": "paid",
+            "complimentary_reason": None,
+            "complimentary_approved_by": None,
+            "complimentary_value_sen": 0,
+        }
+
+    raw_reason = order_payload.get("complimentary_reason")
+    raw_approved_by = order_payload.get("complimentary_approved_by")
+    if not isinstance(raw_reason, str) or not raw_reason.strip():
+        frappe.throw(
+            "Complimentary orders require a reason",
+            frappe.ValidationError,
+        )
+    if not isinstance(raw_approved_by, str) or not raw_approved_by.strip():
+        frappe.throw(
+            "Complimentary orders require a manager approval",
+            frappe.ValidationError,
+        )
+    complimentary_value_sen = _parse_wire_money_sen(
+        order_payload,
+        version="sen_v1",
+        sen_field="complimentary_value_sen",
+        legacy_fields=(),
+    )
+    if complimentary_value_sen <= 0:
+        frappe.throw(
+            "order.complimentary_value_sen must be greater than 0",
+            frappe.ValidationError,
+        )
+    return {
+        "completion_kind": "complimentary",
+        "complimentary_reason": raw_reason.strip(),
+        "complimentary_approved_by": raw_approved_by.strip(),
+        "complimentary_value_sen": complimentary_value_sen,
+    }
 
 
 def submit_order() -> dict[str, Any]:
@@ -1330,6 +1410,7 @@ def _normalize_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     sale_datetime_value = order_payload.get("created_at")
     items = order_payload.get("items")
     payments = order_payload.get("payments")
+    completion = _normalize_order_completion(order_payload)
 
     if not order_id:
         frappe.throw("order_id is required", frappe.ValidationError)
@@ -1353,9 +1434,11 @@ def _normalize_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         frappe.throw("order.order_type is required", frappe.ValidationError)
     if not isinstance(items, list) or not items:
         frappe.throw("order.items must contain at least one row", frappe.ValidationError)
-    if not isinstance(payments, list) or not payments:
+    if not isinstance(payments, list):
+        frappe.throw("order.payments must be an array", frappe.ValidationError)
+    if completion["completion_kind"] == "complimentary" and payments:
         frappe.throw(
-            "order.payments must contain at least one row", frappe.ValidationError
+            "Complimentary orders cannot contain payments", frappe.ValidationError
         )
 
     sale_datetime = validate_submit_sale_datetime(sale_datetime_value)
@@ -1456,8 +1539,8 @@ def _normalize_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "order.tax_amount_sen must equal subtotal_sen multiplied by order.tax_rate, rounded to sen",
                 frappe.ValidationError,
             )
-    if grand_total_sen <= 0:
-        frappe.throw("order.total_sen must be greater than 0", frappe.ValidationError)
+    if grand_total_sen < 0:
+        frappe.throw("order.total_sen must be 0 or greater", frappe.ValidationError)
     if summed_line_total_sen != net_total_sen:
         frappe.throw(
             "order.subtotal_sen must equal summed line totals",
@@ -1477,8 +1560,78 @@ def _normalize_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         (row["amount_sen"] for row in validated_payments),
         "order payment total",
     )
+    if completion["completion_kind"] == "paid":
+        if grand_total_sen > 0 and not validated_payments:
+            frappe.throw(
+                "Paid orders above RM0 require at least one payment",
+                frappe.ValidationError,
+            )
+        if grand_total_sen == 0:
+            valid_zero_payment_sale = (
+                net_total_sen == 0
+                and tax_total_sen == 0
+                and rounding_adjustment_sen == 0
+                and _items_are_valid_zero_total_paid(validated_items)
+            )
+            if not valid_zero_payment_sale:
+                frappe.throw(
+                    "A paid RM0 order must have exact zero totals and valid discount or promotion pricing",
+                    frappe.ValidationError,
+                )
+            if validated_payments:
+                frappe.throw(
+                    "A paid RM0 order cannot contain a payment",
+                    frappe.ValidationError,
+                )
     if paid_total_sen != grand_total_sen:
         frappe.throw("payments total must equal order.total_sen", frappe.ValidationError)
+
+    if completion["completion_kind"] == "complimentary":
+        if any(
+            value != 0
+            for value in (
+                net_total_sen,
+                tax_total_sen,
+                rounding_adjustment_sen,
+                grand_total_sen,
+            )
+        ):
+            frappe.throw(
+                "Complimentary orders must have zero totals",
+                frappe.ValidationError,
+            )
+        if applied_promotions or any(
+            row["promotion_allocations"] for row in validated_items
+        ):
+            frappe.throw(
+                "Complimentary approval cannot be combined with a promotion",
+                frappe.ValidationError,
+            )
+        complimentary_value_sen = _checked_sen_sum(
+            (
+                (row["unit_price_sen"] + row["modifier_total_sen"])
+                * row["qty"]
+                for row in validated_items
+            ),
+            "complimentary order value",
+        )
+        for index, row in enumerate(validated_items, start=1):
+            gross_line_sen = (
+                row["unit_price_sen"] + row["modifier_total_sen"]
+            ) * row["qty"]
+            if (
+                row["line_total_sen"] != 0
+                or row["discount_amount_sen"] != gross_line_sen
+            ):
+                frappe.throw(
+                    f"Complimentary order item {index} must retain its full price as an exact discount",
+                    frappe.ValidationError,
+                )
+        if complimentary_value_sen != completion["complimentary_value_sen"]:
+            frappe.throw(
+                "order.complimentary_value_sen must equal the priced item total",
+                frappe.ValidationError,
+            )
 
     normalized = {
         "money_contract_version": money_contract_version,
@@ -1509,6 +1662,7 @@ def _normalize_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "pricing_context": pricing_context,
         "applied_promotions": applied_promotions,
         "promotion_reconciliation_status": promotion_reconciliation_status,
+        **completion,
     }
     normalized["accepted_sale_fingerprint"] = (
         _canonical_accepted_sale_fingerprint(normalized)
@@ -1520,7 +1674,7 @@ def _normalize_submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _validate_new_submit_order_state(normalized: dict[str, Any]) -> dict[str, Any]:
     shift_name = _resolve_fb_shift_name(normalized["shift"])
     if not shift_name:
-        frappe.throw(f"shift {normalized['shift']} was not found", frappe.ValidationError)
+        frappe.throw(f"shift {normalized['shift']} was not found", ShiftRequiredError)
     assert shift_name is not None
     shift_doc = _validate_submit_shift(
         shift_name=shift_name,
@@ -1535,6 +1689,8 @@ def _validate_new_submit_order_state(normalized: dict[str, Any]) -> dict[str, An
     _require_doc("Warehouse", normalized["booth_warehouse"], "booth_warehouse")
     _require_doc("Company", normalized["company"], "company")
     _require_doc("User", normalized["staff_id"], "staff_id")
+    if normalized["completion_kind"] == "complimentary":
+        _validate_complimentary_approver(normalized)
     if normalized["customer"]:
         _require_doc("Customer", normalized["customer"], "customer")
     if normalized["event_project"]:
@@ -1560,6 +1716,33 @@ def _validate_new_submit_order_state(normalized: dict[str, Any]) -> dict[str, An
         for index, row in enumerate(normalized["payments"], start=1)
     ]
     return validated
+
+
+def _validate_complimentary_approver(normalized: Mapping[str, Any]) -> None:
+    from kopos_connector.api.devices import (
+        get_device_doc,
+        get_device_pos_profile_doc,
+    )
+    from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
+        find_staff_access_for_device,
+    )
+
+    approved_by = cstr(normalized.get("complimentary_approved_by")).strip()
+    _require_doc("User", approved_by, "complimentary_approved_by")
+    device_doc = get_device_doc(device_id=cstr(normalized.get("device_id")))
+    profile_doc = get_device_pos_profile_doc(
+        device_id=cstr(normalized.get("device_id"))
+    )
+    access = find_staff_access_for_device(
+        device_doc,
+        approved_by,
+        profile_doc=profile_doc,
+    )
+    if not access or cstr(access.get("access_level")).strip() != "Manager":
+        frappe.throw(
+            "Complimentary approval requires a manager assigned to this outlet",
+            frappe.PermissionError,
+        )
 
 
 def _snapshot_rule_decimal(value: Any, fieldname: str) -> Decimal:
@@ -3047,6 +3230,14 @@ def _build_fb_order(validated: dict[str, Any]):
     if hasattr(order_doc, "rounding_adjustment"):
         order_doc.rounding_adjustment = validated["rounding_adjustment"]
     order_doc.grand_total = validated["grand_total"]
+    order_doc.completion_kind = validated["completion_kind"]
+    order_doc.complimentary_value = sen_to_decimal(
+        validated["complimentary_value_sen"]
+    )
+    order_doc.complimentary_reason = validated["complimentary_reason"]
+    order_doc.complimentary_approved_by = validated[
+        "complimentary_approved_by"
+    ]
     order_doc.pricing_mode = pricing_context.get("pricing_mode")
     order_doc.promotion_snapshot_version = pricing_context.get(
         "snapshot_version"
@@ -3484,6 +3675,14 @@ def _dedupe_projection_diagnostics(
 
 
 def _validate_fb_order_doc(doc) -> None:
+    completion_kind = cstr(
+        getattr(doc, "completion_kind", None) or "paid"
+    ).strip().lower()
+    if completion_kind not in ORDER_COMPLETION_KINDS:
+        frappe.throw(
+            "FB Order completion_kind must be paid or complimentary",
+            frappe.ValidationError,
+        )
     if not cstr(getattr(doc, "order_id", None)):
         frappe.throw("FB Order requires order_id", frappe.ValidationError)
     if not cstr(getattr(doc, "external_idempotency_key", None)):
@@ -3504,8 +3703,8 @@ def _validate_fb_order_doc(doc) -> None:
         frappe.throw("FB Order requires currency", frappe.ValidationError)
     if not doc.get("items"):
         frappe.throw("FB Order requires at least one item", frappe.ValidationError)
-    if not doc.get("payments"):
-        frappe.throw("FB Order requires at least one payment", frappe.ValidationError)
+    if completion_kind == "complimentary" and doc.get("payments"):
+        frappe.throw("Complimentary FB Order cannot contain payments", frappe.ValidationError)
 
     _require_doc("FB Shift", cstr(doc.shift), "shift")
     _require_doc("Warehouse", cstr(doc.booth_warehouse), "booth_warehouse")
@@ -3515,6 +3714,39 @@ def _validate_fb_order_doc(doc) -> None:
         _require_doc("Customer", cstr(doc.customer), "customer")
     if cstr(getattr(doc, "event_project", None)):
         _require_doc("Project", cstr(doc.event_project), "event_project")
+    if completion_kind == "complimentary":
+        if not cstr(getattr(doc, "complimentary_reason", None)).strip():
+            frappe.throw(
+                "Complimentary FB Order requires a reason",
+                frappe.ValidationError,
+            )
+        if not cstr(getattr(doc, "complimentary_approved_by", None)).strip():
+            frappe.throw(
+                "Complimentary FB Order requires a manager approval",
+                frappe.ValidationError,
+            )
+        _validate_complimentary_approver(
+            {
+                "device_id": cstr(doc.device_id),
+                "complimentary_approved_by": cstr(
+                    doc.complimentary_approved_by
+                ),
+            }
+        )
+    elif any(
+        (
+            cstr(getattr(doc, "complimentary_reason", None)).strip(),
+            cstr(getattr(doc, "complimentary_approved_by", None)).strip(),
+            _persisted_money_sen(
+                getattr(doc, "complimentary_value", 0) or 0,
+                "FB Order complimentary_value",
+            ),
+        )
+    ):
+        frappe.throw(
+            "Paid FB Order cannot contain complimentary approval details",
+            frappe.ValidationError,
+        )
 
     if doc.name:
         duplicate_name = frappe.db.get_value(
@@ -3534,6 +3766,8 @@ def _validate_fb_order_doc(doc) -> None:
         )
 
     line_total_values_sen: list[int] = []
+    complimentary_gross_values_sen: list[int] = []
+    valid_zero_total_paid_items = True
     for index, row in enumerate(doc.get("items") or [], start=1):
         if not cstr(getattr(row, "line_id", None)):
             frappe.throw(
@@ -3541,7 +3775,7 @@ def _validate_fb_order_doc(doc) -> None:
             )
         if not cstr(getattr(row, "item", None)):
             frappe.throw(f"FB Order item {index} requires item", frappe.ValidationError)
-        _parse_positive_integer_quantity(
+        quantity = _parse_positive_integer_quantity(
             getattr(row, "qty", None), f"FB Order item {index} qty"
         )
         line_total_sen = _persisted_money_sen(
@@ -3554,6 +3788,42 @@ def _validate_fb_order_doc(doc) -> None:
                 frappe.ValidationError,
             )
         line_total_values_sen.append(line_total_sen)
+        unit_price_sen = _persisted_money_sen(
+            getattr(row, "unit_price", None),
+            f"FB Order item {index} unit_price",
+        )
+        modifier_total_sen = _persisted_money_sen(
+            getattr(row, "modifier_total", 0) or 0,
+            f"FB Order item {index} modifier_total",
+        )
+        discount_amount_sen = _persisted_money_sen(
+            getattr(row, "discount_amount", 0) or 0,
+            f"FB Order item {index} discount_amount",
+        )
+        gross_line_sen = (unit_price_sen + modifier_total_sen) * quantity
+        _require_safe_sen(
+            gross_line_sen,
+            f"FB Order item {index} priced value",
+        )
+        if unit_price_sen < 0 or gross_line_sen < 0:
+            frappe.throw(
+                f"FB Order item {index} price must be 0 or greater",
+                frappe.ValidationError,
+            )
+        if discount_amount_sen < 0:
+            frappe.throw(
+                f"FB Order item {index} discount_amount must be 0 or greater",
+                frappe.ValidationError,
+            )
+        if line_total_sen != 0 or discount_amount_sen != gross_line_sen:
+            valid_zero_total_paid_items = False
+        if completion_kind == "complimentary":
+            if line_total_sen != 0 or discount_amount_sen != gross_line_sen:
+                frappe.throw(
+                    f"Complimentary FB Order item {index} must retain its full price as an exact discount",
+                    frappe.ValidationError,
+                )
+            complimentary_gross_values_sen.append(gross_line_sen)
 
     payment_values_sen: list[int] = []
     source_payment_ids: set[str] = set()
@@ -3618,12 +3888,70 @@ def _validate_fb_order_doc(doc) -> None:
             "FB Order grand_total must equal net_total plus tax_total plus rounding_adjustment",
             frappe.ValidationError,
         )
+    _validate_persisted_fb_order_promotion_evidence(doc)
+    has_promotions = _persisted_fb_order_has_promotions(doc)
+    if completion_kind == "paid":
+        if grand_total_sen < 0:
+            frappe.throw(
+                "Paid FB Order grand_total must be 0 or greater",
+                frappe.ValidationError,
+            )
+        if grand_total_sen > 0 and not doc.get("payments"):
+            frappe.throw(
+                "Paid FB Orders above RM0 require at least one payment",
+                frappe.ValidationError,
+            )
+        if grand_total_sen == 0 and (
+            net_total_sen != 0
+            or tax_total_sen != 0
+            or rounding_adjustment_sen != 0
+            or not valid_zero_total_paid_items
+        ):
+            frappe.throw(
+                "A paid RM0 FB Order must have exact zero totals and valid discount or promotion pricing",
+                frappe.ValidationError,
+            )
     if payment_total_sen != grand_total_sen:
         frappe.throw(
             "FB Order payments total must equal grand_total",
             frappe.ValidationError,
         )
-    _validate_persisted_fb_order_promotion_evidence(doc)
+    if completion_kind == "complimentary":
+        if any(
+            value != 0
+            for value in (
+                net_total_sen,
+                tax_total_sen,
+                rounding_adjustment_sen,
+                grand_total_sen,
+            )
+        ):
+            frappe.throw(
+                "Complimentary FB Order must have zero totals",
+                frappe.ValidationError,
+            )
+        complimentary_value_sen = _persisted_money_sen(
+            getattr(doc, "complimentary_value", 0) or 0,
+            "FB Order complimentary_value",
+        )
+        expected_complimentary_value_sen = _checked_sen_sum(
+            complimentary_gross_values_sen,
+            "FB Order complimentary value",
+        )
+        if (
+            complimentary_value_sen <= 0
+            or complimentary_value_sen != expected_complimentary_value_sen
+        ):
+            frappe.throw(
+                "FB Order complimentary_value must equal the priced item total",
+                frappe.ValidationError,
+            )
+    if completion_kind == "complimentary":
+        if has_promotions:
+            frappe.throw(
+                "Complimentary FB Order cannot be combined with a promotion",
+                frappe.ValidationError,
+            )
 
 
 def _parse_persisted_promotion_value(
@@ -3646,6 +3974,22 @@ def _parse_persisted_promotion_value(
     if not isinstance(parsed, expected_type):
         frappe.throw(f"{fieldname} has an invalid JSON shape", frappe.ValidationError)
     return parsed
+
+
+def _persisted_fb_order_has_promotions(doc: Any) -> bool:
+    promotion_payload = _parse_persisted_promotion_value(
+        getattr(doc, "promotion_payload_json", None),
+        expected_type=dict,
+        fieldname="FB Order promotion_payload_json",
+    )
+    return bool(promotion_payload.get("applied_promotions")) or any(
+        _parse_persisted_promotion_value(
+            getattr(item, "promotion_allocations_json", None),
+            expected_type=list,
+            fieldname=f"FB Order item {cstr(getattr(item, 'line_id', None))} promotion_allocations_json",
+        )
+        for item in (doc.get("items") or [])
+    )
 
 
 def _validate_persisted_fb_order_promotion_evidence(doc: Any) -> None:
@@ -4376,16 +4720,16 @@ def _validate_submit_shift(
     if shift_device_id != device_id:
         frappe.throw(
             f"shift {shift_name} does not belong to device {device_id}",
-            frappe.ValidationError,
+            ShiftOwnedByOtherError,
         )
     if shift_staff_id != staff_id:
         frappe.throw(
             f"shift {shift_name} does not belong to staff {staff_id}",
-            frappe.ValidationError,
+            ShiftOwnedByOtherError,
         )
     if shift_status != "Open":
         frappe.throw(
             f"shift {shift_name} is {shift_status or 'missing'}; new FB Orders require an Open FB Shift",
-            frappe.ValidationError,
+            ShiftAlreadyClosedError if shift_status == "Closed" else ShiftRequiredError,
         )
     return shift_doc

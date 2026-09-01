@@ -20,5 +20,5 @@
   {"fieldname":"status","fieldtype":"Select","label":"Status","options":"Assigned\nClaimed\nIn Progress\nSubmitted\nReview\nReviewed\nCancelled","default":"Assigned","reqd":1},
 	{"fieldname":"lines","fieldtype":"Table","label":"Items staff must count","options":"FB Inventory Count Task Line"}
  ],
- "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]
+ "permissions": [{"role":"System Manager","read":1,"write":1,"create":1}]
 }

@@ -270,6 +270,7 @@ def _unavailable_inventory_overlay() -> ERPRecord:
         "generated_at": _iso_with_offset(now_datetime()),
         "items": [],
         "modifier_options": [],
+        "contextual_modifier_options": [],
         "reasons": [
             {
                 "code": "inventory_overlay_unavailable",
@@ -573,6 +574,24 @@ def get_items(
             if cstr(row.get("id") or row.get("item_code")).strip()
         },
     )
+    # ERP Items are site-wide. A POS Profile's selling price list is the
+    # explicit commercial boundary for one café; without this intersection,
+    # an Item from another company in the same Item Group can appear on this
+    # tablet at its global standard rate. A configured list therefore means
+    # "only products currently priced on this list", including a valid RM0
+    # price. The no-list path stays available for legacy callers.
+    if cstr(selling_price_list).strip():
+        rows = [
+            row
+            for row in rows
+            if cstr(row.get("id") or row.get("item_code")).strip()
+            in prices_by_item
+        ]
+        item_ids = [
+            cstr(row.get("id") or row.get("item_code")).strip()
+            for row in rows
+            if cstr(row.get("id") or row.get("item_code")).strip()
+        ]
     barcodes_by_item = get_item_barcodes_map(item_ids)
     items: list[ERPRecord] = []
     for row in rows:

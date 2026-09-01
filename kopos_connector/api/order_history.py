@@ -123,6 +123,7 @@ def get_order_history_payload(
             order_by="parent asc, idx asc",
         )
         fb_items_by_order = query_fb_order_items_by_order(invoice_rows + refund_rows)
+        fb_headers_by_order = query_fb_order_headers(invoice_rows + refund_rows)
 
     return {
         "status": "ok",
@@ -140,6 +141,9 @@ def get_order_history_payload(
                 items=fb_items_by_order.get(cstr(row.get("custom_fb_order")).strip())
                 or items_by_parent.get(cstr(row.get("name")).strip(), []),
                 payments=payments_by_parent.get(cstr(row.get("name")).strip(), []),
+                fb_order=fb_headers_by_order.get(
+                    cstr(row.get("custom_fb_order")).strip()
+                ),
             )
             for row in page_rows
         ],
@@ -866,6 +870,40 @@ def query_fb_order_items_by_order(
     return grouped
 
 
+def query_fb_order_headers(
+    invoice_rows: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    fb_order_names = sorted(
+        {
+            cstr(row.get("custom_fb_order")).strip()
+            for row in invoice_rows
+            if cstr(row.get("custom_fb_order")).strip()
+        }
+    )
+    if not fb_order_names:
+        return {}
+    rows = frappe.get_all(
+        "FB Order",
+        filters={"name": ["in", fb_order_names]},
+        fields=filter_existing_fields(
+            "FB Order",
+            [
+                "name",
+                "completion_kind",
+                "complimentary_value",
+                "complimentary_reason",
+                "complimentary_approved_by",
+            ],
+        ),
+        limit_page_length=len(fb_order_names),
+    )
+    return {
+        cstr(row.get("name")).strip(): dict(row)
+        for row in rows
+        if cstr(row.get("name")).strip()
+    }
+
+
 def parse_commercial_modifier_snapshot(value: Any) -> list[dict[str, Any]] | None:
     snapshot_json = cstr(value).strip()
     if not snapshot_json:
@@ -970,10 +1008,24 @@ def serialize_order_row(
     *,
     items: list[dict[str, Any]],
     payments: list[dict[str, Any]],
+    fb_order: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    completion_kind = cstr(
+        (fb_order or {}).get("completion_kind") or "paid"
+    ).strip().lower()
     return {
         **serialize_invoice_row(row, items=items, payments=payments),
         "status": "voided" if cint(row.get("docstatus")) == 2 else "paid",
+        "completion_kind": completion_kind,
+        "complimentary_value": money_string(
+            (fb_order or {}).get("complimentary_value")
+        ),
+        "complimentary_reason": empty_to_none(
+            (fb_order or {}).get("complimentary_reason")
+        ),
+        "complimentary_approved_by": empty_to_none(
+            (fb_order or {}).get("complimentary_approved_by")
+        ),
     }
 
 

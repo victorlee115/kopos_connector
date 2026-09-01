@@ -646,6 +646,7 @@ def _tracked_component_items(*, company: str) -> tuple[str, ...]:
 
     if not company or not frappe.db.exists("DocType", "FB Recipe") or not frappe.db.exists("DocType", "FB Recipe Component"):
         return ()
+    effective_at = now_datetime()
     rows = frappe.db.sql(
         """
         SELECT DISTINCT component.item
@@ -654,11 +655,13 @@ def _tracked_component_items(*, company: str) -> tuple[str, ...]:
         INNER JOIN `tabItem` item ON item.name = component.item
         WHERE recipe.company = %s
           AND recipe.status = 'Active'
+          AND (recipe.effective_from IS NULL OR recipe.effective_from <= %s)
+          AND (recipe.effective_to IS NULL OR recipe.effective_to >= %s)
           AND component.affects_stock = 1
           AND item.is_stock_item = 1
         ORDER BY component.item ASC
         """,
-        (company,),
+        (company, effective_at, effective_at),
         as_dict=True,
     ) or []
     return tuple(cstr(row.get("item")).strip() for row in rows if cstr(row.get("item")).strip())

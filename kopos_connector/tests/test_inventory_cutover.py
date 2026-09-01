@@ -196,7 +196,9 @@ class InventoryCutoverTests(TestCase):
             company="JiJi",
             items=[SimpleNamespace(item_code="MILK", warehouse="Outlet - KL")],
         )
-        with patch.object(frappe.db, "sql", side_effect=[[], []]), patch.object(
+        with patch.object(inventory, "resolve_director_context"), patch.object(
+            frappe.db, "sql", side_effect=[[], []]
+        ), patch.object(
             frappe, "get_doc", side_effect=[policy, reconciliation]
         ), patch.object(
             inventory, "get_menu_authoring_summary", return_value={"ready": True}
@@ -237,7 +239,9 @@ class InventoryCutoverTests(TestCase):
             cutover_at=datetime(2026, 8, 15, 12, 0),
             opening_stock_reconciliation="MAT-RECON-1",
         )
-        with patch.object(frappe.db, "sql", return_value=[]), patch.object(
+        with patch.object(inventory, "resolve_director_context"), patch.object(
+            frappe.db, "sql", return_value=[]
+        ), patch.object(
             frappe, "get_doc", return_value=existing
         ):
             replay = inventory.activate_inventory_cutover(policy=existing.name)
@@ -245,7 +249,9 @@ class InventoryCutoverTests(TestCase):
         self.assertEqual(replay["cutover_token"], "immutable-token")
         self.assertEqual(replay["automation_state"], "Paused")
 
-        with patch.object(frappe.db, "sql", return_value=[]), patch.object(
+        with patch.object(inventory, "resolve_director_context"), patch.object(
+            frappe.db, "sql", return_value=[]
+        ), patch.object(
             frappe, "get_doc", return_value=existing
         ), self.assertRaises(frappe.ValidationError):
             inventory.activate_inventory_cutover(

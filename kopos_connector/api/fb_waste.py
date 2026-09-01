@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import frappe
-from frappe.utils import cstr, flt
+from frappe.utils import cint, cstr
 
 from kopos_connector.api.devices import (
     lock_device_for_operational_mutation,
@@ -31,15 +32,41 @@ def process_waste() -> dict[str, Any]:
                 f"FB Shift {validated['shift']} belongs to another device",
                 frappe.ValidationError,
             )
+    existing = frappe.db.get_value(
+        "FB Waste Event",
+        {"waste_id": validated["waste_id"]},
+        ["name", "status", "stock_entry"],
+        as_dict=True,
+    )
+    if existing:
+        document = frappe.get_doc("FB Waste Event", cstr(existing.get("name")))
+        _submit_waste_now(document)
+        return {
+            "status": "existing",
+            "waste_event": cstr(document.name),
+            "stock_entry": cstr(getattr(document, "stock_entry", None)) or None,
+        }
     doc = _build_waste_event(validated)
     doc.insert(ignore_permissions=True)
-    doc.submit()
-    doc.reload()
+    _submit_waste_now(doc)
     return {
         "status": "ok",
         "waste_event": doc.name,
         "stock_entry": cstr(getattr(doc, "stock_entry", None)) or None,
     }
+
+
+def _submit_waste_now(document: Any) -> None:
+    """Apply physical waste now; retries adopt the event's one Stock Entry."""
+
+    if cint(getattr(document, "docstatus", 0)) == 0:
+        document.flags.ignore_permissions = True
+        document.submit()
+        document.reload()
+    if cint(getattr(document, "docstatus", 0)) != 1 or not cstr(
+        getattr(document, "stock_entry", None)
+    ).strip():
+        frappe.throw("Waste was not applied to stock", frappe.ValidationError)
 
 
 def _get_request_payload() -> dict[str, Any]:
@@ -77,19 +104,21 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(row, Mapping):
             frappe.throw(f"lines[{index}] must be an object", frappe.ValidationError)
         item = cstr(row.get("item") or row.get("item_code"))
-        qty = flt(row.get("qty"))
+        qty = _positive_decimal(row.get("qty"), f"lines[{index}].qty")
         uom = cstr(row.get("uom"))
         cost_center = cstr(row.get("cost_center")) or None
         if not item:
             frappe.throw(f"lines[{index}].item is required", frappe.ValidationError)
-        if qty <= 0:
-            frappe.throw(
-                f"lines[{index}].qty must be greater than 0", frappe.ValidationError
-            )
         if not uom:
             frappe.throw(f"lines[{index}].uom is required", frappe.ValidationError)
         validated_lines.append(
-            {"item": item, "qty": qty, "uom": uom, "cost_center": cost_center}
+            {
+                "item": item,
+                "qty": format(qty, "f"),
+                "qty_decimal": format(qty, "f"),
+                "uom": uom,
+                "cost_center": cost_center,
+            }
         )
     return {
         "waste_id": waste_id,
@@ -117,3 +146,14 @@ def _build_waste_event(validated: dict[str, Any]):
     for line in validated["lines"]:
         doc.append("lines", line)
     return doc
+
+
+def _positive_decimal(value: Any, label: str) -> Decimal:
+    try:
+        quantity = Decimal(cstr(value).strip())
+    except (InvalidOperation, ValueError):
+        frappe.throw(f"{label} must be greater than 0", frappe.ValidationError)
+        raise AssertionError("frappe.throw must raise")
+    if not quantity.is_finite() or quantity <= 0:
+        frappe.throw(f"{label} must be greater than 0", frappe.ValidationError)
+    return quantity

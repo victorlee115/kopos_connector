@@ -1,12 +1,4 @@
-"""One sequence per page, and never an empty required filter.
-
-Two pages predate the desk vocabulary and were restructured rather than
-rewritten. Menu & Recipes offered three competing step models -- a numbered
-prose list, four chips (two numbered, one greyed with no reason), and a
-progress card with its own "Next" -- so a director had to work out which one
-was the actual order. Stock opened with a required outlet filter and showed
-nothing at all until it was filled.
-"""
+"""Beginner pages expose one obvious job and never an empty required filter."""
 
 from __future__ import annotations
 
@@ -19,29 +11,56 @@ STOCK = ROOT / "kopos" / "page" / "jiji_stock_autopilot" / "jiji_stock_autopilot
 SCOPE = ROOT / "api" / "director_scope.py"
 
 
-def test_the_menu_has_one_numbered_sequence() -> None:
+def test_the_menu_is_a_product_workspace_not_a_setup_course() -> None:
     page = MENU.read_text(encoding="utf-8")
-    # The prose list said the same three things in a different order and a
-    # different voice. The chips are the sequence.
     assert "<ol " not in page and "<ol>" not in page
-    for step in ('1. Choose item type', '2. Enter recipe', '3. Check what the tablet will show'):
-        assert step in page, f"the menu sequence is missing {step!r}"
+    assert 'title: __("Menu")' in page
+    assert 'data-add-product>${__("Add product")}' in page
+    assert '${__("Edit ingredients and choices")}' in page
+    assert '${__("Check the counter")}' in page
+    assert "setup steps" not in page.lower()
 
 
-def test_a_tool_is_not_numbered_as_a_step() -> None:
+def test_the_menu_does_not_mix_in_unrelated_admin_tools() -> None:
     page = MENU.read_text(encoding="utf-8")
-    # "Copy or change a recipe" sat unnumbered among numbered chips, which is
-    # how a sequence stops reading as one. FB Recipe still points people here
-    # by this exact name, so the label is kept.
-    assert "Copy or change a recipe" in page
-    assert "3. Copy or change" not in page
-    assert "for an item that already has one" in page
+    for obsolete in (
+        "checkPromotionEconomics",
+        "renderPromotionEconomics",
+        "downloadTemplate",
+        "validateCsv",
+        "renderCommissioningStatus",
+    ):
+        assert obsolete not in page
 
 
-def test_a_greyed_step_says_what_it_is_waiting_for() -> None:
+def test_a_disabled_menu_action_says_what_it_is_waiting_for() -> None:
     page = MENU.read_text(encoding="utf-8")
-    for waiting in ("Step 1 is waiting for", "Step 2 is waiting for", "Step 3 is waiting for"):
-        assert waiting in page, f"a disabled step never explains itself: {waiting!r}"
+    assert 'if (!company) waiting = __("Choose your café first.")' in page
+    assert 'else if (!item) waiting = __("Choose a product, or add a new one.")' in page
+
+
+def test_menu_choices_are_friendly_scoped_selects() -> None:
+    page = MENU.read_text(encoding="utf-8")
+    assert "kopos_connector.api.menu_authoring.get_menu_page_choices" in page
+    assert 'data-company-select' in page
+    assert 'data-menu-item-select' in page
+    assert 'data-catalog-profile-select' in page
+    assert 'options: "Item"' not in page
+    assert 'options: "POS Profile"' not in page
+    assert 'options: "Item Group"' not in page
+    assert 'data-new-menu-group' in page
+    assert "Use the name staff say at the counter, for example Matcha Latte." in page
+
+
+def test_the_landscape_recipe_editor_uses_the_available_width() -> None:
+    page = MENU.read_text(encoding="utf-8")
+    assert 'size: "extra-large"' in page
+
+
+def test_one_incomplete_product_is_written_in_the_singular() -> None:
+    page = MENU.read_text(encoding="utf-8")
+    assert 'missing.length === 1' in page
+    assert '__("1 product needs ingredients")' in page
 
 
 def test_stock_opens_on_the_outlet_the_director_has() -> None:
@@ -49,16 +68,16 @@ def test_stock_opens_on_the_outlet_the_director_has() -> None:
     scope = SCOPE.read_text(encoding="utf-8")
     assert "kopos_connector.api.director_scope.get_director_outlet" in page
     assert "def get_director_outlet" in scope
-    # A director who already chose is never overridden, and a slow or failing
-    # lookup leaves the filter usable instead of blanking the page.
-    assert "if (this.warehouseControl.get_value()) return;" in page
+    # The server returns scoped friendly names, and a refresh keeps a choice
+    # that still belongs to the director.
+    assert 'Array.isArray(data.outlets)' in page
+    assert 'outlets.some((row) => row.value === current)' in page
+    assert '"outlets": [' in scope
     assert "error: () => this.updateWarehouseHelp()" in page
-    # set_value fills the input without firing the change the page listens for,
-    # and resolves after its own validation. Reading the field back directly
-    # left the outlet filled in and the page still asking for an outlet, so a
-    # defaulted outlet takes the same path a chosen one does.
+    # A defaulted outlet takes the same path as one chosen by the person.
     assert "Promise.resolve(this.warehouseControl.set_value(warehouse))" in page
     assert 'this.warehouseControl.$input.trigger("change")' in page
+    assert 'options: "Warehouse"' not in page
 
 
 def test_stock_no_longer_opens_with_an_instruction_to_fill_a_filter() -> None:
@@ -72,14 +91,15 @@ def test_the_outlet_store_is_the_one_the_tablets_sell_from() -> None:
     # creates four for every company, so a single-outlet café never looks like
     # one -- verified on a real site, where the count rule never fired.
     assert '"POS Profile"' in scope
-    assert 'pluck="warehouse"' in scope
+    assert 'fields=["name", "warehouse", "selling_price_list"]' in scope
+    assert 'warehouses = _unique(row.get("warehouse") for row in profiles)' in scope
 
 
 def test_an_ambiguous_outlet_is_still_asked_for() -> None:
     scope = SCOPE.read_text(encoding="utf-8")
     # Two outlets selling from different stores is a real question. Choosing
     # one would show a director the wrong café without saying so.
-    assert "len(warehouses) == 1" in scope
+    assert 'return allowed[0] if len(allowed) == 1 else ""' in scope
 
 
 def test_stock_says_the_urgent_thing_once() -> None:
@@ -93,14 +113,14 @@ def test_stock_says_the_urgent_thing_once() -> None:
     assert "section.route === needs.route" in page
 
 
-def test_stock_keeps_all_six_areas() -> None:
+def test_stock_keeps_only_the_three_director_decisions() -> None:
     page = STOCK.read_text(encoding="utf-8")
     areas = [key for key in ("today", "stock", "counts", "plans", "finance", "settings")
              if f'key: "{key}"' in page]
-    assert areas == ["today", "stock", "counts", "plans", "finance", "settings"]
+    assert areas == ["counts", "plans", "finance"]
 
 
-def test_every_area_is_named_by_what_it_holds() -> None:
+def test_support_machinery_is_not_a_business_area() -> None:
     """An area card's title has to survive being read on its own.
 
     "Today" held the automatic job's status, on a page where every other card
@@ -109,13 +129,11 @@ def test_every_area_is_named_by_what_it_holds() -> None:
     department, not a thing a café owner looks for.
     """
     page = STOCK.read_text(encoding="utf-8")
-    # Only the six area cards. "Finance" is also a role in the who-does-what
-    # fold, where a department name is exactly what is meant.
     sections = page[page.index("const sections = ["):page.index("this.page.body.find(\"[data-sections]\")")]
-    for named in ("Automatic updates", "What the tablets know", "Cost and value"):
+    for named in ("Stock counts", "Ordering", "Cost and value"):
         assert f'title: __("{named}")' in sections, f"the {named!r} area is not named after its contents"
-    for vague in ('title: __("Today")', 'title: __("Stock")', 'title: __("Finance")'):
-        assert vague not in sections, f"{vague} names a time or a department, not what the card holds"
+    for support_only in ('title: __("Automatic updates")', 'title: __("What the tablets know")', 'title: __("Settings")'):
+        assert support_only not in sections, f"{support_only} belongs in the support workspace"
 
 
 def test_an_area_button_says_where_it_goes() -> None:
@@ -154,14 +172,14 @@ def test_page_markup_closes_what_it_opens() -> None:
 def test_the_menu_leads_with_the_drink_not_the_setup() -> None:
     page = MENU.read_text(encoding="utf-8")
     template = _template(page, "jiji-menu-page")
-    # Seven full cards competed on this page. The tools are folded, and the
-    # block holding the drink is named for what a person came to do.
-    assert '__("Look at one thing on your menu")' in page
-    assert template.count("<details") == 4, "the tools and the section map must stay folded"
-    # Setup progress is onboarding, not furniture.
-    assert 'find("[data-completion-card]").toggleClass("d-none", complete)' in page
-    # And the warning bar about who sees cost is a footnote now.
-    assert 'alert alert-warning mt-2' not in page
+    assert '__("Products")' in template
+    assert 'data-drink' in template
+    assert template.count('<div class="card mb-4">') == 2
+    assert "renderDrink(data)" in page
+    assert '__("What goes into a {0}?"' in page
+    assert '__("Available to staff")' in page
+    assert '__("Not published yet")' in page
+    assert "highlightSequenceAction" not in page
 
 
 def test_a_stock_problem_says_what_it_is() -> None:
@@ -175,9 +193,28 @@ def test_a_stock_problem_says_what_it_is() -> None:
     page = STOCK.read_text(encoding="utf-8")
     assert 'reason.includes("cutover_identity")' in page
     assert 'reason.includes("plan_gate")' in page
-    # And an unmapped code names itself, so a café owner ringing for help has
-    # something to read out.
-    assert "has no plain description for: {0}" in page
+    assert 'reason === "operating_day_evidence_missing"' in page
+    assert 'reason === "inventory_count_schedule_unconfigured"' in page
+    # The support record keeps its code; the beginner page never asks the
+    # director to decode it.
+    assert "has no plain description for: {0}" not in page
+    assert "Open it to see what needs fixing" in page
+
+
+def test_stock_setup_action_and_status_sentences_match_real_state() -> None:
+    page = STOCK.read_text(encoding="utf-8")
+    assert 'value: __("Start stock tracking")' in page
+    assert 'route: "start"' in page
+    assert 'if (key === "start")' in page
+    assert "add_inner_button" not in page
+    assert 'title: __("Start stock tracking?")' in page
+    assert 'primary_action_label: __("Start stock tracking")' in page
+    assert 'secondary_action_label: __("Not now")' in page
+    assert "frappe.confirm(" not in page
+    assert 'reason.includes("before_cutover")' in page
+    assert 'JiJi last updated your stock {0} ago' not in page
+    assert "needs.consequence" in page
+    assert "JiJi has stopped updating your stock until this is fixed" not in page
 
 
 def test_one_cause_is_one_alarm() -> None:

@@ -20,5 +20,5 @@
 	{"fieldname":"created_documents","fieldtype":"Long Text","label":"Restock or buying drafts created","read_only":1},
 	{"fieldname":"lines","fieldtype":"Table","label":"Suggested restock actions","options":"FB Inventory Plan Line"}
  ],
- "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]
+ "permissions": [{"role":"System Manager","read":1,"write":1,"create":1}]
 }

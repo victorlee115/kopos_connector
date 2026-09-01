@@ -38,6 +38,98 @@ MAYBANK_MODE_OF_PAYMENT = "duitnow qr"
 STATIC_QR_PAYMENT_CHANNEL = "static qr"
 
 
+def _completion_kind(order_doc: Any) -> str:
+    value = str(_value(order_doc, "completion_kind") or "paid").strip().lower()
+    if value not in {"paid", "complimentary"}:
+        raise ValueError("FB Order completion_kind must be paid or complimentary")
+    return value
+
+
+def _is_complimentary(order_doc: Any) -> bool:
+    return _completion_kind(order_doc) == "complimentary"
+
+
+def _is_zero_total_paid_order(order_doc: Any) -> bool:
+    if _completion_kind(order_doc) != "paid":
+        return False
+    if list(_value(order_doc, "payments") or []):
+        return False
+    if any(
+        _money_sen(_optional_money_value(_value(order_doc, fieldname)), fieldname)
+        != 0
+        for fieldname in (
+            "net_total",
+            "tax_total",
+            "rounding_adjustment",
+            "grand_total",
+        )
+    ):
+        return False
+
+    json.loads(
+        _canonical_json_value(
+            _value(order_doc, "promotion_payload_json"),
+            expected_type=dict,
+        )
+    )
+
+    items = list(_value(order_doc, "items") or [])
+    if not items:
+        return False
+    for item in items:
+        quantity = parse_positive_integer_quantity(
+            _value(item, "qty"),
+            f"FB Order {_value(order_doc, 'name')} item {_value(item, 'line_id')} qty",
+        )
+        unit_price_sen = _money_sen(
+            _optional_money_value(_value(item, "unit_price")),
+            "FB Order item unit_price",
+        )
+        modifier_total_sen = _money_sen(
+            _optional_money_value(_value(item, "modifier_total")),
+            "FB Order item modifier_total",
+        )
+        discount_amount_sen = _money_sen(
+            _optional_money_value(_value(item, "discount_amount")),
+            "FB Order item discount_amount",
+        )
+        line_total_sen = _money_sen(
+            _optional_money_value(_value(item, "line_total")),
+            "FB Order item line_total",
+        )
+        json.loads(
+            _canonical_json_value(
+                _value(item, "promotion_allocations_json"),
+                expected_type=list,
+            )
+        )
+        if (
+            unit_price_sen < 0
+            or unit_price_sen + modifier_total_sen < 0
+            or discount_amount_sen < 0
+            or discount_amount_sen
+            != (unit_price_sen + modifier_total_sen) * quantity
+            or line_total_sen != 0
+        ):
+            return False
+    return True
+
+
+def _priced_unit_value(order_doc: Any, order_item: Any) -> Decimal:
+    unit_price_sen = _money_sen(
+        _optional_money_value(_value(order_item, "unit_price")),
+        f"FB Order {order_doc.name} item {_value(order_item, 'line_id')} unit_price",
+    )
+    modifier_total_sen = _money_sen(
+        _optional_money_value(_value(order_item, "modifier_total")),
+        f"FB Order {order_doc.name} item {_value(order_item, 'line_id')} modifier_total",
+    )
+    unit_value_sen = unit_price_sen + modifier_total_sen
+    if unit_value_sen <= 0:
+        raise ValueError("Priced order items must retain a positive menu value")
+    return sen_to_decimal(unit_value_sen)
+
+
 def _optional_money_value(value: Any) -> Any:
     return 0 if value is None or value == "" else value
 
@@ -133,6 +225,7 @@ def create_sales_invoice(fb_order: Any) -> str | None:
                 _value(order_doc, "promotion_payload_json"),
             )
 
+            zero_total_paid = _is_zero_total_paid_order(order_doc)
             for order_item in list(_value(order_doc, "items") or []):
                 item_code = _value(order_item, "item")
                 if not item_code:
@@ -147,6 +240,7 @@ def create_sales_invoice(fb_order: Any) -> str | None:
                     f"FB Order {order_doc.name} item {_value(order_item, 'line_id') or item_code} qty",
                 )
 
+                complimentary = _is_complimentary(order_doc)
                 rate = _resolve_line_rate(order_item)
                 line_total = _money_decimal(
                     _value(order_item, "line_total"),
@@ -173,6 +267,38 @@ def create_sales_invoice(fb_order: Any) -> str | None:
                     "warehouse": _value(order_doc, "booth_warehouse") or None,
                     "custom_fb_order_line_ref": _value(order_item, "line_id") or None,
                 }
+                if zero_total_paid:
+                    row["price_list_rate"] = Decimal("0.00")
+                if complimentary:
+                    menu_unit_value = _priced_unit_value(
+                        order_doc,
+                        order_item,
+                    )
+                    row.update(
+                        {
+                            "price_list_rate": menu_unit_value,
+                            "rate": Decimal("0.00"),
+                            "amount": Decimal("0.00"),
+                            "discount_percentage": Decimal("100.00"),
+                            "discount_amount": menu_unit_value,
+                            "is_free_item": 0,
+                        }
+                    )
+                elif zero_total_paid and _money_sen(
+                    _optional_money_value(_value(order_item, "discount_amount")),
+                    f"FB Order {order_doc.name} item {_value(order_item, 'line_id') or item_code} discount_amount",
+                ) > 0:
+                    priced_unit_value = _priced_unit_value(order_doc, order_item)
+                    row.update(
+                        {
+                            "price_list_rate": priced_unit_value,
+                            "rate": Decimal("0.00"),
+                            "amount": Decimal("0.00"),
+                            "discount_percentage": Decimal("100.00"),
+                            "discount_amount": priced_unit_value,
+                            "is_free_item": 0,
+                        }
+                    )
                 invoice_item = invoice.append("items", row)
                 modifier_snapshot = _build_modifier_snapshot(order_item)
                 _set_if_present(
@@ -382,6 +508,31 @@ def _validate_sales_invoice_equivalence(order_doc: Any, invoice: Any) -> None:
     """Prove a submitted invoice is the exact ERP projection of one FB Order."""
 
     invoice_name = str(_value(invoice, "name") or "(unnamed)")
+    complimentary = _is_complimentary(order_doc)
+    zero_total_paid = _is_zero_total_paid_order(order_doc)
+    if complimentary:
+        if not str(_value(order_doc, "complimentary_reason") or "").strip():
+            frappe.throw(
+                f"FB Order {order_doc.name} has no complimentary reason",
+                frappe.ValidationError,
+            )
+        if not str(
+            _value(order_doc, "complimentary_approved_by") or ""
+        ).strip():
+            frappe.throw(
+                f"FB Order {order_doc.name} has no complimentary manager approval",
+                frappe.ValidationError,
+            )
+        if list(_value(order_doc, "payments") or []):
+            frappe.throw(
+                f"FB Order {order_doc.name} is complimentary but contains payments",
+                frappe.ValidationError,
+            )
+    elif not list(_value(order_doc, "payments") or []) and not zero_total_paid:
+        frappe.throw(
+            f"FB Order {order_doc.name} has no payment and is not a valid RM0 order",
+            frappe.ValidationError,
+        )
     if int(_value(invoice, "docstatus") or 0) != 1:
         frappe.throw(
             f"Recovered Sales Invoice {invoice_name} is not submitted",
@@ -489,6 +640,32 @@ def _validate_sales_invoice_equivalence(order_doc: Any, invoice: Any) -> None:
         _value(order_doc, "grand_total"),
         f"FB Order {order_doc.name} grand_total",
     )
+    if complimentary:
+        expected_complimentary_value_sen = 0
+        for order_item in list(_value(order_doc, "items") or []):
+            quantity = parse_positive_integer_quantity(
+                _value(order_item, "qty"),
+                f"FB Order {order_doc.name} item {_value(order_item, 'line_id')} qty",
+            )
+            expected_complimentary_value_sen += _money_sen(
+                _priced_unit_value(order_doc, order_item),
+                f"FB Order {order_doc.name} item {_value(order_item, 'line_id')} menu value",
+            ) * quantity
+        complimentary_value_sen = _money_sen(
+            _value(order_doc, "complimentary_value"),
+            f"FB Order {order_doc.name} complimentary_value",
+        )
+        if (
+            order_net_sen != 0
+            or order_tax_sen != 0
+            or order_rounding_sen != 0
+            or order_total_sen != 0
+            or complimentary_value_sen != expected_complimentary_value_sen
+        ):
+            frappe.throw(
+                f"FB Order {order_doc.name} has inconsistent complimentary value or totals",
+                frappe.ValidationError,
+            )
     expected_pre_round_total_sen = order_net_sen + order_tax_sen
     if expected_pre_round_total_sen + order_rounding_sen != order_total_sen:
         frappe.throw(
@@ -663,6 +840,75 @@ def _validate_invoice_item_equivalence(
             if actual_line_sen != expected_line_sen:
                 frappe.throw(
                     f"Recovered Sales Invoice {invoice_name} item {line_ref} {fieldname} does not match FB Order",
+                    frappe.ValidationError,
+                )
+        if _is_complimentary(order_doc):
+            expected_menu_unit_sen = _money_sen(
+                _priced_unit_value(order_doc, order_item),
+                f"FB Order {order_doc.name} item {line_ref} menu value",
+            )
+            complimentary_invoice_values = {
+                "price_list_rate": expected_menu_unit_sen,
+                "rate": 0,
+                "discount_amount": expected_menu_unit_sen,
+            }
+            for fieldname, expected_value_sen in complimentary_invoice_values.items():
+                actual_value_sen = _money_sen(
+                    _optional_money_value(_value(invoice_item, fieldname)),
+                    f"Recovered Sales Invoice {invoice_name} item {line_ref} {fieldname}",
+                )
+                if actual_value_sen != expected_value_sen:
+                    frappe.throw(
+                        f"Recovered Sales Invoice {invoice_name} item {line_ref} does not retain its complimentary price and discount",
+                        frappe.ValidationError,
+                    )
+            if Decimal(
+                str(_value(invoice_item, "discount_percentage") or 0)
+            ) != Decimal("100") or int(
+                _value(invoice_item, "is_free_item") or 0
+            ) != 0:
+                frappe.throw(
+                    f"Recovered Sales Invoice {invoice_name} item {line_ref} is not an exact full discount",
+                    frappe.ValidationError,
+                )
+        elif _is_zero_total_paid_order(order_doc):
+            expected_discount_sen = _money_sen(
+                _optional_money_value(_value(order_item, "discount_amount")),
+                f"FB Order {order_doc.name} item {line_ref} discount_amount",
+            )
+            expected_unit_sen = (
+                _money_sen(
+                    _priced_unit_value(order_doc, order_item),
+                    f"FB Order {order_doc.name} item {line_ref} priced value",
+                )
+                if expected_discount_sen > 0
+                else 0
+            )
+            expected_invoice_values = {
+                "price_list_rate": expected_unit_sen,
+                "rate": 0,
+                "discount_amount": expected_unit_sen if expected_discount_sen > 0 else 0,
+            }
+            for fieldname, expected_value_sen in expected_invoice_values.items():
+                actual_value_sen = _money_sen(
+                    _optional_money_value(_value(invoice_item, fieldname)),
+                    f"Recovered Sales Invoice {invoice_name} item {line_ref} {fieldname}",
+                )
+                if actual_value_sen != expected_value_sen:
+                    frappe.throw(
+                        f"Recovered Sales Invoice {invoice_name} item {line_ref} does not retain its RM0 pricing",
+                        frappe.ValidationError,
+                    )
+            expected_free_item = 0 if expected_discount_sen > 0 else 1
+            if int(_value(invoice_item, "is_free_item") or 0) != expected_free_item:
+                frappe.throw(
+                    f"Recovered Sales Invoice {invoice_name} item {line_ref} has inconsistent RM0 discount treatment",
+                    frappe.ValidationError,
+                )
+            expected_discount_percentage = Decimal("100") if expected_discount_sen > 0 else Decimal("0")
+            if Decimal(str(_value(invoice_item, "discount_percentage") or 0)) != expected_discount_percentage:
+                frappe.throw(
+                    f"Recovered Sales Invoice {invoice_name} item {line_ref} has an inconsistent RM0 discount percentage",
                     frappe.ValidationError,
                 )
         expected_modifier_sen = _money_sen(
@@ -1204,8 +1450,16 @@ def _apply_rounding(invoice: Any, order_doc: Any) -> None:
         _value(order_doc, "grand_total"),
         "FB Order grand_total",
     )
-    if grand_total_sen <= 0:
-        raise ValueError("FB Order grand_total must be greater than 0")
+    if grand_total_sen < 0:
+        raise ValueError("FB Order grand_total must not be negative")
+    if (
+        grand_total_sen == 0
+        and not _is_complimentary(order_doc)
+        and not _is_zero_total_paid_order(order_doc)
+    ):
+        raise ValueError(
+            "A paid RM0 FB Order must have exact zero totals and valid pricing"
+        )
 
     rounding_gap_sen = _resolve_rounding_gap_sen(invoice, grand_total_sen)
     expected_rounding_gap_sen = -rounding_adjustment_sen
@@ -1377,6 +1631,14 @@ def _build_invoice_remarks(order_doc: Any) -> str:
         f"Shift: {_value(order_doc, 'shift') or ''}",
         f"Device ID: {_value(order_doc, 'device_id') or ''}",
     ]
+    if _is_complimentary(order_doc):
+        parts.extend(
+            [
+                "Complimentary order",
+                f"Approved by: {_value(order_doc, 'complimentary_approved_by') or ''}",
+                f"Reason: {_value(order_doc, 'complimentary_reason') or ''}",
+            ]
+        )
     notes = _value(order_doc, "notes")
     if notes:
         parts.append(str(notes))

@@ -41,7 +41,30 @@ def test_inventory_records_have_no_generic_device_resource_permissions() -> None
     )
     assert paths
     for path in paths:
-        assert all(permission.get("role") != DEVICE_ROLE for permission in _permissions(path)), path
+            assert all(permission.get("role") != DEVICE_ROLE for permission in _permissions(path)), path
+
+
+def test_business_roles_cannot_open_internal_inventory_records_directly() -> None:
+    internal = (
+        "fb_recipe",
+        "fb_modifier",
+        "fb_modifier_group",
+        "fb_inventory_policy",
+        "fb_inventory_availability_rule",
+        "fb_inventory_exception",
+        "fb_availability_hold",
+        "fb_projection_log",
+        "fb_inventory_count_observation",
+        "fb_inventory_count_task",
+        "fb_inventory_count_task_line",
+        "fb_inventory_plan",
+        "fb_inventory_plan_line",
+        "fb_waste_event",
+    )
+    for name in internal:
+        path = ROOT / "kopos" / "doctype" / name / f"{name}.json"
+        roles = {str(row.get("role")) for row in _permissions(path)}
+        assert roles == {"System Manager"}, (name, roles)
 
 
 def test_sensitive_role_boundary_includes_authoritative_inventory_records() -> None:

@@ -162,6 +162,10 @@ def test_fb_order_builder_persists_normalized_sale_datetime(monkeypatch: Any) ->
             "tax_rate": 0,
             "rounding_adjustment": 0.0,
             "grand_total": 10.0,
+            "completion_kind": "paid",
+            "complimentary_value_sen": 0,
+            "complimentary_reason": "",
+            "complimentary_approved_by": "",
             "notes": None,
             "items": [
                 {

@@ -568,9 +568,26 @@ def outbound_configuration_safe() -> tuple[bool, str]:
             risky.append(doctype)
     hooks = frappe.get_hooks("doc_events") or {}
     if isinstance(hooks, dict):
-        for target in ("Purchase Order", "*"):
-            if _hook_has_handlers(hooks.get(target)):
-                risky.append(f"doc_events:{target}")
+        if _hook_has_handlers(hooks.get("Purchase Order")):
+            risky.append("doc_events:Purchase Order")
+        # Frappe itself registers global maintenance hooks for notifications,
+        # permissions, search, workflows and assignment rules. The last two
+        # are already checked above against Purchase Order configuration. A
+        # blanket rejection of every ``frappe.*`` wildcard therefore marks a
+        # standard site unsafe forever. Non-framework wildcard handlers still
+        # fail closed because they can run for a new Purchase Order.
+        safe_erpnext_wildcard_handlers = {
+            "erpnext.support.doctype.service_level_agreement.service_level_agreement.apply",
+            "erpnext.setup.doctype.transaction_deletion_record.transaction_deletion_record.check_for_running_deletion_job",
+        }
+        custom_wildcard_handlers = [
+            handler
+            for handler in _hook_handler_names(hooks.get("*"))
+            if not handler.startswith("frappe.")
+            and handler not in safe_erpnext_wildcard_handlers
+        ]
+        if custom_wildcard_handlers:
+            risky.append("doc_events:*")
     for hook_name in ("override_doctype_class", "extend_doctype_class"):
         mappings = frappe.get_hooks(hook_name) or {}
         if isinstance(mappings, dict) and _hook_has_handlers(mappings.get("Purchase Order")):
@@ -880,11 +897,24 @@ def _has_inventory_fingerprint_field(doctype: str) -> bool:
 
 
 def _hook_has_handlers(value: Any) -> bool:
+    return bool(_hook_handler_names(value))
+
+
+def _hook_handler_names(value: Any) -> tuple[str, ...]:
     if isinstance(value, dict):
-        return any(_hook_has_handlers(item) for item in value.values())
+        return tuple(
+            handler
+            for item in value.values()
+            for handler in _hook_handler_names(item)
+        )
     if isinstance(value, (list, tuple, set)):
-        return any(_hook_has_handlers(item) for item in value)
-    return bool(cstr(value).strip())
+        return tuple(
+            handler
+            for item in value
+            for handler in _hook_handler_names(item)
+        )
+    handler = cstr(value).strip()
+    return (handler,) if handler else ()
 
 
 def _as_date(value: Any) -> date | None:

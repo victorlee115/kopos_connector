@@ -33,6 +33,12 @@ DEMO_MATCHA_ITEM = "SMOKE-MATCHA-POWDER"
 DEMO_STRAWBERRY_ITEM = "SMOKE-STRAWBERRY-PUREE"
 DEMO_MILK_ITEM = "SMOKE-MILK"
 DEMO_CUP_ITEM = "SMOKE-CUP"
+SMOKE_INGREDIENT_ITEM_CODES = (
+    DEMO_CUP_ITEM,
+    DEMO_MATCHA_ITEM,
+    DEMO_MILK_ITEM,
+    DEMO_STRAWBERRY_ITEM,
+)
 DEMO_PROMOTION_NAME = "SMOKE-MANUAL-10-PCT"
 DEMO_PROMOTION_DISPLAY_LABEL = "Smoke 10% Off"
 DEMO_PROMOTION_DISCOUNT_VALUE = 10
@@ -233,6 +239,11 @@ def _ensure_smoke_base_data(
     else:
         item = _ensure_commercial_smoke_item()
         demo_recipe = None
+
+    # The POS Profile's selling price list is the commercial catalogue
+    # boundary. A standard rate alone is intentionally not enough: without an
+    # Item Price this smoke product is correctly excluded from the tablet.
+    _ensure_smoke_item_price(item, _get_demo_currency(company))
 
     frappe.db.commit()
     return {
@@ -1569,6 +1580,31 @@ def _ensure_selling_price_list(currency: str) -> str:
     )
     doc.insert(ignore_permissions=True)
     return str(doc.name)
+
+
+def _ensure_smoke_item_price(item_code: str, currency: str) -> str:
+    filters = {
+        "item_code": item_code,
+        "price_list": SMOKE_SELLING_PRICE_LIST,
+        "uom": "Nos",
+    }
+    existing = frappe.db.get_value("Item Price", filters, "name")
+    doc = (
+        frappe.get_doc("Item Price", existing)
+        if existing
+        else frappe.new_doc("Item Price")
+    )
+    doc.item_code = item_code
+    doc.price_list = SMOKE_SELLING_PRICE_LIST
+    doc.uom = "Nos"
+    doc.price_list_rate = Decimal("12.00")
+    doc.currency = currency
+    doc.selling = 1
+    if existing:
+        doc.save(ignore_permissions=True)
+    else:
+        doc.insert(ignore_permissions=True)
+    return cstr(doc.name)
 
 
 def _apply_smoke_pos_profile_tax_config(profile_doc: Any) -> bool:
@@ -2925,9 +2961,10 @@ def setup_full_smoke_data(
         )
         set_demo_ingredient_quantities()
     promotion_name = _ensure_demo_promotion(base["pos_profile"])
+    promotion_snapshot: dict[str, Any] = {}
     if inventory_regression:
         _ensure_demo_promotion_economics(promotion_name, base["pos_profile"])
-    promotion_snapshot = _ensure_promotion_snapshot(base["pos_profile"])
+        promotion_snapshot = _ensure_promotion_snapshot(base["pos_profile"])
 
     frappe.db.commit()
 
@@ -4183,6 +4220,10 @@ def _collect_smoke_business_state(
         "tax_total",
         "tax_rate",
         "rounding_adjustment",
+        "completion_kind",
+        "complimentary_value",
+        "complimentary_reason",
+        "complimentary_approved_by",
         "currency",
         "docstatus",
         "sale_datetime",
@@ -4209,6 +4250,7 @@ def _collect_smoke_business_state(
             "net_total",
             "tax_total",
             "rounding_adjustment",
+            "complimentary_value",
         ):
             order[fieldname] = _exact_money(order.get(fieldname))
         order["tax_rate"] = _decimal_text(order.get("tax_rate"))
@@ -4383,6 +4425,12 @@ def build_smoke_business_assertions(
     modifier_proof_required = any(
         str(key).startswith("history-") for key in expected_keys
     )
+    complimentary_expected_keys = [
+        key for key in expected_keys if str(key).startswith("complimentary-")
+    ]
+    zero_price_expected_keys = [
+        key for key in expected_keys if str(key).startswith("zero-price-")
+    ]
     modifier_cases: list[dict[str, Any]] = []
     for order in fb_orders:
         invoice = invoices_by_name.get(order.get("sales_invoice"))
@@ -4406,6 +4454,48 @@ def build_smoke_business_assertions(
                     "invoice_item": invoice_item,
                 }
             )
+    complimentary_cases = []
+    for key in complimentary_expected_keys:
+        matching_orders = [
+            order
+            for order in fb_orders
+            if order.get("external_idempotency_key") == key
+        ]
+        order = matching_orders[0] if len(matching_orders) == 1 else None
+        invoice = (
+            invoices_by_name.get(order.get("sales_invoice"))
+            if isinstance(order, dict)
+            else None
+        )
+        complimentary_cases.append(
+            {
+                "idempotency_key": key,
+                "matching_order_count": len(matching_orders),
+                "order": order,
+                "invoice": invoice,
+            }
+        )
+    zero_price_cases = []
+    for key in zero_price_expected_keys:
+        matching_orders = [
+            order
+            for order in fb_orders
+            if order.get("external_idempotency_key") == key
+        ]
+        order = matching_orders[0] if len(matching_orders) == 1 else None
+        invoice = (
+            invoices_by_name.get(order.get("sales_invoice"))
+            if isinstance(order, dict)
+            else None
+        )
+        zero_price_cases.append(
+            {
+                "idempotency_key": key,
+                "matching_order_count": len(matching_orders),
+                "order": order,
+                "invoice": invoice,
+            }
+        )
 
     if isinstance(device_state, dict):
         expect(
@@ -4476,6 +4566,7 @@ def build_smoke_business_assertions(
             ),
             modifier_cases,
         )
+
         expect(
             "modifier_sales_invoice_audit_proven",
             bool(modifier_cases)
@@ -4495,6 +4586,28 @@ def build_smoke_business_assertions(
                 for case in modifier_cases
             ),
             modifier_cases,
+        )
+
+    if complimentary_expected_keys:
+        expect(
+            "complimentary_accounting_proven",
+            len(complimentary_cases) == len(complimentary_expected_keys)
+            and all(
+                _complimentary_accounting_matches(case)
+                for case in complimentary_cases
+            ),
+            complimentary_cases,
+        )
+
+    if zero_price_expected_keys:
+        expect(
+            "zero_price_accounting_proven",
+            len(zero_price_cases) == len(zero_price_expected_keys)
+            and all(
+                _zero_price_accounting_matches(case)
+                for case in zero_price_cases
+            ),
+            zero_price_cases,
         )
 
     expect("fb_shift_open_close_proven", bool(closed_shifts), fb_shifts)
@@ -4546,10 +4659,15 @@ def build_smoke_business_assertions(
         },
     )
     if inventory_acceptance:
+        expected_key_set = set(expected_keys)
         inventory_orders = [
             row
             for row in fb_orders
             if row.get("status") in {"Submitted", "Cancelled"}
+            and (
+                not expected_key_set
+                or row.get("external_idempotency_key") in expected_key_set
+            )
         ]
         stock_entries_by_name = {
             row.get("name"): row
@@ -4563,7 +4681,14 @@ def build_smoke_business_assertions(
         expect(
             "inventory_stock_issue_links_proven",
             bool(inventory_orders)
-            and len(stock_entries_by_name) == len(inventory_orders)
+            and len(
+                {
+                    entry.get("name")
+                    for entry in linked_entries
+                    if isinstance(entry, dict) and entry.get("name")
+                }
+            )
+            == len(inventory_orders)
             and all(
                 order.get("stock_status") == "Posted"
                 and isinstance(entry, dict)
@@ -4755,6 +4880,276 @@ def _modifier_invoice_audit_matches(case: dict[str, Any]) -> bool:
     )
 
 
+def _complimentary_accounting_matches(case: dict[str, Any]) -> bool:
+    """Prove the live ERP document shape for one manager-approved free order."""
+
+    if case.get("matching_order_count") != 1:
+        return False
+    order = case.get("order")
+    invoice = case.get("invoice")
+    if not isinstance(order, dict) or not isinstance(invoice, dict):
+        return False
+
+    order_items = _list(order.get("items"))
+    invoice_items = _list(invoice.get("items"))
+    if not order_items or len(invoice_items) != len(order_items):
+        return False
+
+    zero_order_fields = (
+        "net_total",
+        "tax_total",
+        "rounding_adjustment",
+        "grand_total",
+    )
+    zero_invoice_fields = (
+        "net_total",
+        "total_taxes_and_charges",
+        "rounding_adjustment",
+        "grand_total",
+        "paid_amount",
+        "change_amount",
+        "outstanding_amount",
+        "write_off_amount",
+    )
+    if (
+        order.get("completion_kind") != "complimentary"
+        or not str(order.get("complimentary_reason") or "").strip()
+        or not str(order.get("complimentary_approved_by") or "").strip()
+        or any(
+            persisted_money_to_sen(order.get(fieldname), fieldname) != 0
+            for fieldname in zero_order_fields
+        )
+        or _list(order.get("payments"))
+        or invoice.get("docstatus") != 1
+        or bool(invoice.get("is_return"))
+        or any(
+            persisted_money_to_sen(invoice.get(fieldname), fieldname) != 0
+            for fieldname in zero_invoice_fields
+        )
+        or _list(invoice.get("payments"))
+    ):
+        return False
+
+    expected_value_sen = 0
+    invoice_items_by_line = {
+        item.get("order_line_ref"): item
+        for item in invoice_items
+        if isinstance(item, dict) and item.get("order_line_ref")
+    }
+    for item in order_items:
+        if not isinstance(item, dict):
+            return False
+        try:
+            quantity = Decimal(str(item.get("qty") or ""))
+        except (InvalidOperation, ValueError):
+            return False
+        if quantity <= 0 or quantity != quantity.to_integral_value():
+            return False
+        menu_unit_sen = persisted_money_to_sen(
+            item.get("unit_price"), "complimentary order unit price"
+        ) + persisted_money_to_sen(
+            item.get("modifier_total"), "complimentary order modifier value"
+        )
+        line_value_sen = menu_unit_sen * int(quantity)
+        if (
+            menu_unit_sen <= 0
+            or persisted_money_to_sen(
+                item.get("discount_amount"), "complimentary order discount"
+            )
+            != line_value_sen
+            or persisted_money_to_sen(
+                item.get("line_total"), "complimentary order line total"
+            )
+            != 0
+        ):
+            return False
+        expected_value_sen += line_value_sen
+
+        invoice_item = invoice_items_by_line.get(item.get("line_id"))
+        if not isinstance(invoice_item, dict):
+            return False
+        if (
+            persisted_money_to_sen(
+                invoice_item.get("price_list_rate"),
+                "complimentary invoice menu price",
+            )
+            != menu_unit_sen
+            or persisted_money_to_sen(
+                invoice_item.get("rate"), "complimentary invoice rate"
+            )
+            != 0
+            or persisted_money_to_sen(
+                invoice_item.get("discount_amount"),
+                "complimentary invoice discount",
+            )
+            != menu_unit_sen
+            or Decimal(str(invoice_item.get("discount_percentage") or 0))
+            != Decimal("100")
+            or bool(invoice_item.get("is_free_item"))
+            or persisted_money_to_sen(
+                invoice_item.get("amount"), "complimentary invoice amount"
+            )
+            != 0
+            or persisted_money_to_sen(
+                invoice_item.get("net_amount"),
+                "complimentary invoice net amount",
+            )
+            != 0
+        ):
+            return False
+
+    if persisted_money_to_sen(
+        order.get("complimentary_value"), "complimentary order value"
+    ) != expected_value_sen:
+        return False
+
+    remarks = str(invoice.get("remarks") or "")
+    if (
+        str(order.get("complimentary_reason")) not in remarks
+        or str(order.get("complimentary_approved_by")) not in remarks
+    ):
+        return False
+
+    return all(
+        persisted_money_to_sen(entry.get("debit"), "complimentary GL debit") == 0
+        and persisted_money_to_sen(
+            entry.get("credit"), "complimentary GL credit"
+        )
+        == 0
+        for entry in _list(invoice.get("gl_entries"))
+        if isinstance(entry, dict)
+    )
+
+
+def _zero_price_accounting_matches(case: dict[str, Any]) -> bool:
+    """Prove one valid zero-total paid order and its invoice."""
+
+    if case.get("matching_order_count") != 1:
+        return False
+    order = case.get("order")
+    invoice = case.get("invoice")
+    if not isinstance(order, dict) or not isinstance(invoice, dict):
+        return False
+
+    order_items = _list(order.get("items"))
+    invoice_items = _list(invoice.get("items"))
+    if not order_items or len(invoice_items) != len(order_items):
+        return False
+
+    zero_order_fields = (
+        "net_total",
+        "tax_total",
+        "rounding_adjustment",
+        "grand_total",
+        "complimentary_value",
+    )
+    zero_invoice_fields = (
+        "net_total",
+        "total_taxes_and_charges",
+        "rounding_adjustment",
+        "grand_total",
+        "paid_amount",
+        "change_amount",
+        "outstanding_amount",
+        "write_off_amount",
+    )
+    if (
+        order.get("completion_kind") != "paid"
+        or str(order.get("complimentary_reason") or "").strip()
+        or str(order.get("complimentary_approved_by") or "").strip()
+        or any(
+            persisted_money_to_sen(order.get(fieldname), fieldname) != 0
+            for fieldname in zero_order_fields
+        )
+        or _list(order.get("payments"))
+        or invoice.get("docstatus") != 1
+        or bool(invoice.get("is_return"))
+        or any(
+            persisted_money_to_sen(invoice.get(fieldname), fieldname) != 0
+            for fieldname in zero_invoice_fields
+        )
+        or _list(invoice.get("payments"))
+    ):
+        return False
+
+    invoice_items_by_line = {
+        item.get("order_line_ref"): item
+        for item in invoice_items
+        if isinstance(item, dict) and item.get("order_line_ref")
+    }
+    for item in order_items:
+        if not isinstance(item, dict):
+            return False
+        try:
+            quantity = Decimal(str(item.get("qty") or ""))
+        except (InvalidOperation, ValueError):
+            return False
+        if quantity <= 0 or quantity != quantity.to_integral_value():
+            return False
+        unit_price_sen = persisted_money_to_sen(
+            item.get("unit_price"), "RM0 order unit price"
+        )
+        modifier_total_sen = persisted_money_to_sen(
+            item.get("modifier_total"), "RM0 order modifier value"
+        )
+        gross_line_sen = (unit_price_sen + modifier_total_sen) * int(quantity)
+        discount_amount_sen = persisted_money_to_sen(
+            item.get("discount_amount"), "RM0 order discount"
+        )
+        if (
+            gross_line_sen < 0
+            or discount_amount_sen != gross_line_sen
+            or persisted_money_to_sen(
+                item.get("line_total"), "RM0 order line total"
+            )
+            != 0
+        ):
+            return False
+
+        invoice_item = invoice_items_by_line.get(item.get("line_id"))
+        if not isinstance(invoice_item, dict):
+            return False
+        expected_discounted = discount_amount_sen > 0
+        expected_unit_sen = unit_price_sen + modifier_total_sen
+        if (
+            persisted_money_to_sen(
+                invoice_item.get("price_list_rate"),
+                "RM0 invoice price_list_rate",
+            )
+            != expected_unit_sen
+            or persisted_money_to_sen(
+                invoice_item.get("rate"), "RM0 invoice rate"
+            )
+            != 0
+            or persisted_money_to_sen(
+                invoice_item.get("discount_amount"),
+                "RM0 invoice discount_amount",
+            )
+            != (expected_unit_sen if expected_discounted else 0)
+            or persisted_money_to_sen(
+                invoice_item.get("amount"), "RM0 invoice amount"
+            )
+            != 0
+            or persisted_money_to_sen(
+                invoice_item.get("net_amount"), "RM0 invoice net_amount"
+            )
+            != 0
+            or Decimal(str(invoice_item.get("discount_percentage") or 0))
+            != (Decimal("100") if expected_discounted else Decimal("0"))
+            or bool(invoice_item.get("is_free_item")) == expected_discounted
+            or _list(invoice_item.get("promotion_allocations"))
+            != _list(item.get("promotion_allocations"))
+        ):
+            return False
+
+    return all(
+        persisted_money_to_sen(entry.get("debit"), "RM0 GL debit") == 0
+        and persisted_money_to_sen(entry.get("credit"), "RM0 GL credit") == 0
+        for entry in _list(invoice.get("gl_entries"))
+        if isinstance(entry, dict)
+    )
+
+
 def _collect_sales_invoices(device_id: str) -> list[dict[str, Any]]:
     rows = _get_rows(
         "Sales Invoice",
@@ -4779,6 +5174,7 @@ def _collect_sales_invoices(device_id: str) -> list[dict[str, Any]]:
             "outstanding_amount",
             "posting_date",
             "posting_time",
+            "remarks",
             "customer",
             "company",
             "currency",
@@ -5876,15 +6272,9 @@ def _collect_ingredient_bin_balances(warehouse: Any) -> list[dict[str, Any]]:
     warehouse_name = str(warehouse or "").strip()
     if not warehouse_name:
         return []
-    tracked_items = _get_rows(
-        "Item",
-        filters={"is_stock_item": 1, "custom_kopos_track_stock": 1},
-        fields=["item_code"],
-        order_by="item_code asc",
-    )
-    item_codes = _unique_names(row.get("item_code") for row in tracked_items)
-    if not item_codes:
-        return []
+    # This proof belongs to the smoke recipe, not to every tracked Item that
+    # another acceptance fixture may have left in the same warehouse.
+    item_codes = list(SMOKE_INGREDIENT_ITEM_CODES)
     bin_rows = _get_rows(
         "Bin",
         filters={
@@ -6095,6 +6485,16 @@ def _collect_invoice_items(invoice_doc: Any) -> list[dict[str, Any]]:
                 "item_code": _value(item, "item_code"),
                 "qty": _decimal_text(_value(item, "qty")),
                 "rate": _decimal_text(_value(item, "rate")),
+                "price_list_rate": _decimal_text(
+                    _value(item, "price_list_rate")
+                ),
+                "discount_percentage": _decimal_text(
+                    _value(item, "discount_percentage")
+                ),
+                "discount_amount": _exact_money(
+                    _value(item, "discount_amount")
+                ),
+                "is_free_item": bool(_value(item, "is_free_item")),
                 "amount": _exact_money(_value(item, "amount")),
                 "net_rate": _decimal_text(_value(item, "net_rate")),
                 "net_amount": _exact_money(_value(item, "net_amount")),

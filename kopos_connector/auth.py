@@ -61,6 +61,7 @@ ALLOWED_DEVICE_API_PATHS = frozenset(
         "/api/method/kopos_connector.api.submit_purchase_receipt",
         "/api/method/kopos_connector.api.submit_transfer_dispatch",
         "/api/method/kopos_connector.api.submit_transfer_receipt",
+        "/api/method/kopos_connector.api.record_waste_event",
         # A device API user must always be able to end its own browser session.
         # This is deliberately an exit-only Frappe core method, not Desk access.
         "/api/v2/method/logout",
@@ -131,6 +132,7 @@ DEVICE_API_HTTP_METHODS.update(
         "/api/method/kopos_connector.api.submit_purchase_receipt": frozenset({"POST"}),
         "/api/method/kopos_connector.api.submit_transfer_dispatch": frozenset({"POST"}),
         "/api/method/kopos_connector.api.submit_transfer_receipt": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.record_waste_event": frozenset({"POST"}),
         "/api/v2/method/logout": frozenset({"POST"}),
     }
 )

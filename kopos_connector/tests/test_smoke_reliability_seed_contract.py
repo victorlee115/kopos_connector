@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime, timedelta
+from decimal import Decimal
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
@@ -151,6 +152,7 @@ def test_included_smoke_gate_proves_standard_inventory_documents_and_balances() 
                 "sale_datetime": datetime(2026, 7, 12, 0, 30, 45),
                 "sales_invoice": "SINV-INV-1",
                 "ingredient_stock_entry": "STE-INV-1",
+                "external_idempotency_key": "inventory-current",
             }
         ],
         "sales_invoices": [
@@ -223,6 +225,31 @@ def test_included_smoke_gate_proves_standard_inventory_documents_and_balances() 
         assert result["assertions"][assertion] is True
     assert result["summary"]["inventory_acceptance"] is True
     assert result["summary"]["inventory_evaluation"] == "included_evaluated"
+
+    state["fb_orders"].append(
+        {
+            "name": "FB-ORDER-BEFORE-CUTOVER",
+            "status": "Submitted",
+            "stock_status": "Not tracked",
+            "sale_datetime": datetime(2026, 7, 11, 23, 30, 45),
+            "sales_invoice": "SINV-BEFORE-CUTOVER",
+            "ingredient_stock_entry": None,
+            "external_idempotency_key": "historical-before-cutover",
+        }
+    )
+    state["ingredient_stock_entries"].append({"name": "STE-OLDER-INVENTORY-RUN"})
+    scoped_result = smoke.build_smoke_business_assertions(
+        state,
+        expected_idempotency_keys=["inventory-current"],
+    )
+    for assertion in (
+        "inventory_stock_issue_links_proven",
+        "inventory_stock_entry_details_proven",
+        "inventory_stock_ledger_movements_proven",
+        "inventory_stock_projection_sale_datetime_preserved",
+        "inventory_bin_balances_proven",
+    ):
+        assert scoped_result["assertions"][assertion] is True
 
     state["ingredient_stock_entries"][0]["stock_ledger_entries"] = []
     failed_result = smoke.build_smoke_business_assertions(state)
@@ -433,6 +460,72 @@ def test_smoke_selling_price_list_is_enabled_and_myr(monkeypatch) -> None:
         "buying": 0,
         "currency": "MYR",
     }
+
+
+def test_smoke_product_is_priced_on_the_profile_catalogue(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    import frappe
+
+    from kopos_connector import smoke
+
+    class ItemPrice:
+        name = "SMOKE-ITEM-PRICE"
+
+        def __init__(self) -> None:
+            self.inserted = False
+
+        def insert(self, *, ignore_permissions: bool) -> None:
+            assert ignore_permissions is True
+            self.inserted = True
+
+    item_price = ItemPrice()
+    monkeypatch.setattr(frappe.db, "get_value", lambda *args: None)
+    monkeypatch.setattr(frappe, "new_doc", lambda doctype: item_price)
+
+    result = smoke._ensure_smoke_item_price(smoke.DEMO_DRINK_ITEM, "MYR")
+
+    assert result == "SMOKE-ITEM-PRICE"
+    assert item_price.item_code == smoke.DEMO_DRINK_ITEM
+    assert item_price.price_list == smoke.SMOKE_SELLING_PRICE_LIST
+    assert item_price.uom == "Nos"
+    assert item_price.price_list_rate == Decimal("12.00")
+    assert item_price.currency == "MYR"
+    assert item_price.selling == 1
+    assert item_price.inserted is True
+
+
+def test_smoke_bin_proof_is_scoped_to_its_recipe_ingredients(monkeypatch) -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    captured_filters: dict[str, Any] = {}
+
+    def get_rows(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        assert doctype == "Bin"
+        captured_filters.update(kwargs["filters"])
+        return [
+            {
+                "name": "BIN-SMOKE-MATCHA",
+                "item_code": smoke.DEMO_MATCHA_ITEM,
+                "warehouse": "KoPOS Store - KMY",
+                "actual_qty": "100",
+            }
+        ]
+
+    monkeypatch.setattr(smoke, "_get_rows", get_rows)
+
+    result = smoke._collect_ingredient_bin_balances("KoPOS Store - KMY")
+
+    assert captured_filters["item_code"] == [
+        "in",
+        list(smoke.SMOKE_INGREDIENT_ITEM_CODES),
+    ]
+    assert [row["item_code"] for row in result] == list(
+        smoke.SMOKE_INGREDIENT_ITEM_CODES
+    )
+    assert not any(row["item_code"].startswith("INV-ACCEPT-") for row in result)
 
 
 def test_smoke_seed_repairs_duitnow_qr_to_bank_account(monkeypatch) -> None:
@@ -835,6 +928,102 @@ def test_smoke_business_gate_proves_modifier_audit_and_totals() -> None:
     assert result["assertions"]["modifier_commercial_snapshot_audit_proven"] is True
     assert result["assertions"]["modifier_sales_invoice_audit_proven"] is True
     assert result["assertions"]["modifier_order_and_invoice_totals_proven"] is True
+
+
+def test_smoke_business_gate_proves_complimentary_accounting() -> None:
+    install_fake_frappe_modules()
+
+    from kopos_connector import smoke
+
+    complimentary_key = "complimentary-smoke-order-1"
+    state = {
+        "fb_shifts": [],
+        "fb_orders": [
+            {
+                "name": "FB-ORDER-COMPLIMENTARY",
+                "status": "Submitted",
+                "external_idempotency_key": complimentary_key,
+                "sales_invoice": "SINV-COMPLIMENTARY",
+                "completion_kind": "complimentary",
+                "complimentary_reason": "Guest recovery",
+                "complimentary_approved_by": "manager@smoke.kopos.local",
+                "complimentary_value": "12.00",
+                "net_total": "0.00",
+                "tax_total": "0.00",
+                "rounding_adjustment": "0.00",
+                "grand_total": "0.00",
+                "payments": [],
+                "items": [
+                    {
+                        "line_id": "LINE-COMPLIMENTARY",
+                        "qty": "1",
+                        "unit_price": "12.00",
+                        "modifier_total": "0.00",
+                        "discount_amount": "12.00",
+                        "line_total": "0.00",
+                    }
+                ],
+            }
+        ],
+        "sales_invoices": [
+            {
+                "name": "SINV-COMPLIMENTARY",
+                "docstatus": 1,
+                "is_return": False,
+                "net_total": "0.00",
+                "total_taxes_and_charges": "0.00",
+                "rounding_adjustment": "0.00",
+                "grand_total": "0.00",
+                "paid_amount": "0.00",
+                "change_amount": "0.00",
+                "outstanding_amount": "0.00",
+                "write_off_amount": "0.00",
+                "remarks": (
+                    "Complimentary order\n"
+                    "Approved by: manager@smoke.kopos.local\n"
+                    "Reason: Guest recovery"
+                ),
+                "items": [
+                    {
+                        "order_line_ref": "LINE-COMPLIMENTARY",
+                        "price_list_rate": "12.00",
+                        "rate": "0.00",
+                        "discount_percentage": "100.00",
+                        "discount_amount": "12.00",
+                        "is_free_item": False,
+                        "amount": "0.00",
+                        "net_amount": "0.00",
+                    }
+                ],
+                "payments": [],
+                "gl_entries": [],
+            }
+        ],
+        "ingredient_stock_entries": [],
+        "return_records": [],
+        "void_records": [],
+        "projection_statuses": {"failed": []},
+        "legacy_active_paths": {},
+        "idempotency": {
+            "duplicate_sales_invoice_keys": [],
+            "sales_invoice_counts_by_idempotency_key": {complimentary_key: 1},
+        },
+        "order_history": {"invoice_count": 1},
+    }
+
+    result = smoke.build_smoke_business_assertions(
+        state,
+        expected_idempotency_keys=[complimentary_key],
+    )
+
+    assert result["assertions"]["complimentary_accounting_proven"] is True
+
+    state["sales_invoices"][0]["paid_amount"] = "12.00"
+    failed = smoke.build_smoke_business_assertions(
+        state,
+        expected_idempotency_keys=[complimentary_key],
+    )
+    assert failed["assertions"]["complimentary_accounting_proven"] is False
 
 
 def test_reliability_drink_item_code_matches_t16_submit_payload() -> None:

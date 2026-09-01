@@ -11,7 +11,7 @@ from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
 
 
 CONNECTOR_ROOT = Path(__file__).resolve().parents[1]
-ADMIN_ROLES = {"System Manager", "KoPOS Manager", "POS Manager"}
+ADMIN_ROLES = {"System Manager"}
 CASHIER_ROLES = {"KoPOS Cashier", "POS User", "All"}
 FORBIDDEN_SECRET_TERMS = {
     "api-key-secret",
@@ -53,7 +53,7 @@ def roles_from_rows(rows: object) -> set[str]:
     return roles
 
 
-def test_task11_reports_are_manager_support_only_and_linked_from_workspace() -> None:
+def test_task11_reports_are_system_manager_only_and_linked_from_workspace() -> None:
     report_paths = [
         "kopos/report/kopos_shift_reconciliation/kopos_shift_reconciliation.json",
         "kopos/report/kopos_support_report/kopos_support_report.json",
@@ -62,7 +62,7 @@ def test_task11_reports_are_manager_support_only_and_linked_from_workspace() -> 
     for relative_path in report_paths:
         report = load_json(relative_path)
         roles = roles_from_rows(report["roles"])
-        assert ADMIN_ROLES.issubset(roles)
+        assert roles == ADMIN_ROLES
         assert CASHIER_ROLES.isdisjoint(roles)
         assert report["report_type"] == "Script Report"
 

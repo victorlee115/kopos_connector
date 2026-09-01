@@ -7,9 +7,10 @@
  * each area reported itself with equal weight, so three could claim to be the
  * most urgent thing at once.
  *
- * This page is read-only. It shows one next step, five quiet doors, and
- * whatever is queued behind that step. Every number comes from the service
- * that owns it, and every link goes to the real record.
+	 * This page is read-only. It shows one next step, four quiet doors, today's
+	 * sales at a glance, and
+	 * whatever is waiting behind that step. Every number comes from the service
+	 * that owns it, and actions stay inside the simple JiJi pages.
  *
  * Routing and the shared look live in public/js/jiji_desk.js, so the five
  * director pages cannot drift into five answers about how the desk behaves.
@@ -35,6 +36,7 @@ class JiJiHome {
 		frappe.call({
 			method: "kopos_connector.api.director_home.get_director_home",
 			type: "GET",
+			args: this.company ? { company: this.company } : {},
 			callback: (response) => this.render(response.message || {}),
 			error: () => this.renderUnavailable(),
 		});
@@ -44,18 +46,37 @@ class JiJiHome {
 		this.body.empty().append(
 			jiji.desk.notice(
 				__("JiJi could not check your outlets just now"),
-				__("Nothing is wrong with your café. Try Refresh in a moment."),
+				__("This page has not confirmed anything yet. Try Refresh in a moment."),
 			),
 		);
 	}
 
 	render(data) {
 		this.body.empty();
-		if (data.status === "no_company") {
+		if (data.status === "selection_required" && (data.companies || []).length) {
+			const card = jiji.desk.notice(
+				__("Which café do you want to see?"),
+				__("Choose one to continue."),
+			);
+			(data.companies || []).forEach((company) => {
+				$("<button>")
+					.addClass("btn btn-primary")
+					.css("margin", "12px 8px 0 0")
+					.text(company)
+					.on("click", () => {
+						this.company = company;
+						this.load();
+					})
+					.appendTo(card);
+			});
+			this.body.append(card);
+			return;
+		}
+		if (data.status === "permission_denied") {
 			this.body.append(
 				jiji.desk.notice(
-					__("Choose a company to see your outlets"),
-					__("Set your default company, then open JiJi Home again."),
+					__("This page is not linked to your account yet"),
+					__("Ask the person who set up JiJi to add your café."),
 				),
 			);
 			return;
@@ -70,9 +91,12 @@ class JiJiHome {
 		}
 		this.body.append(nextBlock);
 
-		const tiles = $("<div>").addClass("jiji-tiles");
-		(data.tiles || []).forEach((tile) => {
-			const link = jiji.desk.routeLink(tile.route).addClass("jiji-tile");
+			const tiles = $("<div>").addClass("jiji-tiles");
+			(data.tiles || []).forEach((tile) => {
+				const route = Array.isArray(tile.route) ? tile.route : [];
+				const link = route.length
+					? jiji.desk.routeLink(route).addClass("jiji-tile")
+					: $("<div>").addClass("jiji-tile");
 			link.append(jiji.desk.label(tile.label || ""));
 			link.append(
 				$("<div>")
@@ -108,14 +132,15 @@ class JiJiHome {
 			const card = $("<div>").addClass("jiji-card").appendTo(row);
 			const head = $("<div>").addClass("jiji-head").appendTo(card);
 			head.append(jiji.desk.label(__("Last seven days")));
+			const weekSummary = [__("{0} collected", [week.total || ""])];
+			if (Number(week.complimentary_orders || 0) > 0) {
+				weekSummary.push(__("{0} given free", [week.complimentary_value || ""]));
+			}
+			if (week.busiest) weekSummary.push(__("busiest {0}", [week.busiest]));
 			head.append(
 				$("<span>")
 					.addClass("jiji-muted jiji-num")
-					.text(
-						week.busiest
-							? __("{0} sold · busiest {1}", [week.total || "", week.busiest])
-							: __("{0} sold", [week.total || ""]),
-					),
+					.text(weekSummary.join(" · ")),
 			);
 			card.append(jiji.desk.weekBars(week.days).css("margin-top", "16px"));
 
@@ -126,15 +151,19 @@ class JiJiHome {
 				side.append(jiji.desk.label(__("Your outlets, today")));
 				const list = $("<div>").css("margin-top", "8px").appendTo(side);
 				outlets.forEach((outlet) => {
-					const line = jiji.desk.routeLink(outlet.route).addClass("jiji-kv").appendTo(list);
+					const line = $("<div>").addClass("jiji-kv").appendTo(list);
 					line.append($("<span>").addClass("jiji-kv__main").text(outlet.outlet || ""));
-					line.append($("<span>").addClass("jiji-muted jiji-num").text(outlet.orders || ""));
-					line.append($("<span>").addClass("jiji-num").css("font-weight", "600").text(outlet.total || ""));
+					const outletOrders = Number(outlet.complimentary_orders_count || 0) > 0
+						? __("{0} · {1} given free", [outlet.orders || "", outlet.complimentary_orders_count])
+						: outlet.orders || "";
+					line.append($("<span>").addClass("jiji-muted jiji-num").text(outletOrders));
+					const outletMoney = Number(outlet.complimentary_orders_count || 0) > 0
+						? __("{0} in · {1} free", [outlet.total || "", outlet.complimentary_value || ""])
+						: outlet.total || "";
+					line.append($("<span>").addClass("jiji-num").css("font-weight", "600").text(outletMoney));
 				});
 			}
 			this.body.append(row);
 		}
-
-		this.body.append(jiji.desk.advanced(__("click any number to see where it came from.")));
 	}
 }

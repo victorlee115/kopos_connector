@@ -25,7 +25,16 @@ PAGES = (
     "jiji_menu_recipes",
     "jiji_stock_autopilot",
 )
-APIS = ("director_home", "shift_money", "supplier_orders", "staff_desk", "stock_desk", "cafe_units")
+APIS = (
+    "director_home",
+    "shift_money",
+    "supplier_orders",
+    "staff_desk",
+    "stock_desk",
+    "menu_authoring",
+    "inventory",
+    "cafe_units",
+)
 
 # Word -> what to say instead. Every JiJi page is covered. Words are banned
 # only after they have been seen on screen and found to need the system
@@ -51,6 +60,25 @@ BANNED = {
     "schema": "never appears on screen",
     "payload": "never appears on screen",
     "endpoint": "never appears on screen",
+    "erpnext": "say JiJi or name the café task",
+    "uom": "show the familiar unit word instead",
+    "bom": "preparation recipe",
+    "sku": "product",
+    "item code": "product or ingredient name",
+    "modifier": "customer choice",
+    "api": "never appears on screen",
+    "json": "never appears on screen",
+    "hash": "never appears on screen",
+    "canonical": "never appears on screen",
+    "queue": "say waiting work or saved work",
+    "worker": "say JiJi",
+    "redis": "never appears on screen",
+    "database": "never appears on screen",
+    "java": "never appears on screen",
+    "technical": "say what Support should check",
+    "advanced": "keep support tools outside business pages",
+    "warehouse": "outlet",
+    "company": "café",
 }
 
 # The response fields the desk pages actually render. Scanning every literal
@@ -60,7 +88,15 @@ COPY_FIELDS = (
     "title", "detail", "label", "state", "reason", "arrival", "action",
     "moved_note", "moved_empty_note", "running_low_note", "days", "when",
     "reliability", "why", "person",
+    "headline", "next_action", "message", "failure_reason", "state_label",
+    "document_label", "open_label",
 )
+
+
+def _contains_banned_word(sentence: str, word: str) -> bool:
+    if word == "idempotenc":
+        return word in sentence.lower()
+    return bool(re.search(rf"(?<![A-Za-z]){re.escape(word)}(?![A-Za-z])", sentence, re.IGNORECASE))
 
 
 def _user_strings(text: str) -> list[str]:
@@ -95,9 +131,8 @@ def test_no_word_on_screen_needs_the_system_explained_first() -> None:
     problems = []
     for name, text in _sources().items():
         for sentence in _user_strings(text):
-            lowered = sentence.lower()
             for word, instead in BANNED.items():
-                if word in lowered:
+                if _contains_banned_word(sentence, word):
                     problems.append(f"{name}: {sentence!r} uses {word!r} — {instead}")
     assert not problems, "words a café owner would have to be taught:\n" + "\n".join(problems)
 
@@ -114,7 +149,7 @@ def test_takings_are_sold_not_taken() -> None:
     home = (ROOT / "kopos" / "page" / "jiji_home" / "jiji_home.js").read_text(encoding="utf-8")
     # "Nothing was taken in the last seven days" can be read as a theft report.
     assert "taken" not in home
-    assert '__("{0} sold", [week.total || ""])' in home
+    assert '__("{0} collected", [week.total || ""])' in home
 
 
 def test_a_place_is_called_what_the_owner_named_it() -> None:
@@ -124,12 +159,21 @@ def test_a_place_is_called_what_the_owner_named_it() -> None:
     assert "placeName(" in stock
 
 
+def test_count_reviews_show_cafe_amounts_not_erp_units_or_percentages() -> None:
+    stock = (ROOT / "kopos" / "page" / "jiji_stock_autopilot" / "jiji_stock_autopilot.js").read_text("utf-8")
+    review = stock.split("renderCountReviews(summary) {", 1)[1].split("\n\treviewCount(", 1)[0]
+    assert "line.pack_breakdown_display" in review
+    assert "line.counted_display" in review
+    assert "line.difference_display" in review
+    assert "line.purchase_uom" not in review
+    assert "line.variance_percent" not in review
+
+
 def test_a_control_and_its_note_do_not_contradict_each_other() -> None:
     supplies = (ROOT / "kopos" / "page" / "jiji_supplies" / "jiji_supplies.js").read_text("utf-8")
-    # The button said "Open the order to send it" and the note beside it said
-    # "Nothing is sent from this page", which cannot both be acted on.
-    assert "Open this order" in supplies
-    assert "JiJi never sends an order. You send it." in supplies
+    assert "Approve order" in supplies
+    assert "Approval marks it as ordered. Send it to the supplier outside JiJi." in supplies
+    assert "will not send anything to the supplier" in supplies
 
 
 def test_no_page_claims_a_result_it_drew_from_an_absence() -> None:
@@ -160,3 +204,4 @@ def test_no_page_claims_a_result_it_drew_from_an_absence() -> None:
     home = (ROOT / "api" / "director_home.py").read_text(encoding="utf-8")
     assert '"no shift counted yet"' in home
     assert "any_shift = bool(" in home
+    assert '"label": "Cash checks"' in home

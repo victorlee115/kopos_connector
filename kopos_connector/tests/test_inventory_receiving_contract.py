@@ -98,6 +98,10 @@ class SupplierReceivingContractTests(TestCase):
             inventory_api,
             "upsert_inventory_exception",
             side_effect=lambda **kwargs: raised.append(kwargs) or "EX-RECEIVE",
+        ), patch.object(
+            inventory_api,
+            "_supplier_receiving_is_paused",
+            return_value=False,
         ):
             fake_frappe.db.exists.side_effect = lambda doctype, *_a, **_k: doctype != "Item"
             fake_frappe.get_meta.return_value = SimpleNamespace(has_field=lambda _field: True)
@@ -221,7 +225,9 @@ class SupplierReceivingContractTests(TestCase):
             inventory_api, "_apply_guided_task_audit"
         ), patch.object(inventory_api, "_set_document_value"), patch.object(
             inventory_api, "_require_item_batch_metadata"
-        ), patch.object(inventory_api, "upsert_inventory_exception", return_value="EX"):
+        ), patch.object(inventory_api, "upsert_inventory_exception", return_value="EX"), patch.object(
+            inventory_api, "_supplier_receiving_is_paused", return_value=False
+        ):
             fake_frappe.db.exists.side_effect = lambda doctype, *_a, **_k: doctype != "Item"
             fake_frappe.get_meta.return_value = SimpleNamespace(has_field=lambda _field: True)
             fake_frappe.get_doc.return_value = self._purchase_order()

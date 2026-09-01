@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from datetime import datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +13,72 @@ install_fake_frappe_modules()
 
 
 class TestFBOrderModifierValidation(unittest.TestCase):
+    def test_complimentary_order_allows_exactly_zero_total(self):
+        from kopos_connector.kopos.doctype.fb_order.fb_order import FBOrder
+
+        order = FBOrder()
+        order.completion_kind = "complimentary"
+        order.tax_total = Decimal("0.00")
+        order.rounding_adjustment = Decimal("0.00")
+        order.get = lambda fieldname: getattr(order, fieldname, None)
+        order.items = [
+            SimpleNamespace(
+                unit_price=Decimal("12.00"),
+                modifier_total=Decimal("0.00"),
+                discount_amount=Decimal("12.00"),
+                qty=1,
+            )
+        ]
+
+        order.calculate_totals()
+
+        self.assertEqual(order.net_total, Decimal("0.00"))
+        self.assertEqual(order.grand_total, Decimal("0.00"))
+
+    def test_paid_order_accepts_a_catalogue_priced_zero_total(self):
+        from kopos_connector.kopos.doctype.fb_order.fb_order import FBOrder
+
+        order = FBOrder()
+        order.completion_kind = "paid"
+        order.tax_total = Decimal("0.00")
+        order.rounding_adjustment = Decimal("0.00")
+        order.get = lambda fieldname: getattr(order, fieldname, None)
+        order.items = [
+            SimpleNamespace(
+                unit_price=Decimal("0.00"),
+                modifier_total=Decimal("0.00"),
+                discount_amount=Decimal("0.00"),
+                qty=1,
+            )
+        ]
+
+        order.calculate_totals()
+
+        self.assertEqual(order.net_total, Decimal("0.00"))
+        self.assertEqual(order.grand_total, Decimal("0.00"))
+
+    def test_paid_order_accepts_a_priced_item_discounted_to_zero(self):
+        from kopos_connector.kopos.doctype.fb_order.fb_order import FBOrder
+
+        order = FBOrder()
+        order.completion_kind = "paid"
+        order.tax_total = Decimal("0.00")
+        order.rounding_adjustment = Decimal("0.00")
+        order.get = lambda fieldname: getattr(order, fieldname, None)
+        order.items = [
+            SimpleNamespace(
+                unit_price=Decimal("12.00"),
+                modifier_total=Decimal("0.00"),
+                discount_amount=Decimal("12.00"),
+                qty=1,
+            )
+        ]
+
+        order.calculate_totals()
+
+        self.assertEqual(order.net_total, Decimal("0.00"))
+        self.assertEqual(order.grand_total, Decimal("0.00"))
+
     def test_commercial_modifier_replay_never_reads_resolved_sale(self):
         from kopos_connector.kopos.doctype.fb_order import fb_order
 

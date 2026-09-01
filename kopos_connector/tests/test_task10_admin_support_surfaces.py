@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 CONNECTOR_ROOT = Path(__file__).resolve().parents[1]
-ADMIN_ROLES = {"System Manager", "KoPOS Manager", "POS Manager"}
+ADMIN_ROLES = {"System Manager"}
 CASHIER_ROLES = {"KoPOS Cashier", "POS User", "All"}
 FORBIDDEN_SECRET_TERMS = {
     "api_key",
@@ -42,10 +42,10 @@ def roles_from_rows(rows: object) -> set[str]:
     return roles
 
 
-def test_workspace_is_manager_support_only_and_uses_canonical_links() -> None:
+def test_workspace_is_system_manager_support_only_and_uses_canonical_links() -> None:
     workspace = load_json("kopos/workspace/kopos_support/kopos_support.json")
     roles = roles_from_rows(workspace["roles"])
-    assert ADMIN_ROLES.issubset(roles)
+    assert roles == ADMIN_ROLES
     assert CASHIER_ROLES.isdisjoint(roles)
 
     serialized = json.dumps(workspace, sort_keys=True)
@@ -99,7 +99,7 @@ def test_support_reports_exclude_cashier_roles_and_secret_fields() -> None:
     for relative_path in report_paths:
         report = load_json(relative_path)
         roles = roles_from_rows(report["roles"])
-        assert ADMIN_ROLES.issubset(roles)
+        assert roles == ADMIN_ROLES
         assert CASHIER_ROLES.isdisjoint(roles)
         assert report["report_type"] == "Script Report"
 

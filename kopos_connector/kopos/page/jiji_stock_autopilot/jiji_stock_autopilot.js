@@ -6,56 +6,38 @@ class JiJiStockAutopilotPage {
 	constructor(wrapper) {
 		this.page = frappe.ui.make_app_page({
 			parent: wrapper,
-			title: __("JiJi Stock Overview"),
+				title: __("Stock"),
 			single_column: true,
 		});
 		this.loadedWarehouse = "";
 		this.health = null;
 		this.activeWorkflow = null;
-		this.financePeriodDays = 30;
+			this.financePeriodDays = 30;
 		this.refreshing = false;
 		this.stockStatusKey = null;
-		this.autoPollCount = 0;
-		this.render();
-		this.warehouseControl = frappe.ui.form.make_control({
-			parent: this.page.body.find("[data-warehouse]")[0],
-			df: {
-				fieldtype: "Link",
-				fieldname: "warehouse",
-				options: "Warehouse",
-					label: __("Outlet stock location"),
-					description: __("Choose where this outlet keeps its ingredients and supplies."),
-				reqd: 1,
-			},
-		});
-		this.warehouseControl.refresh();
+			this.autoPollCount = 0;
+			this.render();
+			const outletInput = this.page.body.find("[data-warehouse-select]");
+			this.warehouseControl = {
+				$input: outletInput,
+				get_value: () => String(outletInput.val() || ""),
+				set_value: (value) => {
+					outletInput.val(value || "");
+					return Promise.resolve();
+				},
+			};
 		this.warehouseControl.$input.on("change awesomplete-selectcomplete", () => this.onWarehouseChanged());
 		this.chooseOutletForDirector();
 		jiji.desk.injectStyle();
 		$(wrapper).addClass("jiji-desk");
 		this.page.set_primary_action(__("Check now"), () => this.refresh({ showMissingOutlet: true }));
-		this.page.add_inner_button(__("Start using stock tracking"), () => this.activateCutover());
 		this.page.body.on("click", "[data-primary-route]", (event) => {
 			event.preventDefault();
 			this.openRoute($(event.currentTarget).attr("data-primary-route"));
 		});
-		this.page.body.on("click", "[data-exception-route]", (event) => {
-			event.preventDefault();
-			this.openException($(event.currentTarget).attr("data-exception-route"));
-		});
 		this.page.body.on("click", "[data-count-review]", (event) => {
 			event.preventDefault();
 			this.reviewCount($(event.currentTarget).attr("data-count-review"));
-		});
-		this.page.body.on("click", "[data-advanced-route]", (event) => {
-			event.preventDefault();
-			this.openAdvancedRoute($(event.currentTarget).attr("data-advanced-route"));
-		});
-		this.page.body.on("click", "[data-open-document]", (event) => {
-			event.preventDefault();
-			const doctype = $(event.currentTarget).attr("data-doctype");
-			const name = $(event.currentTarget).attr("data-open-document");
-			if (doctype && name) frappe.set_route("Form", doctype, name);
 		});
 		this.page.body.on("click", "[data-close-workflow]", (event) => {
 			event.preventDefault();
@@ -74,7 +56,7 @@ class JiJiStockAutopilotPage {
 		$(this.page.body).html(`
 			<div class="jiji-stock-autopilot">
 				<div class="jiji-outletbar mb-4">
-					<div data-warehouse></div>
+						<div><label class="control-label" for="jiji-stock-outlet">${__("Outlet")}</label><select class="form-control" id="jiji-stock-outlet" data-warehouse-select><option value="">${__("Choose an outlet")}</option></select></div>
 					<span data-warehouse-help class="jiji-muted"></span>
 					<span class="jiji-outletbar__sp"></span>
 					<span data-auto-status class="jiji-muted"></span>
@@ -87,9 +69,8 @@ class JiJiStockAutopilotPage {
 				<div data-moved class="mb-4"></div>
 				<div data-sections class="row"></div>
 				<div data-count-reviews class="mt-2"></div>
-				<div data-exceptions class="mt-4"></div>
-				${this.stakeholderWorkflowHtml()}
-			</div>`);
+					<div data-exceptions class="mt-4"></div>
+				</div>`);
 		this.updateWarehouseHelp();
 	}
 
@@ -102,22 +83,24 @@ class JiJiStockAutopilotPage {
 	 * answer is genuinely ambiguous the filter stays empty and asks.
 	 */
 	chooseOutletForDirector() {
-		if (this.warehouseControl.get_value()) return;
 		frappe.call({
 			method: "kopos_connector.api.director_scope.get_director_outlet",
 			type: "GET",
 			callback: (response) => {
-				const warehouse = (response.message || {}).warehouse;
-				if (!warehouse || this.warehouseControl.get_value()) return;
-				// set_value fills the input but does not fire the change the page
-				// listens for, and it resolves after its own link validation.
-				// Calling onWarehouseChanged directly read the field back before
-				// it held anything, so the outlet was filled in and the page went
-				// on asking for an outlet. Trigger the control's own change so a
-				// defaulted outlet and a chosen one take exactly the same path.
-				Promise.resolve(this.warehouseControl.set_value(warehouse)).then(() =>
-					this.warehouseControl.$input.trigger("change"),
-				);
+				const data = response.message || {};
+				const current = this.warehouseControl.get_value();
+				const outlets = Array.isArray(data.outlets)
+					? data.outlets
+					: (data.warehouses || []).map((value) => ({ value, label: this.placeName(value) }));
+				const options = outlets.map((row) => `<option value="${this.escapeAttribute(row.value)}">${this.escape(row.label)}</option>`).join("");
+				this.warehouseControl.$input.html(`<option value="">${__("Choose an outlet")}</option>${options}`);
+				const warehouse = outlets.some((row) => row.value === current)
+					? current
+					: data.warehouse || "";
+				Promise.resolve(this.warehouseControl.set_value(warehouse)).then(() => {
+					if (warehouse) this.warehouseControl.$input.trigger("change");
+					else this.updateWarehouseHelp();
+				});
 			},
 			// One outlet still beats no page: leave the filter for the director.
 			error: () => this.updateWarehouseHelp(),
@@ -188,17 +171,15 @@ class JiJiStockAutopilotPage {
 		if ((data.tiles || []).length) {
 			const grid = $('<div class="jiji-tiles"></div>').appendTo(counted);
 			data.tiles.forEach((tile) => {
-				// Built through the desk's own routing owner rather than a
-				// second click handler on this page.
-				const link = jiji.desk.routeLink(tile.route).addClass("jiji-tile");
-				link.append(jiji.desk.label(tile.label || ""));
-				link.append(
-					$("<div>")
+					const card = $('<div class="jiji-tile"></div>');
+					card.append(jiji.desk.label(tile.label || ""));
+					card.append(
+						$("<div>")
 						.addClass("jiji-tile__value" + (tile.attention ? " jiji-tile__value--attention" : ""))
 						.text(tile.value || ""),
 				);
-				link.append($("<div>").addClass("jiji-tile__detail").text(tile.detail || ""));
-				grid.append(link);
+					card.append($("<div>").addClass("jiji-tile__detail").text(tile.detail || ""));
+					grid.append(card);
 			});
 		}
 
@@ -316,45 +297,46 @@ class JiJiStockAutopilotPage {
 		const critical = Number(exceptions.open_critical || 0);
 		const warningCount = (exceptions.warning_reasons || []).length;
 		const devices = health.devices || {};
-		const scheduler = health.scheduler || {};
-		const runtime = health.runtime_artifact || {};
 		const countReviews = health.count_director_reviews || {};
 		const exceptionRouting = health.exception_routing || {};
 		const stockReportAge = this.oldestDeviceReportAge(devices, health.as_of);
-		const unacknowledgedDevices = Number(health.overlay?.unacknowledged_devices || 0);
 		const schedulerState = this.schedulerStatus(health);
 		const stockNeedsReview = Number(devices.stale || 0) > 0 || Number(devices.dirty || 0) > 0 || !health.overlay?.acknowledged;
-		const overallCritical = critical > 0 || (exceptions.critical_reasons || []).length > 0 || health.draft_purchase_order_safety === "unsafe" || ["missing", "policy_missing"].includes(exceptionRouting.status);
-		const overallWarning = warningCount > 0 || stockNeedsReview || Number(countReviews.open || 0) > 0 || Number(health.planning?.open || 0) > 0;
-			let needs = {
-				value: __("Nothing needs your attention"),
-				detail: __("JiJi can carry on. Look again later."),
-				action: null,
-				route: null,
-			};
-			if (["missing", "policy_missing"].includes(exceptionRouting.status)) {
-				needs = exceptionRouting.status === "policy_missing"
-					? { value: __("Stock settings are not finished"), detail: __("Finish the stock settings for this outlet before starting stock tracking."), action: __("Open stock settings"), route: "settings" }
-					: { value: __("No director is assigned to stock problems"), detail: __("Ask an administrator to assign a Company Director to receive urgent stock problems."), action: __("Open stock settings"), route: "settings" };
-			} else if (critical > 0) {
-				needs = { value: critical === 1 ? __("1 urgent stock problem") : __("{0} urgent stock problems", [critical]), detail: this.firstExceptionDetail(exceptions), action: __("Open stock problems"), route: "needs" };
-			} else if (Number(countReviews.open || 0) > 0) {
-				const openReviews = Number(countReviews.open || 0);
-				needs = { value: openReviews === 1 ? __("1 stock count needs your check") : __("{0} stock counts need your check", [openReviews]), detail: __("Check what your staff counted, then tell JiJi which amount is right."), action: __("See the stock counts"), route: "counts" };
+		const setupPending = !health.stock_tracking_started && exceptionRouting.status === "configured";
+		const overallCritical = ["missing", "policy_missing"].includes(exceptionRouting.status) || (!setupPending && (critical > 0 || (exceptions.critical_reasons || []).length > 0 || health.draft_purchase_order_safety === "unsafe"));
+		const overallWarning = setupPending || warningCount > 0 || stockNeedsReview || Number(countReviews.open || 0) > 0 || Number(health.planning?.open || 0) > 0;
+		let needs = {
+			value: __("Nothing needs your attention"),
+			detail: __("JiJi can carry on. Look again later."),
+			action: null,
+			route: null,
+			consequence: __("No urgent stock problem was found."),
+		};
+		if (["missing", "policy_missing"].includes(exceptionRouting.status)) {
+			needs = exceptionRouting.status === "policy_missing"
+				? { value: __("Stock settings are not finished"), detail: __("Finish the stock settings for this outlet before starting stock tracking."), action: __("Open stock settings"), route: "settings", consequence: __("Stock tracking cannot start until the setup is finished.") }
+				: { value: __("No director is assigned to stock problems"), detail: __("Ask the person who set up JiJi to choose who receives urgent stock problems."), action: __("Open stock settings"), route: "settings", consequence: __("Urgent stock problems cannot reach the right person yet.") };
+		} else if (setupPending) {
+			needs = { value: __("Start stock tracking"), detail: __("JiJi will use the opening stock already saved for this outlet."), action: __("Start now"), route: "start", consequence: __("Until you start, JiJi will not estimate what is running low or suggest new orders.") };
+		} else if (critical > 0) {
+			needs = { value: critical === 1 ? __("1 urgent stock problem") : __("{0} urgent stock problems", [critical]), detail: this.firstExceptionDetail(exceptions), action: __("Open stock problems"), route: "needs", consequence: __("Fix this before relying on automatic updates.") };
+		} else if (Number(countReviews.open || 0) > 0) {
+			const openReviews = Number(countReviews.open || 0);
+			needs = { value: openReviews === 1 ? __("1 stock count needs your check") : __("{0} stock counts need your check", [openReviews]), detail: __("Check what your staff counted, then tell JiJi which amount is right."), action: __("See the stock counts"), route: "counts", consequence: __("The count stays saved until you choose the right amount.") };
 		} else if (schedulerState === "critical" || schedulerState === "warning") {
-				needs = { value: __("JiJi has not finished its first automatic update"), detail: __("JiJi keeps your stock in step with your sales on its own. It has to finish that once before you can rely on it."), action: __("See the automatic updates"), route: "today" };
+			needs = { value: __("JiJi has not finished its first automatic update"), detail: __("JiJi keeps your stock in step with your sales on its own. It has to finish that once before you can rely on it."), action: __("See the automatic updates"), route: "today", consequence: __("Stock may not be current until that update finishes.") };
 		} else if (health.draft_purchase_order_safety === "unsafe") {
-				needs = { value: __("Your buying limits need checking"), detail: __("JiJi will not write another order until the limits are fixed. It never sends one either way."), action: __("Open stock settings"), route: "settings" };
-			} else if ((exceptions.critical_reasons || []).length > 0 || warningCount > 0) {
-				needs = { value: __("Something in your stock needs you"), detail: this.firstExceptionDetail(exceptions), action: __("Open stock problems"), route: "needs" };
+			needs = { value: __("Your buying limits need checking"), detail: __("Check the minimum and maximum amounts this outlet is allowed to buy. JiJi never sends orders on its own."), action: __("Open stock settings"), route: "settings", consequence: __("Suggested orders stay paused until this is fixed.") };
+		} else if ((exceptions.critical_reasons || []).length > 0 || warningCount > 0) {
+			needs = { value: __("Something in your stock needs you"), detail: this.firstExceptionDetail(exceptions), action: __("Open stock problems"), route: "needs", consequence: __("Open the problem before relying on the affected automatic update.") };
 		} else if (stockNeedsReview) {
-			needs = { value: __("A tablet's stock report needs you"), detail: stockReportAge, action: __("See the tablets"), route: "stock" };
+			needs = { value: __("A tablet's stock report needs you"), detail: stockReportAge, action: __("See the tablets"), route: "stock", consequence: __("JiJi will use the last saved information until the tablet updates.") };
 		} else if (Number(health.planning?.open || 0) > 0) {
 			const openPlans = Number(health.planning.open || 0);
-			needs = { value: openPlans === 1 ? __("1 suggested order needs your check") : __("{0} suggested orders need your check", [openPlans]), detail: __("Check the amounts and the order before anything is sent."), action: __("See the suggested orders"), route: "plans" };
+			needs = { value: openPlans === 1 ? __("1 suggested order needs your check") : __("{0} suggested orders need your check", [openPlans]), detail: __("Check the amounts and the order before anything is sent."), action: __("See the suggested orders"), route: "plans", consequence: __("Nothing will be ordered until someone approves it.") };
 		}
 		this.page.set_indicator(
-			overallCritical ? __("Action needed") : overallWarning ? __("Review needed") : __("All clear"),
+			overallCritical ? __("Action needed") : setupPending ? __("Setup needed") : overallWarning ? __("Review needed") : __("All clear"),
 			overallCritical ? "red" : overallWarning ? "orange" : "green",
 		);
 		// The consequence sits inside the one next step rather than above it.
@@ -364,38 +346,19 @@ class JiJiStockAutopilotPage {
 		this.renderNextStep(
 			needs,
 			overallCritical ? "critical" : overallWarning ? "warning" : "ok",
-			overallCritical
-				? __("JiJi has stopped updating your stock until this is fixed.")
+			needs.consequence || (overallCritical
+				? __("Fix this before relying on automatic updates.")
 				: overallWarning
 					? __("JiJi is updating your stock, but some things need you.")
-					: __("No urgent stock problem was found."),
+					: __("No urgent stock problem was found.")),
 		);
 
-		// The old first card repeated the next step -- same words, same button,
-		// directly under it. Six areas remain, and the one that produced the
-		// next step is marked as such rather than raising a second alarm.
-		const sections = [
-			{
-				key: "today",
-				title: __("Automatic updates"),
-				icon: "◷",
-				status: schedulerState,
-					value: scheduler.last_success ? __("JiJi last updated your stock {0} ago", [this.agePhrase(scheduler.last_success, health.as_of)]) : __("JiJi has not updated your stock yet"),
-					detail: scheduler.next_success_deadline ? __("Next check is expected by {0}", [this.shortDate(scheduler.next_success_deadline)]) : __("It needs to finish once on its own before you rely on it"),
-					action: __("See the automatic updates"),
-				route: "today",
-			},
-			{
-				key: "stock",
-				title: __("What the tablets know"),
-				icon: "▣",
-				status: Number(devices.stale || 0) || Number(devices.dirty || 0) || !health.overlay?.acknowledged ? "warning" : "ok",
-				value: __("{0} current · {1} need an update · {2} waiting to send", [Number(devices.current || 0), Number(devices.stale || 0), Number(devices.dirty || 0)]),
-					detail: `${health.overlay?.acknowledged ? __("Every connected tablet has the latest menu and stock instructions") : unacknowledgedDevices === 1 ? __("1 tablet has not received the latest menu or stock instructions") : __("{0} tablets have not received the latest menu or stock instructions", [unacknowledgedDevices])} · ${stockReportAge}`,
-				action: __("See the tablets"),
-				route: "stock",
-			},
-			{
+			// The business page keeps only the three decisions a director makes.
+			// Update machinery, tablet diagnostics, and policy records belong to the
+			// separate support workspace; problems from them still become one plain
+			// next step above.
+			const sections = [
+				{
 				key: "counts",
 					title: __("Stock counts"),
 				icon: "▤",
@@ -410,8 +373,8 @@ class JiJiStockAutopilotPage {
 					title: __("Ordering"),
 				icon: "▥",
 				status: health.draft_purchase_order_safety === "unsafe" ? "critical" : this.summaryStatus(health.planning),
-					value: health.draft_purchase_order_safety === "unsafe" ? __("JiJi has stopped writing new orders") : this.summaryValue(health.planning, __("suggested order waiting"), __("suggested orders waiting")),
-					detail: health.draft_purchase_order_safety === "unsafe" ? __("Check your buying limits before JiJi writes another order") : this.summaryAge(health.planning, __("Oldest suggested order")),
+				value: health.draft_purchase_order_safety === "unsafe" ? __("Suggested orders paused") : this.summaryValue(health.planning, __("suggested order waiting"), __("suggested orders waiting")),
+				detail: health.draft_purchase_order_safety === "unsafe" ? __("Check your buying limits before JiJi writes another suggestion") : this.summaryAge(health.planning, __("Oldest suggested order")),
 					action: __("See suggested orders"),
 				route: "plans",
 			},
@@ -425,103 +388,13 @@ class JiJiStockAutopilotPage {
 				action: __("See cost and value"),
 				route: "ledger",
 			},
-			{
-				key: "settings",
-				title: __("Settings"),
-				icon: "⚙",
-				status: runtime.status === "verified" ? "info" : runtime.status === "present" ? "warning" : "critical",
-				value: this.automationStateLabel(health.automation_state),
-					detail: runtime.status === "verified"
-						? `${__("JiJi setup checked · stock information may be up to {0} minutes old", [Number(health.max_source_age_minutes || 30)])} · ${this.checkedAge(health.as_of)}`
-						: runtime.status === "present"
-							? `${__("JiJi setup has not been checked yet")} · ${this.checkedAge(health.as_of)}`
-							: runtime.status === "unmatched"
-								? __("This JiJi setup is not approved. Ask Support before starting stock tracking.")
-								: __("JiJi setup could not be checked. Ask Support before starting stock tracking."),
-					action: __("Open stock settings"),
-				route: "settings",
-			},
-		];
-		this.page.body.find("[data-sections]").html(
-			`<div class="col-12"><div class="jiji-head mb-2"><div class="jiji-label">${__("How the automatic work is doing")}</div>
-				<span class="jiji-muted">${__("Six areas JiJi watches for you. Only one of them is ever your next step.")}</span></div></div>` +
-			sections.map((section) => this.sectionHtml(section, section.route === needs.route)).join(""),
-		);
+			];
+			this.page.body.find("[data-sections]").html(
+				`<div class="col-12"><div class="jiji-head mb-2"><div class="jiji-label">${__("What do you want to check?")}</div></div></div>` +
+				sections.map((section) => this.sectionHtml(section, section.route === needs.route)).join(""),
+			);
 		this.renderCountReviews(countReviews);
 		this.renderExceptions(exceptions.top || [], overallCritical || overallWarning);
-	}
-
-	stakeholderWorkflowHtml() {
-		const stakeholders = [
-			{
-				step: "1",
-				title: __("Staff"),
-				where: __("Tablet"),
-				detail: __("Count what is there. Record preparation, deliveries, transfers, and waste. Enter what you actually see; do not guess."),
-			},
-			{
-				step: "2",
-				title: __("Outlet manager"),
-				where: __("Tablet"),
-				detail: __("Check unusual amounts and confirm the changes. If something is unclear, leave it rather than changing the answer."),
-			},
-			{
-				step: "3",
-				title: __("Company director"),
-				where: __("This page"),
-				detail: __("Follow Your next step. Check big count differences, urgent problems, suggested orders, and orders waiting to be sent."),
-			},
-			{
-				step: "4",
-				title: __("Buying"),
-				where: __("This page"),
-				detail: __("Check the amounts, the price, and the order. Nothing reaches the supplier until you send it."),
-				action: __("See suggested orders"),
-				route: "plans",
-			},
-			{
-				step: "5",
-				title: __("Supplier"),
-				where: __("Outside JiJi"),
-				detail: __("The supplier hears nothing until you send the order yourself. JiJi never sends one."),
-			},
-			{
-				step: "6",
-				title: __("Finance"),
-				where: __("This page"),
-				detail: __("Check ingredient cost, stock changes, and the books once the work is approved. Never change a finished entry."),
-				action: __("Open detailed stock changes"),
-				route: "ledger",
-			},
-			{
-				step: "7",
-				title: __("Support"),
-				where: __("This page and system checks"),
-				detail: __("Fix the connection or the automatic update, then refresh. Never delete saved work to make a warning go away."),
-				action: __("See the automatic updates"),
-				route: "today",
-			},
-			{
-				step: "8",
-				title: __("JiJi"),
-				where: __("Automatic"),
-				detail: __("Tries unfinished work again, saves what it can, and stops anything risky for a person to decide."),
-			},
-		];
-		const cards = stakeholders.map((stakeholder) => {
-			const action = stakeholder.route && stakeholder.action
-				? `<button type="button" class="btn btn-sm btn-default mt-3" data-primary-route="${this.escapeAttribute(stakeholder.route)}">${this.escape(stakeholder.action)}</button>`
-				: "";
-			return `<div class="col-sm-6 col-lg-4 mb-3">
-			<div class="border rounded h-100 p-3">
-				<div class="d-flex justify-content-between align-items-start mb-2"><strong>${this.escape(stakeholder.step)}. ${this.escape(stakeholder.title)}</strong><span class="badge badge-light">${this.escape(stakeholder.where)}</span></div>
-				<div class="text-muted small">${this.escape(stakeholder.detail)}</div>${action}
-			</div>
-		</div>`;
-		}).join("");
-		return `<details class="card mb-4"><summary class="card-header font-weight-bold" style="cursor: pointer">${__("Who does each part?")}</summary>
-			<div class="card-body"><p class="mb-3">${__("Only Company Directors use this page for business decisions. System Managers may open it for support. Staff and outlet managers use the tablet. One person may also handle buying or finance responsibilities.")}</p><div class="row">${cards}</div></div>
-		</details>`;
 	}
 
 	chooseOutletNextStepHtml() {
@@ -562,18 +435,19 @@ class JiJiStockAutopilotPage {
 			target.empty();
 			return;
 		}
-		const cards = (Array.isArray(summary.items) ? summary.items : []).map((review) => {
+			const cards = (Array.isArray(summary.items) ? summary.items : []).map((review) => {
 			const lines = (Array.isArray(review.lines) ? review.lines : []).map((line) => {
-				const packs = line.full_packs != null && line.loose_quantity != null
-					? `${this.escape(line.full_packs)} ${this.escape(line.purchase_uom || __("packs"))} + ${this.escape(line.loose_quantity)} ${this.escape(line.uom)}`
-					: `${this.escape(line.total_quantity)} ${this.escape(line.uom)}`;
-				const difference = line.variance_percent == null ? __("difference not available") : `${this.escape(line.variance_percent)}%`;
-				return `<tr><td>${this.escape(line.item_name || line.item_id)}</td><td>${packs}</td><td>${difference}</td></tr>`;
-			}).join("");
-			const reviewId = this.escapeAttribute(review.observation_id);
-			return `<div class="card border-warning mb-3"><div class="card-body">
-				<div class="d-flex justify-content-between align-items-start gap-2"><div><div class="mb-1">${this.statusBadge("warning", __("You need to check this"))}</div>
-					<h4 class="mb-1">${__("Help number")}: ${this.escape(review.observation_id)}</h4><p class="text-muted small mb-2">${__("This count is a long way from what JiJi expected, so you need to look at it.")}</p></div>
+				const counted = line.pack_breakdown_display || line.counted_display || __("Count is not ready yet");
+				const difference = line.difference_display || __("Difference is not ready yet");
+				return `<tr><td>${this.escape(line.item_name || line.item_id)}</td><td>${this.escape(counted)}</td><td>${this.escape(difference)}</td></tr>`;
+				}).join("");
+				const reviewId = this.escapeAttribute(review.observation_id);
+				const when = review.age_minutes == null
+					? __("Count waiting for you")
+					: __("Count from {0} ago", [this.ageMinutesPhrase(review.age_minutes)]);
+				return `<div class="card border-warning mb-3"><div class="card-body">
+					<div class="d-flex justify-content-between align-items-start gap-2"><div><div class="mb-1">${this.statusBadge("warning", __("You need to check this"))}</div>
+					<h4 class="mb-1">${this.escape(when)}</h4><p class="text-muted small mb-2">${__("This count is a long way from what JiJi expected, so you need to look at it.")}</p></div>
 				<button type="button" class="btn btn-sm btn-primary" data-count-review="${reviewId}">${__("Check it and write the order")}</button></div>
 					<table class="table table-sm mb-0"><thead><tr><th>${__("Item")}</th><th>${__("Count entered")}</th><th>${__("Difference from what JiJi expected")}</th></tr></thead><tbody>${lines}</tbody></table>
 				<div class="text-muted small mt-2">${review.age_minutes == null ? __("Observed time unavailable") : __("Observed {0} ago", [this.ageMinutesPhrase(review.age_minutes)])}</div>
@@ -638,7 +512,15 @@ class JiJiStockAutopilotPage {
 
 	renderExceptions(rows, otherReviewNeeded = false) {
 		const target = this.page.body.find("[data-exceptions]");
-		if (!rows.length) {
+		const visibleRows = !this.health?.stock_tracking_started
+			? rows.filter((row) => {
+				const reason = String(row.reason_code || "").toLowerCase();
+				return !reason.includes("cutover_identity")
+					&& !reason.includes("before_cutover")
+					&& !reason.includes("plan_gate");
+			})
+			: rows;
+		if (!visibleRows.length) {
 			const status = otherReviewNeeded ? "info" : "ok";
 			const message = otherReviewNeeded ? __("No additional stock problems") : __("No open stock problems");
 			target.html(`<div class="alert alert-${this.toneClass(status)}">${this.statusBadge(status, message)}</div>`);
@@ -648,7 +530,7 @@ class JiJiStockAutopilotPage {
 		// Grouped by what the reader is told, not by the code behind it: two
 		// codes that produce the same sentence are one thing to a person.
 		const grouped = new Map();
-		rows.forEach((row) => {
+		visibleRows.forEach((row) => {
 			const key = this.plainExceptionMessage(row.reason_code);
 			const seen = grouped.get(key);
 			if (seen) {
@@ -659,20 +541,16 @@ class JiJiStockAutopilotPage {
 		});
 		const cards = [...grouped.values()].map(({ row, count }) => {
 			const severity = String(row.severity || "Warning").toLowerCase() === "critical" ? "critical" : "warning";
-			const route = row.source_doctype && row.source_name
-				? JSON.stringify(["Form", row.source_doctype, row.source_name])
-				: JSON.stringify(["Form", "FB Inventory Exception", row.name]);
-			const again = count > 1 ? ` · ${__("{0} times", [count])}` : "";
+				const again = count > 1 ? ` · ${__("{0} times", [count])}` : "";
 			return `<div class="jiji-row"><span class="jiji-row__main">
 					<span class="jiji-pill jiji-pill--${severity === "critical" ? "stop" : "attention"}">${severity === "critical" ? __("Urgent") : __("Please check")}</span>
 					<div class="mt-2" style="font-weight:600">${this.escape(this.plainExceptionMessage(row.reason_code))}</div>
-					<div class="jiji-row__note">${__("Found {0}", [this.agePhrase(row.last_seen, this.health?.as_of)])}${again}</div>
-				</span>
-				<button type="button" class="btn btn-sm btn-default" data-exception-route='${this.escapeAttribute(route)}'>${__("Open")}</button>
-			</div>`;
+						<div class="jiji-row__note">${__("Found {0}", [this.agePhrase(row.last_seen, this.health?.as_of)])}${again}</div>
+					</span>
+				</div>`;
 		}).join("");
 		target.html(`<div class="jiji-head mb-2"><div class="jiji-label">${__("Stock problems open now")}</div>
-			<span class="jiji-muted">${__("Each one, once, with what it is.")}</span></div>
+			<span class="jiji-muted">${__("Each problem appears once, with what to do.")}</span></div>
 			<div class="jiji-rows">${cards}</div>`);
 	}
 
@@ -685,6 +563,21 @@ class JiJiStockAutopilotPage {
 
 	plainExceptionMessage(reasonCode) {
 		const reason = String(reasonCode || "").toLowerCase();
+		if (reason === "operating_day_evidence_missing") {
+			return __("JiJi needs a few more recent sales before it can suggest what to order.");
+		}
+		if (reason === "inventory_count_schedule_unconfigured") {
+			return __("Choose how often this outlet should count stock.");
+		}
+		if (reason === "inventory_count_missing_uom_conversion") {
+			return __("One item's pack size is missing, so JiJi cannot turn packs into the amount on hand.");
+		}
+		if (reason === "inventory_count_stale_watermark") {
+			return __("Stock changed while this count was being checked. Open the count and choose the right amount.");
+		}
+		if (reason === "inventory_count_director_review") {
+			return __("A stock count needs you to choose the right amount.");
+		}
 		if (reason.includes("scheduler") || reason.includes("projection")) {
 			return __("JiJi could not finish updating your stock. Nothing you saved is lost.");
 		}
@@ -697,13 +590,9 @@ class JiJiStockAutopilotPage {
 		if (reason.includes("cost")) return __("One or more ingredient costs need checking.");
 		if (reason.includes("purchase") || reason.includes("outbound")) return __("Your buying limits need checking before JiJi can write another order.");
 		if (reason.includes("routing") || reason.includes("director")) return __("Choose who should receive urgent stock problems.");
-		// A sentence that names nothing is worse than a code. A café owner
-		// ringing for help can read a code out; "a stock problem" tells the
-		// person on the other end nothing either.
-		const code = String(reasonCode || "").trim();
-		return code
-			? __("JiJi found a stock problem it has no plain description for: {0}", [code])
-			: __("JiJi found a stock problem that needs you.");
+		// The saved exception keeps the support code. The beginner page never
+		// makes a director decode it just to decide what to do next.
+		return __("JiJi found a stock problem. Open it to see what needs fixing.");
 	}
 
 	oldestDeviceReportAge(devices, asOf) {
@@ -712,11 +601,6 @@ class JiJiStockAutopilotPage {
 			.map((row) => this.ageMinutes(row.effective_at, asOf))
 			.filter((value) => value != null);
 		return ages.length ? __("Oldest tablet update: {0}", [this.ageMinutesPhrase(Math.max(...ages))]) : __("No tablet update yet");
-	}
-
-	checkedAge(timestamp) {
-		const age = this.ageMinutes(timestamp, new Date().toISOString());
-		return age == null ? __("check time unavailable") : __("checked {0}", [this.ageMinutesPhrase(age)]);
 	}
 
 	schedulerStatus(health) {
@@ -754,33 +638,42 @@ class JiJiStockAutopilotPage {
 		return { critical: __("Action required"), warning: __("Review"), ok: __("OK"), info: __("Information") }[status] || __("Information");
 	}
 
-	automationStateLabel(state) {
-		return {
-			Active: __("Automatic actions on"),
-			Paused: __("Paused"),
-			"Review First": __("Approval required"),
-		}[String(state || "Review First")] || __("Approval required");
-	}
-
 	toneClass(status) {
 		return { critical: "danger", warning: "warning", ok: "success", info: "info" }[status] || "secondary";
 	}
 
 	openRoute(key) {
+		if (key === "start") {
+			this.activateCutover();
+			return;
+		}
 		const workflows = { today: "updates", plans: "buying", ledger: "finance" };
 		if (workflows[key]) {
 			this.openWorkflow(workflows[key]);
 			return;
 		}
-		const routes = {
-			needs: ["List", "FB Inventory Exception"],
-			stock: ["List", "Bin"],
-			counts: ["List", "FB Inventory Count Task"],
-			settings: ["List", "FB Inventory Policy"],
-		};
-		const route = routes[key];
-		if (!route) return;
-		frappe.set_route(...route);
+		if (key === "needs") {
+			this.page.body.find("[data-exceptions]")[0]?.scrollIntoView({ behavior: "smooth", block: "start" });
+			return;
+		}
+		if (key === "counts") {
+			this.page.body.find("[data-count-reviews]")[0]?.scrollIntoView({ behavior: "smooth", block: "start" });
+			return;
+		}
+		if (key === "stock") {
+			jiji.desk.go(["jiji_staff"]);
+			return;
+		}
+		if (key === "supplies") {
+			jiji.desk.go(["jiji_supplies"]);
+				return;
+			}
+		if (key === "settings") {
+			frappe.msgprint({
+				title: __("Ask Support to check this setup"),
+				message: __("Tell Support which outlet you chose and what this page says. Your saved stock will not be removed."),
+			});
+		}
 	}
 
 	openWorkflow(workflow) {
@@ -821,26 +714,39 @@ class JiJiStockAutopilotPage {
 	buyingWorkflowHtml(data) {
 		const draftStatusLabel = __("Written — not sent");
 		const cards = (Array.isArray(data.items) ? data.items : []).map((plan) => {
-			const lines = (Array.isArray(plan.lines) ? plan.lines : []).map((line) => `<tr><td>${this.escape(line.item_name || line.item)}</td><td>${this.escape(line.action)}</td><td>${this.escape(line.quantity)} ${this.escape(line.uom)}</td><td>${this.escape(line.reason || __("JiJi calculated this from current stock and expected use."))}</td></tr>`).join("");
-			const drafts = (Array.isArray(plan.draft_documents) ? plan.draft_documents : []).map((draft) => `<div class="alert alert-info mt-3 mb-0"><strong>${this.escape(draft.status || draftStatusLabel)}</strong> · ${this.escape(draft.name)} · ${this.escape(draft.supplier || __("Supplier not shown"))} · ${this.escape(this.moneyLabel(draft.total_sen, draft.currency))}<br><span class="small">${__("You check this order, then send it yourself.")}</span> <button type="button" class="btn btn-sm btn-primary ml-2" data-doctype="Purchase Order" data-open-document="${this.escapeAttribute(draft.name)}">${__("See the order")}</button></div>`).join("");
-			return `<div class="border rounded p-3 mb-3"><div class="d-flex justify-content-between"><strong>${__("Suggested order")}</strong><span class="badge badge-light">${this.escape(plan.status)}</span></div><div class="text-muted small mb-2">${__("Help number")}: ${this.escape(plan.name)} · ${this.escape(plan.planning_date)} · ${this.escape(plan.forecast_state)}</div><table class="table table-sm"><thead><tr><th>${__("Item")}</th><th>${__("Action")}</th><th>${__("Suggested amount")}</th><th>${__("Why")}</th></tr></thead><tbody>${lines || `<tr><td colspan="4">${__("Nothing is suggested in this order.")}</td></tr>`}</tbody></table>${drafts || `<div class="text-muted small">${__("No order has been written yet. Nothing has been sent.")}</div>`}</div>`;
+			const lines = (Array.isArray(plan.lines) ? plan.lines : []).map((line) => `<tr><td>${this.escape(line.item_name || __("Ingredient or supply"))}</td><td>${this.escape(line.action_label || this.stockActionLabel(line.action))}</td><td>${this.escape(line.quantity_display || line.quantity)}</td><td>${this.escape(line.reason || __("JiJi calculated this from current stock and expected use."))}</td></tr>`).join("");
+				const drafts = (Array.isArray(plan.draft_documents) ? plan.draft_documents : []).map((draft) => {
+					const details = [draft.supplier, Number.isInteger(draft.total_sen) ? this.moneyLabel(draft.total_sen, draft.currency) : ""].filter(Boolean).map((value) => this.escape(value)).join(" · ");
+					return `<div class="alert alert-info mt-3 mb-0"><strong>${this.escape(draft.document_label || __("Supplier order"))}</strong> · ${this.escape(draft.status || draftStatusLabel)}${details ? ` · ${details}` : ""}<br><span class="small">${this.escape(draft.next_action || __("Open Supplies to continue."))}</span> <button type="button" class="btn btn-sm btn-primary ml-2" data-primary-route="supplies">${__("Open Supplies")}</button></div>`;
+			}).join("");
+			return `<div class="border rounded p-3 mb-3"><strong>${__("Suggested order")}</strong><div class="text-muted small mb-2">${this.escape(plan.planning_date || "")}</div><table class="table table-sm"><thead><tr><th>${__("Ingredient or supply")}</th><th>${__("What to do")}</th><th>${__("Suggested amount")}</th><th>${__("Why")}</th></tr></thead><tbody>${lines || `<tr><td colspan="4">${__("Nothing is suggested in this order.")}</td></tr>`}</tbody></table>${drafts || `<div class="text-muted small">${__("No order has been written yet. Nothing has been sent.")}</div>`}</div>`;
 		}).join("");
-		return `${cards || `<div class="alert alert-light">${__("No order is suggested. Nothing was created or sent.")}</div>`}<button type="button" class="btn btn-sm btn-default" data-advanced-route="plans">${__("More detail · the full suggested order")}</button>`;
+		return cards || `<div class="alert alert-light">${__("No order is suggested. Nothing was created or sent.")}</div>`;
 	}
 
 	updatesWorkflowHtml(data) {
 		const scheduler = data.scheduler || {};
-		const rows = (Array.isArray(data.items) ? data.items : []).map((row) => `<tr><td>${this.escape(row.name)}</td><td>${this.escape(row.state_label || __("Check status"))}</td><td>${this.escape(this.shortDate(row.last_attempt_at || row.created_at))}</td><td>${this.escape(row.failure_reason || __("No problem recorded"))}</td><td>${this.escape(row.next_action)}</td></tr>`).join("");
-		return `<div class="row mb-3"><div class="col-sm-4"><strong>${__("JiJi checks stock")}</strong><br>${__("About every {0} minutes", [this.escape(scheduler.expected_interval_minutes || 5)])}</div><div class="col-sm-4"><strong>${__("Last finished")}</strong><br>${this.escape(this.shortDate(scheduler.last_success))}</div><div class="col-sm-4"><strong>${__("Last problem")}</strong><br>${scheduler.last_failure ? this.escape(this.shortDate(scheduler.last_failure)) : __("No problem recorded")}</div></div><table class="table table-sm"><thead><tr><th>${__("Help number")}</th><th>${__("Status")}</th><th>${__("Last checked")}</th><th>${__("What happened")}</th><th>${__("What to do")}</th></tr></thead><tbody>${rows || `<tr><td colspan="5">${__("JiJi has not updated this outlet's stock yet.")}</td></tr>`}</tbody></table><button type="button" class="btn btn-sm btn-primary" data-primary-route="today">${__("Refresh")}</button> <button type="button" class="btn btn-sm btn-default" data-advanced-route="updates">${__("Advanced: technical update history")}</button>`;
+			const rows = (Array.isArray(data.items) ? data.items : []).map((row) => `<tr><td>${this.escape(row.state_label || __("Check status"))}</td><td>${this.escape(this.shortDate(row.checked_at))}</td><td>${this.escape(row.failure_reason || __("No problem recorded"))}</td><td>${this.escape(row.next_action)}</td></tr>`).join("");
+		return `<div class="row mb-3"><div class="col-sm-4"><strong>${__("JiJi checks stock")}</strong><br>${__("About every {0} minutes", [this.escape(scheduler.expected_interval_minutes || 5)])}</div><div class="col-sm-4"><strong>${__("Last finished")}</strong><br>${this.escape(this.shortDate(scheduler.last_success))}</div><div class="col-sm-4"><strong>${__("Last problem")}</strong><br>${scheduler.last_failure ? this.escape(this.shortDate(scheduler.last_failure)) : __("No problem recorded")}</div></div><table class="table table-sm"><thead><tr><th>${__("Status")}</th><th>${__("Last checked")}</th><th>${__("What happened")}</th><th>${__("What to do")}</th></tr></thead><tbody>${rows || `<tr><td colspan="4">${__("JiJi has not updated this outlet's stock yet.")}</td></tr>`}</tbody></table><button type="button" class="btn btn-sm btn-primary" data-primary-route="today">${__("Refresh")}</button>`;
 	}
 
 	financeWorkflowHtml(data) {
 		const summary = data.summary || {};
 		const currency = data.currency || "";
 		const periods = [7, 30, 90].map((days) => `<button type="button" class="btn btn-sm ${Number(data.period_days) === days ? "btn-primary" : "btn-default"} mr-1" data-finance-period="${days}">${days} ${__("days")}</button>`).join("");
-		const balances = (Array.isArray(data.balances) ? data.balances : []).map((row) => `<tr><td>${this.escape(row.item_name || row.item)}</td><td>${this.escape(row.quantity)}</td><td>${this.escape(this.moneyLabel(row.stock_value_sen, currency))}</td></tr>`).join("");
-		const movements = (Array.isArray(data.items) ? data.items : []).map((row) => `<tr><td>${this.escape(row.posting_date)}</td><td>${this.escape(row.item_name || row.item)}</td><td>${this.escape(this.movementLabel(row.kind))}</td><td>${this.escape(row.quantity)}</td><td>${this.escape(this.moneyLabel(row.value_change_sen, currency))}</td></tr>`).join("");
-		return `<div class="mb-3">${periods}</div><div class="row mb-3"><div class="col-sm-4"><strong>${__("Stock value")}</strong><br>${this.escape(this.moneyLabel(summary.stock_value_sen, currency))}</div><div class="col-sm-2"><strong>${__("Received")}</strong><br>${this.escape(this.moneyLabel(summary.received_sen, currency))}</div><div class="col-sm-2"><strong>${__("Used")}</strong><br>${this.escape(this.moneyLabel(summary.used_sen, currency))}</div><div class="col-sm-2"><strong>${__("Transferred")}</strong><br>${this.escape(this.moneyLabel(summary.transferred_sen, currency))}</div><div class="col-sm-2"><strong>${__("Waste")}</strong><br>${this.escape(this.moneyLabel(summary.waste_sen, currency))}</div></div><h4>${__("Stock on hand")}</h4><table class="table table-sm"><thead><tr><th>${__("Item")}</th><th>${__("Amount on hand")}</th><th>${__("Value")}</th></tr></thead><tbody>${balances || `<tr><td colspan="3">${__("No stock balance is recorded.")}</td></tr>`}</tbody></table><h4>${__("Recent stock changes")}</h4><table class="table table-sm"><thead><tr><th>${__("Date")}</th><th>${__("Item")}</th><th>${__("Change")}</th><th>${__("Quantity")}</th><th>${__("Value change")}</th></tr></thead><tbody>${movements || `<tr><td colspan="5">${__("No stock change is recorded for this period.")}</td></tr>`}</tbody></table><button type="button" class="btn btn-sm btn-default" data-advanced-route="ledger">${__("Advanced: detailed stock records")}</button>`;
+			const balances = (Array.isArray(data.balances) ? data.balances : []).map((row) => `<tr><td>${this.escape(row.item_name || __("Ingredient or supply"))}</td><td>${this.escape(row.quantity_display)}</td><td>${this.escape(this.moneyLabel(row.stock_value_sen, currency))}</td></tr>`).join("");
+			const movements = (Array.isArray(data.items) ? data.items : []).map((row) => `<tr><td>${this.escape(row.posting_date)}</td><td>${this.escape(row.item_name || __("Ingredient or supply"))}</td><td>${this.escape(this.movementLabel(row.kind))}</td><td>${this.escape(row.quantity_display)}</td><td>${this.escape(this.moneyLabel(row.value_change_sen, currency))}</td></tr>`).join("");
+		const balancesNote = data.balances_truncated ? `<div class="alert alert-light small">${__("The total includes everything. This table shows the first 100 ingredients and supplies.")}</div>` : "";
+		const movementsNote = data.items_truncated ? `<div class="alert alert-light small">${__("The totals include every stock change. This table shows the latest 100 changes.")}</div>` : "";
+		return `<div class="mb-3">${periods}</div><div class="row mb-3"><div class="col-sm-4"><strong>${__("Stock value")}</strong><br>${this.escape(this.moneyLabel(summary.stock_value_sen, currency))}</div><div class="col-sm-2"><strong>${__("Received")}</strong><br>${this.escape(this.moneyLabel(summary.received_sen, currency))}</div><div class="col-sm-2"><strong>${__("Used")}</strong><br>${this.escape(this.moneyLabel(summary.used_sen, currency))}</div><div class="col-sm-2"><strong>${__("Transferred")}</strong><br>${this.escape(this.moneyLabel(summary.transferred_sen, currency))}</div><div class="col-sm-2"><strong>${__("Waste")}</strong><br>${this.escape(this.moneyLabel(summary.waste_sen, currency))}</div></div><h4>${__("Stock on hand")}</h4>${balancesNote}<table class="table table-sm"><thead><tr><th>${__("Ingredient or supply")}</th><th>${__("Amount on hand")}</th><th>${__("Value")}</th></tr></thead><tbody>${balances || `<tr><td colspan="3">${__("No stock balance is recorded.")}</td></tr>`}</tbody></table><h4>${__("Recent stock changes")}</h4>${movementsNote}<table class="table table-sm"><thead><tr><th>${__("Date")}</th><th>${__("Ingredient or supply")}</th><th>${__("Change")}</th><th>${__("Amount")}</th><th>${__("Value change")}</th></tr></thead><tbody>${movements || `<tr><td colspan="5">${__("No stock change is recorded for this period.")}</td></tr>`}</tbody></table>`;
+	}
+
+	stockActionLabel(action) {
+		return {
+			Purchase: __("Order from supplier"),
+			Manufacture: __("Prepare in the café"),
+			Transfer: __("Move from another outlet"),
+		}[String(action || "")] || __("Check this");
 	}
 
 	movementLabel(kind) {
@@ -852,28 +758,9 @@ class JiJiStockAutopilotPage {
 		}[String(kind || "").toLowerCase()] || __("Stock change");
 	}
 
-	openAdvancedRoute(key) {
-		const warehouse = this.warehouseControl && this.warehouseControl.get_value();
-		const company = this.health && this.health.company;
-		if (key === "ledger") frappe.route_options = { company, warehouse };
-		if (key === "plans") frappe.route_options = { company, warehouse };
-		if (key === "updates") frappe.route_options = { warehouse };
-		const route = { plans: ["List", "FB Inventory Plan"], updates: ["List", "FB Projection Log"], ledger: ["query-report", "Stock Ledger"] }[key];
-		if (route) frappe.set_route(...route);
-	}
-
 	moneyLabel(value, currency) {
 		const sen = Number(value || 0);
 		return `${currency || ""} ${(sen / 100).toFixed(2)}`.trim();
-	}
-
-	openException(serializedRoute) {
-		try {
-			const route = JSON.parse(serializedRoute);
-			if (Array.isArray(route)) frappe.set_route(...route);
-		} catch {
-			frappe.msgprint({ title: __("Could not open the stock problem"), message: __("Refresh the page and try again.") });
-		}
 	}
 
 	activateCutover() {
@@ -882,22 +769,32 @@ class JiJiStockAutopilotPage {
 			frappe.msgprint({ title: __("Choose an outlet stock location"), message: __("Choose where this outlet keeps stock before starting stock tracking.") });
 			return;
 		}
-		frappe.prompt([
-			{ fieldname: "policy", fieldtype: "Link", options: "FB Inventory Policy", label: __("Stock settings for this outlet"), reqd: 1, get_query: () => ({ filters: { warehouse } }) },
-			{ fieldname: "opening_stock_reconciliation", fieldtype: "Link", options: "Stock Reconciliation", label: __("Checked opening stock count"), description: __("This is the approved starting amount for every ingredient and supply."), reqd: 1, get_query: () => ({ filters: { docstatus: 1 } }) },
-		], (values) => {
-			frappe.call({
-				method: "kopos_connector.api.inventory.activate_inventory_cutover",
-				type: "POST",
-				args: values,
-				callback: (response) => {
-					const result = response.message || {};
-					frappe.show_alert({ message: result.status === "already_active" ? __("Stock tracking already has a recorded start point. Nothing changed.") : __("Stock tracking has started. Automatic actions still follow the approval settings."), indicator: "green" });
-					this.refresh();
-				},
-				error: () => frappe.msgprint({ title: __("Stock tracking could not start"), message: __("Nothing was changed. Complete the missing setup shown by the system and try again.") }),
-			});
-		}, __("Start using stock tracking"), __("Start stock tracking"));
+		const dialog = new frappe.ui.Dialog({
+			title: __("Start stock tracking?"),
+			fields: [{
+				fieldtype: "HTML",
+				fieldname: "explanation",
+				options: `<p>${__("JiJi will use the opening stock already saved for this outlet as the starting amount for every ingredient and supply.")}</p>`,
+			}],
+			primary_action_label: __("Start stock tracking"),
+			primary_action: () => {
+				dialog.hide();
+				frappe.call({
+					method: "kopos_connector.api.inventory.start_inventory_tracking",
+					type: "POST",
+					args: { warehouse },
+					callback: (response) => {
+						const result = response.message || {};
+						frappe.show_alert({ message: result.message || __("Stock tracking has started."), indicator: "green" });
+						this.refresh();
+					},
+					error: () => frappe.msgprint({ title: __("Stock tracking could not start"), message: __("Nothing was changed. Follow the message above or ask Support to check this outlet.") }),
+				});
+			},
+			secondary_action_label: __("Not now"),
+			secondary_action: () => dialog.hide(),
+		});
+		dialog.show();
 	}
 
 	agePhrase(timestamp, asOf) {
@@ -918,6 +815,7 @@ class JiJiStockAutopilotPage {
 	}
 
 	ageMinutes(timestamp, asOf) {
+		if (!timestamp) return null;
 		const end = asOf ? new Date(asOf).getTime() : Date.now();
 		const start = new Date(timestamp).getTime();
 		if (!Number.isFinite(start) || !Number.isFinite(end)) return null;

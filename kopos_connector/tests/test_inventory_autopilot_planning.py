@@ -169,6 +169,21 @@ def test_planning_health_marker_is_warehouse_scoped():
     assert first != second
 
 
+def test_planning_tracks_only_recipes_effective_now():
+    now = datetime(2026, 8, 15, 12, 0)
+    with patch.object(planning_module.frappe.db, "exists", return_value=True), patch.object(
+        planning_module.frappe.db,
+        "sql",
+        return_value=[{"item": "MILK"}],
+    ) as sql, patch.object(planning_module, "now_datetime", return_value=now):
+        assert planning_module._tracked_component_items(company="JiJi") == ("MILK",)
+
+    query = sql.call_args.args[0]
+    assert "recipe.effective_from <= %s" in query
+    assert "recipe.effective_to >= %s" in query
+    assert sql.call_args.args[1] == ("JiJi", now, now)
+
+
 def test_supplier_configuration_uses_standard_item_purchase_authority():
     values = {
         "stock_uom": "Gram",

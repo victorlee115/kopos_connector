@@ -10,5 +10,5 @@
 	{"fieldname":"purchase_uom","fieldtype":"Link","label":"Full pack or carton","options":"UOM","reqd":1,"read_only":1},
 	{"fieldname":"conversion_factor","fieldtype":"Data","label":"Loose units in one full pack","reqd":1,"read_only":1,"no_copy":1}
  ],
- "permissions": [{"role":"Company Director","read":1,"write":1,"create":1}]
+ "permissions": [{"role":"System Manager","read":1,"write":1,"create":1}]
 }

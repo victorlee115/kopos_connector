@@ -267,6 +267,7 @@ def test_missing_and_expired_tokens_have_stable_machine_codes(monkeypatch):
         "status": "error",
         "message": "Manager approval token is required",
         "error_code": "manager_approval_required",
+        "error_contract_version": "kopos.operational-error.v1",
     }
 
 

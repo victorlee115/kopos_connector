@@ -38,431 +38,32 @@ from kopos_connector.acceptance.restored_inventory_acceptance import (
     _text,
     _value,
 )
+from kopos_connector.demo.moonleaf_catalog import (
+    CAFE_NAME,
+    INGREDIENTS,
+    MATCHA_CONCENTRATE_ITEM,
+    MODIFIER_GROUPS,
+    OPENING_PACKS,
+    OPENING_REMARKS,
+    PACKAGING_COMPONENTS,
+    POS_PROFILE,
+    PREPARED_BOM_QTY,
+    PREPARED_COMPONENTS,
+    PREPARED_ITEM,
+    PREPARED_LEAD_MINUTES,
+    PREPARED_MIN_READY_QTY,
+    PROMOTIONS,
+    RECIPE_CODE,
+    RECIPE_COMPONENTS,
+    SELLABLE_ITEM,
+    SELLABLES,
+    SELLING_PRICE_LIST,
+    SUPPLIER,
+    SUPPLIER_NAME,
+)
 
 PRODUCER = "kopos_connector.acceptance.restored_commissioning.run_v1"
 CONTRACT_ID = "kopos.restored-commissioning.v2"
-CAFE_NAME = "Moonleaf Coffee & Matcha (Fictional)"
-SELLING_PRICE_LIST = f"{AUTHORITY_PREFIX}MOONLEAF-MENU-MYR"
-POS_PROFILE = f"{AUTHORITY_PREFIX}MOONLEAF-CAFE-PILOT"
-
-SUPPLIER = f"{AUTHORITY_PREFIX}MOONLEAF-PROVISIONS"
-PREPARED_ITEM = f"{AUTHORITY_PREFIX}MOONLEAF-VANILLA-COLD-FOAM"
-MATCHA_CONCENTRATE_ITEM = f"{AUTHORITY_PREFIX}MOONLEAF-MATCHA-CONCENTRATE"
-PREPARED_BOM_QTY = Decimal("1000")
-PREPARED_MIN_READY_QTY = Decimal("300")
-PREPARED_LEAD_MINUTES = 20
-
-# Stock UOM, purchase UOM, and the exact whole-unit conversion between them.
-# Every conversion is exact by construction: no ingredient may rely on an
-# inferred or rounded factor.
-INGREDIENTS: tuple[dict[str, Any], ...] = (
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-ESPRESSO-BEANS",
-        "name": "Moonleaf Nightjar Espresso Beans",
-        "stock_uom": "Gram",
-        "purchase_uom": "Bag",
-        "conversion": Decimal("1000"),
-        "purchase_rate": Decimal("68"),
-        "valuation_rate": Decimal("0.068"),
-        "shelf_life_days": 60,
-        "has_batch_no": 1,
-        "role": "Ingredient",
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-MATCHA-POWDER",
-        "name": "Moonleaf Jade Mist Matcha Powder",
-        "stock_uom": "Gram",
-        "purchase_uom": "Tin",
-        "conversion": Decimal("500"),
-        "purchase_rate": Decimal("95"),
-        "valuation_rate": Decimal("0.19"),
-        "shelf_life_days": 180,
-        "has_batch_no": 1,
-        "role": "Ingredient",
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-FRESH-MILK",
-        "name": "Moonleaf Meadow Fresh Milk",
-        "stock_uom": "Millilitre",
-        "purchase_uom": "Carton",
-        "conversion": Decimal("1000"),
-        "purchase_rate": Decimal("7.40"),
-        "valuation_rate": Decimal("0.0074"),
-        "shelf_life_days": 7,
-        "has_batch_no": 1,
-        "role": "Ingredient",
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-OAT-MILK",
-        "name": "Moonleaf Cloud Oat Milk",
-        "stock_uom": "Millilitre",
-        "purchase_uom": "Carton",
-        "conversion": Decimal("1000"),
-        "purchase_rate": Decimal("11.80"),
-        "valuation_rate": Decimal("0.0118"),
-        "shelf_life_days": 90,
-        "has_batch_no": 1,
-        "role": "Ingredient",
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-STRAWBERRY-PUREE",
-        "name": "Moonleaf Ruby Strawberry Puree",
-        "stock_uom": "Millilitre",
-        "purchase_uom": "Bottle",
-        "conversion": Decimal("1000"),
-        "purchase_rate": Decimal("28"),
-        "valuation_rate": Decimal("0.028"),
-        "shelf_life_days": 30,
-        "has_batch_no": 1,
-        "role": "Ingredient",
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-VANILLA-SYRUP",
-        "name": "Moonleaf Vanilla Syrup",
-        "stock_uom": "Millilitre",
-        "purchase_uom": "Bottle",
-        "conversion": Decimal("750"),
-        "purchase_rate": Decimal("24"),
-        "valuation_rate": Decimal("0.032"),
-        "shelf_life_days": 365,
-        "has_batch_no": 1,
-        "role": "Ingredient",
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-BROWN-SUGAR-SYRUP",
-        "name": "Moonleaf Ember Brown Sugar Syrup",
-        "stock_uom": "Millilitre",
-        "purchase_uom": "Bottle",
-        "conversion": Decimal("750"),
-        "purchase_rate": Decimal("21.75"),
-        "valuation_rate": Decimal("0.029"),
-        "shelf_life_days": 180,
-        "has_batch_no": 1,
-        "role": "Ingredient",
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-WHIPPING-CREAM",
-        "name": "Moonleaf Whipping Cream",
-        "stock_uom": "Millilitre",
-        "purchase_uom": "Carton",
-        "conversion": Decimal("1000"),
-        "purchase_rate": Decimal("18"),
-        "valuation_rate": Decimal("0.018"),
-        "shelf_life_days": 14,
-        "has_batch_no": 1,
-        "role": "Ingredient",
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-FILTERED-WATER",
-        "name": "Moonleaf Filtered Water",
-        "stock_uom": "Millilitre",
-        "purchase_uom": "Canister",
-        "conversion": Decimal("5000"),
-        "purchase_rate": Decimal("4"),
-        "valuation_rate": Decimal("0.0008"),
-        "shelf_life_days": 30,
-        "has_batch_no": 1,
-        "role": "Ingredient",
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-16OZ-CUP",
-        "name": "Moonleaf 16 oz Clear Cup",
-        "stock_uom": "Nos",
-        "purchase_uom": "Sleeve",
-        "conversion": Decimal("50"),
-        "purchase_rate": Decimal("14"),
-        "valuation_rate": Decimal("0.28"),
-        "shelf_life_days": 0,
-        "has_batch_no": 0,
-        "role": "Packaging",
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-16OZ-LID",
-        "name": "Moonleaf 16 oz Flat Lid",
-        "stock_uom": "Nos",
-        "purchase_uom": "Sleeve",
-        "conversion": Decimal("50"),
-        "purchase_rate": Decimal("9"),
-        "valuation_rate": Decimal("0.18"),
-        "shelf_life_days": 0,
-        "has_batch_no": 0,
-        "role": "Packaging",
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-PAPER-STRAW",
-        "name": "Moonleaf Paper Straw",
-        "stock_uom": "Nos",
-        "purchase_uom": "Box",
-        "conversion": Decimal("200"),
-        "purchase_rate": Decimal("12"),
-        "valuation_rate": Decimal("0.06"),
-        "shelf_life_days": 0,
-        "has_batch_no": 0,
-        "role": "Packaging",
-    },
-)
-
-PREPARED_COMPONENTS: tuple[dict[str, Any], ...] = (
-    {
-        "code": PREPARED_ITEM,
-        "name": "Moonleaf Vanilla Cold Foam",
-        "batch_qty": PREPARED_BOM_QTY,
-        "min_ready_qty": PREPARED_MIN_READY_QTY,
-        "lead_minutes": PREPARED_LEAD_MINUTES,
-        "shelf_life_days": 1,
-        "instructions": (
-            "Chill the clean pitcher. Add whipping cream, fresh milk, and vanilla syrup. "
-            "Blend for 30 seconds until pourable, then label the batch and refrigerate immediately."
-        ),
-        "inputs": (
-            (f"{AUTHORITY_PREFIX}MOONLEAF-WHIPPING-CREAM", "700"),
-            (f"{AUTHORITY_PREFIX}MOONLEAF-FRESH-MILK", "250"),
-            (f"{AUTHORITY_PREFIX}MOONLEAF-VANILLA-SYRUP", "50"),
-        ),
-    },
-    {
-        "code": MATCHA_CONCENTRATE_ITEM,
-        "name": "Moonleaf Matcha Concentrate",
-        "batch_qty": Decimal("1000"),
-        "min_ready_qty": Decimal("300"),
-        "lead_minutes": 10,
-        "shelf_life_days": 1,
-        "instructions": (
-            "Sift matcha into the sanitized jug. Add filtered water gradually while whisking "
-            "until smooth, then label the batch and refrigerate immediately."
-        ),
-        "inputs": (
-            (f"{AUTHORITY_PREFIX}MOONLEAF-MATCHA-POWDER", "50"),
-            (f"{AUTHORITY_PREFIX}MOONLEAF-FILTERED-WATER", "950"),
-        ),
-    },
-)
-
-
-def _component(
-    item: str,
-    qty: str,
-    component_type: str = "Ingredient",
-    *,
-    loss: str = "0",
-    substitution_key: str | None = None,
-) -> dict[str, Any]:
-    return {
-        "item": item,
-        "qty": qty,
-        "component_type": component_type,
-        "loss": loss,
-        "substitution_key": substitution_key,
-    }
-
-
-PACKAGING_COMPONENTS: tuple[dict[str, Any], ...] = (
-    _component(f"{AUTHORITY_PREFIX}MOONLEAF-16OZ-CUP", "1", "Packaging"),
-    _component(f"{AUTHORITY_PREFIX}MOONLEAF-16OZ-LID", "1", "Packaging"),
-    _component(f"{AUTHORITY_PREFIX}MOONLEAF-PAPER-STRAW", "1", "Packaging"),
-)
-
-SELLABLES: tuple[dict[str, Any], ...] = (
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-CLASSIC-MATCHA-LATTE",
-        "name": "Moonleaf Classic Matcha Latte",
-        "price": Decimal("12.90"),
-        "components": (
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-MATCHA-POWDER", "4", loss="2"),
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-FRESH-MILK", "240", loss="1", substitution_key="milk"),
-        ) + PACKAGING_COMPONENTS,
-        "modifier_groups": ("milk", "matcha_extras"),
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-STRAWBERRY-MATCHA-LATTE",
-        "name": "Moonleaf Strawberry Matcha Latte",
-        "price": Decimal("15.90"),
-        "components": (
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-MATCHA-POWDER", "4", loss="2"),
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-FRESH-MILK", "200", loss="1", substitution_key="milk"),
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-STRAWBERRY-PUREE", "40", loss="1"),
-        ) + PACKAGING_COMPONENTS,
-        "modifier_groups": ("milk", "matcha_extras"),
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-ICED-AMERICANO",
-        "name": "Moonleaf Iced Americano",
-        "price": Decimal("9.90"),
-        "components": (
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-ESPRESSO-BEANS", "18", loss="2"),
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-FILTERED-WATER", "220"),
-        ) + PACKAGING_COMPONENTS,
-        "modifier_groups": ("coffee_extras",),
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-VANILLA-OAT-LATTE",
-        "name": "Moonleaf Vanilla Oat Latte",
-        "price": Decimal("14.90"),
-        "components": (
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-ESPRESSO-BEANS", "18", loss="2"),
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-OAT-MILK", "220", loss="1"),
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-VANILLA-SYRUP", "15"),
-        ) + PACKAGING_COMPONENTS,
-        "modifier_groups": ("coffee_extras",),
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-BROWN-SUGAR-CLOUD-COFFEE",
-        "name": "Moonleaf Brown Sugar Cloud Coffee",
-        "price": Decimal("15.90"),
-        "components": (
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-ESPRESSO-BEANS", "18", loss="2"),
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-OAT-MILK", "170", loss="1"),
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-BROWN-SUGAR-SYRUP", "20"),
-            _component(PREPARED_ITEM, "50", "Prep Item"),
-        ) + PACKAGING_COMPONENTS,
-        "modifier_groups": ("coffee_extras",),
-    },
-    {
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-MATCHA-CLOUD",
-        "name": "Moonleaf Matcha Cloud",
-        "price": Decimal("16.90"),
-        "components": (
-            _component(MATCHA_CONCENTRATE_ITEM, "80", "Prep Item"),
-            _component(f"{AUTHORITY_PREFIX}MOONLEAF-FRESH-MILK", "180", loss="1", substitution_key="milk"),
-            _component(PREPARED_ITEM, "40", "Prep Item"),
-        ) + PACKAGING_COMPONENTS,
-        "modifier_groups": ("milk", "matcha_extras"),
-    },
-)
-
-RECIPE_CODE = f"{AUTHORITY_PREFIX}MOONLEAF-BROWN-SUGAR-CLOUD-COFFEE-RECIPE"
-SELLABLE_ITEM = f"{AUTHORITY_PREFIX}MOONLEAF-BROWN-SUGAR-CLOUD-COFFEE"
-RECIPE_COMPONENTS: tuple[tuple[str, str], ...] = tuple(
-    (row["item"], row["qty"])
-    for row in next(spec for spec in SELLABLES if spec["code"] == SELLABLE_ITEM)["components"]
-)
-
-MODIFIER_GROUPS: tuple[dict[str, Any], ...] = (
-    {
-        "key": "milk",
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-MILK-CHOICE",
-        "name": "Milk choice",
-        "selection_type": "Single",
-        "required": 1,
-        "min": 1,
-        "max": 1,
-        "options": (
-            {
-                "code": f"{AUTHORITY_PREFIX}MOONLEAF-DAIRY-MILK",
-                "name": "Fresh milk",
-                "kind": "Instruction Only",
-                "default": 1,
-                "price": Decimal("0"),
-                "instruction": "Use the measured fresh-milk recipe.",
-            },
-            {
-                "code": f"{AUTHORITY_PREFIX}MOONLEAF-OAT-MILK-SWAP",
-                "name": "Oat milk",
-                "kind": "Replace",
-                "default": 0,
-                "price": Decimal("2"),
-                "target_substitution_key": "milk",
-                "target_item": f"{AUTHORITY_PREFIX}MOONLEAF-FRESH-MILK",
-                "new_item": f"{AUTHORITY_PREFIX}MOONLEAF-OAT-MILK",
-            },
-        ),
-    },
-    {
-        "key": "matcha_extras",
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-MATCHA-EXTRAS",
-        "name": "Matcha extras",
-        "selection_type": "Multiple",
-        "required": 0,
-        "min": 0,
-        "max": 2,
-        "options": (
-            {
-                "code": f"{AUTHORITY_PREFIX}MOONLEAF-EXTRA-MATCHA",
-                "name": "Extra matcha",
-                "kind": "Add",
-                "default": 0,
-                "price": Decimal("2.50"),
-                "new_item": f"{AUTHORITY_PREFIX}MOONLEAF-MATCHA-POWDER",
-                "qty_delta": Decimal("2"),
-                "qty_uom": "Gram",
-            },
-            {
-                "code": f"{AUTHORITY_PREFIX}MOONLEAF-EXTRA-COLD-FOAM",
-                "name": "Extra vanilla cold foam",
-                "kind": "Add",
-                "default": 0,
-                "price": Decimal("3"),
-                "new_item": PREPARED_ITEM,
-                "qty_delta": Decimal("30"),
-                "qty_uom": "Millilitre",
-            },
-        ),
-    },
-    {
-        "key": "coffee_extras",
-        "code": f"{AUTHORITY_PREFIX}MOONLEAF-COFFEE-EXTRAS",
-        "name": "Coffee extras",
-        "selection_type": "Multiple",
-        "required": 0,
-        "min": 0,
-        "max": 2,
-        "options": (
-            {
-                "code": f"{AUTHORITY_PREFIX}MOONLEAF-EXTRA-ESPRESSO",
-                "name": "Extra espresso shot",
-                "kind": "Add",
-                "default": 0,
-                "price": Decimal("3"),
-                "new_item": f"{AUTHORITY_PREFIX}MOONLEAF-ESPRESSO-BEANS",
-                "qty_delta": Decimal("18"),
-                "qty_uom": "Gram",
-            },
-            {
-                "code": f"{AUTHORITY_PREFIX}MOONLEAF-COFFEE-COLD-FOAM",
-                "name": "Vanilla cold foam",
-                "kind": "Add",
-                "default": 0,
-                "price": Decimal("3"),
-                "new_item": PREPARED_ITEM,
-                "qty_delta": Decimal("30"),
-                "qty_uom": "Millilitre",
-            },
-        ),
-    },
-)
-
-PROMOTIONS: tuple[dict[str, Any], ...] = (
-    {
-        "name": f"{AUTHORITY_PREFIX}MOONLEAF-MATCHA-MONDAY",
-        "label": "Matcha Monday 10%",
-        "type": "item_discount",
-        "discount": Decimal("10"),
-        "items": tuple(spec["code"] for spec in SELLABLES if "MATCHA" in spec["code"]),
-    },
-    {
-        "name": f"{AUTHORITY_PREFIX}MOONLEAF-CAFE-PAIR",
-        "label": "Coffee + Matcha Pair 15%",
-        "type": "order_discount",
-        "discount": Decimal("15"),
-        "items": tuple(spec["code"] for spec in SELLABLES),
-    },
-)
-
-OPENING_REMARKS = f"{AUTHORITY_PREFIX}MOONLEAF fictional opening stock"
-OPENING_PACKS: dict[str, Decimal] = {
-    f"{AUTHORITY_PREFIX}MOONLEAF-ESPRESSO-BEANS": Decimal("8"),
-    f"{AUTHORITY_PREFIX}MOONLEAF-MATCHA-POWDER": Decimal("6"),
-    f"{AUTHORITY_PREFIX}MOONLEAF-FRESH-MILK": Decimal("24"),
-    f"{AUTHORITY_PREFIX}MOONLEAF-OAT-MILK": Decimal("12"),
-    f"{AUTHORITY_PREFIX}MOONLEAF-STRAWBERRY-PUREE": Decimal("6"),
-    f"{AUTHORITY_PREFIX}MOONLEAF-VANILLA-SYRUP": Decimal("4"),
-    f"{AUTHORITY_PREFIX}MOONLEAF-BROWN-SUGAR-SYRUP": Decimal("4"),
-    f"{AUTHORITY_PREFIX}MOONLEAF-WHIPPING-CREAM": Decimal("8"),
-    f"{AUTHORITY_PREFIX}MOONLEAF-FILTERED-WATER": Decimal("10"),
-    f"{AUTHORITY_PREFIX}MOONLEAF-16OZ-CUP": Decimal("10"),
-    f"{AUTHORITY_PREFIX}MOONLEAF-16OZ-LID": Decimal("10"),
-    f"{AUTHORITY_PREFIX}MOONLEAF-PAPER-STRAW": Decimal("3"),
-}
 
 
 def _ensure_uom(name: str) -> str:
@@ -810,11 +411,23 @@ def _commission_supplier_and_quotation(*, company: str, warehouse: str) -> dict[
     """Draft PO creation requires exactly one current submitted quotation."""
 
     runtime_frappe = _require_frappe()
-    if not runtime_frappe.db.exists("Supplier", SUPPLIER):
-        supplier = runtime_frappe.new_doc("Supplier")
-        supplier.supplier_name = SUPPLIER
+    existing_supplier = runtime_frappe.db.exists("Supplier", SUPPLIER)
+    supplier = (
+        runtime_frappe.get_doc("Supplier", existing_supplier)
+        if existing_supplier
+        else runtime_frappe.new_doc("Supplier")
+    )
+    supplier_name_changed = (
+        _text(getattr(supplier, "supplier_name", None)) != SUPPLIER_NAME
+    )
+    if not existing_supplier:
+        supplier.name = SUPPLIER
+    supplier.supplier_name = SUPPLIER_NAME
+    if not existing_supplier:
         _set_if_present(supplier, "supplier_group", _discover_supplier_group())
         supplier.insert(ignore_permissions=True)
+    elif supplier_name_changed:
+        supplier.save(ignore_permissions=True)
 
     existing = runtime_frappe.db.get_value(
         "Supplier Quotation",

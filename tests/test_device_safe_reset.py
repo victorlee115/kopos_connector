@@ -933,6 +933,7 @@ class DeviceSafeResetTests(unittest.TestCase):
             {
                 "status": "rejected",
                 "error_code": "SAFE_RESET_REQUEST_REJECTED_NO_COMMIT",
+                "error_contract_version": "kopos.operational-error.v1",
                 "message": "queue is not fully drained",
                 "request_attempt_committed": False,
                 "request_registration_status": "not_found",

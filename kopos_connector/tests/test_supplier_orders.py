@@ -1,9 +1,8 @@
-"""JiJi Supplies shows a decision; ERPNext still makes it.
+"""JiJi Supplies shows and approves one understandable supplier order.
 
 A director approving a supplier order needs five facts and a reason. This page
-gathers them and stops. The two properties that keep it safe are that it never
-writes, and that it never becomes a second place to send an order -- the
-Purchase Order is the accounting document and the only thing that can.
+gathers them and submits the existing Purchase Order through one scoped action.
+It never creates a second order and never sends anything to the supplier.
 """
 
 from __future__ import annotations
@@ -21,26 +20,42 @@ def _tree() -> ast.Module:
     return ast.parse(SOURCE.read_text(encoding="utf-8"))
 
 
-def test_supplies_never_writes() -> None:
-    forbidden = {"insert", "save", "submit", "cancel", "delete", "set_value", "commit", "new_doc", "rename_doc"}
+def test_supplies_never_creates_a_parallel_order() -> None:
+    forbidden = {"insert", "save", "cancel", "delete", "set_value", "commit", "new_doc", "rename_doc"}
     used = {
         node.func.attr
         for node in ast.walk(_tree())
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
-    assert not (used & forbidden), f"supplies must stay read-only, found {sorted(used & forbidden)}"
+    assert not (used & forbidden), f"supplies must reuse Purchase Order, found {sorted(used & forbidden)}"
+    source = SOURCE.read_text(encoding="utf-8")
+    assert "document.submit()" in source
+    assert 'frappe.get_doc("Purchase Order", order_name)' in source
 
 
-def test_sending_stays_in_erpnext() -> None:
+def test_approval_is_guided_and_sending_stays_outside_jiji() -> None:
     page = PAGE.read_text(encoding="utf-8")
-    # A second submit path would put the accounting document's authority on a
-    # page that cannot frame the consequence. The button says where it goes.
-    assert "Open this order" in page
-    assert "JiJi never sends an order. You send it." in page
-    # Every server call the page makes is a read, and says so.
-    methods = re.findall(r'method:\s*"([^"]+)"', page)
-    assert methods == ["kopos_connector.api.supplier_orders.get_supplier_orders"]
-    assert page.count('type: "GET"') == len(methods)
+    assert "Waiting for your approval" in page
+    assert "Waiting for you to send" not in page
+    assert "Approve order" in page
+    assert "Send it to the supplier outside JiJi" in page
+    assert 'primary_action_label: __("Approve order")' in page
+    assert 'secondary_action_label: __("Not now")' in page
+    assert "frappe.confirm(" not in page
+    assert "approve_supplier_order" in page
+    assert 'type: "POST"' in page
+    assert 'routeLink(draft.route' not in page
+    assert "orders_route" not in page
+
+
+def test_approval_locks_scope_and_exact_revision_before_submit() -> None:
+    source = SOURCE.read_text(encoding="utf-8")
+    approval = source.split("def approve_supplier_order", 1)[1].split("def get_supplier_orders", 1)[0]
+    assert "FOR UPDATE" in approval
+    assert "expected_modified" in approval
+    assert "line_outlets != {outlet_name}" in approval
+    assert "resolve_director_context(warehouse=outlet_name)" in approval
+    assert approval.index("document.submit()") > approval.index("line_outlets != {outlet_name}")
 
 
 def test_the_runout_figure_is_read_not_recomputed() -> None:
@@ -80,6 +95,18 @@ def test_history_is_bounded() -> None:
     assert "limit_page_length=RELIABILITY_SAMPLE" in source
 
 
+def test_orders_and_delivery_totals_are_scoped_to_the_chosen_outlet() -> None:
+    source = SOURCE.read_text(encoding="utf-8")
+    page = PAGE.read_text(encoding="utf-8")
+    assert "COALESCE(NULLIF(line.warehouse, ''), purchase_order.set_warehouse) = %s" in source
+    assert "COUNT(DISTINCT purchase_order.name)" in source
+    assert "SUM(line.amount) AS outlet_total" in source
+    assert "warehouse=warehouse" in source
+    assert 'id="jiji-supplies-outlet"' in page
+    assert 'fieldtype: "Link"' not in page
+    assert "Choose an outlet" in page
+
+
 def test_the_page_is_registered_for_directors() -> None:
     install = (ROOT / "install" / "install.py").read_text(encoding="utf-8")
     assert '"name": "jiji_supplies"' in install
@@ -96,11 +123,11 @@ def test_amounts_are_worded_by_one_owner() -> None:
     source = SOURCE.read_text(encoding="utf-8")
     units = (ROOT / "api" / "cafe_units.py").read_text(encoding="utf-8")
     # A real draft printed "6 cartons · 1000 ml each". Nobody says that about a
-    # litre of milk. The scale only applies when it stays exact, so 1500 ml is
+    # litre of milk. The scale only applies when it stays exact, so 1,500 ml is
     # never rounded into 2 L. Two desk pages now show amounts, so the wording
     # has one home rather than a copy in each.
     assert "_SCALED_UNITS" in units
-    assert "% 1000 == 0" in units
+    assert 'quantity % scale == 0' in units
     assert "from kopos_connector.api.cafe_units import amount_phrase" in source
     assert "_UNIT_WORDS" not in source
 

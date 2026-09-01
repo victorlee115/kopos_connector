@@ -283,6 +283,17 @@ class InventoryCountConfirmationTests(unittest.TestCase):
             )
         self.assertEqual(variance, "-15")
 
+        with patch.object(inventory.frappe.db, "get_value", return_value="10"):
+            details = inventory._count_line_variance_details(
+                warehouse="Outlet - A",
+                item_id="MILK",
+                counted_quantity="8.5",
+            )
+        self.assertEqual(
+            details,
+            {"difference_quantity": "-1.5", "variance_percent": "-15"},
+        )
+
     def test_review_projection_is_operational_only(self) -> None:
         observation = {
             "name": "OBS-ROW-1",
@@ -311,6 +322,7 @@ class InventoryCountConfirmationTests(unittest.TestCase):
                     "item_id": "MILK",
                     "uom": "L",
                     "counted_quantity": "8.5",
+                    "difference_quantity": "-1.5",
                     "variance_percent": "-15",
                 }],
             },

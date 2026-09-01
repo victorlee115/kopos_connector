@@ -1,10 +1,8 @@
 /**
  * JiJi Staff.
  *
- * The form behind this page showed an email as its title, an employee code, a
- * revision counter, a grid with a Warehouse column, five red asterisks, and a
- * Comments feed on a security record. It also could not set a PIN at all: the
- * field sits at permlevel 1 and no role had permission to write it.
+ * Business users stay on this page. The security record, internal identifiers,
+ * and outlet links remain behind the scoped API.
  *
  * A director needs three things here -- who can use a tablet, at what level,
  * and how to give someone a PIN -- and the two states the old form could not
@@ -25,15 +23,11 @@ class JiJiStaff {
 	constructor(wrapper) {
 		this.page = frappe.ui.make_app_page({
 			parent: wrapper,
-			title: __("JiJi Staff"),
+				title: __("Staff"),
 			single_column: true,
 		});
-		this.page.set_primary_action(__("Refresh"), () => this.load(), "refresh");
-		// Adding a person is the one thing this page cannot do from a row, and
-		// the record is where it is correctly done.
-		this.page.add_inner_button(__("Add someone"), () =>
-			jiji.desk.go(["Form", "KoPOS Staff Access", "new"]),
-		);
+		this.page.set_primary_action(__("Add someone"), () => this.openAddPerson());
+		this.page.add_inner_button(__("Refresh"), () => this.load());
 		this.body = jiji.desk.page(this.page);
 		this.injectStyle();
 		// Whose PIN the form at the bottom is for. Null means it is not shown.
@@ -84,8 +78,8 @@ class JiJiStaff {
 		if (data.status === "no_company") {
 			this.body.append(
 				jiji.desk.notice(
-					__("Choose a company to see its people"),
-					__("Set your default company, then open JiJi Staff again."),
+						__("Choose a café to see its people"),
+						__("Ask Support to choose the café for your account."),
 				),
 			);
 			return;
@@ -109,7 +103,15 @@ class JiJiStaff {
 			),
 		);
 		const list = $("<div>").addClass("jiji-rows").css("margin-top", "8px").appendTo(people);
-		(data.people || []).forEach((person) => list.append(this.renderPerson(person)));
+		if ((data.people || []).length) {
+			data.people.forEach((person) => list.append(this.renderPerson(person)));
+		} else {
+			list.append(
+				$("<div>")
+					.addClass("jiji-row jiji-muted")
+					.text(__("No one can use a tablet yet. Add someone to get started.")),
+			);
+		}
 		this.body.append(people);
 
 		if (this.setting) this.body.append(this.renderPinForm(this.setting));
@@ -121,7 +123,7 @@ class JiJiStaff {
 			head.append($("<span>").addClass("jiji-muted").text(__("Where each tablet is, and who is on it")));
 			const tablets = $("<div>").addClass("jiji-rows").appendTo(block);
 			data.tablets.forEach((tablet) => {
-				const row = jiji.desk.routeLink(tablet.route).addClass("jiji-row");
+					const row = $("<div>").addClass("jiji-row");
 				const main = $("<span>").addClass("jiji-row__main").appendTo(row);
 				main.append($("<div>").addClass("jiji-staff__name").text(tablet.tablet || ""));
 				main.append($("<div>").addClass("jiji-row__note").text(tablet.detail || ""));
@@ -131,8 +133,7 @@ class JiJiStaff {
 			this.body.append(block);
 		}
 
-		this.body.append(jiji.desk.advanced(__("the full staff record")));
-	}
+		}
 
 	renderPerson(person) {
 		const row = $("<div>").addClass("jiji-row");
@@ -160,12 +161,119 @@ class JiJiStaff {
 					// answer on screen; the server is asked only after a save.
 					this.setting = person;
 					this.render(this.data);
-				})
+					})
+					.appendTo(row);
+			$("<button>")
+				.addClass("btn btn-sm btn-link text-danger")
+				.text(__("Remove access"))
+				.on("click", () => this.setStaffActive(person, false))
 				.appendTo(row);
 		} else {
-			jiji.desk.routeLink(person.route, __("Bring back")).addClass("btn btn-sm btn-default").appendTo(row);
+			$("<button>")
+				.addClass("btn btn-sm btn-default")
+				.text(__("Bring back"))
+				.on("click", () => this.setStaffActive(person, true))
+				.appendTo(row);
 		}
 		return row;
+	}
+
+	openAddPerson() {
+		frappe.call({
+			method: "kopos_connector.api.staff_desk.get_staff_setup_choices",
+			type: "GET",
+			args: { company: this.data?.company || "" },
+			callback: (response) => {
+				const choices = response.message || {};
+				if (choices.status !== "ok") {
+					frappe.msgprint({
+						title: __("Choose a café first"),
+						message: __("Ask Support to choose the café for your account."),
+					});
+					return;
+				}
+				if (!(choices.people || []).length) {
+					const message = choices.people_missing_sign_in
+						? __("Someone's staff details are missing a sign-in email. Ask Support to finish them first.")
+						: __("No one else is ready to add. Ask Support if the person you need is missing.");
+					frappe.msgprint({ title: __("Nobody to add right now"), message });
+					return;
+				}
+				const people = choices.people.map((row) => `<option value="${this.escape(row.value)}">${this.escape(row.label)}</option>`).join("");
+				const outlets = (choices.outlets || []).map((row) => `<option value="${this.escape(row.value)}">${this.escape(row.label)}</option>`).join("");
+				const dialog = new frappe.ui.Dialog({
+					title: __("Add someone"),
+					fields: [
+						{ fieldtype: "HTML", fieldname: "person_picker", options: `<label class="control-label">${__("Person")}</label><select class="form-control" data-new-staff-person><option value="">${__("Choose someone")}</option>${people}</select>` },
+						{ fieldtype: "HTML", fieldname: "outlet_picker", options: `<label class="control-label">${__("Outlet")}</label><select class="form-control" data-new-staff-outlet><option value="">${__("Choose an outlet")}</option>${outlets}</select>` },
+						{ fieldtype: "Select", fieldname: "level", label: __("What can they do?"), options: [__("Staff"), __("Manager")], default: __("Staff"), reqd: 1, description: __("Managers can approve the actions that need a manager on the tablet.") },
+						{ fieldtype: "Password", fieldname: "pin", label: __("Four-digit tablet PIN"), reqd: 1 },
+						{ fieldtype: "Password", fieldname: "confirm", label: __("Type the PIN again"), reqd: 1 },
+					],
+					primary_action_label: __("Give tablet access"),
+					primary_action: (values) => {
+						const employee = dialog.$wrapper.find("[data-new-staff-person]").val() || "";
+						const outlet = dialog.$wrapper.find("[data-new-staff-outlet]").val() || "";
+						if (!employee) return frappe.msgprint(__("Choose someone."));
+						if (!outlet) return frappe.msgprint(__("Choose an outlet."));
+						frappe.call({
+							method: "kopos_connector.api.staff_desk.add_staff_access",
+							type: "POST",
+							args: {
+								company: choices.company,
+								employee,
+								outlet,
+								access_level: values.level === __("Manager") ? "Manager" : "Staff",
+								pin: values.pin,
+								confirm: values.confirm,
+							},
+							callback: (saveResponse) => {
+								const result = saveResponse.message || {};
+								dialog.hide();
+								frappe.show_alert({
+									message: __("{0} can now sign in", [result.person || __("This person")]),
+									indicator: "green",
+								});
+								this.load();
+							},
+							error: () => frappe.msgprint({
+								title: __("This person was not added"),
+								message: __("Nothing changed. Check the details and try again."),
+							}),
+						});
+					},
+				});
+				dialog.show();
+			},
+			error: () => frappe.msgprint({
+				title: __("JiJi could not load the staff list"),
+				message: __("Nothing changed. Try again."),
+			}),
+		});
+	}
+
+	setStaffActive(person, active) {
+		const save = () => frappe.call({
+			method: "kopos_connector.api.staff_desk.set_staff_active",
+			type: "POST",
+			args: { access: person.access, active: active ? 1 : 0 },
+			callback: () => {
+				frappe.show_alert({
+					message: active ? __("Tablet access restored") : __("Tablet access removed"),
+					indicator: "green",
+				});
+				this.load();
+			},
+			error: () => frappe.msgprint({
+				title: __("Access was not changed"),
+				message: __("Nothing changed. Try again."),
+			}),
+		});
+		if (active) return save();
+		frappe.confirm(
+			__("Remove tablet access for {0}? They will not be able to sign in.", [person.name || __("this person")]),
+			save,
+		);
 	}
 
 	renderPinForm(person) {
@@ -235,5 +343,11 @@ class JiJiStaff {
 			.appendTo(form);
 
 		return card;
+	}
+
+	escape(value) {
+		return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+			"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;",
+		})[character]);
 	}
 }

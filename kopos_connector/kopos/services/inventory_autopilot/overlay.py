@@ -36,6 +36,7 @@ def build_inventory_overlay(
             "generated_at": generated_at_iso,
             "items": [],
             "modifier_options": [],
+            "contextual_modifier_options": [],
         }
     policy = _policy(company, warehouse)
     if not policy:
@@ -45,17 +46,19 @@ def build_inventory_overlay(
             "generated_at": generated_at_iso,
             "items": [],
             "modifier_options": [],
+            "contextual_modifier_options": [],
             "reasons": [{"code": "policy_missing", "label": "Inventory policy is not configured", "source": "policy"}],
         }
     targets: list[dict[str, Any]] = []
     modifier_targets: list[dict[str, Any]] = []
-    hold_fingerprints: list[str] = []
+    contextual_modifier_targets: list[dict[str, Any]] = []
+    hold_fingerprints: set[str] = set()
     for item in items:
         target_id = cstr(item.get("id")).strip()
         if not target_id:
             continue
         holds = active_holds(target_type="Item", target_id=target_id, warehouse=warehouse)
-        hold_fingerprints.extend(
+        hold_fingerprints.update(
             f"{cstr(hold.get('name'))}:{int(bool(hold.get('stale')))}:{cstr(hold.get('last_evaluated_at'))}"
             for hold in holds
         )
@@ -101,53 +104,45 @@ def build_inventory_overlay(
             }
         )
     for option in modifier_options or []:
-        target_id = cstr(option.get("id")).strip()
-        if not target_id:
-            continue
-        holds = active_holds(target_type="Modifier", target_id=target_id, warehouse=warehouse)
-        hold_fingerprints.extend(
-            f"{cstr(hold.get('name'))}:{int(bool(hold.get('stale')))}:{cstr(hold.get('last_evaluated_at'))}"
-            for hold in holds
-        )
-        rule = _availability_rule(target_id, company, warehouse, target_type="Modifier")
-        capacity = target_capacity(
-            target_type="Modifier",
-            target_id=target_id,
+        target, fingerprints = _modifier_overlay_target(
+            option=option,
             company=company,
             warehouse=warehouse,
         )
-        warning, shortfall, capacity_reason = _stock_warning(rule, capacity)
-        availability = choose_availability(
-            commercially_enabled=bool(option.get("is_active", 1)),
-            holds=holds,
-            warning=warning,
-        )
-        modifier_targets.append({
-            "target_id": target_id,
-            "availability": availability,
-            "freshness": "current",
-            "reasons": ([{
-                "code": "inventory_short",
-                "label": "Stock cannot cover one more serving",
-                "source": "stock",
-            }] if shortfall else []) + ([{
-                "code": "inventory_evidence_not_ready",
-                "label": capacity_reason,
-                "source": "stock",
-            }] if capacity_reason and not capacity.reliable and rule != "Off" else []) + ([{
-                "code": "stock_check_overdue",
-                "label": "Stock check overdue; selling remains paused until evidence is refreshed",
-                "source": "automation",
-            }] if any(bool(hold.get("stale")) for hold in holds) else []) + [{
-                "code": cstr(hold.get("reason_code")),
-                "label": cstr(hold.get("reason_label")),
-                "source": cstr(hold.get("source")),
-                "hold_id": cstr(hold.get("name")),
-            } for hold in holds],
-        })
+        if target:
+            modifier_targets.append(target)
+            hold_fingerprints.update(fingerprints)
+
+    options_by_group: dict[str, list[dict[str, Any]]] = {}
+    for option in modifier_options or []:
+        group_id = cstr(option.get("group_id")).strip()
+        if group_id:
+            options_by_group.setdefault(group_id, []).append(option)
+    for item in items:
+        item_id = cstr(item.get("id")).strip()
+        group_ids = item.get("modifier_group_ids")
+        if not item_id or not isinstance(group_ids, list):
+            continue
+        for group_id in group_ids:
+            for option in options_by_group.get(cstr(group_id).strip(), []):
+                target, fingerprints = _modifier_overlay_target(
+                    option=option,
+                    company=company,
+                    warehouse=warehouse,
+                    parent_item_id=item_id,
+                )
+                if target:
+                    contextual_modifier_targets.append({"item_id": item_id, **target})
+                    hold_fingerprints.update(fingerprints)
     hold_set_hash = _hash(sorted(hold_fingerprints))
     policy_hash = _hash({"company": company, "warehouse": warehouse, "policy": policy})
-    version = _hash({"policy_hash": policy_hash, "hold_set_hash": hold_set_hash, "items": targets, "modifier_options": modifier_targets})
+    version = _hash({
+        "policy_hash": policy_hash,
+        "hold_set_hash": hold_set_hash,
+        "items": targets,
+        "modifier_options": modifier_targets,
+        "contextual_modifier_options": contextual_modifier_targets,
+    })
     if known_version and cstr(known_version).strip() == version:
         return {
             "schema_version": "inventory-overlay-v1",
@@ -172,7 +167,71 @@ def build_inventory_overlay(
         "hold_set_hash": hold_set_hash,
         "items": targets,
         "modifier_options": modifier_targets,
+        "contextual_modifier_options": contextual_modifier_targets,
     }
+
+
+def _modifier_overlay_target(
+    *,
+    option: dict[str, Any],
+    company: str,
+    warehouse: str,
+    parent_item_id: str | None = None,
+) -> tuple[dict[str, Any] | None, set[str]]:
+    target_id = cstr(option.get("id")).strip()
+    if not target_id:
+        return None, set()
+    holds = active_holds(target_type="Modifier", target_id=target_id, warehouse=warehouse)
+    fingerprints = {
+        f"{cstr(hold.get('name'))}:{int(bool(hold.get('stale')))}:{cstr(hold.get('last_evaluated_at'))}"
+        for hold in holds
+    }
+    rule = _availability_rule(target_id, company, warehouse, target_type="Modifier")
+    capacity = target_capacity(
+        target_type="Modifier",
+        target_id=target_id,
+        company=company,
+        warehouse=warehouse,
+        parent_item_id=parent_item_id,
+    )
+    warning, shortfall, capacity_reason = _stock_warning(rule, capacity)
+    availability = choose_availability(
+        commercially_enabled=bool(option.get("is_active", 1)),
+        holds=holds,
+        warning=warning,
+    )
+    limiting_item = cstr(getattr(capacity, "limiting_item", None)).strip()
+    limiting_name = cstr(
+        frappe.db.get_value("Item", limiting_item, "item_name") if limiting_item else ""
+    ).strip()
+    return {
+        "target_id": target_id,
+        "availability": availability,
+        "freshness": "current",
+        "limiting_item_name": limiting_name or None,
+        "reasons": ([{
+            "code": "inventory_short",
+            "label": (
+                f"Not enough {limiting_name} for this choice"
+                if limiting_name
+                else "Stock cannot cover one more serving"
+            ),
+            "source": "stock",
+        }] if shortfall else []) + ([{
+            "code": "inventory_evidence_not_ready",
+            "label": capacity_reason,
+            "source": "stock",
+        }] if capacity_reason and not capacity.reliable and rule != "Off" else []) + ([{
+            "code": "stock_check_overdue",
+            "label": "Stock check overdue; selling remains paused until evidence is refreshed",
+            "source": "automation",
+        }] if any(bool(hold.get("stale")) for hold in holds) else []) + [{
+            "code": cstr(hold.get("reason_code")),
+            "label": cstr(hold.get("reason_label")),
+            "source": cstr(hold.get("source")),
+            "hold_id": cstr(hold.get("name")),
+        } for hold in holds],
+    }, fingerprints
 
 
 def device_overlay_is_current(

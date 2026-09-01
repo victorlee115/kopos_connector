@@ -331,22 +331,45 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
         value = {
             "command_id": "receipt-1",
             "payload_hash": "a" * 64,
+            "task_type": "submit_purchase_receipt",
             "device_config_version": 7,
             "company": "JiJi Foods",
             "warehouse": "Outlet - WH",
             "source_document": "PO-1",
             "purchase_order": "PO-1",
         }
+        command_receipt = SimpleNamespace(
+            task_type="submit_purchase_receipt",
+            outcome="",
+            result_doctype="",
+            result_document="",
+        )
+
+        def complete_receipt(receipt, *, result_doctype, result_document, outcome):
+            receipt.outcome = outcome
+            receipt.result_doctype = result_doctype
+            receipt.result_document = result_document
+
         with patch.object(inventory, "require_device_context", return_value=SimpleNamespace()), patch.object(
             inventory, "_parse_guided_task_payload", return_value=value
         ), patch.object(inventory, "_validate_guided_task_actor"), patch.object(
             inventory, "_validate_guided_task_scope"
         ), patch.object(
+            inventory, "_validate_guided_task_actionable_quantities"
+        ), patch.object(
             inventory,
             "lock_device_for_operational_mutation",
             return_value=SimpleNamespace(config_version=7),
         ), patch.object(
+            inventory, "_get_guided_command_receipt", return_value=None
+        ), patch.object(
             inventory, "_find_command_document", return_value=None
+        ), patch.object(
+            inventory, "_create_guided_command_receipt", return_value=command_receipt
+        ), patch.object(
+            inventory, "_guided_result_doctype", return_value="Purchase Receipt"
+        ), patch.object(
+            inventory, "_complete_guided_command_receipt", side_effect=complete_receipt
         ), patch.object(
             inventory, "inventory_automation_identity", return_value=nullcontext("automation@example.com")
         ) as identity, patch.object(
@@ -367,10 +390,146 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
         create_receipt.assert_called_once_with(value, "receipt-1")
         self.assertEqual(result["document"], "MAT-PRE-0001")
 
+    def test_staff_waste_submits_under_the_automation_user_without_review(self) -> None:
+        value = {
+            "command_id": "inventory-waste:WASTE-1",
+            "payload_hash": "c" * 64,
+            "task_type": "record_waste_event",
+            "device_config_version": 7,
+            "company": "JiJi Foods",
+            "warehouse": "Outlet - WH",
+            "source_document": "WASTE-1",
+            "waste_id": "WASTE-1",
+        }
+        command_receipt = SimpleNamespace(
+            task_type="record_waste_event",
+            outcome="",
+            result_doctype="",
+            result_document="",
+        )
+
+        def complete_receipt(receipt, *, result_doctype, result_document, outcome):
+            receipt.outcome = outcome
+            receipt.result_doctype = result_doctype
+            receipt.result_document = result_document
+
+        with patch.object(inventory, "require_device_context", return_value=SimpleNamespace()), patch.object(
+            inventory, "_parse_guided_task_payload", return_value=value
+        ), patch.object(inventory, "_validate_guided_task_actor"), patch.object(
+            inventory, "_validate_guided_task_scope"
+        ), patch.object(
+            inventory, "_validate_guided_task_actionable_quantities"
+        ), patch.object(
+            inventory,
+            "lock_device_for_operational_mutation",
+            return_value=SimpleNamespace(config_version=7),
+        ), patch.object(
+            inventory, "_get_guided_command_receipt", return_value=None
+        ), patch.object(
+            inventory, "_find_command_document", return_value=None
+        ), patch.object(
+            inventory, "_create_guided_command_receipt", return_value=command_receipt
+        ), patch.object(
+            inventory, "_guided_result_doctype", return_value="FB Waste Event"
+        ), patch.object(
+            inventory, "_complete_guided_command_receipt", side_effect=complete_receipt
+        ), patch.object(
+            inventory, "inventory_automation_identity", return_value=nullcontext("automation@example.com")
+        ) as identity, patch.object(
+            inventory, "_record_waste_event", return_value="FB-WASTE-0001"
+        ) as record_waste, patch.object(inventory.frappe.db, "commit"):
+            result = inventory._handle_guided_task(
+                device_id="TAB-A",
+                payload={},
+                task_type="record_waste_event",
+            )
+
+        identity.assert_called_once_with(
+            company="JiJi Foods",
+            warehouse="Outlet - WH",
+            create_doctypes=("Stock Entry",),
+            submit_doctypes=("Stock Entry",),
+        )
+        record_waste.assert_called_once_with(value, "inventory-waste:WASTE-1")
+        self.assertEqual(result["document"], "FB-WASTE-0001")
+        self.assertEqual(result["outcome"], "completed")
+
+    def test_made_product_waste_ignores_client_lines_and_saves_resolved_provenance(self) -> None:
+        class WasteDocument:
+            doctype = "FB Waste Event"
+            name = "FB-WASTE-0002"
+
+            def __init__(self):
+                self.lines = []
+
+            def append(self, fieldname, value):
+                self.assert_field(fieldname)
+                self.lines.append(SimpleNamespace(**value))
+
+            @staticmethod
+            def assert_field(fieldname):
+                if fieldname != "lines":
+                    raise AssertionError(fieldname)
+
+            def insert(self, **_kwargs):
+                return None
+
+        document = WasteDocument()
+        value = {
+            "company": "Moonleaf Café",
+            "warehouse": "Moonleaf Bar - MC",
+            "waste_id": "WASTE-MADE-1",
+            "reason_code": "Prep Error",
+            "payload_hash": "d" * 64,
+            "source_type": "made_item",
+            "source_item": "MATCHA-LATTE",
+            "source_quantity": "2",
+            "selected_modifiers": ["OAT-MILK"],
+            # This must never be accepted as authority for a made product.
+            "lines": [{"item": "EXPENSIVE-OTHER-CAFE-ITEM", "qty": "999"}],
+        }
+        resolved = {
+            "recipe": "MATCHA-RECIPE-V3",
+            "recipe_hash": "e" * 64,
+            "selected_modifiers": ["OAT-MILK"],
+            "lines": [
+                {"item": "MATCHA", "qty_decimal": "8", "uom": "Gram"},
+                {"item": "OAT-MILK", "qty_decimal": "360", "uom": "Millilitre"},
+            ],
+        }
+        with patch.object(
+            inventory, "resolve_made_item_waste", return_value=resolved
+        ), patch.object(
+            inventory.frappe, "new_doc", return_value=document
+        ), patch.object(
+            inventory, "_set_document_value"
+        ), patch.object(
+            inventory, "_apply_guided_task_audit"
+        ), patch.object(
+            inventory, "_submit_waste_document_now", return_value=document.name
+        ):
+            result = inventory._record_waste_event(value, "inventory-waste:WASTE-MADE-1")
+
+        self.assertEqual(result, "FB-WASTE-0002")
+        self.assertEqual([line.item for line in document.lines], ["MATCHA", "OAT-MILK"])
+        self.assertEqual([line.qty_decimal for line in document.lines], ["8", "360"])
+        self.assertEqual(document.source_type, "Made Item")
+        self.assertEqual(document.recipe, "MATCHA-RECIPE-V3")
+        self.assertEqual(document.recipe_canonical_hash, "e" * 64)
+        self.assertEqual(json.loads(document.selected_modifiers_json), ["OAT-MILK"])
+        self.assertEqual(
+            json.loads(document.resolved_lines_json),
+            [
+                {"item": "MATCHA", "qty": "8", "uom": "Gram"},
+                {"item": "OAT-MILK", "qty": "360", "uom": "Millilitre"},
+            ],
+        )
+
     def test_guided_stock_document_refuses_an_unsafe_automation_identity(self) -> None:
         value = {
             "command_id": "transfer-1",
             "payload_hash": "b" * 64,
+            "task_type": "submit_transfer_dispatch",
             "device_config_version": 7,
             "company": "JiJi Foods",
             "warehouse": "Outlet - WH",
@@ -382,11 +541,17 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
         ), patch.object(inventory, "_validate_guided_task_actor"), patch.object(
             inventory, "_validate_guided_task_scope"
         ), patch.object(
+            inventory, "_validate_guided_task_actionable_quantities"
+        ), patch.object(
             inventory,
             "lock_device_for_operational_mutation",
             return_value=SimpleNamespace(config_version=7),
         ), patch.object(
+            inventory, "_get_guided_command_receipt", return_value=None
+        ), patch.object(
             inventory, "_find_command_document", return_value=None
+        ), patch.object(
+            inventory, "_create_guided_command_receipt", return_value=SimpleNamespace()
         ), patch.object(
             inventory,
             "inventory_automation_identity",
@@ -403,6 +568,80 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
                 )
 
         create_transfer.assert_not_called()
+
+    def test_guided_receiving_requires_a_real_amount_or_discrepancy(self) -> None:
+        with self.assertRaisesRegex(frappe.ValidationError, "at least one received"):
+            inventory._validate_guided_task_actionable_quantities(
+                {
+                    "lines": [{
+                        "qty": "0",
+                        "missing_qty": "0",
+                        "damaged_qty": "0",
+                        "excess_qty": "0",
+                    }],
+                },
+                task_type="submit_purchase_receipt",
+            )
+
+        inventory._validate_guided_task_actionable_quantities(
+            {
+                "lines": [{
+                    "qty": "0",
+                    "missing_qty": "1",
+                    "damaged_qty": "0",
+                    "excess_qty": "0",
+                }],
+            },
+            task_type="submit_purchase_receipt",
+        )
+
+    def test_guided_transfer_requires_every_line_to_move_stock(self) -> None:
+        with self.assertRaisesRegex(frappe.ValidationError, "Every transfer amount"):
+            inventory._validate_guided_task_actionable_quantities(
+                {"lines": [{"qty": "2"}, {"qty": "0"}]},
+                task_type="submit_transfer_dispatch",
+            )
+
+    def test_open_delivery_difference_pauses_only_the_exact_outlet_order(self) -> None:
+        with patch.object(inventory.frappe.db, "exists", return_value=True), patch.object(
+            inventory.frappe.db,
+            "get_value",
+            return_value="INV-EX-1",
+        ) as get_value:
+            self.assertTrue(inventory._supplier_receiving_is_paused(
+                company="JiJi Foods",
+                warehouse="Outlet - WH",
+                purchase_order="PO-1",
+            ))
+
+        self.assertEqual(get_value.call_args.args[0], "FB Inventory Exception")
+        self.assertEqual(get_value.call_args.args[1], {
+            "reason_code": "supplier_receiving_discrepancy",
+            "status": "Open",
+            "company": "JiJi Foods",
+            "warehouse": "Outlet - WH",
+            "source_doctype": "Purchase Order",
+            "source_name": "PO-1",
+        })
+
+    def test_guided_command_replay_rejects_reused_identity(self) -> None:
+        value = {
+            "command_id": "receive-1",
+            "payload_hash": "a" * 64,
+            "task_type": "submit_purchase_receipt",
+            "device_id": "TAB-A",
+            "company": "JiJi Foods",
+            "warehouse": "Outlet - WH",
+            "source_document": "PO-1",
+            "source_revision": "2026-08-15T10:00:00+08:00",
+        }
+        receipt = dict(value, state="Completed", outcome="Completed", result_doctype="Purchase Receipt", result_document="PRE-1")
+        receipt["payload_hash"] = "b" * 64
+        with patch.object(inventory.frappe.db, "exists", return_value=True), patch.object(
+            inventory.frappe.db, "get_value", return_value=receipt
+        ):
+            with self.assertRaisesRegex(frappe.ValidationError, "reused with different content"):
+                inventory._get_guided_command_receipt(value)
 
     def test_guided_task_rejects_a_stale_locked_device_configuration(self) -> None:
         value = {

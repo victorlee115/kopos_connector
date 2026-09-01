@@ -24,6 +24,9 @@ from kopos_connector.kopos.services.inventory_autopilot.holds import (
 from kopos_connector.kopos.services.inventory_autopilot.availability_capacity import (
     target_capacity,
 )
+from kopos_connector.kopos.services.inventory_autopilot.tracking_scope import (
+    resolve_tracking_scope,
+)
 
 
 EDGE_SCHEMA_VERSION = "inventory-edge-v1"
@@ -88,8 +91,18 @@ def build_edge_inventory_snapshot(
     current_time = now or now_datetime()
     policy = _policy(resolved_company, resolved_warehouse)
     max_age_minutes = _max_source_age(policy)
+    tracking_scope = resolve_tracking_scope(
+        company=resolved_company,
+        warehouse=resolved_warehouse,
+        catalog_item_ids=catalog_item_ids,
+        at_time=current_time,
+    )
     bin_rows: dict[str, dict[str, Any]] = {}
-    modifier_rows = _load_modifier_rows(normalized_search, result_limit)
+    modifier_rows = _load_modifier_rows(
+        normalized_search,
+        result_limit,
+        allowed_ids=catalog_modifier_ids,
+    )
     modifier_stock_codes = {
         cstr(row.get("new_item") or row.get("target_item")).strip()
         for row in modifier_rows
@@ -98,6 +111,7 @@ def build_edge_inventory_snapshot(
     item_rows, item_truncated = _load_item_rows(
         normalized_search,
         result_limit,
+        tracked_codes=set(tracking_scope.item_codes),
         extra_codes=modifier_stock_codes | set(catalog_item_ids or set()),
     )
     item_codes = {
@@ -176,7 +190,7 @@ def build_edge_inventory_snapshot(
             }
         )
         if not stock_item:
-            if affects_stock:
+            if affects_stock and target["reliability"] != "Reliable":
                 target.update(
                     {
                         "actual_qty": None,
@@ -300,7 +314,10 @@ def attach_bounded_tasks(
         if isinstance(task, Mapping) and cstr(task.get("kind")).strip()
         in {"count", "preparation", "receiving", "transfer_dispatch", "transfer_receipt"}
     ]
-    snapshot["tasks_truncated"] = len(raw_tasks) > max_tasks
+    snapshot["tasks_truncated"] = bool(
+        len(raw_tasks) > max_tasks
+        or (isinstance(task_response, Mapping) and task_response.get("tasks_truncated"))
+    )
     snapshot["tasks_status"] = "ok"
     snapshot.pop("tasks_error_label", None)
     raw_count_task = task_response.get("count_task") if isinstance(task_response, Mapping) else None
@@ -341,6 +358,7 @@ def _safe_task(task: Mapping[str, Any], *, max_lines: int) -> dict[str, Any]:
         "item_code", "item_name", "qty", "produced_qty", "bom_no",
         "preparation_instructions", "blocked_reason", "preparation_alert", "preparation_fingerprint",
         "batch_qty", "min_ready_qty", "trigger_qty", "current_qty", "lead_minutes",
+        "lines_truncated",
     }
     result = {key: _safe_value(task.get(key)) for key in allowed if key in task}
     lines = task.get("lines")
@@ -395,14 +413,14 @@ def _safe_count_task(task: Mapping[str, Any], *, max_lines: int) -> dict[str, An
 
 def _safe_count_task_line(line: Mapping[str, Any]) -> dict[str, Any]:
     allowed = {
-        "item_id", "item_name", "uom", "stock_uom", "purchase_uom", "conversion_factor",
+        "item_id", "item_name", "barcode", "uom", "stock_uom", "purchase_uom", "conversion_factor",
     }
     return {key: _safe_value(line.get(key)) for key in allowed if key in line}
 
 
 def _safe_count_review_line(line: Mapping[str, Any]) -> dict[str, Any]:
     allowed = {
-        "item_id", "item_name", "uom", "counted_quantity", "variance_percent",
+        "item_id", "item_name", "uom", "counted_quantity", "difference_quantity", "variance_percent",
         "stock_uom", "purchase_uom", "conversion_factor", "full_packs",
         "loose_quantity", "total_quantity",
     }
@@ -411,7 +429,7 @@ def _safe_count_review_line(line: Mapping[str, Any]) -> dict[str, Any]:
 
 def _safe_task_line(line: Mapping[str, Any]) -> dict[str, Any]:
     allowed = {
-        "item_id", "item_code", "item_name", "qty", "remaining_qty", "requested_qty", "dispatched_qty", "received_qty",
+        "item_id", "item_code", "item_name", "barcode", "qty", "remaining_qty", "requested_qty", "dispatched_qty", "received_qty",
         "stock_qty", "stock_dispatched_qty", "stock_received_qty",
         "uom", "warehouse", "source_warehouse", "destination_warehouse", "transit_warehouse",
         "stock_uom", "purchase_uom", "conversion_factor", "purchase_order_item", "material_request_item",
@@ -433,11 +451,12 @@ def _load_item_rows(
     search: str,
     limit: int,
     *,
+    tracked_codes: set[str],
     extra_codes: set[str],
 ) -> tuple[list[dict[str, Any]], bool]:
     if not frappe.db.exists("DocType", "Item"):
         return [], False
-    filters: dict[str, Any] = {"is_stock_item": 1, "disabled": 0}
+    filters: dict[str, Any] = {"name": ["in", sorted(tracked_codes)]}
     or_filters = None
     if search:
         pattern = f"%{search.replace('%', '').replace('_', '')}%"
@@ -450,7 +469,7 @@ def _load_item_rows(
     }
     if or_filters:
         query_kwargs["or_filters"] = or_filters
-    rows = frappe.get_all("Item", **query_kwargs)
+    rows = frappe.get_all("Item", **query_kwargs) if tracked_codes else []
     normalized = [dict(row) for row in rows if cstr(row.get("name")).strip()]
     selected_codes = {
         cstr(row.get("name")).strip()
@@ -495,8 +514,15 @@ def _load_bin_rows(warehouse: str, *, item_codes: set[str] | None = None) -> dic
     }
 
 
-def _load_modifier_rows(search: str, limit: int) -> list[dict[str, Any]]:
+def _load_modifier_rows(
+    search: str,
+    limit: int,
+    *,
+    allowed_ids: set[str] | None,
+) -> list[dict[str, Any]]:
     if not frappe.db.exists("DocType", "FB Modifier") or not frappe.db.exists("DocType", "FB Modifier Group"):
+        return []
+    if allowed_ids is not None and not allowed_ids:
         return []
     groups = frappe.get_all(
         "FB Modifier Group",
@@ -507,9 +533,15 @@ def _load_modifier_rows(search: str, limit: int) -> list[dict[str, Any]]:
     group_ids = [cstr(row.get("name")).strip() for row in groups if cstr(row.get("name")).strip()]
     if not group_ids:
         return []
+    modifier_filters: dict[str, Any] = {
+        "active": 1,
+        "modifier_group": ["in", group_ids],
+    }
+    if allowed_ids is not None:
+        modifier_filters["name"] = ["in", sorted(allowed_ids)]
     rows = frappe.get_all(
         "FB Modifier",
-        filters={"active": 1, "modifier_group": ["in", group_ids]},
+        filters=modifier_filters,
         fields=["name", "modifier_group", "modifier_name", "target_item", "new_item", "affects_stock", "active"],
         order_by="modifier_group asc, modifier_name asc, name asc",
         limit_page_length=MAX_ITEM_LIMIT * 5,

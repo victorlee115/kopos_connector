@@ -145,6 +145,60 @@ def _legacy_decimal_payload() -> dict[str, Any]:
     return payload
 
 
+def _complimentary_payload() -> dict[str, Any]:
+    payload = _sen_payload()
+    order = payload["order"]
+    order.update(
+        {
+            "completion_kind": "complimentary",
+            "complimentary_reason": "Guest recovery",
+            "complimentary_approved_by": "manager@example.test",
+            "complimentary_value_sen": 4250,
+            "subtotal_sen": 0,
+            "tax_amount_sen": 0,
+            "rounding_adjustment_sen": 0,
+            "total_sen": 0,
+            "payments": [],
+        }
+    )
+    order["items"][0].update(
+        {"discount_amount_sen": 3400, "line_total_sen": 0}
+    )
+    order["items"][1].update(
+        {"discount_amount_sen": 850, "line_total_sen": 0}
+    )
+    return payload
+
+
+def _zero_price_payload() -> dict[str, Any]:
+    payload = _sen_payload()
+    order = payload["order"]
+    order.update(
+        {
+            "completion_kind": "paid",
+            "subtotal_sen": 0,
+            "tax_amount_sen": 0,
+            "rounding_adjustment_sen": 0,
+            "total_sen": 0,
+            "payments": [],
+        }
+    )
+    order["items"] = [
+        {
+            "line_id": "LINE-ZERO",
+            "item_code": "WATER",
+            "item_name": "Water",
+            "qty": 1,
+            "unit_price_sen": 0,
+            "modifier_total_sen": 0,
+            "discount_amount_sen": 0,
+            "line_total_sen": 0,
+            "modifiers": [],
+        }
+    ]
+    return payload
+
+
 @pytest.fixture(autouse=True)
 def _fixed_now(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
@@ -180,6 +234,109 @@ def test_live_sen_contract_accepts_catalog_discount_modifier_adjustments() -> No
 
     assert normalized["items"][0]["modifier_total_sen"] == -200
     assert normalized["items"][0]["line_total_sen"] == 2500
+
+
+def test_complimentary_order_keeps_menu_value_without_a_payment() -> None:
+    normalized = fb_orders._normalize_submit_order_payload(
+        _complimentary_payload()
+    )
+
+    assert normalized["completion_kind"] == "complimentary"
+    assert normalized["complimentary_value_sen"] == 4250
+    assert normalized["complimentary_reason"] == "Guest recovery"
+    assert normalized["complimentary_approved_by"] == "manager@example.test"
+    assert normalized["grand_total_sen"] == 0
+    assert normalized["payments"] == []
+
+
+def test_catalogue_priced_rm0_order_needs_no_payment_or_approval() -> None:
+    normalized = fb_orders._normalize_submit_order_payload(_zero_price_payload())
+
+    assert normalized["completion_kind"] == "paid"
+    assert normalized["grand_total_sen"] == 0
+    assert normalized["payments"] == []
+    assert normalized["complimentary_approved_by"] is None
+
+
+def test_priced_item_discounted_to_rm0_needs_no_second_checkout_approval() -> None:
+    payload = _zero_price_payload()
+    payload["order"]["items"][0].update(
+        {
+            "unit_price_sen": 500,
+            "discount_amount_sen": 500,
+        }
+    )
+
+    normalized = fb_orders._normalize_submit_order_payload(payload)
+
+    assert normalized["completion_kind"] == "paid"
+    assert normalized["grand_total_sen"] == 0
+    assert normalized["items"][0]["discount_amount_sen"] == 500
+    assert normalized["payments"] == []
+
+
+def test_rm0_paid_order_rejects_inexact_discount_arithmetic() -> None:
+    payload = _zero_price_payload()
+    payload["order"]["items"][0].update(
+        {
+            "unit_price_sen": 500,
+            "discount_amount_sen": 499,
+        }
+    )
+
+    with pytest.raises(fb_orders.frappe.ValidationError, match="line_total_sen"):
+        fb_orders._normalize_submit_order_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda payload: payload["order"]["payments"].append(
+                {"payment_method": "Cash", "amount_sen": 1}
+            ),
+            "cannot contain payments",
+        ),
+        (
+            lambda payload: payload["order"].__setitem__(
+                "complimentary_value_sen", 4249
+            ),
+            "must equal the priced item total",
+        ),
+        (
+            lambda payload: payload["order"]["items"][0].__setitem__(
+                "discount_amount_sen", 3399
+            ),
+            "does not match",
+        ),
+        (
+            lambda payload: payload["order"].__setitem__(
+                "complimentary_reason", ""
+            ),
+            "require a reason",
+        ),
+    ],
+)
+def test_complimentary_order_rejects_inexact_or_unapproved_evidence(
+    mutate: Any,
+    message: str,
+) -> None:
+    payload = _complimentary_payload()
+    mutate(payload)
+
+    with pytest.raises(fb_orders.frappe.ValidationError, match=message):
+        fb_orders._normalize_submit_order_payload(payload)
+
+
+def test_paid_order_rejects_complimentary_fields() -> None:
+    payload = _sen_payload()
+    payload["order"]["complimentary_reason"] = "Should not be here"
+
+    with pytest.raises(
+        fb_orders.frappe.ValidationError,
+        match="Paid orders cannot contain complimentary approval details",
+    ):
+        fb_orders._normalize_submit_order_payload(payload)
 
 
 def test_invalid_modifier_decoration_preserves_sale_and_records_redacted_warning() -> None:
@@ -284,6 +441,42 @@ def test_new_order_converts_integer_sen_to_decimal_only_after_reference_checks(
     assert validated["grand_total"] == Decimal("44.82")
     assert validated["items"][0]["line_total"] == Decimal("33")
     assert validated["payments"][1]["amount"] == Decimal("24.82")
+
+
+def test_complimentary_approver_must_be_a_manager_on_this_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kopos_connector.api import devices
+    from kopos_connector.kopos.services.inventory_autopilot import staff_access
+
+    device = SimpleNamespace(name="KOPOS-DEVICE-1")
+    profile = SimpleNamespace(name="POS Profile")
+    monkeypatch.setattr(fb_orders, "_require_doc", lambda *args: None)
+    monkeypatch.setattr(devices, "get_device_doc", lambda **kwargs: device)
+    monkeypatch.setattr(
+        devices,
+        "get_device_pos_profile_doc",
+        lambda **kwargs: profile,
+    )
+    monkeypatch.setattr(
+        staff_access,
+        "find_staff_access_for_device",
+        lambda *args, **kwargs: {
+            "user": "staff@example.test",
+            "access_level": "Staff",
+        },
+    )
+
+    with pytest.raises(
+        fb_orders.frappe.PermissionError,
+        match="requires a manager assigned to this outlet",
+    ):
+        fb_orders._validate_complimentary_approver(
+            {
+                "device_id": "DEVICE-1",
+                "complimentary_approved_by": "staff@example.test",
+            }
+        )
 
 
 def test_accepted_timeout_duplicate_reconciles_before_closed_shift_validation(

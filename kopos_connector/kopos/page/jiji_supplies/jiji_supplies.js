@@ -21,13 +21,21 @@ class JiJiSupplies {
 	constructor(wrapper) {
 		this.page = frappe.ui.make_app_page({
 			parent: wrapper,
-			title: __("JiJi Supplies"),
+			title: __("Supplies"),
 			single_column: true,
 		});
-		this.page.set_primary_action(__("Refresh"), () => this.load(), "refresh");
+		this.page.set_primary_action(__("Refresh"), () => this.loadChoices(), "refresh");
 		this.body = jiji.desk.page(this.page);
+		this.outletBar = $("<div>").addClass("jiji-supplies__outletbar row").appendTo(this.body);
+		this.outletBar.append(`<div class="col-sm-6"><label class="control-label" for="jiji-supplies-cafe">${__("Café")}</label><select class="form-control" id="jiji-supplies-cafe"><option value="">${__("Choose a café")}</option></select></div>`);
+		this.outletBar.append(`<div class="col-sm-6"><label class="control-label" for="jiji-supplies-outlet">${__("Outlet")}</label><select class="form-control" id="jiji-supplies-outlet"><option value="">${__("Choose an outlet")}</option></select></div>`);
+		this.cafeInput = this.outletBar.find("#jiji-supplies-cafe");
+		this.outletInput = this.outletBar.find("#jiji-supplies-outlet");
+		this.cafeInput.on("change", () => this.loadChoices());
+		this.outletInput.on("change", () => this.load());
+		this.content = $("<div>").appendTo(this.body);
 		this.injectStyle();
-		this.load();
+		this.loadChoices();
 	}
 
 	injectStyle() {
@@ -48,17 +56,55 @@ class JiJiSupplies {
 .jiji-supplies__date { color: var(--jiji-ink-3); font-size: 12px; width: 74px; flex: 0 0 auto; }
 .jiji-supplies__why + .jiji-supplies__actions { margin-top: 0; }
 .jiji-supplies__history-total { font-weight: 600; font-variant-numeric: tabular-nums; min-width: 100px; text-align: right; }
+	.jiji-supplies__outletbar { max-width: 760px; margin-bottom: 16px; }
 `;
 		document.head.appendChild(style);
 	}
 
+	setSelectOptions(select, rows, prompt, selected) {
+		select.empty().append($("<option>").val("").text(prompt));
+		(rows || []).forEach((row) => select.append($("<option>").val(row.value || "").text(row.label || row.value || "")));
+		select.val(selected || "");
+	}
+
+	loadChoices() {
+		const requestedCafe = String(this.cafeInput.val() || "");
+		frappe.call({
+			method: "kopos_connector.api.supplier_orders.get_supplier_page_choices",
+			type: "GET",
+			args: requestedCafe ? { company: requestedCafe } : {},
+			callback: (response) => {
+				const choices = response.message || {};
+				const selectedCafe = requestedCafe || choices.selected_cafe || "";
+				const currentOutlet = String(this.outletInput.val() || "");
+				this.setSelectOptions(this.cafeInput, choices.cafes, __("Choose a café"), selectedCafe);
+				const outlet = (choices.outlets || []).some((row) => row.value === currentOutlet)
+					? currentOutlet
+					: choices.selected_outlet || "";
+				this.setSelectOptions(this.outletInput, choices.outlets, __("Choose an outlet"), outlet);
+				this.load();
+			},
+			error: () => this.content.empty().append(jiji.desk.notice(__("JiJi could not load your outlets"), __("Nothing changed. Refresh and try again."))),
+		});
+	}
+
 	load() {
+		const company = String(this.cafeInput.val() || "");
+		const warehouse = String(this.outletInput.val() || "");
+		if (!company || !warehouse) {
+			this.content.empty().append(jiji.desk.notice(__("Choose a café and outlet"), __("Supplier orders are shown one outlet at a time.")));
+			return;
+		}
 		frappe.call({
 			method: "kopos_connector.api.supplier_orders.get_supplier_orders",
 			type: "GET",
-			callback: (response) => this.render(response.message || {}),
+			args: { company, warehouse },
+			callback: (response) => {
+				const data = response.message || {};
+				this.render(data);
+			},
 			error: () =>
-				this.body.empty().append(
+				this.content.empty().append(
 					jiji.desk.notice(
 						__("JiJi could not read your supplier orders just now"),
 						__("Nothing has been ordered or changed. Try Refresh in a moment."),
@@ -68,18 +114,27 @@ class JiJiSupplies {
 	}
 
 	render(data) {
-		this.body.empty();
-		if (data.status === "no_company") {
-			this.body.append(
+		this.content.empty();
+		if (data.status === "permission_denied") {
+			this.content.append(
 				jiji.desk.notice(
-					__("Choose a company to see its supplier orders"),
-					__("Set your default company, then open JiJi Supplies again."),
+					__("You do not have access to supplier orders"),
+						__("Ask a director to check your café and outlet access."),
+				),
+			);
+			return;
+		}
+		if (data.status === "selection_required") {
+			this.content.append(
+				jiji.desk.notice(
+					__("Choose an outlet"),
+					__("Supplier orders and deliveries are shown one outlet at a time."),
 				),
 			);
 			return;
 		}
 		if (data.status !== "ok") {
-			this.body.append(
+			this.content.append(
 				jiji.desk.notice(
 					__("JiJi could not read your supplier orders just now"),
 					__("Nothing has been ordered or changed. Try Refresh in a moment."),
@@ -96,7 +151,7 @@ class JiJiSupplies {
 		);
 
 		if (!data.draft_count) {
-			this.body.append(
+			this.content.append(
 				jiji.desk.notice(
 					__("Nothing is waiting to be ordered"),
 					__("JiJi writes one when something will run out before a delivery could arrive."),
@@ -106,29 +161,28 @@ class JiJiSupplies {
 
 		if ((data.detailed || []).length) {
 			// Every other page names its first block. This one began mid-air.
-			this.body.append(jiji.desk.label(__("Waiting for you to send")));
+			this.content.append(jiji.desk.label(__("Waiting for your approval")));
 		}
 		(data.detailed || []).forEach((draft) => {
-			this.body.append(this.renderDraft(draft));
+			this.content.append(this.renderDraft(draft));
 			// The supplier's record is its own block. Folded into the decision
 			// card it read as a footnote to the order rather than as the
 			// evidence the decision is weighed against.
-			if ((draft.history || []).length) this.body.append(this.renderHistory(draft));
+			if ((draft.history || []).length) this.content.append(this.renderHistory(draft));
 		});
 
 		if ((data.other_drafts || []).length) {
-			const block = $("<div>").append(jiji.desk.label(__("Also waiting")));
-			const list = $("<div>").addClass("jiji-rows").appendTo(block);
-			data.other_drafts.forEach((draft) => {
-				jiji.desk
-					.routeLink(draft.route)
-					.addClass("jiji-row")
-					.append($("<span>").addClass("jiji-row__main").text(draft.supplier || ""))
-					.append($("<span>").addClass("jiji-num").text(draft.total || ""))
-					.append($("<span>").text("›"))
-					.appendTo(list);
-			});
-			this.body.append(block);
+				const block = $("<div>").append(jiji.desk.label(__("Also waiting")));
+				const list = $("<div>").addClass("jiji-rows").appendTo(block);
+				data.other_drafts.forEach((draft) => {
+					$("<div>")
+						.addClass("jiji-row")
+						.append($("<span>").addClass("jiji-row__main").text(draft.supplier || ""))
+						.append($("<span>").addClass("jiji-num").text(draft.total || ""))
+						.appendTo(list);
+				});
+				block.append($("<p>").addClass("jiji-muted mt-2").text(__("Finish the first order to check the next one.")));
+			this.content.append(block);
 		}
 
 		if ((data.on_the_way || []).length) {
@@ -136,24 +190,18 @@ class JiJiSupplies {
 			const head = $("<div>").addClass("jiji-head").appendTo(block);
 			head.append(jiji.desk.label(__("Already on the way")));
 			head.append($("<span>").addClass("jiji-muted").text(__("Sent, so there is nothing to decide here")));
-			const list = $("<div>").addClass("jiji-rows").appendTo(block);
-			data.on_the_way.forEach((order) => {
-				jiji.desk
-					.routeLink(order.route)
-					.addClass("jiji-row")
+				const list = $("<div>").addClass("jiji-rows").appendTo(block);
+				data.on_the_way.forEach((order) => {
+					$("<div>")
+						.addClass("jiji-row")
 					.append($("<span>").addClass("jiji-row__main").text(order.supplier || ""))
 					.append($("<span>").addClass("jiji-row__note").text(order.when || ""))
 					.append($("<span>").addClass("jiji-num jiji-supplies__history-total").text(order.total || ""))
 					.appendTo(list);
 			});
-			this.body.append(block);
+			this.content.append(block);
 		}
 
-		this.body.append(
-			jiji.desk
-				.routeLink(data.orders_route, __("More detail · the order itself, where you send it from"))
-				.addClass("jiji-advanced"),
-		);
 	}
 
 	renderHistory(draft) {
@@ -173,7 +221,7 @@ class JiJiSupplies {
 		);
 		const list = $("<div>").css("margin-top", "8px").appendTo(card);
 		draft.history.forEach((entry) => {
-			const row = jiji.desk.routeLink(entry.route).addClass("jiji-kv").appendTo(list);
+			const row = $("<div>").addClass("jiji-kv").appendTo(list);
 			row.append($("<span>").addClass("jiji-supplies__date").text(entry.when || ""));
 			row.append($("<span>").addClass("jiji-kv__main"));
 			row.append(jiji.desk.pill(entry.arrival || "", entry.on_time ? "ok" : ""));
@@ -192,8 +240,7 @@ class JiJiSupplies {
 
 		const lines = $("<div>").addClass("jiji-rows").appendTo(card);
 		(draft.lines || []).forEach((line) => {
-			jiji.desk
-				.routeLink(line.route)
+			$("<div>")
 				.addClass("jiji-row")
 				.append($("<span>").addClass("jiji-row__main").text(line.item || ""))
 				.append($("<span>").addClass("jiji-supplies__amount").text(line.amount || ""))
@@ -208,13 +255,50 @@ class JiJiSupplies {
 		}
 
 		const actions = $("<div>").addClass("jiji-supplies__actions").appendTo(card);
-		// One button, and it says where it goes. Sending stays in ERPNext.
-		jiji.desk.routeLink(draft.route, __("Open this order")).addClass("btn btn-primary").appendTo(actions);
-		actions.append($("<span>").addClass("jiji-muted").text(__("JiJi never sends an order. You send it.")));
+		$("<button type=\"button\">")
+			.addClass("btn btn-primary")
+			.text(__("Approve order"))
+			.on("click", () => this.approveOrder(draft))
+			.appendTo(actions);
+		actions.append($("<span>").addClass("jiji-muted").text(__("Approval marks it as ordered. Send it to the supplier outside JiJi.")));
 		if (draft.arrives) {
 			actions.append($("<span>").addClass("jiji-supplies__when").text(__("Arrives {0}", [draft.arrives])));
 		}
 
 		return card;
+	}
+
+	approveOrder(draft) {
+		const outlet = String(this.outletInput.val() || "");
+		if (!draft.order || !draft.revision || !outlet) {
+			frappe.msgprint({ title: __("Refresh this order"), message: __("The order may have changed. Refresh and check it again.") });
+			return;
+		}
+		const dialog = new frappe.ui.Dialog({
+			title: __("Approve this order?"),
+			fields: [{
+				fieldtype: "HTML",
+				fieldname: "explanation",
+				options: `<p>${__("This records the order here. JiJi will not send anything to the supplier. Send it yourself.")}</p>`,
+			}],
+			primary_action_label: __("Approve order"),
+			primary_action: () => {
+				dialog.hide();
+				frappe.call({
+				method: "kopos_connector.api.supplier_orders.approve_supplier_order",
+				type: "POST",
+				args: { order: draft.order, outlet, expected_modified: draft.revision },
+				callback: (response) => {
+					const result = response.message || {};
+					frappe.show_alert({ message: result.message || __("Order approved"), indicator: "green" });
+					this.load();
+				},
+				error: () => frappe.msgprint({ title: __("Order not approved"), message: __("Nothing was sent. Refresh and try again.") }),
+				});
+			},
+			secondary_action_label: __("Not now"),
+			secondary_action: () => dialog.hide(),
+		});
+		dialog.show();
 	}
 }

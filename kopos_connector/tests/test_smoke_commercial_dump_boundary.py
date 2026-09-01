@@ -209,6 +209,74 @@ def test_commercial_modifier_dump_uses_immutable_snapshot_without_resolved_sale(
     assert rows[0]["selected_modifiers"] == snapshot
 
 
+def test_zero_price_accounting_proof_accepts_an_exact_full_discount() -> None:
+    smoke = _smoke_module()
+    case = {
+        "matching_order_count": 1,
+        "order": {
+            "completion_kind": "paid",
+            "complimentary_value": "0.00",
+            "net_total": "0.00",
+            "tax_total": "0.00",
+            "rounding_adjustment": "0.00",
+            "grand_total": "0.00",
+            "payments": [],
+            "promotion_evidence": {"applied_promotions": []},
+            "items": [{
+                "line_id": "LINE-ZERO",
+                "qty": "1",
+                "unit_price": "0.00",
+                "modifier_total": "0.00",
+                "discount_amount": "0.00",
+                "line_total": "0.00",
+                "promotion_allocations": [],
+            }],
+        },
+        "invoice": {
+            "docstatus": 1,
+            "is_return": False,
+            "net_total": "0.00",
+            "total_taxes_and_charges": "0.00",
+            "rounding_adjustment": "0.00",
+            "grand_total": "0.00",
+            "paid_amount": "0.00",
+            "change_amount": "0.00",
+            "outstanding_amount": "0.00",
+            "write_off_amount": "0.00",
+            "payments": [],
+            "gl_entries": [],
+            "items": [{
+                "order_line_ref": "LINE-ZERO",
+                "price_list_rate": "0.00",
+                "rate": "0.00",
+                "discount_percentage": "0.00",
+                "discount_amount": "0.00",
+                "is_free_item": True,
+                "amount": "0.00",
+                "net_amount": "0.00",
+                "promotion_allocations": [],
+            }],
+        },
+    }
+
+    assert smoke._zero_price_accounting_matches(case)
+
+    case["order"]["items"][0]["unit_price"] = "5.00"
+    case["order"]["items"][0]["discount_amount"] = "5.00"
+    case["invoice"]["items"][0].update(
+        {
+            "price_list_rate": "5.00",
+            "discount_percentage": "100.00",
+            "discount_amount": "5.00",
+            "is_free_item": False,
+        }
+    )
+    assert smoke._zero_price_accounting_matches(case)
+
+    case["order"]["items"][0]["discount_amount"] = "4.99"
+    assert not smoke._zero_price_accounting_matches(case)
+
+
 def test_commercial_return_dump_never_reads_stock_or_resolved_sale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -314,9 +382,11 @@ def test_default_smoke_base_never_calls_optional_recipe_or_inventory_helpers(
     monkeypatch.setattr(smoke, "_ensure_expense_account", lambda company: "Expense - KMY")
     monkeypatch.setattr(smoke, "_ensure_mode_of_payment", lambda *args: None)
     monkeypatch.setattr(smoke, "_ensure_pos_profile", lambda **kwargs: "Smoke POS")
+    monkeypatch.setattr(smoke, "_get_demo_currency", lambda company: "MYR")
     monkeypatch.setattr(
         smoke, "_ensure_commercial_smoke_item", lambda: smoke.DEMO_DRINK_ITEM
     )
+    monkeypatch.setattr(smoke, "_ensure_smoke_item_price", lambda *args: "Item Price")
     monkeypatch.setattr(smoke, "_ensure_fb_modifier_group", forbidden)
     monkeypatch.setattr(smoke, "_ensure_item", forbidden)
     monkeypatch.setattr(smoke, "_ensure_demo_recipe", forbidden)
@@ -372,8 +442,9 @@ def test_default_full_smoke_seed_does_not_post_ingredient_stock(
         lambda **kwargs: {"token": "token"},
     )
     monkeypatch.setattr(smoke, "set_demo_ingredient_quantities", forbidden)
+    monkeypatch.setattr(smoke, "_ensure_demo_promotion_economics", forbidden)
     monkeypatch.setattr(smoke, "_ensure_demo_promotion", lambda profile: "PROMO")
-    monkeypatch.setattr(smoke, "_ensure_promotion_snapshot", lambda profile: {})
+    monkeypatch.setattr(smoke, "_ensure_promotion_snapshot", forbidden)
     monkeypatch.setattr(smoke, "_get_demo_currency", lambda company: "MYR")
     time_zone_writes: list[tuple[str, str, str]] = []
     monkeypatch.setattr(
@@ -391,6 +462,7 @@ def test_default_full_smoke_seed_does_not_post_ingredient_stock(
 
     assert result["recipe"] is None
     assert result["inventory_evaluation"] == "excluded_not_evaluated"
+    assert result["promotion_snapshot"] == {}
     assert result["time_zone"] == "Asia/Kuala_Lumpur"
     assert time_zone_writes == [
         ("System Settings", "time_zone", "Asia/Kuala_Lumpur")

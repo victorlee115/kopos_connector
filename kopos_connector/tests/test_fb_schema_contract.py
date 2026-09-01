@@ -562,7 +562,52 @@ class TestFBSchemaContract(unittest.TestCase):
                 "lines",
             }.issubset(names)
         )
+        self.assertTrue({"reviewed_by", "reviewed_at", "review_reason"}.isdisjoint(names))
         self.assertEqual(doc.get("is_submittable"), 1)
+        payload_hash = next(
+            field for field in doc["fields"] if field.get("fieldname") == "payload_hash"
+        )
+        self.assertEqual(payload_hash.get("hidden"), 1)
+        self.assertEqual(payload_hash.get("read_only"), 1)
+        self.assertNotEqual(payload_hash.get("reqd"), 1)
+        status = next(field for field in doc["fields"] if field.get("fieldname") == "status")
+        self.assertNotIn("Rejected", status["options"])
+        self.assertEqual(
+            {permission.get("role") for permission in doc["permissions"]},
+            {"System Manager"},
+        )
+        system_manager = doc["permissions"][0]
+        self.assertEqual(system_manager.get("read"), 1)
+        self.assertEqual(system_manager.get("submit"), 1)
+
+    @pytest.mark.inventory_regression
+    def test_inventory_command_receipt_is_immutable_replay_evidence(self):
+        doc = load_doctype("fb_inventory_command_receipt")
+        fields = {field["fieldname"]: field for field in doc["fields"]}
+        self.assertTrue(
+            {
+                "command_id",
+                "payload_hash",
+                "task_type",
+                "state",
+                "outcome",
+                "device_id",
+                "company",
+                "warehouse",
+                "source_document",
+                "source_revision",
+                "result_doctype",
+                "result_document",
+                "completed_at",
+            }.issubset(fields)
+        )
+        self.assertEqual(fields["command_id"].get("unique"), 1)
+        self.assertEqual(fields["command_id"].get("length"), 160)
+        self.assertEqual(fields["result_document"].get("fieldtype"), "Dynamic Link")
+        self.assertEqual(fields["result_document"].get("options"), "result_doctype")
+        self.assertTrue(all(field.get("read_only") for field in fields.values()))
+        self.assertTrue(all(not permission.get("delete") for permission in doc["permissions"]))
+        self.assertEqual([permission.get("role") for permission in doc["permissions"]], ["System Manager"])
 
     @pytest.mark.inventory_regression
     def test_fb_refill_schema(self):

@@ -305,6 +305,9 @@ def build_guided_recipe_preview(
                 "component_type": component_type,
                 "entered_qty": _guided_decimal_text(entered_qty),
                 "entered_uom": entered_uom,
+                "entered_qty_per_serving": _guided_decimal_text(
+                    entered_qty * output_ratio
+                ),
                 "stock_qty_per_batch": _guided_decimal_text(batch_qty),
                 "stock_qty_per_serving": _guided_decimal_text(serving_qty),
                 "stock_uom": stock_uom,

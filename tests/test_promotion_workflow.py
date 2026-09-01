@@ -189,6 +189,9 @@ class PromotionWorkflowTests(unittest.TestCase):
                 return_value="KoPOS Main",
             ),
             patch(
+                "kopos_connector.api.promotions._require_director_profile_scope",
+            ),
+            patch(
                 "kopos_connector.api.promotions.get_latest_published_snapshot",
                 return_value=latest,
             ),
@@ -229,6 +232,9 @@ class PromotionWorkflowTests(unittest.TestCase):
             patch(
                 "kopos_connector.api.promotions.resolve_snapshot_pos_profile",
                 return_value="KoPOS Main",
+            ),
+            patch(
+                "kopos_connector.api.promotions._require_director_profile_scope",
             ),
             patch(
                 "kopos_connector.api.promotions.build_snapshot_payload_for_persistence",
@@ -284,6 +290,9 @@ class PromotionWorkflowTests(unittest.TestCase):
                 return_value="KoPOS Main",
             ),
             patch(
+                "kopos_connector.api.promotions._require_director_profile_scope",
+            ),
+            patch(
                 "kopos_connector.api.promotions.build_snapshot_payload_for_persistence",
                 return_value=payload,
             ) as build_payload,
@@ -333,6 +342,9 @@ class PromotionWorkflowTests(unittest.TestCase):
             patch(
                 "kopos_connector.api.promotions.resolve_snapshot_pos_profile",
                 return_value="KoPOS Main",
+            ),
+            patch(
+                "kopos_connector.api.promotions._require_director_profile_scope",
             ),
             patch(
                 "kopos_connector.api.promotions.build_snapshot_payload_for_persistence",

@@ -788,6 +788,53 @@ def test_get_items_bulk_loads_commercial_data_without_inventory_queries(
     assert items[1]["stock_warning"] is None
 
 
+def test_pos_price_list_excludes_another_cafes_unpriced_item(
+    catalog_module, monkeypatch
+):
+    rows = [
+        {
+            "id": "MOONLEAF-RM0",
+            "item_code": "MOONLEAF-RM0",
+            "name": "Complimentary water",
+            "category_id": "DRINKS",
+            "price": 8,
+            "disabled": 0,
+        },
+        {
+            "id": "OTHER-CAFE-LATTE",
+            "item_code": "OTHER-CAFE-LATTE",
+            "name": "Another café latte",
+            "category_id": "DRINKS",
+            "price": 12,
+            "disabled": 0,
+        },
+    ]
+    barcode_requests: list[list[str]] = []
+    monkeypatch.setattr(catalog_module, "get_allowed_item_groups", lambda _profile: None)
+    monkeypatch.setattr(
+        catalog_module, "get_saleable_item_rows", lambda **_kwargs: rows
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_item_prices_map",
+        lambda **_kwargs: {"MOONLEAF-RM0": 0},
+    )
+    monkeypatch.setattr(
+        catalog_module,
+        "get_item_barcodes_map",
+        lambda item_codes: barcode_requests.append(item_codes) or {},
+    )
+
+    items = catalog_module.get_items(
+        selling_price_list="Moonleaf Menu",
+        pos_profile={"company": "Moonleaf"},
+    )
+
+    assert [item["id"] for item in items] == ["MOONLEAF-RM0"]
+    assert items[0]["price_sen"] == 0
+    assert barcode_requests == [["MOONLEAF-RM0"]]
+
+
 def test_saleable_item_query_tolerates_all_optional_custom_columns_absent(
     catalog_module, monkeypatch
 ):

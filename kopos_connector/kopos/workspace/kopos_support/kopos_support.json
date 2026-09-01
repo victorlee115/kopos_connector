@@ -36,9 +36,7 @@
  "quick_lists": [],
  "restrict_to_domain": "",
  "roles": [
-  {"role": "System Manager"},
-  {"role": "KoPOS Manager"},
-  {"role": "POS Manager"}
+  {"role": "System Manager"}
  ],
  "sequence_id": 30,
  "shortcuts": [

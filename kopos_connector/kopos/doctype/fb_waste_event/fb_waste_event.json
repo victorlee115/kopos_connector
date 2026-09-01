@@ -10,6 +10,15 @@
     "engine": "InnoDB",
     "field_order": [
         "waste_id",
+        "payload_hash",
+        "source_type",
+        "source_item",
+        "source_quantity_decimal",
+        "selected_modifiers_json",
+        "recipe",
+        "recipe_canonical_hash",
+        "resolved_lines_json",
+        "company",
         "warehouse",
         "event_project",
         "shift",
@@ -27,6 +36,70 @@
             "label": "Waste ID",
             "reqd": 1,
             "unique": 1
+        },
+        {
+            "fieldname": "payload_hash",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Command Payload Hash",
+            "no_copy": 1,
+            "read_only": 1
+        },
+        {
+            "default": "Physical Item",
+            "fieldname": "source_type",
+            "fieldtype": "Select",
+            "label": "Waste Source",
+            "options": "Physical Item\nMade Item",
+            "read_only": 1,
+            "reqd": 1
+        },
+        {
+            "fieldname": "source_item",
+            "fieldtype": "Link",
+            "label": "Made Product",
+            "options": "Item",
+            "read_only": 1
+        },
+        {
+            "fieldname": "source_quantity_decimal",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Exact Made Quantity",
+            "no_copy": 1,
+            "read_only": 1
+        },
+        {
+            "fieldname": "selected_modifiers_json",
+            "fieldtype": "Long Text",
+            "hidden": 1,
+            "label": "Selected Customer Choices",
+            "no_copy": 1,
+            "read_only": 1
+        },
+        {
+            "fieldname": "recipe",
+            "fieldtype": "Link",
+            "hidden": 1,
+            "label": "Frozen Recipe",
+            "options": "FB Recipe",
+            "read_only": 1
+        },
+        {
+            "fieldname": "recipe_canonical_hash",
+            "fieldtype": "Data",
+            "hidden": 1,
+            "label": "Frozen Recipe Hash",
+            "no_copy": 1,
+            "read_only": 1
+        },
+        {
+            "fieldname": "resolved_lines_json",
+            "fieldtype": "Long Text",
+            "hidden": 1,
+            "label": "Resolved Physical Lines",
+            "no_copy": 1,
+            "read_only": 1
         },
         {
             "fieldname": "company",
@@ -104,19 +177,6 @@
             "read": 1,
             "report": 1,
             "role": "System Manager",
-            "share": 1,
-            "submit": 1,
-            "write": 1
-        },
-        {
-            "create": 1,
-            "delete": 0,
-            "email": 1,
-            "export": 1,
-            "print": 1,
-            "read": 1,
-            "report": 1,
-            "role": "KoPOS Manager",
             "share": 1,
             "submit": 1,
             "write": 1

@@ -16,14 +16,150 @@ from kopos_connector.kopos.doctype.fb_inventory_availability_rule.fb_inventory_a
 from kopos_connector.kopos.services.inventory_autopilot.availability_capacity import (
     CapacityResult,
     _is_effective,
+    active_recipe_tracking_items,
     calculate_capacity,
+    resolve_made_item_waste,
     target_capacity,
 )
-from kopos_connector.kopos.services.inventory_autopilot.overlay import _stock_warning
+from kopos_connector.kopos.services.inventory_autopilot import availability_capacity
+from kopos_connector.kopos.services.inventory_autopilot.overlay import (
+    _stock_warning,
+    build_inventory_overlay,
+)
 from kopos_connector.kopos.services.inventory_autopilot import holds
 
 
 class InventoryAvailabilityCapacityTests(TestCase):
+    def test_made_product_waste_applies_saved_default_choices_and_exact_quantity(self) -> None:
+        import frappe
+
+        recipe = SimpleNamespace(
+            name="MATCHA-RECIPE-V1",
+            canonical_hash="a" * 64,
+            yield_qty_decimal="1",
+            default_serving_qty_decimal="1",
+            components=[
+                SimpleNamespace(
+                    item="MATCHA",
+                    stock_qty_decimal="4",
+                    stock_uom="Gram",
+                    affects_stock=1,
+                ),
+                SimpleNamespace(
+                    item="MILK",
+                    stock_qty_decimal="180",
+                    stock_uom="Millilitre",
+                    affects_stock=1,
+                ),
+            ],
+            allowed_modifier_groups=[
+                SimpleNamespace(
+                    modifier_group="MILK-CHOICE",
+                    required=1,
+                    override_min_selection=1,
+                    override_max_selection=1,
+                    default_modifier="DAIRY-MILK",
+                )
+            ],
+            recipe_modifier_effects=[
+                SimpleNamespace(
+                    modifier="DAIRY-MILK",
+                    modifier_group="MILK-CHOICE",
+                    kind="Instruction Only",
+                    affects_stock=0,
+                    affects_recipe=0,
+                )
+            ],
+        )
+        group = SimpleNamespace(
+            selection_type="Single",
+            is_required=1,
+            min_selection=1,
+            max_selection=1,
+        )
+        exact_lines = [
+            {"item": "MATCHA", "stock_qty": "8", "stock_uom": "Gram"},
+            {"item": "MILK", "stock_qty": "360", "stock_uom": "Millilitre"},
+        ]
+        with (
+            patch.object(availability_capacity, "_active_recipe", return_value=recipe),
+            patch.object(frappe, "get_cached_doc", return_value=group),
+            patch.object(
+                availability_capacity,
+                "compile_recipe_vector",
+                return_value=exact_lines,
+            ) as compile_vector,
+        ):
+            resolved = resolve_made_item_waste(
+                item="MATCHA-LATTE",
+                company="Moonleaf Café",
+                quantity="2",
+                selected_modifiers=[],
+            )
+
+        self.assertEqual(resolved["recipe"], "MATCHA-RECIPE-V1")
+        self.assertEqual(resolved["recipe_hash"], "a" * 64)
+        self.assertEqual(resolved["selected_modifiers"], ["DAIRY-MILK"])
+        self.assertEqual(resolved["lines"][0]["qty_decimal"], "8")
+        self.assertEqual(resolved["lines"][1]["qty_decimal"], "360")
+        self.assertEqual(compile_vector.call_args.kwargs["servings"], "2")
+
+    def test_overlay_keeps_choice_availability_in_product_context(self) -> None:
+        import frappe
+
+        def capacity(**kwargs):
+            parent = kwargs.get("parent_item_id")
+            if parent == "MATCHA-LATTE":
+                return CapacityResult(
+                    "Modifier", "EXTRA-MATCHA", Decimal("0"), True,
+                    "not enough matcha", {"MATCHA": Decimal("0.002")}, "MATCHA",
+                )
+            return CapacityResult(
+                "Modifier", "EXTRA-MATCHA", Decimal("10"), True,
+                "enough stock", {"MATCHA": Decimal("0.002")}, "MATCHA",
+            )
+
+        with (
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.overlay._policy",
+                return_value={"cutover_token": "CUT", "max_source_age_minutes": 30},
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.overlay.active_holds",
+                return_value=[],
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.overlay._availability_rule",
+                return_value="Warn",
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.overlay.target_capacity",
+                side_effect=capacity,
+            ),
+            patch.object(frappe.db, "get_value", return_value="Matcha powder"),
+        ):
+            overlay = build_inventory_overlay(
+                warehouse="Moonleaf Bar",
+                company="Moonleaf",
+                items=[
+                    {"id": "MATCHA-LATTE", "is_active": 1, "modifier_group_ids": ["ADD-ONS"]},
+                    {"id": "COFFEE-LATTE", "is_active": 1, "modifier_group_ids": ["ADD-ONS"]},
+                ],
+                modifier_options=[{
+                    "id": "EXTRA-MATCHA", "group_id": "ADD-ONS", "is_active": 1,
+                }],
+            )
+
+        contextual = {
+            row["item_id"]: row for row in overlay["contextual_modifier_options"]
+        }
+        self.assertEqual(contextual["MATCHA-LATTE"]["availability"], "warning")
+        self.assertEqual(contextual["COFFEE-LATTE"]["availability"], "available")
+        self.assertEqual(
+            contextual["MATCHA-LATTE"]["reasons"][0]["label"],
+            "Not enough Matcha powder for this choice",
+        )
+
     def test_create_hold_replay_requires_the_same_payload_hash(self) -> None:
         import frappe
 
@@ -333,3 +469,97 @@ class InventoryAvailabilityCapacityTests(TestCase):
 
         self.assertTrue(result.reliable)
         self.assertEqual(result.capacity, Decimal("2"))
+
+    def test_customer_choice_capacity_is_calculated_for_its_product_context(self) -> None:
+        import frappe
+
+        recipe = SimpleNamespace(
+            name="LATTE-RECIPE",
+            yield_qty="1",
+            default_serving_qty="1",
+            components=[SimpleNamespace(
+                item="MILK", stock_qty="0.25", stock_uom="L", affects_stock=1,
+                substitution_key="milk", name="ROW-1",
+            )],
+            allowed_modifier_groups=[SimpleNamespace(
+                modifier_group="ADD-ONS", default_modifier=None,
+            )],
+            recipe_modifier_effects=[SimpleNamespace(
+                modifier="EXTRA-MATCHA", kind="Add", new_item="MATCHA",
+                target_item=None, target_substitution_key=None,
+                stock_qty_delta="0.002", stock_uom="Kg",
+                affects_stock=1, affects_recipe=1,
+            )],
+        )
+
+        def modifier_value(doctype, name, fields, **kwargs):
+            if doctype != "FB Modifier":
+                return None
+            if isinstance(fields, list):
+                return {"name": name, "active": 1, "affects_stock": 1}
+            return "ADD-ONS"
+
+        with (
+            patch.object(frappe.db, "get_value", side_effect=modifier_value),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.availability_capacity._policy",
+                return_value={"cutover_token": "CUT", "cutover_at": "2026-01-01"},
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.availability_capacity._active_recipe",
+                return_value=recipe,
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.availability_capacity._active_recipes_for_modifier"
+            ) as global_recipes,
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.availability_capacity._stock_evidence",
+                return_value={
+                    "MILK": {"current": True, "usable": Decimal("10")},
+                    "MATCHA": {"current": True, "usable": Decimal("0")},
+                },
+            ),
+        ):
+            result = target_capacity(
+                target_type="Modifier",
+                target_id="EXTRA-MATCHA",
+                parent_item_id="LATTE",
+                company="Moonleaf",
+                warehouse="Moonleaf Bar",
+            )
+
+        global_recipes.assert_not_called()
+        self.assertTrue(result.reliable)
+        self.assertEqual(result.capacity, Decimal("0"))
+        self.assertEqual(result.limiting_item, "MATCHA")
+
+    def test_tracking_inputs_come_from_the_same_frozen_recipe_compiler(self) -> None:
+        recipe = SimpleNamespace(
+            name="LATTE-RECIPE",
+            yield_qty="1",
+            default_serving_qty="1",
+            components=[SimpleNamespace(
+                item="MILK", stock_qty="0.25", stock_uom="L", affects_stock=1,
+                substitution_key="milk", name="ROW-1",
+            )],
+            allowed_modifier_groups=[],
+            recipe_modifier_effects=[SimpleNamespace(
+                modifier="EXTRA-MATCHA", kind="Add", new_item="MATCHA",
+                target_item=None, target_substitution_key=None,
+                stock_qty_delta="0.002", stock_uom="Kg",
+                affects_stock=1, affects_recipe=1,
+            )],
+        )
+        with (
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.availability_capacity._active_recipe",
+                return_value=recipe,
+            ),
+            patch(
+                "kopos_connector.kopos.services.inventory_autopilot.availability_capacity.frappe.db.get_value",
+                return_value="ADD-ONS",
+            ),
+        ):
+            tracked = active_recipe_tracking_items(item="LATTE", company="Moonleaf")
+
+        self.assertEqual(tracked, {"MILK", "MATCHA"})

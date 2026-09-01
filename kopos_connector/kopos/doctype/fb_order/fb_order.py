@@ -849,7 +849,9 @@ class FBOrder(BaseDocument):
 
     def calculate_totals(self):
         net_total_sen = 0
-        for line_index, line in enumerate(self.get("items") or [], start=1):
+        order_items = list(self.get("items") or [])
+        valid_zero_total_paid = bool(order_items)
+        for line_index, line in enumerate(order_items, start=1):
             prefix = f"FB Order item {line_index}"
             unit_price_sen = _money_sen(
                 _optional_money_value(getattr(line, "unit_price", None)),
@@ -864,9 +866,19 @@ class FBOrder(BaseDocument):
                 f"{prefix} discount_amount",
             )
             qty = _positive_integer_qty(getattr(line, "qty", None), f"{prefix} qty")
-            computed_line_total_sen = (
-                (unit_price_sen + modifier_total_sen) * qty
-            ) - discount_amount_sen
+            effective_unit_price_sen = unit_price_sen + modifier_total_sen
+            if unit_price_sen < 0 or effective_unit_price_sen < 0:
+                frappe.throw(
+                    f"{prefix} price must be 0 or greater",
+                    frappe.ValidationError,
+                )
+            if discount_amount_sen < 0:
+                frappe.throw(
+                    f"{prefix} discount_amount must be 0 or greater",
+                    frappe.ValidationError,
+                )
+            gross_line_sen = effective_unit_price_sen * qty
+            computed_line_total_sen = gross_line_sen - discount_amount_sen
             if computed_line_total_sen < 0:
                 frappe.throw(
                     f"{prefix} line_total must be 0 or greater",
@@ -878,6 +890,8 @@ class FBOrder(BaseDocument):
             line.discount_amount = sen_to_decimal(discount_amount_sen)
             line.line_total = sen_to_decimal(computed_line_total_sen)
             net_total_sen += computed_line_total_sen
+            if computed_line_total_sen != 0 or discount_amount_sen != gross_line_sen:
+                valid_zero_total_paid = False
 
         tax_total_sen = _money_sen(
             _optional_money_value(getattr(self, "tax_total", None)),
@@ -893,9 +907,28 @@ class FBOrder(BaseDocument):
                 frappe.ValidationError,
             )
         grand_total_sen = net_total_sen + tax_total_sen + rounding_adjustment_sen
-        if grand_total_sen <= 0:
+        completion_kind = cstr(
+            getattr(self, "completion_kind", None) or "paid"
+        ).strip().lower()
+        if completion_kind not in {"paid", "complimentary"}:
             frappe.throw(
-                "FB Order grand_total must be greater than 0",
+                "FB Order completion_kind must be paid or complimentary",
+                frappe.ValidationError,
+            )
+        if completion_kind == "paid":
+            if grand_total_sen < 0:
+                frappe.throw(
+                    "Paid FB Order grand_total must be 0 or greater",
+                    frappe.ValidationError,
+                )
+            if grand_total_sen == 0 and not valid_zero_total_paid:
+                frappe.throw(
+                    "A paid RM0 FB Order must have exact zero totals and valid discount or promotion pricing",
+                    frappe.ValidationError,
+                )
+        if completion_kind == "complimentary" and grand_total_sen != 0:
+            frappe.throw(
+                "Complimentary FB Order grand_total must be 0",
                 frappe.ValidationError,
             )
         self.net_total = sen_to_decimal(net_total_sen)
@@ -1043,7 +1076,15 @@ class FBOrder(BaseDocument):
             _money_sen(payment.amount, f"FB Order payment {index} amount")
             for index, payment in enumerate(payment_rows, start=1)
         )
-        if payment_rows and payment_total_sen != grand_total_sen:
+        completion_kind = cstr(
+            getattr(self, "completion_kind", None) or "paid"
+        ).strip().lower()
+        if completion_kind == "paid" and grand_total_sen > 0 and not payment_rows:
+            frappe.throw(
+                "Paid FB Orders above RM0 require at least one payment",
+                frappe.ValidationError,
+            )
+        if payment_total_sen != grand_total_sen:
             frappe.throw(
                 "FB Order payment total {0} does not match grand_total {1}".format(
                     sen_to_decimal(payment_total_sen),

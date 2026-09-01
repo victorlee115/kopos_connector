@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 API = ROOT / "api" / "menu_authoring.py"
 SCOPE = ROOT / "api" / "director_scope.py"
 PAGE = ROOT / "kopos" / "page" / "jiji_menu_recipes" / "jiji_menu_recipes.js"
+SHARED = ROOT / "public" / "js" / "jiji_desk.js"
 
 
 def test_the_price_comes_from_what_the_tablet_charges() -> None:
@@ -24,7 +25,7 @@ def test_the_price_comes_from_what_the_tablet_charges() -> None:
     # what a drink costs a customer.
     assert "get_item_prices_map" in api
     assert "director_price_list" in api and "def director_price_list" in scope
-    assert '"POS Profile"' in scope and 'pluck="selling_price_list"' in scope
+    assert '"POS Profile"' in scope and '"selling_price_list"' in scope
 
 
 def test_a_cafe_without_a_counter_yet_still_sees_a_price() -> None:
@@ -33,7 +34,7 @@ def test_a_cafe_without_a_counter_yet_still_sees_a_price() -> None:
     # Profile falls back to the site default. Two profiles on two price lists
     # stays ambiguous rather than becoming a coin toss.
     assert 'get_single_value("Selling Settings", "selling_price_list")' in scope
-    assert "if price_lists:\n        return \"\"" in scope
+    assert "len(context.allowed_price_lists) == 1" in scope
 
 
 def test_the_margin_is_integer_sen_all_the_way() -> None:
@@ -48,7 +49,7 @@ def test_a_missing_price_is_said_rather_than_guessed() -> None:
     api = API.read_text(encoding="utf-8")
     page = PAGE.read_text(encoding="utf-8")
     assert "if not price_list:" in api
-    assert "Set a selling price for this item to see what it keeps." in page
+    assert "Add a selling price to see what you keep." in page
     assert "JiJi cannot cost this yet" in page
 
 
@@ -68,6 +69,13 @@ def test_the_preview_leads_with_the_comparison() -> None:
     assert "Ingredient cost for the full recipe" not in page
 
 
+def test_the_dialog_money_figures_do_not_run_together() -> None:
+    page = PAGE.read_text(encoding="utf-8")
+    shared = SHARED.read_text(encoding="utf-8")
+    assert "jiji-money-line" in page
+    assert ".jiji-money-line { gap: 16px; }" in shared
+
+
 def test_a_broken_recipe_does_not_get_a_confident_margin() -> None:
     page = PAGE.read_text(encoding="utf-8")
     # A real check with the yield fields cleared reported "Keeps RM 16.90" over
@@ -82,7 +90,7 @@ def test_a_drink_that_costs_nothing_is_an_absence_not_a_margin() -> None:
     # cost_status is "complete" when no component counts towards cost at all,
     # so a zero total would otherwise read as keeping the entire price.
     assert "if (!cost) {" in page
-    assert "counts towards cost yet" in page
+    assert "Add the cost of at least one ingredient" in page
 
 
 def test_the_drink_is_on_the_page_not_behind_a_dialog() -> None:

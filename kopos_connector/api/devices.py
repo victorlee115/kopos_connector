@@ -10,6 +10,11 @@ import frappe
 from frappe import _
 from frappe.utils import cint, cstr, now_datetime
 
+from kopos_connector.api.operational_errors import (
+    StoreSetupIncompleteError,
+    TabletDisabledError,
+)
+
 from kopos_connector.services.static_qr_commissioning import (
     commissioned_profile_static_qr_config,
     commissioned_static_qr_config,
@@ -141,7 +146,7 @@ def require_device_context(device_id: str | None = None, name: str | None = None
             _("KoPOS Device {0} is disabled").format(
                 cstr(getattr(device_doc, "device_id", None)).strip()
             ),
-            frappe.ValidationError,
+            TabletDisabledError,
         )
     return device_doc
 
@@ -197,7 +202,7 @@ def lock_device_for_operational_mutation(
     if not locked_rows:
         frappe.throw(
             _("KoPOS Device {0} was not found").format(lookup_value),
-            frappe.ValidationError,
+            TabletDisabledError,
         )
 
     locked_row = locked_rows[0]
@@ -222,7 +227,7 @@ def lock_device_for_operational_mutation(
     if not cint(_row_value(locked_row, "enabled")):
         frappe.throw(
             _("KoPOS Device {0} is disabled").format(locked_device_id),
-            frappe.ValidationError,
+            TabletDisabledError,
         )
 
     active_reset_rows = frappe.db.sql(
@@ -273,7 +278,7 @@ def lock_device_for_operational_mutation(
         if not user_rows or not cint(_row_value(user_rows[0], "enabled")):
             frappe.throw(
                 _("KoPOS Device API user is disabled or missing"),
-                frappe.ValidationError,
+                TabletDisabledError,
             )
         current_api_key = cstr(_row_value(user_rows[0], "api_key")).strip()
         if not current_api_key or not hmac.compare_digest(
@@ -333,7 +338,7 @@ def require_device_operational_scope(
     if not cint(getattr(device_doc, "enabled", 0)):
         frappe.throw(
             _("KoPOS Device {0} is disabled").format(resolved_device_id),
-            frappe.ValidationError,
+            TabletDisabledError,
         )
 
     profile_name = cstr(getattr(device_doc, "pos_profile", None)).strip()
@@ -342,7 +347,7 @@ def require_device_operational_scope(
             _("KoPOS Device {0} has no POS Profile configured").format(
                 resolved_device_id
             ),
-            frappe.ValidationError,
+            StoreSetupIncompleteError,
         )
     profile_doc = frappe.get_cached_doc("POS Profile", profile_name)
     profile_company = cstr(getattr(profile_doc, "company", None)).strip()
@@ -429,7 +434,7 @@ def get_device_doc(device_id: str | None = None, name: str | None = None):
         if not docname:
             frappe.throw(
                 _("KoPOS Device {0} was not found").format(device_id_value),
-                frappe.ValidationError,
+                TabletDisabledError,
             )
         return frappe.get_doc("KoPOS Device", docname)
 
@@ -437,7 +442,7 @@ def get_device_doc(device_id: str | None = None, name: str | None = None):
         if not frappe.db.exists("KoPOS Device", name_value):
             frappe.throw(
                 _("KoPOS Device {0} was not found").format(name_value),
-                frappe.ValidationError,
+                TabletDisabledError,
             )
         return frappe.get_doc("KoPOS Device", name_value)
 
@@ -526,7 +531,7 @@ def get_device_pos_profile_doc(device_id: str | None = None, name: str | None = 
     device = get_device_doc(device_id=device_id, name=name)
     pos_profile = cstr(getattr(device, "pos_profile", None)).strip()
     if not pos_profile:
-        frappe.throw(_("KoPOS Device has no POS Profile configured"), frappe.ValidationError)
+        frappe.throw(_("KoPOS Device has no POS Profile configured"), StoreSetupIncompleteError)
     return frappe.get_cached_doc("POS Profile", pos_profile)
 
 
@@ -544,7 +549,7 @@ def serialize_device_config(
             _("KoPOS Device {0} is disabled").format(
                 cstr(getattr(device_doc, "device_id", None)).strip()
             ),
-            frappe.ValidationError,
+            TabletDisabledError,
         )
 
     legacy_device_users = [

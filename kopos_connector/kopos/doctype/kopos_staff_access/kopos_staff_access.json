@@ -17,7 +17,7 @@
   {"fieldname":"outlet_assignments","fieldtype":"Table","label":"Assigned Outlets","options":"KoPOS Staff Outlet"}
  ],
  "permissions": [
-  {"role":"Company Director","read":1,"write":1,"create":1},
-  {"role":"Company Director","permlevel":1,"read":1,"write":1}
+  {"role":"System Manager","read":1,"write":1,"create":1},
+  {"role":"System Manager","permlevel":1,"read":1,"write":1}
  ]
 }

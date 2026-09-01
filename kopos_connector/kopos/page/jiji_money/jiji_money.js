@@ -80,8 +80,8 @@ class JiJiMoney {
 		if (data.status !== "ok") {
 			this.body.append(
 				jiji.desk.notice(
-					__("Choose a company to see its shifts"),
-					__("Set your default company, then open JiJi Money again."),
+						__("Choose a café to see its shifts"),
+						__("Set your default café, then open Money again."),
 				),
 			);
 			return;
@@ -112,11 +112,6 @@ class JiJiMoney {
 		this.appendGroup(__("Did not match"), data.needs_review || []);
 		this.appendGroup(__("Never counted"), data.missing_count || []);
 
-		this.body.append(
-			jiji.desk
-				.routeLink(data.report_route, __("More detail · the shift audit, with every technical column"))
-				.addClass("jiji-advanced"),
-		);
 	}
 
 	appendGroup(title, rows) {
@@ -124,15 +119,15 @@ class JiJiMoney {
 		const block = $("<div>").append(jiji.desk.label(title));
 		const list = $("<div>").addClass("jiji-rows").appendTo(block);
 		rows.forEach((row) => {
-			const link = jiji.desk.routeLink(["Form", "FB Shift", row.shift]).addClass("jiji-row");
-			link.append($("<span>").addClass("jiji-money__who").text(`${row.person || ""} · ${readableWhen(row.closed_at)}`));
-			link.append(
+			const line = $("<div>").addClass("jiji-row");
+			line.append($("<span>").addClass("jiji-money__who").text(`${row.person || ""} · ${readableWhen(row.closed_at)}`));
+			line.append(
 				$("<span>")
 					.addClass("jiji-money__amounts")
-					.text(`${__("Expected")} RM ${Number(row.expected || 0).toFixed(2)} · ${__("Counted")} RM ${Number(row.counted || 0).toFixed(2)}`),
+					.text(`${__("Expected")} ${row.expected_display || ""} · ${__("Counted")} ${row.counted_display || ""}`),
 			);
-			link.append($("<span>").addClass("jiji-money__difference").text(row.difference || ""));
-			list.append(link);
+			line.append($("<span>").addClass("jiji-money__difference").text(row.difference || ""));
+			list.append(line);
 		});
 		this.body.append(block);
 	}

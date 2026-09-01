@@ -63,6 +63,7 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
                 "lines": [{
                     "item_code": "MILK",
                     "item_id": "MILK",
+                    "barcode": "955500000001",
                     "qty": Decimal("2.5"),
                     "rate": Decimal("12.34"),
                     "amount": Decimal("30.85"),
@@ -73,6 +74,7 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         self.assertEqual(task["document"], "PO-1")
         self.assertEqual(task["lines"][0]["qty"], "2.5")
         self.assertEqual(task["lines"][0]["item_id"], "MILK")
+        self.assertEqual(task["lines"][0]["barcode"], "955500000001")
         self.assertNotIn("supplier", task)
         self.assertNotIn("rate", task)
         self.assertNotIn("value", task)
@@ -106,6 +108,7 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
                     "lines": [{
                         "item_id": "MILK",
                         "item_name": "Milk",
+                        "barcode": "955500000001",
                         "uom": "L",
                         "stock_uom": "L",
                         "purchase_uom": "Carton",
@@ -125,6 +128,7 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         self.assertNotIn("rate", preparation)
         self.assertEqual(result["count_task"]["name"], "COUNT-0001")
         self.assertEqual(result["count_task"]["lines"][0]["conversion_factor"], "12")
+        self.assertEqual(result["count_task"]["lines"][0]["barcode"], "955500000001")
         self.assertNotIn("expected_quantity", result["count_task"]["lines"][0])
 
     def test_edge_tasks_derive_count_task_for_older_task_reader(self) -> None:
@@ -189,7 +193,9 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         with patch.object(inventory.frappe.db, "exists", return_value=True), patch.object(
             inventory.frappe, "get_meta", return_value=meta
         ), patch.object(inventory.frappe, "get_all", return_value=[row]), patch.object(
-            inventory, "_count_line_variance_percent", return_value="16.67"
+            inventory,
+            "_count_line_variance_details",
+            return_value={"difference_quantity": "2", "variance_percent": "16.67"},
         ):
             result = inventory._health_count_director_reviews(
                 "Outlet - J",
@@ -200,6 +206,7 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         self.assertEqual(result["open"], 1)
         self.assertEqual(result["items"][0]["lines"][0]["full_packs"], "1")
         self.assertEqual(result["items"][0]["lines"][0]["loose_quantity"], "2")
+        self.assertEqual(result["items"][0]["lines"][0]["difference_quantity"], "2")
         self.assertNotIn("variance_value", result["items"][0])
         self.assertNotIn("count_variance_value_ceiling", result["items"][0])
 
@@ -251,6 +258,8 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
             warehouse="Outlet - J",
             search="milk",
             limit="1",
+            catalog_item_ids=set(),
+            catalog_modifier_ids=set(),
         )
 
         with (
@@ -293,10 +302,21 @@ class InventoryEdgeSnapshotTest(unittest.TestCase):
         self.assertEqual(sql.call_count, 3)
         self.assertTrue(all("LIMIT" in call.args[0] for call in sql.call_args_list))
 
-    def test_director_stock_status_read_requires_policy_permission(self) -> None:
-        with patch.object(inventory.frappe, "has_permission", return_value=False, create=True):
+    def test_director_stock_status_read_requires_scoped_director_context(self) -> None:
+        with (
+            patch.object(inventory, "_require_company_director") as require_director,
+            patch.object(inventory.frappe.db, "get_value", return_value="JiJi"),
+            patch.object(
+                inventory,
+                "resolve_director_context",
+                side_effect=frappe.PermissionError("not allowed"),
+            ) as resolve_context,
+        ):
             with self.assertRaises(frappe.PermissionError):
                 inventory.get_stock_update_status(warehouse="Outlet - J")
+
+        require_director.assert_called_once_with("Stock update status")
+        resolve_context.assert_called_once_with(company="JiJi", warehouse="Outlet - J")
 
     def test_inventory_task_reader_returns_count_task_alongside_task_list(self) -> None:
         count_task = {

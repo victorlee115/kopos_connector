@@ -209,6 +209,7 @@ def test_guided_preview_uses_decimal_uom_conversion_and_serving_ratio():
     assert result["valid"] is True
     row = result["components"][0]
     assert row["conversion_factor"] == "1000"
+    assert row["entered_qty_per_serving"] == "0.02"
     assert row["stock_qty_per_batch"] == "210"
     assert row["stock_qty_per_serving"] == "21"
     assert result["cost_per_batch"] == "2.1"

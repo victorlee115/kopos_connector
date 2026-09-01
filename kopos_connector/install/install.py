@@ -13,6 +13,8 @@ from kopos_connector.patches.normalize_duplicate_device_api_users import (
 
 
 KOPOS_DEVICE_API_ROLE = "KoPOS Device API"
+JIJI_BUSINESS_MODULE_PROFILE = "JiJi Business"
+CONFIGURATION_LIMIT = 500
 
 
 def before_install():
@@ -54,6 +56,7 @@ def after_install():
     try:
         ensure_kopos_module_defs()
         ensure_standard_pages()
+        ensure_jiji_business_module_profile()
         ensure_kopos_custom_fields(skip_if_missing_doctypes=True)
         create_fb_custom_fields()
         ensure_maybank_provider_device_id()
@@ -70,6 +73,7 @@ def after_migrate():
     """Ensure active KoPOS custom fields exist after DocTypes are synced."""
     ensure_kopos_module_defs()
     ensure_standard_pages()
+    ensure_jiji_business_module_profile()
     ensure_kopos_custom_fields(skip_if_missing_doctypes=False)
     create_fb_custom_fields()
     ensure_maybank_provider_device_id()
@@ -114,12 +118,12 @@ def ensure_standard_pages() -> None:
         },
         {
             "name": "jiji_menu_recipes",
-            "title": "JiJi Menu, Recipes & Offers",
+            "title": "Menu",
             "roles": ("System Manager", "Company Director"),
         },
         {
             "name": "jiji_stock_autopilot",
-            "title": "JiJi Stock Overview",
+            "title": "Stock",
             "roles": ("System Manager", "Company Director"),
         },
     )
@@ -150,6 +154,110 @@ def ensure_standard_pages() -> None:
             ).insert(ignore_permissions=True)
         finally:
             frappe.conf.developer_mode = previous_developer_mode
+
+
+def ensure_jiji_business_module_profile() -> None:
+    """Give ordinary directors the JiJi-only desk without weakening security.
+
+    Module Profile is presentation only. Direct record permissions remain the
+    security boundary. Users who also hold System Manager are deliberately not
+    changed because support and business access must use separate accounts.
+    """
+
+    if not frappe.db.exists("DocType", "Module Profile"):
+        return
+    module_names = [
+        str(value)
+        for value in frappe.get_all(
+            "Module Def",
+            pluck="name",
+            order_by="name asc",
+            limit_page_length=CONFIGURATION_LIMIT + 1,
+        )
+    ]
+    if len(module_names) > CONFIGURATION_LIMIT:
+        frappe.throw(_("JiJi could not safely simplify the desk navigation"))
+    blocked = [name for name in module_names if name != "KoPOS"]
+
+    profile = (
+        frappe.get_doc("Module Profile", JIJI_BUSINESS_MODULE_PROFILE)
+        if frappe.db.exists("Module Profile", JIJI_BUSINESS_MODULE_PROFILE)
+        else frappe.get_doc(
+            {
+                "doctype": "Module Profile",
+                "module_profile_name": JIJI_BUSINESS_MODULE_PROFILE,
+            }
+        )
+    )
+    profile_meta = frappe.get_meta("Module Profile")
+    block_field = profile_meta.get_field("block_modules")
+    if not block_field or not getattr(block_field, "options", None):
+        frappe.throw(_("JiJi could not safely simplify the desk navigation"))
+    child_meta = frappe.get_meta(block_field.options)
+    module_field = next(
+        (
+            field.fieldname
+            for field in child_meta.fields
+            if field.fieldtype == "Link" and field.options == "Module Def"
+        ),
+        "module",
+    )
+    desired_modules = set(blocked)
+    existing_modules = {
+        str(
+            row.get(module_field)
+            if hasattr(row, "get")
+            else getattr(row, module_field, "")
+        ).strip()
+        for row in (profile.get("block_modules") or [])
+    }
+    profile_is_new = getattr(profile, "is_new", lambda: True)()
+    if profile_is_new or existing_modules != desired_modules:
+        profile.set("block_modules", [{module_field: name} for name in blocked])
+    if profile_is_new:
+        profile.insert(ignore_permissions=True)
+    elif existing_modules != desired_modules:
+        profile.save(ignore_permissions=True)
+
+    directors = set(
+        frappe.get_all(
+            "Has Role",
+            filters={"parenttype": "User", "role": "Company Director"},
+            pluck="parent",
+            limit_page_length=CONFIGURATION_LIMIT + 1,
+        )
+    )
+    system_managers = set(
+        frappe.get_all(
+            "Has Role",
+            filters={"parenttype": "User", "role": "System Manager"},
+            pluck="parent",
+            limit_page_length=CONFIGURATION_LIMIT + 1,
+        )
+    )
+    if len(directors) > CONFIGURATION_LIMIT or len(system_managers) > CONFIGURATION_LIMIT:
+        frappe.throw(_("JiJi could not safely assign the business navigation"))
+    mixed_accounts = sorted(directors & system_managers)
+    if mixed_accounts:
+        frappe.log_error(
+            title="JiJi business and support accounts must be separated",
+            message=", ".join(mixed_accounts),
+        )
+    for user in sorted(directors - system_managers):
+        if frappe.db.exists("User", user):
+            # Frappe's stock default-workspace redirect opens the legacy
+            # workspace slug, which is not the JiJi page route on v16. The
+            # role-aware home-page hook owns the landing route; clear an old
+            # default so it cannot override that supported hook.
+            frappe.db.set_value(
+                "User",
+                user,
+                {
+                    "module_profile": JIJI_BUSINESS_MODULE_PROFILE,
+                    "default_workspace": None,
+                },
+                update_modified=False,
+            )
 
 
 OPERATIONAL_INDEX_SPECS = (

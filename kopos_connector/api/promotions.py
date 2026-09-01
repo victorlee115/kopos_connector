@@ -231,6 +231,7 @@ def publish_promotion_snapshot(
 ) -> dict[str, Any]:
     require_company_director_for_promotion_publication()
     profile_name = resolve_snapshot_pos_profile(pos_profile, device_id=device_id)
+    _require_director_profile_scope(profile_name)
     payload = build_snapshot_payload_for_persistence(profile_name)
     latest = get_latest_published_snapshot(profile_name)
     if latest and cstr(latest.snapshot_hash) == cstr(payload["snapshot_hash"]):
@@ -274,6 +275,28 @@ def require_company_director_for_promotion_publication() -> None:
             _("Promotion publication requires Company Director permission"),
             frappe.PermissionError,
         )
+
+
+def _require_director_profile_scope(pos_profile: str) -> None:
+    from kopos_connector.api.director_scope import (
+        director_pos_profiles,
+        resolve_director_context,
+    )
+
+    profile = frappe.db.get_value(
+        "POS Profile",
+        cstr(pos_profile).strip(),
+        ["company", "warehouse"],
+        as_dict=True,
+    )
+    if not profile:
+        frappe.throw(_("Choose an outlet that exists"), frappe.ValidationError)
+    context = resolve_director_context(
+        company=cstr(profile.get("company")).strip(),
+        warehouse=cstr(profile.get("warehouse")).strip(),
+    )
+    if cstr(pos_profile).strip() not in director_pos_profiles(context):
+        frappe.throw(_("You do not have access to this outlet."), frappe.PermissionError)
 
 
 def reconcile_promotion_payload(

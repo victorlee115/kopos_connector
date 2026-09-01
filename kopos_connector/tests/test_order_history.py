@@ -432,6 +432,89 @@ def test_serialize_invoice_row_returns_kopos_display_number_and_modifiers(
     ]
 
 
+def test_serialize_order_row_keeps_complimentary_value_and_manager_evidence(
+    order_history_module,
+):
+    payload = order_history_module.serialize_order_row(
+        {
+            "name": "ACC-PSINV-COMP-00001",
+            "docstatus": 1,
+            "grand_total": "0.00",
+            "net_total": "0.00",
+            "total_taxes_and_charges": "0.00",
+        },
+        items=[
+            {
+                "line_id": "LINE-COMP-1",
+                "item_code": "MATCHA-LATTE",
+                "item_name": "Matcha Latte",
+                "qty": 1,
+                "rate": "12.50",
+                "custom_kopos_modifier_total": "1.50",
+                "discount_amount": "14.00",
+                "amount": "0.00",
+            }
+        ],
+        payments=[],
+        fb_order={
+            "completion_kind": "complimentary",
+            "complimentary_value": "14.00",
+            "complimentary_reason": "Guest recovery",
+            "complimentary_approved_by": "manager-1",
+        },
+    )
+
+    assert payload["status"] == "paid"
+    assert payload["grand_total"] == "0.00"
+    assert payload["payments"] == []
+    assert payload["completion_kind"] == "complimentary"
+    assert payload["complimentary_value"] == "14.00"
+    assert payload["complimentary_reason"] == "Guest recovery"
+    assert payload["complimentary_approved_by"] == "manager-1"
+    assert payload["items"][0]["discount_amount"] == "14.00"
+
+
+def test_query_fb_order_headers_is_bounded_and_requests_completion_evidence(
+    order_history_module,
+    monkeypatch,
+):
+    captured: dict[str, Any] = {}
+
+    def fake_get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        captured["doctype"] = doctype
+        captured.update(kwargs)
+        return [
+            {
+                "name": "FB-ORDER-COMP-1",
+                "completion_kind": "complimentary",
+                "complimentary_value": "14.00",
+                "complimentary_reason": "Guest recovery",
+                "complimentary_approved_by": "manager-1",
+            }
+        ]
+
+    monkeypatch.setattr(order_history_module.frappe, "get_all", fake_get_all)
+
+    result = order_history_module.query_fb_order_headers(
+        [
+            {"custom_fb_order": "FB-ORDER-COMP-1"},
+            {"custom_fb_order": "FB-ORDER-COMP-1"},
+        ]
+    )
+
+    assert captured["doctype"] == "FB Order"
+    assert captured["filters"] == {"name": ["in", ["FB-ORDER-COMP-1"]]}
+    assert captured["limit_page_length"] == 1
+    assert set(captured["fields"]) == {
+        "name",
+        "completion_kind",
+        "complimentary_value",
+        "complimentary_reason",
+        "complimentary_approved_by",
+    }
+    assert result["FB-ORDER-COMP-1"]["completion_kind"] == "complimentary"
+
+
 def test_fb_order_history_uses_the_commercial_modifier_snapshot(
     order_history_module,
     monkeypatch,

@@ -16,6 +16,10 @@ from frappe.utils import add_to_date, cint, get_datetime, now_datetime
 
 from kopos_connector.api.catalog import get_default_pos_profile, get_tax_rate_value
 from kopos_connector.api.devices import elevate_device_api_user, get_device_doc
+from kopos_connector.api.operational_errors import (
+    StoreSetupIncompleteError,
+    TabletDisabledError,
+)
 from kopos_connector.api.modifiers import (
     build_modifiers_snapshot,
     copy_modifiers_to_refund,
@@ -314,7 +318,7 @@ def resolve_pos_profile(payload: dict[str, Any]):
         if not cint(device_doc.enabled):
             frappe.throw(
                 _("KoPOS Device {0} is disabled").format(device_doc.device_id),
-                frappe.ValidationError,
+                TabletDisabledError,
             )
         return frappe.get_cached_doc("POS Profile", device_doc.pos_profile)
 
@@ -323,13 +327,13 @@ def resolve_pos_profile(payload: dict[str, Any]):
         if not frappe.db.exists("POS Profile", profile_name):
             frappe.throw(
                 _("POS Profile {0} was not found").format(profile_name),
-                frappe.ValidationError,
+                StoreSetupIncompleteError,
             )
         return frappe.get_cached_doc("POS Profile", profile_name)
 
     default_profile = get_default_pos_profile(payload.get("company"))
     if not default_profile:
-        frappe.throw(_("No enabled POS Profile was found"), frappe.ValidationError)
+        frappe.throw(_("No enabled POS Profile was found"), StoreSetupIncompleteError)
 
     return frappe.get_cached_doc("POS Profile", default_profile["name"])
 
@@ -350,7 +354,7 @@ def build_pos_invoice(payload: dict[str, Any], pos_profile_doc):
             _("POS Profile {0} must define a default Customer").format(
                 pos_profile_doc.name
             ),
-            frappe.ValidationError,
+            StoreSetupIncompleteError,
         )
 
     invoice = frappe.new_doc("POS Invoice")
@@ -434,7 +438,7 @@ def build_pos_invoice(payload: dict[str, Any], pos_profile_doc):
                 _("Mode of Payment {0} is not configured for company {1}").format(
                     mode_of_payment, invoice.company
                 ),
-                frappe.ValidationError,
+                StoreSetupIncompleteError,
             )
 
         payment_meta = mode_info[0]
@@ -520,7 +524,7 @@ def resolve_mode_of_payment(
         _("Could not map payment method {0} to a POS Profile payment mode").format(
             method
         ),
-        frappe.ValidationError,
+        StoreSetupIncompleteError,
     )
 
 

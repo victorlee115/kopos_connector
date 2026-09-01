@@ -1,12 +1,4 @@
-"""The desk may set a PIN; the doctype is still the one that stores it.
-
-JiJi Staff exists because ``KoPOS Staff Access`` carries its PIN at permlevel 1
-and the doctype had no permlevel-1 permission row, so no role could set one
-through the form. The page on top of that fix has one write, and these tests
-hold the properties that keep it safe: it hands four digits to the controller
-that hashes them, it never touches the verifier itself, and it refuses to
-report success for a write that Frappe silently dropped.
-"""
+"""JiJi Staff owns the scoped business workflow; the raw record is support-only."""
 
 from __future__ import annotations
 
@@ -37,12 +29,16 @@ def test_the_verifier_is_written_by_the_doctype_alone() -> None:
 def test_the_pin_is_never_returned_stored_or_logged() -> None:
     source = _source()
     tree = ast.parse(source)
-    returned = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Return) and "entered" in ast.dump(node)
+    endpoints = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"set_staff_pin", "add_staff_access"}
     ]
-    assert not returned, "the digits must not travel back to the browser"
+    for endpoint in endpoints:
+        returned = [node for node in ast.walk(endpoint) if isinstance(node, ast.Return)]
+        for node in returned:
+            names = {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
+            assert names.isdisjoint({"entered", "pin", "confirm", "repeated"})
     assert "log_error" not in source
     assert "frappe.logger" not in source
 
@@ -57,23 +53,23 @@ def test_a_permlevel_write_that_did_not_happen_is_not_reported_as_success() -> N
     assert "frappe.PermissionError" in source
 
 
-def test_the_save_is_permission_checked() -> None:
-    # A director's permlevel-1 write is exactly what is being exercised here,
-    # so no call may wave the check through.
-    for node in ast.walk(ast.parse(_source())):
-        if not isinstance(node, ast.Call):
-            continue
-        assert not any(
-            keyword.arg == "ignore_permissions" for keyword in node.keywords
-        ), "the staff desk must save through the normal permission check"
+def test_the_scoped_page_is_the_only_business_write_path() -> None:
+    source = _source()
+    definition = (ROOT / "kopos" / "doctype" / "kopos_staff_access" / "kopos_staff_access.json").read_text(encoding="utf-8")
+    assert '"role":"System Manager"' in definition
+    assert '"role":"Company Director"' not in definition
+    assert "can_manage_staff_access(name)" in source
+    assert "resolve_director_context(company=company)" in source
+    assert "save(ignore_permissions=True)" in source
 
 
 def test_the_typo_is_caught_before_anything_is_written() -> None:
     source = _source()
-    body = source.split("def set_staff_pin")[1]
+    body = source.split("def _checked_pin")[1].split("def set_staff_pin")[0]
     typo_check = body.index("entered != repeated")
-    save = body.index("document.save()")
-    assert typo_check < save, "a mistyped PIN would lock someone out of their own shift"
+    assert typo_check >= 0
+    set_pin = source.split("def set_staff_pin")[1]
+    assert set_pin.index("_checked_pin(pin, confirm)") < set_pin.index("document.save")
 
 
 def test_the_two_states_the_old_form_could_not_say() -> None:
@@ -126,3 +122,13 @@ def test_the_page_degrades_instead_of_blanking() -> None:
     page = PAGE.read_text(encoding="utf-8")
     assert "could not read your people just now" in page
     assert "Nobody has been changed" in page
+
+
+def test_an_empty_staff_list_says_what_to_do_next() -> None:
+    page = PAGE.read_text(encoding="utf-8")
+    assert "No one can use a tablet yet. Add someone to get started." in page
+    assert "No one else is ready to add. Ask Support if the person you need is missing." in page
+    assert 'set_primary_action(__("Add someone")' in page
+    assert 'add_inner_button(__("Refresh")' in page
+    assert 'add_inner_button(__("Refresh"), () => this.load(), "refresh")' not in page
+    assert 'primary_action_label: __("Give tablet access")' in page

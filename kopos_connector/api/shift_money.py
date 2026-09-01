@@ -16,7 +16,10 @@ from __future__ import annotations
 from typing import Any
 
 import frappe
-from frappe.utils import cstr, flt
+from frappe.utils import cstr
+
+from kopos_connector.api.cafe_money import company_currency, money_sen, money_text
+from kopos_connector.api.director_scope import resolve_director_context
 
 
 def person_name(staff_id: str) -> str:
@@ -37,7 +40,7 @@ def person_name(staff_id: str) -> str:
         name = cstr(frappe.db.get_value("Employee", employee, "employee_name")).strip()
         if name:
             return name
-    return identifier
+    return "Staff member"
 
 
 def closed_shifts(company: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -50,33 +53,52 @@ def closed_shifts(company: str, limit: int = 50) -> list[dict[str, Any]]:
     )
 
 
-def describe_difference(variance: float) -> str:
+def describe_difference(variance_sen: int, currency: str = "MYR") -> str:
     """The direction in words, because a signed number is not an instruction."""
-    amount = abs(flt(variance))
-    if amount == 0:
+    if variance_sen == 0:
         return "Matched"
-    return f"RM {amount:,.2f} {'short' if flt(variance) < 0 else 'over'}"
+    return f"{money_text(abs(variance_sen), currency)} {'short' if variance_sen < 0 else 'over'}"
 
 
-def group_shifts(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def group_shifts(
+    rows: list[dict[str, Any]], currency: str = "MYR"
+) -> dict[str, list[dict[str, Any]]]:
     """Split shifts into the three answers a director actually wants."""
     matched: list[dict[str, Any]] = []
     needs_review: list[dict[str, Any]] = []
     missing_count: list[dict[str, Any]] = []
 
     for row in rows:
+        expected_sen = money_sen(row.get("expected_cash"), "FB Shift.expected_cash")
+        counted_sen = (
+            None
+            if row.get("counted_cash") is None
+            else money_sen(row.get("counted_cash"), "FB Shift.counted_cash")
+        )
+        variance_sen = (
+            None
+            if counted_sen is None
+            else money_sen(row.get("cash_variance"), "FB Shift.cash_variance")
+        )
         entry = {
-            "shift": cstr(row.get("name")),
             "person": person_name(cstr(row.get("staff_id"))),
             "closed_at": cstr(row.get("closed_at")),
-            "expected": flt(row.get("expected_cash")),
-            "counted": flt(row.get("counted_cash")),
-            "variance": flt(row.get("cash_variance")),
-            "difference": describe_difference(flt(row.get("cash_variance"))),
+            "expected_sen": expected_sen,
+            "expected_display": money_text(expected_sen, currency),
+            "counted_sen": counted_sen,
+            "counted_display": (
+                money_text(counted_sen, currency) if counted_sen is not None else "Not counted"
+            ),
+            "variance_sen": variance_sen,
+            "difference": (
+                describe_difference(variance_sen, currency)
+                if variance_sen is not None
+                else "Not compared"
+            ),
         }
         if row.get("counted_cash") is None:
             missing_count.append(entry)
-        elif flt(row.get("cash_variance")) != 0:
+        elif variance_sen != 0:
             needs_review.append(entry)
         else:
             matched.append(entry)
@@ -87,17 +109,18 @@ def group_shifts(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
 @frappe.whitelist(methods=["GET"])
 def get_shift_money(company: str | None = None) -> dict[str, Any]:
     """Summary first, then the exceptions, then one shift."""
-    resolved = cstr(company or frappe.defaults.get_user_default("Company") or "")
-    if not resolved:
-        companies = frappe.get_all("Company", pluck="name", limit_page_length=2)
-        resolved = cstr(companies[0]) if len(companies) == 1 else ""
-    if not resolved:
-        return {"status": "no_company"}
+    context = resolve_director_context(company=cstr(company).strip() or None)
+    if not context.company:
+        return {
+            "status": context.status,
+            "companies": list(context.allowed_companies),
+        }
 
-    grouped = group_shifts(closed_shifts(resolved))
+    currency = company_currency(context.company)
+    grouped = group_shifts(closed_shifts(context.company), currency)
     return {
         "status": "ok",
-        "company": resolved,
+        "company": context.company,
         # Every other desk page leads with one statement. Money led with three
         # counters, so a café where nothing needs doing opened on a row of
         # zeros and buried the good news underneath them.
@@ -109,7 +132,6 @@ def get_shift_money(company: str | None = None) -> dict[str, Any]:
         ],
         "needs_review": grouped["needs_review"],
         "missing_count": grouped["missing_count"],
-        "report_route": ["query-report", "KoPOS Shift Reconciliation"],
     }
 
 

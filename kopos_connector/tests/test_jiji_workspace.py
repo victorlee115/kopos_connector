@@ -4,9 +4,8 @@ Before this workspace the sidebar listed KoPOS Modifier Group, KoPOS Promotion
 Snapshot, Projection Support Queue -- ten destinations, all weighted equally,
 none of them a thing a café owner set out to do.
 
-JiJi names six destinations after the business and folds everything ERP-native
-under Advanced. A director who never opens Advanced can still run the café; a
-support engineer who lives there loses nothing.
+JiJi names six destinations after the business. Raw records and support tools
+belong to the separate System Manager workspace and never appear here.
 """
 
 from __future__ import annotations
@@ -41,17 +40,13 @@ def test_every_destination_is_a_page_that_exists() -> None:
         assert (ROOT / "kopos" / "page" / page / f"{page}.js").exists(), f"{page} has no script"
 
 
-def test_everything_erp_native_is_folded_under_advanced() -> None:
+def test_business_workspace_contains_no_raw_or_support_routes() -> None:
     workspace = _workspace()
-    cards = [row["label"] for row in workspace["links"] if row["type"] == "Card Break"]
-    assert cards == ["Reports", "Where the numbers come from", "Support tools"]
+    assert workspace["links"] == []
     content = json.loads(workspace["content"])
     headers = [block["data"]["text"] for block in content if block["type"] == "header"]
-    assert headers == ["Your café", "Advanced"]
-    # The six destinations sit above the fold; the tables sit under Advanced.
-    assert content.index({"type": "card", "data": {"card_name": "Reports", "col": 4}}) > max(
-        index for index, block in enumerate(content) if block["type"] == "shortcut"
-    )
+    assert headers == ["Run your café"]
+    assert {block["type"] for block in content} <= {"header", "paragraph", "shortcut"}
 
 
 def test_a_director_can_open_it() -> None:
@@ -64,6 +59,31 @@ def test_it_sorts_above_the_support_cockpit() -> None:
     support = json.loads((ROOT / "kopos" / "workspace" / "kopos_support" / "kopos_support.json").read_text("utf-8"))
     # A director's first sidebar entry should be the café, not the cockpit.
     assert _workspace()["sequence_id"] < support["sequence_id"]
+
+
+def test_support_workspace_is_for_system_managers_only() -> None:
+    support = json.loads((ROOT / "kopos" / "workspace" / "kopos_support" / "kopos_support.json").read_text("utf-8"))
+    assert {row["role"] for row in support["roles"]} == {"System Manager"}
+
+
+def test_existing_workspace_migration_is_idempotent_and_preserves_custom_blocks() -> None:
+    from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
+
+    install_fake_frappe_modules()
+    from kopos_connector.patches.simplify_jiji_business_workspace import simplify_content
+
+    old_layout = [
+        {"type": "header", "data": {"text": "Your café", "col": 12}},
+        {"type": "header", "data": {"text": "Advanced", "col": 12}},
+        {"type": "card", "data": {"card_name": "Support tools", "col": 4}},
+        {"type": "paragraph", "data": {"text": "My café note", "col": 12}},
+    ]
+    first, first_changed = simplify_content(json.dumps(old_layout))
+    second, second_changed = simplify_content(first)
+    assert first_changed is True
+    assert second_changed is False
+    migrated = json.loads(second)
+    assert [block["data"].get("text") for block in migrated] == ["Run your café", "My café note"]
 
 
 def test_no_destination_shows_a_record_id() -> None:

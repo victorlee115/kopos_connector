@@ -52,6 +52,67 @@ class _StockEntry:
 
 
 class InventoryTransferContractTests(TestCase):
+    def test_task_feed_limits_only_after_transfer_progress_is_actionable(self) -> None:
+        rows = [{
+            "name": "MAT-ITEM-101",
+            "idx": 101,
+            "from_warehouse": "Source",
+            "warehouse": "Destination",
+            "kopos_dispatched_stock_qty": Decimal("0"),
+            "kopos_received_stock_qty": Decimal("0"),
+        }]
+        with patch.object(inventory_api.frappe.db, "sql", return_value=rows) as sql, patch.object(
+            inventory_api.frappe, "get_all"
+        ) as get_all:
+            result = inventory_api._actionable_transfer_request_lines(
+                material_request="MAT-TRANSFER-1",
+                warehouse="Source",
+                transit_warehouse="Transit",
+                fields=[
+                    "name", "idx", "item_code", "qty", "uom", "warehouse",
+                    "from_warehouse", "stock_qty", "stock_uom", "conversion_factor",
+                ],
+                source_field_installed=True,
+                route_tracking_installed=True,
+                limit=101,
+            )
+
+        self.assertEqual(result, rows)
+        get_all.assert_not_called()
+        query = sql.call_args.args[0]
+        self.assertIn("kopos_requested_stock_qty > scoped.kopos_dispatched_stock_qty", query)
+        self.assertIn("kopos_dispatched_stock_qty > scoped.kopos_received_stock_qty", query)
+        self.assertLess(query.index("WHERE ("), query.index("LIMIT %s"))
+        self.assertEqual(sql.call_args.args[1][-1], 101)
+
+    def test_unconfigured_transfer_route_is_bounded_to_source_setup_work(self) -> None:
+        with patch.object(
+            inventory_api.frappe,
+            "get_all",
+            return_value=[{
+                "name": "MAT-ITEM-1",
+                "idx": 1,
+                "from_warehouse": "Source",
+                "warehouse": "Destination",
+            }],
+        ) as get_all, patch.object(inventory_api.frappe.db, "sql") as sql:
+            result = inventory_api._actionable_transfer_request_lines(
+                material_request="MAT-TRANSFER-1",
+                warehouse="Source",
+                transit_warehouse="",
+                fields=["name", "idx", "from_warehouse", "warehouse"],
+                source_field_installed=True,
+                route_tracking_installed=False,
+                limit=101,
+            )
+
+        sql.assert_not_called()
+        self.assertEqual(result[0]["kopos_dispatched_stock_qty"], Decimal("0"))
+        self.assertEqual(result[0]["kopos_received_stock_qty"], Decimal("0"))
+        self.assertEqual(get_all.call_args.kwargs["filters"]["from_warehouse"], "Source")
+        self.assertNotIn("or_filters", get_all.call_args.kwargs)
+        self.assertEqual(get_all.call_args.kwargs["limit_page_length"], 101)
+
     def test_uom_authority_keeps_source_and_stock_quantities_exact(self) -> None:
         authority = inventory_api._guided_uom_authority(
             SimpleNamespace(

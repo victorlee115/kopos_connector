@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
@@ -62,6 +63,49 @@ class WasteIdempotencyTests(TestCase):
             with self.assertRaises(Exception):
                 waste_service._decimal_quantity(line)
 
+    def test_waste_device_route_is_reachable_without_a_review_endpoint(self) -> None:
+        auth = (ERP_ROOT / "auth.py").read_text()
+        api = (ERP_ROOT / "api" / "__init__.py").read_text()
+        inventory = (ERP_ROOT / "api" / "inventory.py").read_text()
+        route = "/api/method/kopos_connector.api.record_waste_event"
+        self.assertIn(route, auth)
+        self.assertIn(f'"{route}": frozenset({{"POST"}})', auth)
+        self.assertNotIn("review_waste_event", api)
+        self.assertNotIn("def review_waste_event(", inventory)
+        self.assertIn('"record_waste_event": {', inventory)
+        self.assertIn('"submit_doctypes": ("Stock Entry",)', inventory)
+
+    def test_legacy_waste_route_submits_stock_immediately(self) -> None:
+        source = (ERP_ROOT / "api" / "fb_waste.py").read_text()
+        self.assertIn("document.submit()", source)
+        self.assertIn('"status": "ok"', source)
+
+    def test_guided_waste_submission_requires_its_stock_entry_before_success(self) -> None:
+        from kopos_connector.api import inventory as inventory_api
+
+        class WasteEvent:
+            name = "FB-WASTE-1"
+            docstatus = 0
+            status = "Draft"
+            stock_entry = None
+
+            def __init__(self) -> None:
+                self.flags = SimpleNamespace(ignore_permissions=False)
+
+            def submit(self) -> None:
+                self.docstatus = 1
+                self.status = "Submitted"
+                self.stock_entry = "MAT-STE-1"
+
+            def reload(self) -> None:
+                return None
+
+        event = WasteEvent()
+        self.assertEqual(inventory_api._submit_waste_document_now(event), "FB-WASTE-1")
+        self.assertEqual(event.docstatus, 1)
+        self.assertEqual(event.stock_entry, "MAT-STE-1")
+        self.assertTrue(event.flags.ignore_permissions)
+
 
 class SaleableItemClassificationTests(TestCase):
     def test_a_saleable_item_need_not_be_a_drink(self) -> None:
@@ -82,21 +126,12 @@ class SaleableItemClassificationTests(TestCase):
         for role in sorted(menu_authoring.SALEABLE_ITEM_ROLES):
             self.assertIn(role, page)
 
-    def test_empty_catalog_is_not_rendered_as_complete(self) -> None:
+    def test_menu_readiness_indicator_uses_the_server_contract(self) -> None:
         page = (ERP_ROOT / "kopos" / "page" / "jiji_menu_recipes" / "jiji_menu_recipes.js").read_text()
 
-        self.assertIn(
-            "const hasSaleableItems = Number(summary.saleable_items || 0) > 0;",
-            page,
-        )
-        self.assertIn(
-            "const classificationReady = migrationReady && hasSaleableItems",
-            page,
-        )
-        company_gate = page.index("if (!state.companyReady)")
-        empty_catalog_gate = page.index("else if (!state.hasSaleableItems)")
-        self.assertLess(company_gate, empty_catalog_gate)
-        self.assertIn("Add a menu item", page)
+        self.assertIn("hasCompany && summary.ready", page)
+        self.assertNotIn("const hasSaleableItems", page)
+        self.assertIn("Add product", page)
 
 
 class ReturnToStockTests(TestCase):
@@ -175,8 +210,8 @@ class DeskPagePackagingTests(TestCase):
             (ERP_ROOT / "kopos" / "page" / "jiji_menu_recipes" / "jiji_menu_recipes.json").read_text()
         )
 
-        self.assertEqual(stock_page_record["title"], "JiJi Stock Overview")
-        self.assertEqual(menu_page_record["title"], "JiJi Menu, Recipes & Offers")
+        self.assertEqual(stock_page_record["title"], "Stock")
+        self.assertEqual(menu_page_record["title"], "Menu")
 
         for retired_copy in (
             "No scheduler success recorded",
@@ -195,13 +230,12 @@ class DeskPagePackagingTests(TestCase):
         ):
             self.assertNotIn(retired_copy, stock_page)
         for expected_copy in (
-            "JiJi has not updated your stock yet",
-            "JiJi setup checked",
-            "JiJi has stopped writing new orders",
-            "Approval required",
+            "JiJi has not updated this outlet's stock yet",
+            "Suggested orders paused",
             "JiJi has not finished its first automatic update",
             "A tablet's stock report needs you",
-            "Start using stock tracking",
+            "Start stock tracking",
+            "Start now",
             "Difference from what JiJi expected",
             "What staff can sell does not change until someone approves it.",
             "Finish the stock settings for this outlet before starting stock tracking.",
@@ -214,31 +248,19 @@ class DeskPagePackagingTests(TestCase):
             "Updating automatically.",
             "Stock needs a manager.",
             "Check now",
-            "Who does each part?",
-            "Only Company Directors use this page for business decisions.",
-            "Staff",
-            "Outlet manager",
-            "Company director",
-            "Buying",
-            "Supplier",
-            "Finance",
-            "Support",
             "Your next step",
             "Nothing to do right now",
             "See the suggested orders",
-            "Open detailed stock changes",
             "See cost and value",
-            'ledger: ["query-report", "Stock Ledger"]',
             "Follow these steps",
             "Back to stock overview",
-            "Advanced: detailed stock records",
             "Written — not sent",
             "get_autopilot_workflow",
             "get_stock_update_status",
-            "JiJi never sends one.",
-            "Help number",
+            "Nothing will be ordered until someone approves it.",
             "What to do",
             "JiJi could not finish updating your stock. Nothing you saved is lost.",
+            "if (!timestamp) return null",
         ):
             self.assertIn(expected_copy, stock_page)
 
@@ -251,6 +273,8 @@ class DeskPagePackagingTests(TestCase):
             "this.escape(row.summary",
             "this.escape(row.reason_code)",
             "this.escape(review.threshold_reason",
+            'ledger: ["query-report", "Stock Ledger"]',
+            "Advanced: detailed stock records",
         ):
             self.assertNotIn(internal_copy, stock_page)
 
@@ -298,23 +322,24 @@ class DeskPagePackagingTests(TestCase):
         ):
             self.assertNotIn(retired_copy, menu_page)
         for expected_copy in (
-            "Set up a menu item",
-            "prepared-item recipe",
-            "Check cost and money left",
-            "Figures are ready — a director must still approve the offer",
-            "New to running a food or drink business?",
-            "How much the full recipe makes",
-            "Extra items to sell to recover the discount",
-            "Choose a café to see this.",
-            "'Nos' means a count of whole items",
+            "Add product",
+            "Add a product once. JiJi uses what goes into it to manage stock automatically.",
+            "Edit ingredients and choices",
+            "Check the counter",
+            "What goes into one {0}?",
+            "Add each ingredient or supply and the amount used for one order.",
+            "JiJi will track",
+            "Ready to publish",
+            "Publishing makes the selected products available to staff.",
+            "Choose your café first.",
         ):
             self.assertIn(expected_copy, menu_page)
 
-        self.assertIn("if (!state.companyReady)", menu_page)
+        self.assertIn("hasCompany && summary.ready", menu_page)
 
         install_source = (ERP_ROOT / "install" / "install.py").read_text()
-        self.assertIn('"title": "JiJi Menu, Recipes & Offers"', install_source)
-        self.assertIn('"title": "JiJi Stock Overview"', install_source)
+        self.assertIn('"title": "Menu"', install_source)
+        self.assertIn('"title": "Stock"', install_source)
         self.assertIn('frappe.db.set_value(', install_source)
 
         for unexplained_copy in (

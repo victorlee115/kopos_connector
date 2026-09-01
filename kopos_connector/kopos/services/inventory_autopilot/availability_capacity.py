@@ -25,6 +25,14 @@ from frappe.utils import cstr, get_datetime, now_datetime
 from kopos_connector.kopos.services.inventory_autopilot.recipe_compiler import (
     RecipeCompilerError,
     compile_recipe_components,
+    compile_recipe_vector,
+)
+from kopos_connector.kopos.doctype.fb_modifier_group.fb_modifier_group import (
+    filter_visible_allowed_modifier_groups,
+)
+from kopos_connector.kopos.services.recipe.modifier_bounds import (
+    ModifierBoundsError,
+    resolve_effective_modifier_bounds,
 )
 
 
@@ -38,6 +46,7 @@ class CapacityResult:
     reliable: bool
     reason: str
     requirements: dict[str, Decimal]
+    limiting_item: str | None = None
 
 
 def calculate_capacity(
@@ -81,7 +90,7 @@ def calculate_capacity(
             {},
         )
 
-    capacities: list[Decimal] = []
+    capacities: list[tuple[Decimal, str]] = []
     for item_code, required in sorted(normalized.items()):
         row = evidence.get(item_code)
         if not isinstance(row, Mapping) or row.get("current") is not True:
@@ -104,9 +113,10 @@ def calculate_capacity(
                 "Current stock evidence is incomplete for a recipe component",
                 normalized,
             )
-        capacities.append(max(usable, Decimal("0")) / required)
+        capacities.append((max(usable, Decimal("0")) / required, item_code))
 
-    whole_capacity = min(capacities).to_integral_value(rounding=ROUND_FLOOR)
+    limiting_capacity, limiting_item = min(capacities, key=lambda row: (row[0], row[1]))
+    whole_capacity = limiting_capacity.to_integral_value(rounding=ROUND_FLOOR)
     return CapacityResult(
         target_type,
         target_id,
@@ -114,6 +124,7 @@ def calculate_capacity(
         True,
         "Current stock evidence covers the frozen recipe components",
         normalized,
+        limiting_item,
     )
 
 
@@ -124,6 +135,7 @@ def target_capacity(
     company: str,
     warehouse: str,
     at_time: Any | None = None,
+    parent_item_id: str | None = None,
 ) -> CapacityResult:
     """Load one target's active frozen recipe and calculate its capacity.
 
@@ -159,6 +171,7 @@ def target_capacity(
         if resolved_type == "Modifier":
             return _modifier_capacity(
                 modifier=resolved_id,
+                parent_item=cstr(parent_item_id).strip(),
                 company=resolved_company,
                 warehouse=resolved_warehouse,
                 current_time=current_time,
@@ -204,6 +217,7 @@ def _item_capacity(
 def _modifier_capacity(
     *,
     modifier: str,
+    parent_item: str,
     company: str,
     warehouse: str,
     current_time: Any,
@@ -221,7 +235,11 @@ def _modifier_capacity(
             "Modifier", modifier, None, True, "This customer choice changes instructions only and does not use stock", {}
         )
 
-    recipes = _active_recipes_for_modifier(modifier, company, current_time)
+    if parent_item:
+        contextual_recipe = _active_recipe(parent_item, company, current_time)
+        recipes = [contextual_recipe] if contextual_recipe is not None else []
+    else:
+        recipes = _active_recipes_for_modifier(modifier, company, current_time)
     if not recipes:
         return _not_ready("Modifier", modifier, "No current approved recipe uses this customer choice")
 
@@ -237,9 +255,7 @@ def _modifier_capacity(
         )
         if effect is None:
             continue
-        effects = _default_effects(recipe)
-        if not any(cstr(_value(row, "modifier")).strip() == modifier for row in effects):
-            effects.append(effect)
+        effects = _effects_for_choice(recipe, modifier, effect)
         requirements = _recipe_requirements(recipe, modifiers=effects)
         evidence = _stock_evidence(requirements, warehouse=warehouse, cutover_at=cutover_at)
         results.append(
@@ -250,16 +266,199 @@ def _modifier_capacity(
     if any(not result.reliable for result in results):
         first_unreliable = next(result for result in results if not result.reliable)
         return CapacityResult(
-            "Modifier", modifier, None, False, first_unreliable.reason, first_unreliable.requirements
+            "Modifier",
+            modifier,
+            None,
+            False,
+            first_unreliable.reason,
+            first_unreliable.requirements,
+            first_unreliable.limiting_item,
         )
     capacities = [result.capacity for result in results if result.capacity is not None]
     if not capacities:
         return CapacityResult(
             "Modifier", modifier, None, True, "This customer choice does not change any ingredient or supply amount", {}
         )
-    return CapacityResult(
-        "Modifier", modifier, min(capacities), True, "Current stock information covers the ingredient change for this customer choice", results[0].requirements
+    limiting_result = min(
+        (result for result in results if result.capacity is not None),
+        key=lambda result: (result.capacity, result.target_id),
     )
+    return CapacityResult(
+        "Modifier",
+        modifier,
+        min(capacities),
+        True,
+        "Current stock information covers the ingredient change for this customer choice",
+        limiting_result.requirements,
+        limiting_result.limiting_item,
+    )
+
+
+def active_recipe_tracking_items(
+    *, item: str, company: str, at_time: Any | None = None
+) -> set[str]:
+    """Return every physical input used by any valid choice for one product.
+
+    The same frozen recipe compiler used for sale posting performs the work.
+    This function only unions its exact vectors; it does not introduce another
+    recipe interpretation.
+    """
+
+    recipe = _active_recipe(cstr(item).strip(), cstr(company).strip(), at_time or now_datetime())
+    if recipe is None:
+        return set()
+    effects = _rows(recipe, "recipe_modifier_effects")
+    contexts: list[list[Any]] = [_default_effects(recipe)]
+    contexts.extend(
+        _effects_for_choice(recipe, cstr(_value(effect, "modifier")).strip(), effect)
+        for effect in effects
+        if cstr(_value(effect, "modifier")).strip()
+    )
+    if not contexts:
+        contexts = [[]]
+    tracked: set[str] = set()
+    for context in contexts:
+        tracked.update(_recipe_requirements(recipe, modifiers=context))
+    return tracked
+
+
+def resolve_made_item_waste(
+    *,
+    item: str,
+    company: str,
+    quantity: Any,
+    selected_modifiers: list[str] | tuple[str, ...],
+    at_time: Any | None = None,
+) -> dict[str, Any]:
+    """Resolve one made product to the same frozen vector used by a sale.
+
+    The tablet sends only the product, quantity, and customer-choice ids. It
+    cannot send or alter ingredient lines. Defaults from unselected groups are
+    applied exactly as they are for availability and sale projection.
+    """
+
+    recipe = _active_recipe(
+        cstr(item).strip(), cstr(company).strip(), at_time or now_datetime()
+    )
+    if recipe is None:
+        raise ValueError("This product has no approved ingredient list")
+    frozen_effects = {
+        cstr(_value(effect, "modifier")).strip(): effect
+        for effect in _rows(recipe, "recipe_modifier_effects")
+        if cstr(_value(effect, "modifier")).strip()
+    }
+    selected_names = [cstr(value).strip() for value in selected_modifiers]
+    if any(not name for name in selected_names) or len(selected_names) != len(
+        set(selected_names)
+    ):
+        raise ValueError("Choose each customer choice once")
+    unknown = [name for name in selected_names if name not in frozen_effects]
+    if unknown:
+        raise ValueError("One customer choice is not approved for this product")
+
+    allowed_rows = _rows(recipe, "allowed_modifier_groups")
+    allowed_by_group = {
+        cstr(_value(row, "modifier_group")).strip(): row
+        for row in allowed_rows
+        if cstr(_value(row, "modifier_group")).strip()
+    }
+    for name in selected_names:
+        group_name = cstr(_value(frozen_effects[name], "modifier_group")).strip()
+        if not group_name or group_name not in allowed_by_group:
+            raise ValueError("One customer choice is not approved for this product")
+
+    # Apply a visible group's saved default only when the tablet did not send a
+    # choice for that group. A default can reveal another group, so resolve to a
+    # fixed point before validating the same effective bounds used by orders.
+    resolved_names = list(selected_names)
+    for _index in range(len(allowed_rows) + 1):
+        visible_rows = filter_visible_allowed_modifier_groups(
+            allowed_rows, set(resolved_names)
+        )
+        visible_group_names = {
+            cstr(_value(row, "modifier_group")).strip() for row in visible_rows
+        }
+        selected_group_names = {
+            cstr(_value(frozen_effects[name], "modifier_group")).strip()
+            for name in resolved_names
+        }
+        defaults_to_add = [
+            cstr(_value(row, "default_modifier")).strip()
+            for row in visible_rows
+            if cstr(_value(row, "modifier_group")).strip()
+            not in selected_group_names
+            and cstr(_value(row, "default_modifier")).strip()
+        ]
+        invalid_default = next(
+            (name for name in defaults_to_add if name not in frozen_effects), None
+        )
+        if invalid_default:
+            raise ValueError("A saved default choice is incomplete for this product")
+        additions = [name for name in defaults_to_add if name not in resolved_names]
+        if not additions:
+            break
+        resolved_names.extend(additions)
+    else:
+        raise ValueError("The customer choices for this product cannot be resolved")
+
+    visible_rows = filter_visible_allowed_modifier_groups(
+        allowed_rows, set(resolved_names)
+    )
+    visible_group_names = {
+        cstr(_value(row, "modifier_group")).strip() for row in visible_rows
+    }
+    selections_by_group: dict[str, list[str]] = {}
+    for name in resolved_names:
+        group_name = cstr(_value(frozen_effects[name], "modifier_group")).strip()
+        if group_name not in visible_group_names:
+            raise ValueError("One customer choice is not available with the other choices")
+        selections_by_group.setdefault(group_name, []).append(name)
+
+    for row in visible_rows:
+        group_name = cstr(_value(row, "modifier_group")).strip()
+        group = frappe.get_cached_doc("FB Modifier Group", group_name)
+        try:
+            bounds = resolve_effective_modifier_bounds(
+                selection_type=_value(group, "selection_type"),
+                group_is_required=_value(group, "is_required"),
+                group_min_selection=_value(group, "min_selection"),
+                group_max_selection=_value(group, "max_selection"),
+                recipe_required=_value(row, "required"),
+                override_min_selection=_value(row, "override_min_selection"),
+                override_max_selection=_value(row, "override_max_selection"),
+            )
+        except ModifierBoundsError as error:
+            raise ValueError(
+                "The customer choice rules for this product need fixing"
+            ) from error
+        selected_count = len(selections_by_group.get(group_name, []))
+        if selected_count < bounds.min_selection:
+            raise ValueError("Choose the required customer choices for this product")
+        if bounds.max_selection and selected_count > bounds.max_selection:
+            raise ValueError("Too many customer choices were selected for this product")
+
+    modifiers = [frozen_effects[name] for name in resolved_names]
+    vector = compile_recipe_vector(
+        _recipe_mapping(recipe),
+        servings=quantity,
+        modifiers=[_modifier_mapping(effect) for effect in modifiers],
+    )
+    if not vector:
+        raise ValueError("This product has no physical ingredients to record")
+    return {
+        "recipe": cstr(getattr(recipe, "name", "")).strip(),
+        "recipe_hash": cstr(getattr(recipe, "canonical_hash", "")).strip(),
+        "selected_modifiers": resolved_names,
+        "lines": [
+            {
+                "item": cstr(row.get("item")).strip(),
+                "qty": cstr(row.get("stock_qty")).strip(),
+                "qty_decimal": cstr(row.get("stock_qty")).strip(),
+                "uom": cstr(row.get("stock_uom")).strip(),
+            }
+            for row in vector
+        ],
+    }
 
 
 def _recipe_requirements(recipe: Any, *, modifiers: list[Any] | None = None) -> dict[str, Decimal]:
@@ -422,6 +621,29 @@ def _default_effects(recipe: Any) -> list[Any]:
         for row in _rows(recipe, "recipe_modifier_effects")
         if cstr(_value(row, "modifier")).strip() in default_names
     ]
+
+
+def _effects_for_choice(recipe: Any, modifier: str, selected_effect: Any) -> list[Any]:
+    """Apply defaults from other groups, then the selected customer choice."""
+
+    selected_group = cstr(
+        frappe.db.get_value("FB Modifier", modifier, "modifier_group")
+    ).strip()
+    default_names = {
+        cstr(_value(row, "default_modifier")).strip()
+        for row in _rows(recipe, "allowed_modifier_groups")
+        if cstr(_value(row, "default_modifier")).strip()
+        and (
+            not selected_group
+            or cstr(_value(row, "modifier_group")).strip() != selected_group
+        )
+    }
+    defaults = [
+        row
+        for row in _rows(recipe, "recipe_modifier_effects")
+        if cstr(_value(row, "modifier")).strip() in default_names
+    ]
+    return [*defaults, selected_effect]
 
 
 def _recipe_mapping(recipe: Any) -> dict[str, Any]:
