@@ -31,6 +31,7 @@ EXPECTED_PRE_MODEL_SYNC_PATCHES = (
 EXPECTED_POST_MODEL_SYNC_PATCHES = (
     "kopos_connector.patches.migrate_branch_scoped_maybank_qr",
     "kopos_connector.patches.retire_pre_cutover_stock_issue_projections",
+    "kopos_connector.patches.requeue_stranded_commercial_projections",
     "kopos_connector.patches.simplify_kopos_support_workspace_copy",
     "kopos_connector.patches.simplify_jiji_business_workspace",
     "kopos_connector.patches.migrate_branch_scoped_maybank_qr # 2026-09-13 native-singleton-password-repair",

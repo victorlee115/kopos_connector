@@ -193,3 +193,24 @@ def test_orphaned_projection_rows_are_left_alone(monkeypatch) -> None:
 
     assert site.sql_calls == []
     assert site.logs[0]["state"] == "Failed"
+
+
+def test_pre_cutover_rows_stranded_in_pending_retire_but_queued_work_stays(monkeypatch) -> None:
+    """The deployed connector also left pre-cutover Stock Issue rows Pending."""
+
+    site = FakeSite(
+        logs=[
+            _log("LOG-PRE-PENDING", "ORD-PRE-1", "Pending"),
+            _log("LOG-POST-PENDING", "ORD-POST", "Pending"),
+        ],
+        orders=[
+            _order("ORD-PRE-1", datetime(2026, 7, 15, 9, 0, 0)),
+            _order("ORD-POST", datetime(2026, 8, 15, 9, 0, 0)),
+        ],
+    )
+    _install(monkeypatch, site)
+
+    patch.execute()
+
+    assert [row["state"] for row in site.logs] == ["Not Evaluated", "Pending"]
+    assert site.logs[0]["last_error"] == "legacy failure for ORD-PRE-1"

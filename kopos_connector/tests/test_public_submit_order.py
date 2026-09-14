@@ -99,12 +99,10 @@ def test_public_refund_void_and_history_avoid_legacy_orders_module() -> None:
         assert required_call in _called_names(node), function_name
 
 
-def test_legacy_orders_module_is_migration_only_and_not_publicly_whitelisted() -> None:
-    legacy_source = LEGACY_ORDERS_PATH.read_text()
+def test_legacy_pos_invoice_orders_module_is_removed() -> None:
     public_source = PUBLIC_API_PATH.read_text()
 
-    assert "Legacy POS Invoice helpers retained for migration" in legacy_source
-    assert "@frappe.whitelist" not in legacy_source
+    assert not LEGACY_ORDERS_PATH.exists()
     assert "from .orders import" not in public_source
     assert "kopos_connector.api.orders" not in public_source
 

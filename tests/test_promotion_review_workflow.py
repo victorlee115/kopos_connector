@@ -9,7 +9,6 @@ install_fake_frappe_modules()
 
 import frappe
 
-from kopos_connector.api.orders import set_invoice_promotion_metadata
 from kopos_connector.api.promotions import (
     amount_to_sen,
     get_promotion_review_queue,
@@ -23,59 +22,6 @@ from kopos_connector.kopos.doctype.kopos_promotion_snapshot.kopos_promotion_snap
 
 
 class PromotionReviewWorkflowTests(unittest.TestCase):
-    def test_set_invoice_promotion_metadata_uses_invoice_profile_not_payload(self):
-        invoice = SimpleNamespace(
-            name="POS-INV-001",
-            pos_profile="KoPOS Main",
-        )
-        payload = {
-            "pos_profile": "KoPOS Evil",
-            "pricing_context": {
-                "snapshot_version": "snap-1",
-                "snapshot_hash": "hash-1",
-            },
-            "applied_promotions": [{"promotion_id": "PROMO-1", "amount": 4.5}],
-            "order": {
-                "items": [
-                    {
-                        "promotion_allocations": [
-                            {"promotion_id": "PROMO-1", "amount": 4.5}
-                        ]
-                    }
-                ]
-            },
-        }
-        snapshot = SimpleNamespace(
-            snapshot_hash="hash-1",
-            snapshot_version="snap-1",
-            snapshot_payload=json.dumps(
-                {"promotions": [{"promotion_id": "PROMO-1"}]},
-                sort_keys=True,
-            ),
-        )
-
-        reconciliation_calls: list[tuple[object, ...]] = []
-
-        def capture_reconciliation(pos_profile, rec_payload):
-            reconciliation_calls.append((pos_profile, rec_payload))
-            return {
-                "status": "matched",
-                "message": "Promotion payload matched published snapshot",
-                "severity": "none",
-                "snapshot_version": "snap-1",
-                "snapshot_hash": "hash-1",
-            }
-
-        with patch(
-            "kopos_connector.api.promotions.reconcile_promotion_payload",
-            side_effect=capture_reconciliation,
-        ):
-            set_invoice_promotion_metadata(invoice, payload)
-
-        self.assertEqual(len(reconciliation_calls), 1)
-        self.assertEqual(reconciliation_calls[0][0], "KoPOS Main")
-        self.assertNotEqual(reconciliation_calls[0][0], "KoPOS Evil")
-
     def test_get_promotion_review_queue_returns_pending_items(self):
         invoice_row = {
             "name": "POS-INV-001",

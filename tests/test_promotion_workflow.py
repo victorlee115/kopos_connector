@@ -14,10 +14,6 @@ install_fake_frappe_modules()
 
 import frappe
 
-from kopos_connector.api.orders import (
-    build_refund_promotion_allocation,
-    determine_reconciliation_status,
-)
 from kopos_connector.api.promotions import (
     _canonical_promotion_validator,
     build_effective_snapshot_body,
@@ -34,42 +30,6 @@ from kopos_connector.api.promotions import (
 
 
 class PromotionWorkflowTests(unittest.TestCase):
-    def test_determine_reconciliation_status_covers_online_and_offline_modes(self):
-        self.assertEqual(
-            determine_reconciliation_status({"applied_promotions": []}),
-            "not_applicable",
-        )
-        self.assertEqual(
-            determine_reconciliation_status(
-                {
-                    "applied_promotions": [{"promotion_id": "PROMO-1"}],
-                    "offline_priced": False,
-                    "pricing_context": {},
-                }
-            ),
-            "matched",
-        )
-        self.assertEqual(
-            determine_reconciliation_status(
-                {
-                    "applied_promotions": [{"promotion_id": "PROMO-1"}],
-                    "offline_priced": True,
-                    "pricing_context": {},
-                }
-            ),
-            "pending",
-        )
-        self.assertEqual(
-            determine_reconciliation_status(
-                {
-                    "applied_promotions": [{"promotion_id": "PROMO-1"}],
-                    "offline_priced": True,
-                    "pricing_context": {"restricted_mode": True},
-                }
-            ),
-            "review_required",
-        )
-
     def test_build_snapshot_version_from_hash_is_deterministic(self):
         snapshot_hash = "abcdef1234567890fedcba0987654321"
         self.assertEqual(
@@ -728,38 +688,6 @@ class PromotionWorkflowTests(unittest.TestCase):
             "Applied promotion amount evidence is invalid",
         )
         self.assertEqual(result["severity"], "major")
-
-    def test_partial_refund_allocation_scales_original_promotion_evidence(self):
-        original_item = SimpleNamespace(
-            qty=2,
-            amount=25.5,
-            rate=12.75,
-            custom_kopos_promotion_allocation=json.dumps(
-                {
-                    "base_amount": 30.0,
-                    "discount_amount": 4.5,
-                    "promotion_allocations": [
-                        {
-                            "promotion_id": "Second Cup 30% Off",
-                            "amount": 4.5,
-                            "quantity": 1.0,
-                            "scope": "line",
-                        }
-                    ],
-                },
-                sort_keys=True,
-            ),
-        )
-
-        result = json.loads(build_refund_promotion_allocation(original_item, 1) or "{}")
-
-        self.assertEqual(result["refund_context"]["refund_qty"], 1.0)
-        self.assertEqual(result["refund_context"]["refunded_base_amount"], 15.0)
-        self.assertEqual(result["refund_context"]["refunded_discount_amount"], 2.25)
-        self.assertEqual(
-            result["refund_context"]["refunded_promotion_allocations"][0]["amount"],
-            2.25,
-        )
 
     def test_repair_promotion_reconciliation_invoices_repairs_hash_only_invoice(self):
         invoice_row = {

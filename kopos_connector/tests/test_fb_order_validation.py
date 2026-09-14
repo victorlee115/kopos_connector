@@ -476,6 +476,9 @@ class TestFBOrderModifierValidation(unittest.TestCase):
 
         evidence = _validate_published_promotion_snapshot(normalized)
 
+        # The pricing authority is the device's POS Profile; the request supplies none.
+        mock_resolve_profile.assert_called_once_with(None, device_id="SMOKE-TAB-A001")
+        mock_get_snapshot.assert_called_once_with("KoPOS Smoke Profile", normalized["pricing_context"]["snapshot_version"])
         self.assertEqual(evidence["reconciliation"], {
             "status": "matched",
             "source": "published_snapshot",

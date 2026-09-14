@@ -14,7 +14,7 @@ from kopos_connector.kopos.services.inventory_autopilot.projection_worker import
 
 
 PROJECTION_TYPE = "Stock Issue"
-LEGACY_STATES = ("Failed", "Dead Letter")
+LEGACY_STATES = ("Pending", "Failed", "Dead Letter")
 RETIRED_STATE = "Not Evaluated"
 ORDER_FIELDS = ("name", "company", "booth_warehouse", "sale_datetime")
 CHUNK_SIZE = 500
@@ -24,10 +24,12 @@ def execute() -> None:
     """Retire pre-cutover Stock Issue projections left by the deployed connector.
 
     The redesigned worker returns ``Not Evaluated`` and writes no log row for a
-    pre-cutover order, so a ``Failed`` ingredient projection against pre-cutover
-    history can only have been written by the previously deployed connector.
-    Leaving those rows alone makes ``get_autopilot_health`` report a projection
-    failure forever, and the retry lease keeps them nominally claimable.
+    pre-cutover order, so a ``Pending``, ``Failed`` or ``Dead Letter`` ingredient
+    projection against pre-cutover history can only have been written by the
+    previously deployed connector. Leaving those rows alone makes
+    ``get_autopilot_health`` report a projection failure or an ageing backlog
+    forever, and the retry lease keeps them nominally claimable. The August 11
+    production backup holds one such ``Pending`` row beside its stranded sale.
 
     Reclassifying removes the false alarm while preserving the evidence:
     ``last_error``, ``dead_lettered_at``, and ``retry_count`` are untouched, no
