@@ -251,9 +251,12 @@ class TestMaybankLegacyAccountMigration(FrappeTestCase):
         from kopos_connector.patches.migrate_branch_scoped_maybank_qr import execute
         self.assertTrue(frappe.get_meta("Maybank Settings").issingle)
         self.assertFalse(frappe.db.table_exists("Maybank Settings"))
-        # Schemas are already installed. DDL commits are deliberately not run
-        # inside a rollback-only test; the migration data path uses the real DB.
-        with patch.object(frappe, "reload_doc") as reload_doc:
+        # Schemas and custom fields are already installed. DDL commits are
+        # deliberately not run inside a rollback-only test; the migration data
+        # path uses the real DB. Upgrade field creation is proven on restored data.
+        with patch.object(frappe, "reload_doc") as reload_doc, patch(
+            "kopos_connector.install.install.create_kopos_custom_fields"
+        ) as create_fields:
             execute()
             first = self._account()
             profiles = frappe.get_all("POS Profile", fields=["name", "modified",
@@ -265,6 +268,7 @@ class TestMaybankLegacyAccountMigration(FrappeTestCase):
             self.assertEqual(frappe.get_all("POS Profile", fields=["name", "modified",
                 "custom_kopos_maybank_qrpaybiz_account", "custom_kopos_maybank_outlet_id"]), profiles)
             self.assertEqual(reload_doc.call_count, 4)
+            self.assertEqual(create_fields.call_count, 2)
 
     def test_native_patch_identity_repairs_previously_recorded_noop(self):
         from frappe.modules import patch_handler

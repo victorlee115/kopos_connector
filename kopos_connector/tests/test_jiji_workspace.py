@@ -93,3 +93,54 @@ def test_no_destination_shows_a_record_id() -> None:
         assert label == label.strip()
         assert "_" not in label, f"{label!r} reads like a table name"
         assert not label.isupper(), f"{label!r} reads like a code"
+
+
+def test_support_role_restriction_changes_only_role_rows(monkeypatch) -> None:
+    """Deployed 1.0.11 KoPOS Support fails a full v16 Workspace save; roles alone change."""
+    from kopos_connector.tests.fake_frappe import install_fake_frappe_modules
+
+    install_fake_frappe_modules()
+    from kopos_connector.patches import simplify_jiji_business_workspace as patch
+
+    workspace = {"parenttype": "Workspace", "parent": "KoPOS Support"}
+
+    def run(stored: list[str]) -> list[tuple]:
+        events: list[tuple] = []
+
+        class Row(dict):
+            def set_new_name(self) -> None:
+                self["name"] = "generated"
+
+            def db_insert(self) -> None:
+                events.append(("db_insert", self["name"], self["parentfield"], self["role"]))
+                stored.append(self["role"])
+
+        def sql(query: str, values: dict, pluck: bool) -> list[str]:
+            assert "`tabHas Role`" in query and pluck is True and values == workspace
+            return list(stored)
+
+        def delete(doctype: str, filters: dict) -> None:
+            assert (doctype, filters) == ("Has Role", {**workspace, "role": ["!=", "System Manager"]})
+            events.append(("delete_other_roles",))
+            stored[:] = [role for role in stored if role == "System Manager"]
+
+        def get_doc(value):
+            assert isinstance(value, dict), "the legacy Workspace document must not be loaded or saved"
+            return Row(value)
+
+        monkeypatch.setattr(patch.frappe.db, "sql", sql)
+        monkeypatch.setattr(patch.frappe.db, "delete", delete)
+        monkeypatch.setattr(patch.frappe, "get_doc", get_doc, raising=False)
+        monkeypatch.setattr(patch.frappe, "clear_cache", lambda: events.append(("clear_cache",)), raising=False)
+        patch._restrict_support_roles()
+        patch._restrict_support_roles()
+        assert stored == ["System Manager"]
+        return events
+
+    # The August 11 production backup: System Manager plus two retired manager roles.
+    assert run(["System Manager", "POS Manager", "KoPOS Manager"]) == [("delete_other_roles",), ("clear_cache",)]
+    assert run(["Company Director"]) == [
+        ("delete_other_roles",),
+        ("db_insert", "generated", "roles", "System Manager"),
+        ("clear_cache",),
+    ]

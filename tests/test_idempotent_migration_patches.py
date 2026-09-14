@@ -151,3 +151,59 @@ def test_legacy_report_quarantine_patch_is_safe_to_replay(monkeypatch) -> None:
             1,
         ),
     ]
+
+
+def test_branch_qr_migration_creates_profile_fields_before_migrating_store_qr(monkeypatch) -> None:
+    """Upgrade from 1.0.11: POS Profile QR fields do not exist until after_migrate."""
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from kopos_connector.patches import migrate_branch_scoped_maybank_qr as qr_patch
+
+    events: list[str] = []
+    fields_created = False
+    installer = ModuleType("kopos_connector.install.install")
+
+    def create_kopos_custom_fields() -> None:
+        nonlocal fields_created
+        events.append("create_fields")
+        fields_created = True
+
+    installer.create_kopos_custom_fields = create_kopos_custom_fields
+    monkeypatch.setitem(sys.modules, "kopos_connector.install.install", installer)
+
+    class Profile(SimpleNamespace):
+        def save(self, ignore_permissions: bool) -> None:
+            assert ignore_permissions is True
+            # Native Document.save() drops attributes whose fields are unknown.
+            assert fields_created, "profile saved before its QR fields existed"
+            events.append(f"save:{self.name}")
+
+    profile = Profile(name="Booth", custom_kopos_static_qr_payload="", custom_kopos_maybank_qrpaybiz_account="")
+    device = SimpleNamespace(
+        static_qr_payload="PAYLOAD", static_qr_payload_sha256="sha", static_qr_merchant_id="123",
+        static_qr_acquirer_id="501664", static_qr_merchant_name="STORE", static_qr_version="02",
+        static_qr_commissioned_at="2026-08-01 10:00:00",
+    )
+
+    def get_doc(doctype: str, name: str):
+        events.append(f"get_doc:{doctype}")
+        return profile if doctype == "POS Profile" else device
+
+    monkeypatch.setattr(qr_patch.frappe, "reload_doc", lambda *args: events.append("reload"), raising=False)
+    monkeypatch.setattr(qr_patch.frappe.db, "exists", lambda doctype, name=None: doctype == "DocType")
+    monkeypatch.setattr(qr_patch.frappe.db, "table_exists", lambda doctype: True, raising=False)
+    monkeypatch.setattr(qr_patch.frappe, "clear_cache", lambda **kwargs: events.append(f"clear_cache:{kwargs.get('doctype')}"), raising=False)
+    monkeypatch.setattr(qr_patch.frappe, "get_single", lambda doctype: SimpleNamespace(username="", outlet_id="OUTLET"), raising=False)
+    monkeypatch.setattr(qr_patch.frappe, "get_all", lambda doctype, **kwargs: [{"pos_profile": "Booth", "device_id": "TAB-1"}] if doctype == "KoPOS Device" else [], raising=False)
+    monkeypatch.setattr(qr_patch.frappe, "get_doc", get_doc, raising=False)
+
+    qr_patch.execute()
+
+    assert events.index("create_fields") < events.index("clear_cache:POS Profile") < events.index("get_doc:POS Profile")
+    # No legacy Maybank login: no automatic-QR account, but the store QR still migrates.
+    assert profile.custom_kopos_maybank_qrpaybiz_account == ""
+    assert profile.custom_kopos_static_qr_enabled == 1
+    assert profile.custom_kopos_static_qr_payload == "PAYLOAD"
+    assert profile.custom_kopos_static_qr_merchant_id == "123"
+    assert events.count("save:Booth") == 1

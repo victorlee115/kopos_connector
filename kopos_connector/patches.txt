@@ -1,3 +1,5 @@
+[pre_model_sync]
+# Patch identities are the full lines below; moving a line between sections never re-runs it.
 kopos_connector.patches.remove_duplicate_modifier_client_script
 kopos_connector.patches.normalize_duplicate_device_api_users
 kopos_connector.patches.add_order_reference_to_fb_stock_override_log
@@ -6,9 +8,14 @@ kopos_connector.patches.quarantine_legacy_modifier_report
 kopos_connector.patches.backfill_maybank_transaction_authenticity
 kopos_connector.patches.backfill_privileged_request_fingerprints
 kopos_connector.patches.backfill_shift_request_fingerprints
+# Reads the retiring cogs_account field while the installed DocType still defines it.
+kopos_connector.patches.consolidate_inventory_policy_cogs_account
+
+[post_model_sync]
+# These read DocTypes, fields or Pages that an upgrade from the deployed 1.0.11 site
+# creates during sync; saving a Workspace validates links to the synced Page.
 kopos_connector.patches.migrate_branch_scoped_maybank_qr
 kopos_connector.patches.retire_pre_cutover_stock_issue_projections
-kopos_connector.patches.consolidate_inventory_policy_cogs_account
 kopos_connector.patches.simplify_kopos_support_workspace_copy
 kopos_connector.patches.simplify_jiji_business_workspace
 kopos_connector.patches.migrate_branch_scoped_maybank_qr # 2026-09-13 native-singleton-password-repair

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import configparser
 import importlib
 import importlib.util
 import os
@@ -14,7 +15,9 @@ from .fake_frappe import install_fake_frappe_modules
 install_fake_frappe_modules()
 
 
-EXPECTED_PATCHES = (
+# An upgrade from the deployed 1.0.11 site lacks DocTypes, Pages and POS Profile
+# fields that model sync and the installer create; patches using them run post sync.
+EXPECTED_PRE_MODEL_SYNC_PATCHES = (
     "kopos_connector.patches.remove_duplicate_modifier_client_script",
     "kopos_connector.patches.normalize_duplicate_device_api_users",
     "kopos_connector.patches.add_order_reference_to_fb_stock_override_log",
@@ -23,13 +26,16 @@ EXPECTED_PATCHES = (
     "kopos_connector.patches.backfill_maybank_transaction_authenticity",
     "kopos_connector.patches.backfill_privileged_request_fingerprints",
     "kopos_connector.patches.backfill_shift_request_fingerprints",
+    "kopos_connector.patches.consolidate_inventory_policy_cogs_account",
+)
+EXPECTED_POST_MODEL_SYNC_PATCHES = (
     "kopos_connector.patches.migrate_branch_scoped_maybank_qr",
     "kopos_connector.patches.retire_pre_cutover_stock_issue_projections",
-    "kopos_connector.patches.consolidate_inventory_policy_cogs_account",
     "kopos_connector.patches.simplify_kopos_support_workspace_copy",
     "kopos_connector.patches.simplify_jiji_business_workspace",
     "kopos_connector.patches.migrate_branch_scoped_maybank_qr # 2026-09-13 native-singleton-password-repair",
 )
+EXPECTED_PATCHES = EXPECTED_PRE_MODEL_SYNC_PATCHES + EXPECTED_POST_MODEL_SYNC_PATCHES
 EXPECTED_ACCEPTANCE_MODULES = (
     "kopos_connector.acceptance.maybank_uat_accounting",
     "kopos_connector.acceptance.maybank_uat_business_state",
@@ -47,12 +53,17 @@ def _connector_root() -> Path:
     return Path(package_locations[0]).resolve()
 
 
+def _patch_sections(manifest: Path) -> dict[str, tuple[str, ...]]:
+    # Same parser settings as frappe.modules.patch_handler.parse_as_configfile.
+    parser = configparser.ConfigParser(allow_no_value=True, delimiters="\n")
+    parser.optionxform = str
+    parser.read(manifest, encoding="utf-8")
+    return {section: tuple(parser[section]) for section in parser.sections()}
+
+
 def _patch_entries(manifest: Path) -> tuple[str, ...]:
-    return tuple(
-        line.strip()
-        for line in manifest.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    )
+    sections = _patch_sections(manifest)
+    return sections.get("pre_model_sync", ()) + sections.get("post_model_sync", ())
 
 
 def test_frappe_app_path_contains_the_canonical_patch_manifest() -> None:
@@ -62,6 +73,15 @@ def test_frappe_app_path_contains_the_canonical_patch_manifest() -> None:
     assert manifest.is_file()
     assert _patch_entries(manifest) == EXPECTED_PATCHES
     assert not (connector_root.parent / "patches.txt").exists()
+
+
+def test_patch_manifest_runs_schema_dependent_patches_after_model_sync() -> None:
+    sections = _patch_sections(_connector_root() / "patches.txt")
+
+    assert sections == {
+        "pre_model_sync": EXPECTED_PRE_MODEL_SYNC_PATCHES,
+        "post_model_sync": EXPECTED_POST_MODEL_SYNC_PATCHES,
+    }
 
 
 def test_patch_manifest_is_ordered_unique_and_importable() -> None:

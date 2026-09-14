@@ -85,6 +85,34 @@ def _row_value(row: Any, fieldname: str) -> str:
     return str(getattr(row, fieldname, "") or "")
 
 
+def _restrict_support_roles() -> None:
+    """Allow KoPOS Support only to System Managers without re-saving its layout.
+
+    The deployed workspace predates Frappe v16 Workspace validation (empty type,
+    retired shortcut views), so a full document save rejects rows this patch
+    never changes. Replace only the role rows, as Frappe core does for roles.
+    """
+    filters = {"parenttype": "Workspace", "parent": "KoPOS Support"}
+    roles = frappe.db.sql(
+        "select role from `tabHas Role` where parenttype=%(parenttype)s and parent=%(parent)s",
+        filters,
+        pluck=True,
+    )
+    if set(roles) == {"System Manager"}:
+        return
+    # Keep an existing System Manager row; remove only the other roles.
+    frappe.db.delete("Has Role", {**filters, "role": ["!=", "System Manager"]})
+    if "System Manager" not in roles:
+        # Has Role validation treats any same-named parent (such as the KoPOS
+        # Support Desktop Icon) as a duplicate, so write the row natively.
+        row = frappe.get_doc(
+            {"doctype": "Has Role", "parentfield": "roles", "role": "System Manager", "idx": 1, **filters}
+        )
+        row.set_new_name()
+        row.db_insert()
+    frappe.clear_cache()
+
+
 def execute() -> None:
     if frappe.db.exists("Workspace", "JiJi"):
         workspace = frappe.get_doc("Workspace", "JiJi")
@@ -105,8 +133,4 @@ def execute() -> None:
             workspace.save(ignore_permissions=True)
 
     if frappe.db.exists("Workspace", "KoPOS Support"):
-        support = frappe.get_doc("Workspace", "KoPOS Support")
-        roles = {_row_value(row, "role") for row in (getattr(support, "roles", ()) or ())}
-        if roles != {"System Manager"}:
-            support.set("roles", [{"role": "System Manager"}])
-            support.save(ignore_permissions=True)
+        _restrict_support_roles()

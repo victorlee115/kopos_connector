@@ -24,15 +24,23 @@ def execute() -> None:
     if not frappe.db.exists("DocType", LEGACY_DOCTYPE) or not frappe.db.table_exists(ACCOUNT_DOCTYPE):
         return
 
-    legacy = frappe.get_single(LEGACY_DOCTYPE)
-    account_name = _ensure_account(legacy)
-    if not account_name:
-        return
+    # after_migrate creates the POS Profile QR fields only after every patch.
+    # Document.save() silently drops values for fields its meta does not know,
+    # so create them first with the installer's native definitions.
+    from kopos_connector.install.install import create_kopos_custom_fields
+
+    create_kopos_custom_fields()
+    frappe.clear_cache(doctype="POS Profile")
 
     profiles = _profiles_for_devices()
-    _migrate_profile_assignments(profiles, account_name, cstr(getattr(legacy, "outlet_id", None)).strip())
+    legacy = frappe.get_single(LEGACY_DOCTYPE)
+    account_name = _ensure_account(legacy)
+    if account_name:
+        _migrate_profile_assignments(profiles, account_name, cstr(getattr(legacy, "outlet_id", None)).strip())
+    # A store QR payload does not depend on a Maybank merchant login.
     _migrate_static_qr(profiles)
-    _backfill_transaction_snapshots(account_name, profiles)
+    if account_name:
+        _backfill_transaction_snapshots(account_name, profiles)
 
 
 def _ensure_account(legacy: Any) -> str | None:
