@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import binascii
 import hashlib
 import re
 from typing import Any
@@ -39,6 +40,8 @@ def _parse_tlv(payload: str, label: str) -> dict[str, str]:
                 frappe.ValidationError,
             )
         length = int(length_text)
+        if length == 0:
+            frappe.throw(f"{label} tag {tag} must not be empty", frappe.ValidationError)
         value_start = cursor + 4
         value_end = value_start + length
         if value_end > len(payload):
@@ -56,20 +59,8 @@ def _parse_tlv(payload: str, label: str) -> dict[str, str]:
     return values
 
 
-def _crc16_ccitt_false(data: bytes) -> str:
-    crc = 0xFFFF
-    for byte in data:
-        crc ^= byte << 8
-        for _ in range(8):
-            if crc & 0x8000:
-                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
-            else:
-                crc = (crc << 1) & 0xFFFF
-    return f"{crc:04X}"
-
-
 def inspect_paynet_static_qr(payload: Any) -> dict[str, str]:
-    """Parse and authenticate one reusable PayNet v1.5 static QR payload."""
+    """Validate reusable PayNet v1.5 static-QR syntax, identity and checksum."""
 
     if not isinstance(payload, str) or not payload or payload.strip() != payload:
         frappe.throw(
@@ -96,6 +87,10 @@ def inspect_paynet_static_qr(payload: Any) -> dict[str, str]:
         )
 
     top = _parse_tlv(payload, "Static QR payload")
+    if next(iter(top), None) != "00":
+        frappe.throw("Static QR payload format indicator must be first", frappe.ValidationError)
+    if "62" in top:
+        _parse_tlv(top["62"], "Static QR additional data")
     if top.get("00") != PAYNET_PAYLOAD_VERSION:
         frappe.throw(
             "Static QR payload must use PayNet payload version 02",
@@ -183,7 +178,8 @@ def inspect_paynet_static_qr(payload: Any) -> dict[str, str]:
             "Static QR CRC must be the final payload field",
             frappe.ValidationError,
         )
-    calculated_crc = _crc16_ccitt_false(encoded[:-4])
+    # PayNet uses polynomial 0x1021, initial value 0xFFFF, including tag 6304.
+    calculated_crc = f"{binascii.crc_hqx(encoded[:-4], 0xFFFF):04X}"
     if crc.upper() != calculated_crc:
         frappe.throw(
             "Static QR payload CRC does not match",

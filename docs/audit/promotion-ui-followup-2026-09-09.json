@@ -1,0 +1,707 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-09",
+  "status": "development_tests_passed_final_browser_recheck_blocked",
+  "scope": "Approved beginner promotion UX follow-up after Mac unlock; isolated synthetic Colima only. No production or novice/physical-device acceptance.",
+  "heads": {
+    "pos": "74850c0456ae1aea79be704b72b8528a3a23eaec",
+    "erp": "52f2c69e8d5a0ba24f0765052bab240e3425ffc2",
+    "recheckedUnchanged": true,
+    "dirtyTreesPreserved": true
+  },
+  "candidate": {
+    "id": "F",
+    "wheelPath": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-candidate-f.BNP2bo/kopos_connector-1.1.0-py3-none-any.whl",
+    "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+    "imageId": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+    "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+    "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18",
+    "admission": "development_not_checkout_admitted",
+    "site": "test.localhost",
+    "project": "jiji_maintenance_20260908_grhh9w",
+    "url": "http://127.0.0.1:18308/app/jiji_promotions"
+  },
+  "candidateSequence": [
+    {
+      "id": "C",
+      "wheelSha256": "87a9465ebf5189c09e7b660ddc4eaf492c66e904090aa82eb8813bc40ccb43fd",
+      "observed": "Real UI preview hydration feedback loop; original saved-state/focus defects."
+    },
+    {
+      "id": "D",
+      "wheelSha256": "80f0a567a080ca6f525df5b14afc5c5fdf7f4ea6d418b64f400c575e797d04ee",
+      "observed": "Five template calculations, Friday overnight and exact-end boundary exercised in UI; remaining rename/editability bug reproduced."
+    },
+    {
+      "id": "E",
+      "wheelSha256": "2fcde00c4fc9fee93c9ba1441e119210823f2d52faef6f20db354f12055e2876",
+      "observed": "Built; quantity-warning and narrow receipt polish. Never deployed; superseded by F rename correction."
+    },
+    {
+      "id": "F",
+      "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+      "observed": "Deployed, package and eight real-service tests pass; final browser blocked by renewed Mac lock."
+    }
+  ],
+  "sourceHashes": {
+    "kopos_connector/api/promotions.py": "98bbfa1df046e6e5051782b65c747b79238941be6d5df370fdf50bcd260ae05b",
+    "kopos_connector/contracts/promotion.v1.schema.json": "76667e1815e4307d30935dc397afcd714d32b83db6e7c3b72d18045b5716e21d",
+    "kopos_connector/contracts/promotion-snapshot.v2.schema.json": "c5e908c01aac7e6d3b0c5d85bbd010f9edf5c6c166363aa0e66c797937463062",
+    "kopos_connector/pricing/runtime.json": "6f0273799d2bc87822be06059a5c737aa28a71647938f79121e43f8d132807bd",
+    "kopos_connector/pricing/runtime.js": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+    "kopos_connector/pricing/adapter.py": "ba2e880ff6f8f3d024095799f9561a197f82c6b05602f197bf686d1a89338102",
+    "kopos_connector/pricing/runtime.py": "cb934256ce9e5f6b69613e27d93a163d650cf59bc36e458a0c2c41b8108292bb",
+    "kopos_connector/pricing/worker.py": "8b97150d947b7f983121e81da6927cb08d40bbf935d732061a7a24ee446c9586",
+    "kopos_connector/api/promotion_setup.py": "9aca2abe843ca5a134c22a74448468872ef37c52e8ba34acbb4e2cafcb83c386",
+    "kopos_connector/api/inventory.py": "3cc9dc406ac41cd245d95fe710a04697583c8fe80035ffae19b56c85f624489b",
+    "kopos_connector/kopos/api/fb_orders.py": "b0b828b1d5eec5b4c70cf044ef4f5706699914b954ce18a20ec63a0a6f799dd3",
+    "kopos_connector/kopos/page/jiji_promotions/jiji_promotions.js": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18",
+    "tests/test_promotion_workflow.py": "446e7ff4aad86575834f69250bee006fb455170fe89921c5575c8a0172a907b0",
+    "kopos_connector/kopos/tests/test_promotion_snapshot_persistence_contract.py": "d57b9bb7468852d21f53f3038da4db13119e2335ee1fa48b59ba8d1a4d67730d"
+  },
+  "sourceTestHashes": {
+    "tests/test_promotion_setup.py": "7e7c6eb3222400eb0ef644b426db2a714ab441aadc4d86ef80d6db5381235bae",
+    "tests/promotion-setup-ui.test.cjs": "cb28ae54c5aae4e637f1e3251ef67771ca3a5d61a74889b96c4602fb528b3406"
+  },
+  "unchangedPosEvidence": {
+    "receipt": "../../../JiJiPOS/docs/audit/promotion-ux-execution-2026-09-09.json",
+    "boundFilesRechecked": 14,
+    "packageGatesRerunThisFollowup": false
+  },
+  "lifecycle": [
+    {
+      "command": "build",
+      "exitCode": 2,
+      "startedAt": "2026-09-09T02:45:47.627Z",
+      "endedAt": "2026-09-09T02:47:12.104Z",
+      "sourceHead": "52f2c69e8d5a0ba24f0765052bab240e3425ffc2",
+      "artifactSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+      "sourceStable": true,
+      "log": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/build-1788921947626.log",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/build-1788921947626.log.json",
+      "logSha256": "56433c058ee27d4d5470c1e8aa3b8d1201b826109f183e279d63f5d37049a8d8",
+      "receiptSha256": "6ee958a30e19b577c8917c489dab1d1b835877876a4b60699af5bff5f965316e",
+      "failure": "Temporary Docker build space exhausted; running D remained unchanged. Same F wheel retried successfully."
+    },
+    {
+      "command": "build",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T02:57:22.053Z",
+      "endedAt": "2026-09-09T03:00:31.313Z",
+      "sourceHead": "52f2c69e8d5a0ba24f0765052bab240e3425ffc2",
+      "artifactSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+      "sourceStable": true,
+      "log": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/build-1788922642052.log",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/build-1788922642052.log.json",
+      "logSha256": "7c4c1ab7c5fe9af612f7357d9519286aa01c4beed41fcbf34f37b05127217871",
+      "receiptSha256": "73ccbd7c2fa38534c85613a9f6b2052f1d4a4b0b54a73830b7d0c9a4f032ad62"
+    },
+    {
+      "command": "up",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T03:01:21.784Z",
+      "endedAt": "2026-09-09T03:01:57.894Z",
+      "sourceHead": "52f2c69e8d5a0ba24f0765052bab240e3425ffc2",
+      "artifactSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+      "sourceStable": true,
+      "log": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/up-1788922881783.log",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/up-1788922881783.log.json",
+      "logSha256": "f8a350477206c4fc2f94e6df3b42c3894b9bd660eaae978ab273d8cfdea40dd8",
+      "receiptSha256": "424e7d0e060ca4e2a015d464b593ce7345905e237af74425cfad754770f605f6"
+    },
+    {
+      "command": "smoke",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T03:03:27.848Z",
+      "endedAt": "2026-09-09T03:03:43.201Z",
+      "sourceHead": "52f2c69e8d5a0ba24f0765052bab240e3425ffc2",
+      "artifactSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+      "sourceStable": true,
+      "log": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/smoke-1788923007848.log",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/smoke-1788923007848.log.json",
+      "logSha256": "7023f2d35b4528b02f8b5bb818db0716fbeabb2d8052e774c43e2b229f9c8578",
+      "receiptSha256": "9afa50d7cdc009ea8aff2f15220eadd13d00d16e53ff98b83601de86773202fa"
+    },
+    {
+      "command": "dump",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T03:03:50.698Z",
+      "endedAt": "2026-09-09T03:03:52.195Z",
+      "sourceHead": "52f2c69e8d5a0ba24f0765052bab240e3425ffc2",
+      "artifactSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+      "sourceStable": true,
+      "log": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/dump-1788923030698.log",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/dump-1788923030698.log.json",
+      "logSha256": "f595c90d7d742cdc8f6a2eace56c79c6d945bd6eca0797fc4fefee9580e0ed28",
+      "receiptSha256": "1d5c075f3d133a6205fbeb3d1396ac7f30260a4713e702b5a016690d3576d93f"
+    }
+  ],
+  "processCheckedAt": "2026-09-09 03:02:55 UTC",
+  "processChecks": [
+    {
+      "service": "backend",
+      "container": "jiji_maintenance_20260908_grhh9w-backend-1",
+      "image": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+      "restartedAt": "2026-09-09T03:01:46.909484209Z",
+      "exitCode": 0,
+      "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+      "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+      "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18",
+      "setupApiSha256": "9aca2abe843ca5a134c22a74448468872ef37c52e8ba34acbb4e2cafcb83c386",
+      "promotionsApiSha256": "98bbfa1df046e6e5051782b65c747b79238941be6d5df370fdf50bcd260ae05b"
+    },
+    {
+      "service": "websocket",
+      "container": "jiji_maintenance_20260908_grhh9w-websocket-1",
+      "image": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+      "restartedAt": "2026-09-09T03:01:46.906671104Z",
+      "exitCode": 0,
+      "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+      "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+      "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18",
+      "setupApiSha256": "9aca2abe843ca5a134c22a74448468872ef37c52e8ba34acbb4e2cafcb83c386",
+      "promotionsApiSha256": "98bbfa1df046e6e5051782b65c747b79238941be6d5df370fdf50bcd260ae05b"
+    },
+    {
+      "service": "queue-short",
+      "container": "jiji_maintenance_20260908_grhh9w-queue-short-1",
+      "image": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+      "restartedAt": "2026-09-09T03:01:46.908382117Z",
+      "exitCode": 0,
+      "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+      "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+      "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18",
+      "setupApiSha256": "9aca2abe843ca5a134c22a74448468872ef37c52e8ba34acbb4e2cafcb83c386",
+      "promotionsApiSha256": "98bbfa1df046e6e5051782b65c747b79238941be6d5df370fdf50bcd260ae05b"
+    },
+    {
+      "service": "queue-long",
+      "container": "jiji_maintenance_20260908_grhh9w-queue-long-1",
+      "image": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+      "restartedAt": "2026-09-09T03:01:46.909868337Z",
+      "exitCode": 0,
+      "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+      "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+      "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18",
+      "setupApiSha256": "9aca2abe843ca5a134c22a74448468872ef37c52e8ba34acbb4e2cafcb83c386",
+      "promotionsApiSha256": "98bbfa1df046e6e5051782b65c747b79238941be6d5df370fdf50bcd260ae05b"
+    },
+    {
+      "service": "scheduler",
+      "container": "jiji_maintenance_20260908_grhh9w-scheduler-1",
+      "image": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+      "restartedAt": "2026-09-09T03:01:46.905673221Z",
+      "exitCode": 0,
+      "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+      "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+      "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18",
+      "setupApiSha256": "9aca2abe843ca5a134c22a74448468872ef37c52e8ba34acbb4e2cafcb83c386",
+      "promotionsApiSha256": "98bbfa1df046e6e5051782b65c747b79238941be6d5df370fdf50bcd260ae05b"
+    },
+    {
+      "service": "frontend",
+      "container": "jiji_maintenance_20260908_grhh9w-frontend-1",
+      "image": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+      "restartedAt": "2026-09-09T03:01:47.066084885Z",
+      "exitCode": 0,
+      "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+      "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+      "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18",
+      "setupApiSha256": "9aca2abe843ca5a134c22a74448468872ef37c52e8ba34acbb4e2cafcb83c386",
+      "promotionsApiSha256": "98bbfa1df046e6e5051782b65c747b79238941be6d5df370fdf50bcd260ae05b"
+    }
+  ],
+  "tests": [
+    {
+      "name": "Complete connector contracts and final-wheel packaging",
+      "command": ".venv-test/bin/python -m pytest tests kopos_connector/tests -q",
+      "cwd": "worktree-fnb-erpnext",
+      "environment": {
+        "KOPOS_TYPESCRIPT_ROOT": "/Users/victor/dev/jiji/JiJiPOS-Everything/JiJiPOS/kopos/src",
+        "KOPOS_CONNECTOR_WHEEL": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-candidate-f.BNP2bo/kopos_connector-1.1.0-py3-none-any.whl"
+      },
+      "exitCode": 0,
+      "tests": 2045,
+      "subtests": 117,
+      "skips": 0,
+      "level": "mocked_contracts_plus_native_and_packaging"
+    },
+    {
+      "name": "Editor regression tests",
+      "command": "node --test tests/promotion-setup-ui.test.cjs",
+      "cwd": "worktree-fnb-erpnext",
+      "exitCode": 0,
+      "tests": 18,
+      "level": "mocked_interaction"
+    },
+    {
+      "name": "Real promotion persistence and rename/history contracts",
+      "command": "docker exec jiji_maintenance_20260908_grhh9w-backend-1 bench --site test.localhost run-tests --app kopos_connector --module kopos_connector.kopos.tests.test_promotion_snapshot_persistence_contract",
+      "exitCode": 0,
+      "tests": 8,
+      "seconds": 15.78,
+      "level": "real_frappe_mariadb_native_runtime",
+      "limitations": "Publication fixture stubs admission/economics and invokes rollback. Rename/readiness/native preview are not stubbed. No submitted v2 invoice or HTTP concurrency acceptance."
+    }
+  ],
+  "testLogs": [
+    {
+      "path": "/private/tmp/jiji-promotion-verification.y6zmtV/erp-f.log",
+      "sha256": "66bd36d1cec0019f3a2a9a1d7c9bd8081c449525126f587a1a51b2d16256c185"
+    },
+    {
+      "path": "/private/tmp/jiji-promotion-verification.y6zmtV/ui-f.log",
+      "sha256": "9f5f47dfcb8c350a458195deed1816fdfdb3727bd5df4fb87d37cd320e7f85af"
+    },
+    {
+      "path": "/private/tmp/jiji-promotion-verification.y6zmtV/erp-real-f.log",
+      "sha256": "61280c045ec11654a375a39e06297c0292d36b2ca62daecac2cd1825cc84f55c"
+    },
+    {
+      "path": "/private/tmp/jiji-promotion-verification.y6zmtV/rename-f-red.log",
+      "sha256": "220c377bdb2a53b3f04ed80ff56b78e608419565bce973ec14b543853007af3c"
+    },
+    {
+      "path": "/private/tmp/jiji-promotion-verification.y6zmtV/rename-f-green.log",
+      "sha256": "4f974ba9c5259c2000a2449c6f6ce989865dbe91067dc1c2d96a51faf897b5c5"
+    },
+    {
+      "path": "/private/tmp/jiji-promotion-verification.y6zmtV/ui-d-red.log",
+      "sha256": "c1582b57912981a032802f2325fa9d506cfcbe8d992c6056d9248b9e41fee066"
+    }
+  ],
+  "staticChecks": {
+    "eachExitCode": 0,
+    "validators": [
+      "validate-development-methodology.mjs",
+      "validate-agent-guardrails.mjs",
+      "validate-contract-vocabulary.mjs",
+      "validate-ci-workflows.mjs"
+    ],
+    "diffCheckBothTreesExitCode": 0
+  },
+  "businessState": {
+    "status": "ready",
+    "invoices": [
+      {
+        "name": "ACC-SINV-2026-00078",
+        "docstatus": 1,
+        "total": "12.00",
+        "paid": "12.00",
+        "outstanding": "0.00",
+        "returnAgainst": null,
+        "payments": [
+          {
+            "id": "SMOKE-PAYMENT-001",
+            "amount": "12.00",
+            "accountType": "Cash"
+          }
+        ],
+        "glBalanceSen": "0",
+        "glEntries": 4,
+        "promotionStatus": "not_applicable"
+      },
+      {
+        "name": "ACC-SINV-2026-00079",
+        "docstatus": 1,
+        "total": "0.00",
+        "paid": "0.00",
+        "outstanding": "0.00",
+        "returnAgainst": null,
+        "payments": [],
+        "glBalanceSen": "0",
+        "glEntries": 0,
+        "promotionStatus": "not_applicable"
+      },
+      {
+        "name": "ACC-SINV-2026-00080",
+        "docstatus": 1,
+        "total": "0.00",
+        "paid": "0.00",
+        "outstanding": "0.00",
+        "returnAgainst": null,
+        "payments": [],
+        "glBalanceSen": "0",
+        "glEntries": 0,
+        "promotionStatus": "not_applicable"
+      },
+      {
+        "name": "ACC-SINV-2026-00081",
+        "docstatus": 1,
+        "total": "14.00",
+        "paid": "14.00",
+        "outstanding": "0.00",
+        "returnAgainst": null,
+        "payments": [
+          {
+            "id": "HISTORY-PAYMENT-001",
+            "amount": "14.00",
+            "accountType": "Cash"
+          }
+        ],
+        "glBalanceSen": "0",
+        "glEntries": 4,
+        "promotionStatus": "not_applicable"
+      },
+      {
+        "name": "ACC-SINV-2026-00082",
+        "docstatus": 1,
+        "total": "12.00",
+        "paid": "12.00",
+        "outstanding": "0.00",
+        "returnAgainst": null,
+        "payments": [
+          {
+            "id": "SMOKE-PAYMENT-Q",
+            "amount": "12.00",
+            "accountType": "Cash"
+          }
+        ],
+        "glBalanceSen": "0",
+        "glEntries": 4,
+        "promotionStatus": "not_applicable"
+      },
+      {
+        "name": "ACC-SINV-2026-00083",
+        "docstatus": 2,
+        "total": "12.00",
+        "paid": "12.00",
+        "outstanding": "0.00",
+        "returnAgainst": null,
+        "payments": [
+          {
+            "id": "VOID-PAYMENT-001",
+            "amount": "12.00",
+            "accountType": "Cash"
+          }
+        ],
+        "glBalanceSen": "0",
+        "glEntries": 8,
+        "promotionStatus": "not_applicable"
+      },
+      {
+        "name": "ACC-SINV-2026-00084",
+        "docstatus": 1,
+        "total": "-12.00",
+        "paid": "0.00",
+        "outstanding": "0.00",
+        "returnAgainst": "ACC-SINV-2026-00082",
+        "payments": [],
+        "glBalanceSen": "0",
+        "glEntries": 2,
+        "promotionStatus": "not_applicable"
+      }
+    ],
+    "duplicates": {
+      "fbOrders": [],
+      "invoices": []
+    },
+    "failedProjections": [],
+    "legacy": {
+      "pos_invoice": 0,
+      "pos_opening_entry": 0,
+      "pos_closing_entry": 0
+    },
+    "shiftVariances": [
+      {
+        "name": "FB-SHIFT-2026-09-09-00367",
+        "variance": "12.00",
+        "status": "Closed"
+      },
+      {
+        "name": "FB-SHIFT-2026-09-09-00398",
+        "variance": "-12.00",
+        "status": "Closed"
+      }
+    ],
+    "level": "real_synthetic_baseline_commercial_state",
+    "v2DiscountInvoiceAcceptance": false
+  },
+  "browser": {
+    "level": "agent_operated_real_browser",
+    "viewports": [
+      {
+        "width": 1280,
+        "height": 800
+      },
+      {
+        "width": 390,
+        "height": 844
+      }
+    ],
+    "fixture": {
+      "outlets": 1,
+      "menuItems": 1,
+      "item": "Strawberry Matcha Latte",
+      "unitPriceSen": 1200
+    },
+    "allFiveTemplatesCalculated": true,
+    "overnightFriday2200Saturday0200Checked": true,
+    "exactEndExcluded": true,
+    "activatedByUI": false,
+    "finalCandidateRecheck": "blocked by renewed Mac lock; no F screenshots",
+    "viewportReset": "not performed after lock; reset 390x844 override after user unlock",
+    "captureCaveat": "Raw captures contain unused canvas margins; these are individual step/viewport captures, not guaranteed full-page stitched images.",
+    "uncoachedNoviceAcceptance": false,
+    "screenshots": [
+      {
+        "candidate": "C",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-c-review.HaU2fP/01-overview-narrow.png",
+        "sha256": "fa5cfae8a301dd6a20c4b0491682a706ada54457a823f8c2e649718bceb60094",
+        "bytes": 11801,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "C",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-c-review.HaU2fP/02-overview-desktop.png",
+        "sha256": "fa80edf8554184e247944a645c2f1b2075c9875c7f8414c87d9b2136b9fed566",
+        "bytes": 26556,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "C",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-c-review.HaU2fP/03-choose-offer.png",
+        "sha256": "47c1bdf311e38e9ba45e474ccf4ec7e9f2ed6d5c5b3cb572e6bb816bdb6f16ce",
+        "bytes": 26536,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "C",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-c-review.HaU2fP/04-missing-name-guidance.png",
+        "sha256": "5e0bc6aea8ad670689faf7a66f64d1b432a69e7479643804d45b57ef6e737834",
+        "bytes": 28233,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "C",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-c-review.HaU2fP/05-products.png",
+        "sha256": "b0c1f17325ce23685b830feddf332f38e35ae28244b3d6bf33335212ec4f4560",
+        "bytes": 19270,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "C",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-c-review.HaU2fP/06-preview-stuck-candidate-c.png",
+        "sha256": "aeb033c6222f2e5836d6d2961bf5bcf551b956653aaf425dd39e9b4b2b3aac49",
+        "bytes": 18553,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "C",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-c-review.HaU2fP/07-weekly-schedule-c.png",
+        "sha256": "3fc004143d650010022b64e66204b6e44829f59a09aca0b275e293cf3dcbad92",
+        "bytes": 22155,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "C",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-c-review.HaU2fP/08-weekly-narrow-c.png",
+        "sha256": "932c544e8da44657a31f8e8dd1d69dc61ccce06b0ffbd26a1ecd3e1d4a3e5d04",
+        "bytes": 12901,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/01-missing-name-focus.png",
+        "sha256": "623c80437d39e85c1ed2328c50b8f98df58428d9471795b81bf1a2638565209b",
+        "bytes": 27263,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/02-percent-receipt.png",
+        "sha256": "b2da981ec3bcf11f3cb3a8546f90827c455019e5be171f914cb37f26bae51b62",
+        "bytes": 25979,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/03-quantity-recovery.png",
+        "sha256": "15e9147b283de40523292013a1a279813bf24d981e049be54ae83b5a4d87ac21",
+        "bytes": 25766,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/04-draft-safety-checks.png",
+        "sha256": "bce21bf6b9974b9a474f09158b9652b9ca6edaf23e57a92070ccbbf3e985c4b9",
+        "bytes": 27271,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/05-amount-off-receipt.png",
+        "sha256": "28d7555aee639b6a8e9d564e151182ff6f8acf5e6a96c8fc17243d0a9836838f",
+        "bytes": 25402,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/06-special-price-receipt.png",
+        "sha256": "e94e1ccb2a910b21739039bf1e4074b3f7f1c503930a442a4feab249786e648b",
+        "bytes": 25289,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/07-bogo-odd-basket.png",
+        "sha256": "2be45c5e6e8d23c766085449780422274cf1d18980d976dc4ca2894da0a823dc",
+        "bytes": 25741,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/08-half-price-template.png",
+        "sha256": "fd81b92ef73fc5b819fc494a04de35ad53ebf9c60758ac91e4bdf53749ea4467",
+        "bytes": 25407,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/09-half-price-odd-basket.png",
+        "sha256": "0582deb33f30f7def88b6918673eb18b170fb59d0ba7cfd851cb48684ef0179f",
+        "bytes": 25893,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/10-two-line-receipt-narrow.png",
+        "sha256": "47c8eee123173ea79d90eac96c99f58eaee22e0aa84cf3a6b1ecedc58e2e97f2",
+        "bytes": 15556,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/11-friday-overnight-narrow.png",
+        "sha256": "53fedfc133f872af8a3e0d137babbe0b7c8425a3029e58bbd6057ae715194324",
+        "bytes": 12028,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/12-overnight-upcoming-runs.png",
+        "sha256": "a17d960e60f68c51be2e4f233c5c33e94b212f47f3e5b130889ed05e717195c5",
+        "bytes": 15963,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/13-exact-end-no-discount.png",
+        "sha256": "2821714151e0b000ada736ab9cc70801cb7166d4daaf5b99318f46e07edc8103",
+        "bytes": 16157,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      },
+      {
+        "candidate": "D",
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-d-review.jP23cs/14-renamed-draft-rejected.png",
+        "sha256": "085a2f6840be1c6360d14bcc38667e52d48e5c08ebbc1ad9c4f611e006f7930e",
+        "bytes": 9919,
+        "pngWidth": 65536,
+        "pngHeight": 4292542531
+      }
+    ]
+  },
+  "changes": {
+    "newRuntimeDependencies": [],
+    "newServices": [],
+    "newPersistentSchema": [],
+    "monthlySubscriptionAddedMYR": 0,
+    "newDocumentation": [
+      "docs/PROMOTION_UI_SCREENSHOT_REVIEW_2026-09-09.md",
+      "docs/audit/promotion-ui-followup-2026-09-09.json"
+    ],
+    "touchedProductFilesAlreadyOver1500Lines": [],
+    "finalProductLineCounts": {
+      "kopos_connector/api/promotions.py": 1191,
+      "kopos_connector/api/promotion_setup.py": 543,
+      "kopos_connector/kopos/page/jiji_promotions/jiji_promotions.js": 502
+    },
+    "preserved": [
+      "Draft saving cannot activate an offer",
+      "Rollout and cost/second-director gates",
+      "Stable promotion ID and retained snapshot/history bytes",
+      "Legacy v1 naming semantics",
+      "Money calculation artifact",
+      "Offline POS source and production data"
+    ]
+  },
+  "cleanup": {
+    "scope": "Only this task's verified unused archived final images and reproducible build cache; no broad prune, volumes, records, production services, or shared-engine resize/restart.",
+    "archives": [
+      {
+        "path": ".maintenance-colima.gRhh9W/promotion-candidate-d.qgJshN/previous-b-823e137b4ca0.tar",
+        "sha256": "6f8eb561f1f722fd5c53259463f7635a9514efd1927895f0812ec79af84fa056",
+        "bytes": 913264640,
+        "verifiedBlobs": 20,
+        "imageIds": [
+          "sha256:823e137b4ca0ff8e21a2f22a360a48abb2a88b6178a19cf978a4330ce3692677"
+        ]
+      },
+      {
+        "path": ".maintenance-colima.gRhh9W/promotion-candidate-f.BNP2bo/previous-e-34fc62bc08e5.tar",
+        "sha256": "e6eb0da2c4e34fc2f690662a11b393ced832f35ce173e20190277f7a08253357",
+        "bytes": 913265152,
+        "verifiedBlobs": 20,
+        "imageIds": [
+          "sha256:34fc62bc08e59c286b04c2a4402617417cfb426ed4d86c28e0eb02aff1456ca3"
+        ]
+      },
+      {
+        "path": ".maintenance-colima.gRhh9W/promotion-candidate-f.BNP2bo/previous-a-c-images.tar",
+        "sha256": "1213ee25a57b37b8fd6b8b6d8fdac288fd87140bc1e8fae2ca099c8c7b9d4c8c",
+        "bytes": 947825664,
+        "verifiedBlobs": 26,
+        "imageIds": [
+          "sha256:e8f8fab9fa56740373a6572fbe4d82cd6b7ddfe93e227d0b8d38ab421e1ed76c",
+          "sha256:6cb89dd252843cfd82ce96c722a9c8b19c643be15361f38dd20aab8810b9eafe"
+        ]
+      }
+    ],
+    "failedFContainerRemovedWithoutVolumes": "af580135410dd4f2c301c02b117eb3e10dccf4fe06da36bb0de11de4ddcf6f68",
+    "failedFCacheRoot": "sha256:bd7b50eb4b72a736d7bb761e2b3553e4863f03b88820f2c891bfc2e115a2363b",
+    "cacheReceiptSources": [
+      "build-1788917432557.log",
+      "build-1788893235941.log",
+      "build-1788891933685.log",
+      "build-1788920198651.log",
+      "build-1788921273781.log"
+    ],
+    "freeGBBeforeSuccessfulRetry": 2.9,
+    "freeGBFinal": 2.5,
+    "retainedFailures": [
+      "First F build disk exhaustion, exit 2",
+      "First B archive validation used incorrect identity field; corrected OCI root and blob checks passed before removal",
+      "Initial new UI fake needed prepend support; subsequent four real assertions failed before fix"
+    ]
+  },
+  "unrun": [
+    "Final F browser rename/copy/recovery/narrow-screen visual recheck",
+    "Three uncoached novice journeys including emergency stop",
+    "Physical tablet offline/restart and exact receipt delivery",
+    "Submitted v2 invoices/payments/GL/refunds and late-sale replay",
+    "Real concurrent HTTP publication/lock and deployment crash/load checks",
+    "Final candidate on recent restored production data, commissioning, full enabled catalogs",
+    "Pilot/canary and production verification"
+  ]
+}

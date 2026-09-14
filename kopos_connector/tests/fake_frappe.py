@@ -218,7 +218,9 @@ def install_fake_frappe_modules() -> None:
             sql=lambda *args, **kwargs: [],
             delete=lambda *args, **kwargs: None,
             commit=lambda: None,
-            rollback=lambda: None,
+            # Signature-only unit stubs; native transaction tests own SQL proof.
+            savepoint=lambda save_point: None,
+            rollback=lambda *, save_point=None: None,
             escape=lambda x: x,
         ),
     )

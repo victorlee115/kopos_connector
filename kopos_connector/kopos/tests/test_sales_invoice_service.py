@@ -30,6 +30,91 @@ class TestSalesInvoiceService(unittest.TestCase):
     def setUp(self):
         self.company = "Test Company"
 
+    def test_native_rounding_cash_adapter_rederives_change_and_preserves_debt(self):
+        from kopos_connector.extensions.sales_invoice import KoPOSSalesInvoiceIntegrityMixin
+
+        class NativeInvoice(type(frappe._dict({}))):
+            def calculate_taxes_and_totals(self):
+                self.parent_calls = self.get("parent_calls", 0) + 1
+                self.change_amount = Decimal("99.99")
+                self.base_change_amount = Decimal("99.99")
+                self.outstanding_amount = Decimal("-5.00")
+
+        class Invoice(KoPOSSalesInvoiceIntegrityMixin, NativeInvoice):
+            pass
+
+        for rounding in (-2, 2):
+            total = 3843 + rounding
+            for paid in (3000, total, 5000):
+                with self.subTest(rounding=rounding, paid=paid):
+                    invoice = Invoice({"is_pos": 1, "is_return": 0, "custom_fb_order": "ORDER",
+                        "currency": "MYR", "party_account_currency": "MYR", "grand_total": Decimal("38.43"),
+                        "base_grand_total": Decimal("38.43"), "write_off_amount": Decimal(-rounding) / 100,
+                        "base_write_off_amount": Decimal(-rounding) / 100, "paid_amount": Decimal(paid) / 100,
+                        "base_paid_amount": Decimal(paid) / 100, "payments": [{"type": "Cash"}]})
+                    for count in (1, 2):
+                        invoice.calculate_taxes_and_totals()
+                        self.assertEqual(invoice.parent_calls, count)
+                        self.assertEqual(invoice.change_amount, Decimal(max(paid - total, 0)) / 100)
+                        self.assertEqual(invoice.base_change_amount, invoice.change_amount)
+                        self.assertEqual(invoice.outstanding_amount, Decimal(max(total - paid, 0)) / 100)
+                    self.assertEqual(invoice.grand_total, Decimal("38.43"))
+                    self.assertEqual(invoice.write_off_amount, Decimal(-rounding) / 100)
+
+    def test_rounding_cash_adapter_preserves_other_native_invoice_modes(self):
+        from kopos_connector.extensions.sales_invoice import _apply_rounded_cash_change
+
+        for exclusion in ({"is_return": 1}, {"is_pos": 0}, {"custom_fb_order": None},
+                          {"write_off_amount": 0}, {"payments": [{"type": "Bank"}]}, {"payments": []}):
+            with self.subTest(exclusion=exclusion):
+                invoice = frappe._dict({"is_pos": 1, "is_return": 0, "custom_fb_order": "ORDER",
+                    "write_off_amount": Decimal("0.02"), "payments": [{"type": "Cash"}],
+                    "change_amount": Decimal("11.57"), "outstanding_amount": Decimal("0.03"), **exclusion})
+                before = dict(invoice)
+                _apply_rounded_cash_change(invoice)
+                self.assertEqual(dict(invoice), before)
+
+    def test_rounding_cash_adapter_uses_native_base_amounts_for_account_currency(self):
+        from kopos_connector.extensions.sales_invoice import _apply_rounded_cash_change
+
+        invoice = frappe._dict({"is_pos": 1, "is_return": 0, "custom_fb_order": "ORDER",
+            "currency": "USD", "party_account_currency": "MYR", "grand_total": Decimal("38.43"),
+            "base_grand_total": Decimal("76.86"), "write_off_amount": Decimal("0.02"),
+            "base_write_off_amount": Decimal("0.04"), "paid_amount": Decimal("50.00"),
+            "base_paid_amount": Decimal("100.00"), "payments": [{"type": "Cash"}]})
+        _apply_rounded_cash_change(invoice)
+        self.assertEqual(invoice.change_amount, Decimal("11.59"))
+        self.assertEqual(invoice.base_change_amount, Decimal("23.18"))
+        self.assertEqual(invoice.outstanding_amount, Decimal(0))
+
+    def test_native_return_write_off_keeps_amounts_and_only_redirects_its_own_link(self):
+        from copy import deepcopy
+        from kopos_connector.extensions.sales_invoice import KoPOSSalesInvoiceIntegrityMixin
+
+        native_rows = [{"account": "Debtors", "against_voucher": "ORIGINAL", "credit": Decimal("0.02")},
+                       {"account": "Rounding", "debit": Decimal("0.02")}]
+
+        class NativeInvoice(type(frappe._dict({}))):
+            def make_write_off_gl_entry(self, entries):
+                entries.extend(deepcopy(native_rows))
+
+        class Invoice(KoPOSSalesInvoiceIntegrityMixin, NativeInvoice):
+            pass
+
+        for exclusion in ({}, {"is_return": 0}, {"custom_fb_order": None},
+                          {"update_outstanding_for_self": 0}):
+            with self.subTest(exclusion=exclusion):
+                invoice = Invoice({"is_return": 1, "custom_fb_order": "ORDER",
+                    "update_outstanding_for_self": 1, "return_against": "ORIGINAL",
+                    "name": "CREDIT", "debit_to": "Debtors", **exclusion})
+                entries = deepcopy(native_rows)
+                invoice.make_write_off_gl_entry(entries)
+                self.assertEqual(entries[:2], native_rows)
+                expected = deepcopy(native_rows)
+                if not exclusion:
+                    expected[0]["against_voucher"] = "CREDIT"
+                self.assertEqual(entries[2:], expected)
+
     def make_fb_order_stub(self):
         order = frappe._dict()
         order.doctype = "FB Order"

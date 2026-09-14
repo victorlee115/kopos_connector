@@ -5,9 +5,10 @@ import json
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
+from requests import Response
 from requests.adapters import HTTPAdapter
 
 from .fake_frappe import install_fake_frappe_modules
@@ -121,16 +122,16 @@ def _context() -> common.AcceptanceContext:
 
 def test_tls_adapter_hashes_live_peer_certificate_without_retaining_bytes() -> None:
     certificate = b"exact-peer-certificate-der"
-    response = SimpleNamespace(
-        raw=SimpleNamespace(
-            connection=SimpleNamespace(
-                sock=SimpleNamespace(
-                    getpeercert=lambda *, binary_form: (
-                        certificate if binary_form else {}
-                    )
+    response = Response()
+    response.raw = SimpleNamespace(
+        read=Mock(side_effect=[b"{}", b""]), close=Mock(), release_conn=Mock(),
+        connection=SimpleNamespace(
+            sock=SimpleNamespace(
+                getpeercert=lambda *, binary_form: (
+                    certificate if binary_form else {}
                 )
             )
-        )
+        ),
     )
     adapter = maybank_client._TlsEvidenceAdapter()
     with patch.object(HTTPAdapter, "send", return_value=response):
@@ -142,6 +143,12 @@ def test_tls_adapter_hashes_live_peer_certificate_without_retaining_bytes() -> N
     ) == hashlib.sha256(certificate).hexdigest()
     assert getattr(captured, maybank_client.TLS_VERIFIED_ATTR) is True
     assert certificate not in vars(captured).values()
+    assert captured.content == b"{}"
+    assert response.raw.read.call_args_list == [
+        call(maybank_client.MAX_PROVIDER_RESPONSE_BYTES + 1, decode_content=False),
+        call(1, decode_content=False),
+    ]
+    response.raw.release_conn.assert_called_once_with()
 
 
 def test_status_transport_evidence_hashes_exact_prepared_and_response_bytes() -> None:

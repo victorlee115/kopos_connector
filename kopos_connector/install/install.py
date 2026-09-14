@@ -2,6 +2,8 @@
 # For license information, please see license.txt
 # pyright: reportMissingImports=false
 
+from importlib.resources import files
+
 import frappe
 from frappe import _
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
@@ -59,6 +61,8 @@ def after_install():
         ensure_jiji_business_module_profile()
         ensure_kopos_custom_fields(skip_if_missing_doctypes=True)
         create_fb_custom_fields()
+        ensure_sales_invoice_rate_precision()
+        ensure_native_change_ledger_entries()
         ensure_maybank_provider_device_id()
         ensure_operational_composite_indexes()
     except Exception as e:
@@ -76,8 +80,42 @@ def after_migrate():
     ensure_jiji_business_module_profile()
     ensure_kopos_custom_fields(skip_if_missing_doctypes=False)
     create_fb_custom_fields()
+    ensure_sales_invoice_rate_precision()
+    ensure_native_change_ledger_entries()
     ensure_maybank_provider_device_id()
     ensure_operational_composite_indexes()
+
+
+def ensure_sales_invoice_rate_precision() -> None:
+    """Let native ERPNext retain fractional unit rates, not fractional totals.
+
+    A sen-exact line amount divided by its quantity need not be a two-decimal
+    rate. ERPNext rounds rates before multiplying, including on credit notes.
+    Six rate decimals cover the POS's supported quantities (up to 100 per line)
+    while the existing sen-equivalence checks remain the accounting authority.
+    This is standard field metadata for all Sales Invoices, not a pricing hook
+    or a rewrite of historical transactions. Amount/payment/tax precision and
+    equal or higher site precision are deliberately left alone.
+    """
+    from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
+    for fieldname in ("rate", "net_rate", "base_rate", "base_net_rate"):
+        if frappe.get_precision("Sales Invoice Item", fieldname) < 6:
+            make_property_setter("Sales Invoice Item", fieldname, "precision", "6", "Int")
+
+
+def ensure_native_change_ledger_entries() -> None:
+    """Use native change entries instead of subtracting change per cash row.
+
+    ERPNext's compact POS GL path subtracts invoice change from *each* matching
+    payment row. The standard setting handles split cash correctly without
+    merging source payment identities or maintaining custom GL calculations.
+    This site-wide setting affects future retail invoices, not historical GL.
+    """
+    settings = frappe.get_single("POS Settings")
+    if not settings.post_change_gl_entries:
+        settings.post_change_gl_entries = 1
+        settings.save(ignore_permissions=True)
 
 
 def ensure_standard_pages() -> None:
@@ -114,6 +152,11 @@ def ensure_standard_pages() -> None:
         {
             "name": "jiji_staff",
             "title": "JiJi Staff",
+            "roles": ("System Manager", "Company Director"),
+        },
+        {
+            "name": "jiji_promotions",
+            "title": "Offers",
             "roles": ("System Manager", "Company Director"),
         },
         {
@@ -237,6 +280,10 @@ def ensure_jiji_business_module_profile() -> None:
     )
     if len(directors) > CONFIGURATION_LIMIT or len(system_managers) > CONFIGURATION_LIMIT:
         frappe.throw(_("JiJi could not safely assign the business navigation"))
+    # Frappe's built-in Administrator has every role by design; it is not an
+    # ordinary director/support account that can be separated this way.
+    directors.discard("Administrator")
+    system_managers.discard("Administrator")
     mixed_accounts = sorted(directors & system_managers)
     if mixed_accounts:
         frappe.log_error(
@@ -855,117 +902,37 @@ frappe.ui.form.on("KoPOS Device", {
 });
 """.strip()
 
+    _ensure_client_script(script_name, "KoPOS Device", script_body)
+
+
+def ensure_pos_profile_provisioning_script() -> None:
+    script_name = "KoPOS POS Profile Provisioning Shortcut"
+    script_body = files("kopos_connector").joinpath("public/js/pos_profile_setup.js").read_text(encoding="utf-8")
+    _ensure_client_script(script_name, "POS Profile", script_body)
+    frappe.db.commit()
+
+
+def _ensure_client_script(script_name: str, doctype: str, script_body: str) -> None:
+    """Keep native validation for changes without resaving unchanged scripts."""
+    values = {"dt": doctype, "view": "Form", "enabled": 1, "script": script_body}
     existing_name = frappe.db.exists("Client Script", script_name)
     if existing_name:
         doc = frappe.get_doc("Client Script", existing_name)
-        doc.dt = "KoPOS Device"
-        doc.view = "Form"
-        doc.enabled = 1
-        doc.script = script_body
-        doc.save(ignore_permissions=True)
+        changed = False
+        for field, value in values.items():
+            if getattr(doc, field, None) != value:
+                setattr(doc, field, value)
+                changed = True
+        if changed:
+            doc.save(ignore_permissions=True)
     else:
         frappe.get_doc(
             {
                 "doctype": "Client Script",
                 "name": script_name,
-                "dt": "KoPOS Device",
-                "view": "Form",
-                "enabled": 1,
-                "script": script_body,
+                **values,
             }
         ).insert(ignore_permissions=True)
-
-
-def ensure_pos_profile_provisioning_script() -> None:
-    script_name = "KoPOS POS Profile Provisioning Shortcut"
-    script_body = """
-frappe.ui.form.on(\"POS Profile\", {
-  refresh(frm) {
-    if (frm.is_new()) {
-      return;
-    }
-
-    if (!((frappe.user_roles || []).includes(\"System Manager\") || (frappe.user_roles || []).includes(\"Accounts Manager\"))) {
-      return;
-    }
-
-    frm.add_custom_button(__(\"Generate KoPOS Setup QR\"), () => {
-      frappe.route_options = {
-        pos_profile: frm.doc.name,
-        company: frm.doc.company || undefined,
-        warehouse: frm.doc.warehouse || undefined,
-        currency: frm.doc.currency || undefined,
-      };
-      frappe.set_route(\"kopos_provisioning\");
-    }, __(\"KoPOS\"));
-
-    frm.add_custom_button(__(\"Validate Configuration\"), async () => {
-      frappe.dom.freeze(__(\"Checking QR configuration...\"));
-      try {
-        const response = await frappe.call({
-          method: \"kopos_connector.api.get_qr_setup_preview\",
-          args: { profile_name: frm.doc.name },
-        });
-        const preview = response.message?.preview || response.preview || {};
-        frappe.msgprint({ title: __(\"QR configuration\"), message: `<pre style=\"white-space:pre-wrap\">${frappe.utils.escape_html(JSON.stringify(preview, null, 2))}</pre>`, wide: true });
-      } catch (error) {
-        frappe.msgprint({ title: __(\"Validation failed\"), message: error?.message || __(\"QR configuration is invalid\"), indicator: \"red\" });
-      } finally {
-        frappe.dom.unfreeze();
-      }
-    }, __(\"KoPOS\"));
-
-    frm.add_custom_button(__(\"Set Up QR Payments\"), async () => {
-      const fields = [\"custom_kopos_static_qr_enabled\", \"custom_kopos_static_qr_payload\", \"custom_kopos_manual_qr_suspense_account\", \"custom_kopos_automatic_qr_enabled\", \"custom_kopos_maybank_qrpaybiz_account\", \"custom_kopos_maybank_outlet_id\", \"custom_kopos_qr_clearing_account\", \"custom_kopos_qr_settlement_bank_account\"];
-      const config = Object.fromEntries(fields.map((field) => [field, frm.doc[field] || 0]));
-      frappe.dom.freeze(__(\"Preparing QR configuration preview...\"));
-      try {
-        const previewResponse = await frappe.call({ method: \"kopos_connector.api.get_qr_setup_preview\", args: { profile_name: frm.doc.name, config } });
-        const preview = previewResponse.message?.preview || previewResponse.preview || {};
-        frappe.dom.unfreeze();
-        const confirmed = await new Promise((resolve) => frappe.confirm(
-          __(\"Review this QR configuration, then confirm. Standard DuitNow QR Mode of Payment changes are company-wide.\") + `<pre style=\"white-space:pre-wrap\">${frappe.utils.escape_html(JSON.stringify(preview, null, 2))}</pre>`,
-          () => resolve(true), () => resolve(false)
-        ));
-        if (!confirmed) return;
-        frappe.dom.freeze(__(\"Applying QR configuration...\"));
-        const response = await frappe.call({ method: \"kopos_connector.api.apply_qr_configuration\", args: { profile_name: frm.doc.name, config } });
-        const appliedPreview = response.message?.preview || response.preview || {};
-        frappe.show_alert({ message: __(\"QR configuration applied\"), indicator: \"green\" });
-        frappe.msgprint({ title: __(\"QR configuration ready\"), message: `<pre style=\"white-space:pre-wrap\">${frappe.utils.escape_html(JSON.stringify(appliedPreview, null, 2))}</pre>`, wide: true });
-        frm.reload_doc();
-      } catch (error) {
-        frappe.msgprint({ title: __(\"Setup failed\"), message: error?.message || __(\"QR configuration was rolled back\"), indicator: \"red\" });
-      } finally {
-        frappe.dom.unfreeze();
-      }
-    }, __(\"KoPOS\"));
-  },
-});
-""".strip()
-
-    existing_name = frappe.db.exists("Client Script", script_name)
-    if existing_name:
-        doc = frappe.get_doc("Client Script", existing_name)
-        doc.dt = "POS Profile"
-        doc.view = "Form"
-        doc.enabled = 1
-        doc.script = script_body
-        doc.save(ignore_permissions=True)
-    else:
-        doc = frappe.get_doc(
-            {
-                "doctype": "Client Script",
-                "name": script_name,
-                "dt": "POS Profile",
-                "view": "Form",
-                "enabled": 1,
-                "script": script_body,
-            }
-        )
-        doc.insert(ignore_permissions=True)
-
-    frappe.db.commit()
 
 
 def remove_legacy_modifier_group_parent_option_script() -> None:

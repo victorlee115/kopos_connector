@@ -311,6 +311,42 @@ def test_open_shift_lookup_returns_typed_staff_conflict_only_after_no_device_shi
     }
 
 
+@pytest.mark.parametrize("fail_on_staff_query", [False, True])
+def test_open_shift_lookup_never_turns_a_failed_query_into_no_open_shift(monkeypatch, fail_on_staff_query):
+    monkeypatch.setattr(shifts, "get_device_doc", lambda device_id: _device_doc())
+    calls = 0
+
+    def unavailable(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if fail_on_staff_query and calls == 1:
+            return []
+        raise RuntimeError("test database unavailable")
+
+    monkeypatch.setattr(shifts.frappe, "get_all", unavailable)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        shifts.get_device_open_shift_payload("DEVICE-1", STAFF_ID)
+
+
+@pytest.mark.parametrize("opening_float, expected", [("14.50", 1450), ("0.29", 29), ("90071992547409.91", 9007199254740991)])
+def test_open_shift_lookup_uses_exact_persisted_money(monkeypatch, opening_float, expected):
+    monkeypatch.setattr(shifts, "get_device_doc", lambda device_id: _device_doc())
+    monkeypatch.setattr(shifts.frappe, "get_all", lambda *_args, **_kwargs: [{
+        "name": "FB-EXACT", "shift_code": "LOCAL", "device_id": "DEVICE-1", "staff_id": STAFF_ID,
+        "opening_float": opening_float, "opened_at": "2026-07-17 10:00:00",
+    }])
+    assert shifts.get_device_open_shift_payload("DEVICE-1")["opening_float_sen"] == expected
+
+
+def test_open_shift_lookup_refuses_fractional_persisted_sen(monkeypatch):
+    monkeypatch.setattr(shifts, "get_device_doc", lambda device_id: _device_doc())
+    monkeypatch.setattr(shifts.frappe, "get_all", lambda *_args, **_kwargs: [{
+        "name": "FB-BAD-MONEY", "device_id": "DEVICE-1", "opening_float": "14.505",
+    }])
+    with pytest.raises(shifts.frappe.ValidationError, match="fractional sen"):
+        shifts.get_device_open_shift_payload("DEVICE-1")
+
+
 def test_get_device_open_shift_validates_staff_without_mutating_heartbeat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

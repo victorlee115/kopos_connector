@@ -29,9 +29,13 @@ class ParsedPinHash(NamedTuple):
     key: bytes
 
 
+def _is_valid_pin(pin: object) -> bool:
+    return isinstance(pin, str) and len(pin) == 4 and pin.isascii() and pin.isdigit()
+
+
 def assert_pin_format(pin: str) -> None:
-    if not pin or not pin.isdigit() or len(pin) != 4:
-        frappe.throw(_("PIN must be exactly 4 digits"), frappe.ValidationError)
+    if not _is_valid_pin(pin):
+        frappe.throw(_("PIN must be exactly 4 digits (0-9)"), frappe.ValidationError)
 
 
 def _is_supported_cost(cost: int) -> bool:
@@ -75,7 +79,7 @@ def verify_pin(pin: str, encoded_hash: str) -> bool:
         )
     except (MemoryError, ValueError):
         return False
-    format_valid = bool(pin and pin.isdigit() and len(pin) == 4)
+    format_valid = _is_valid_pin(pin)
     return bool(format_valid and hmac.compare_digest(candidate, parsed.key))
 
 

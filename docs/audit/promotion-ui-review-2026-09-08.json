@@ -1,0 +1,500 @@
+{
+  "reviewDate": "2026-09-08",
+  "scope": "ERP promotion workflow screenshot review; isolated synthetic Colima fixture, not production or novice acceptance",
+  "status": "development; creation/correction improved, publication and novice acceptance incomplete",
+  "source": {
+    "erpRoot": "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext",
+    "erpHeadBefore": "52f2c69e8d5a0ba24f0765052bab240e3425ffc2",
+    "erpHeadAfter": "52f2c69e8d5a0ba24f0765052bab240e3425ffc2",
+    "posRoot": "/Users/victor/dev/jiji/JiJiPOS-Everything/JiJiPOS",
+    "posHeadBefore": "74850c0456ae1aea79be704b72b8528a3a23eaec",
+    "posHeadAfter": "74850c0456ae1aea79be704b72b8528a3a23eaec",
+    "dirtyChangesPreserved": true,
+    "commitCreated": false,
+    "sha256": {
+      "kopos_connector/public/js/kopos_promotion.js": "8c1f1582e134a881575bcef477c9b9edb267197db447009ea256b50346194eec",
+      "kopos_connector/api/promotion_setup.py": "ad49965d0b051e8719bd00a8f64806c0a06d16a13237f3cd0cc4b8ff2befc57f",
+      "kopos_connector/kopos/doctype/kopos_promotion/kopos_promotion.json": "974fadc0922e66c499c3771ea8fd0b04cfaad7990305ccf6cb2fb370e807f57d",
+      "kopos_connector/kopos/doctype/kopos_promotion/kopos_promotion_list.js": "bb5efb618b148a2451f3a6a9b84995664bd89df5ddb12a0d5727d79aec4a00d0",
+      "tests/promotion-setup-ui.test.cjs": "4976b280e0734d20c3378e80b88fa5b93cc36ba3ad37e926830e2c3c5321ffa5",
+      "tests/test_promotion_setup.py": "4e05ca492b022fe0ed4f02fa6c7c9d5233aeb892b29da1a32bd6e481c26e2d5f",
+      "kopos_connector/kopos/tests/test_promotion_snapshot_persistence_contract.py": "eefb3da6203c462606ba190ac7b2d6eaf9aa9641bd2c197012bf287ee4eeb692"
+    }
+  },
+  "runtime": {
+    "project": "jiji_maintenance_20260908_grhh9w",
+    "site": "test.localhost",
+    "url": "http://127.0.0.1:18308",
+    "installMode": "source",
+    "image": "sha256:ae38089eaa92d29f991187e14bdd7b583605fe477f593754756006644523cb43",
+    "matchingServices": [
+      "backend",
+      "frontend",
+      "scheduler",
+      "queue-short",
+      "queue-long",
+      "websocket"
+    ],
+    "siteTimeZone": "Asia/Kuala_Lumpur",
+    "reviewAccount": "Administrator",
+    "reviewAccountTimeZone": "Asia/Kolkata",
+    "productionBackupUsed": false
+  },
+  "wheel": {
+    "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-review.Lellpg/delivery-wheel/kopos_connector-1.1.0-py3-none-any.whl",
+    "sha256": "5f7d84152b22d2e92e4f54ee5e3b57f17db034d94ad49a7f3c2bcfaf625489f4",
+    "bytes": 1334126,
+    "role": "packaged from delivery image for contract/package checks; not installed as a release candidate"
+  },
+  "checks": [
+    {
+      "command": "node --check kopos_connector/public/js/kopos_promotion.js",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext",
+      "exitStatus": 0,
+      "evidenceLevel": "static"
+    },
+    {
+      "command": "node --check kopos_connector/kopos/doctype/kopos_promotion/kopos_promotion_list.js",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext",
+      "exitStatus": 0,
+      "evidenceLevel": "static"
+    },
+    {
+      "command": "git diff --check",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext",
+      "exitStatus": 0,
+      "evidenceLevel": "static"
+    },
+    {
+      "command": "git diff --check",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything/JiJiPOS",
+      "exitStatus": 0,
+      "evidenceLevel": "static"
+    },
+    {
+      "command": "node --test tests/promotion-setup-ui.test.cjs",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext",
+      "exitStatus": 0,
+      "passed": 17,
+      "evidenceLevel": "mocked_unit"
+    },
+    {
+      "command": "KOPOS_TYPESCRIPT_ROOT=/Users/victor/dev/jiji/JiJiPOS-Everything/JiJiPOS/kopos/src KOPOS_CONNECTOR_WHEEL=/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-review.Lellpg/delivery-wheel/kopos_connector-1.1.0-py3-none-any.whl .venv-test/bin/python -m pytest -q -rs tests kopos_connector/tests kopos_connector/kopos/tests/test_sales_invoice_service.py kopos_connector/kopos/tests/test_maybank_qr_sales_invoice_flow.py",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext",
+      "exitStatus": 0,
+      "passed": 2039,
+      "subtestsPassed": 119,
+      "skipped": 0,
+      "evidenceLevel": "mocked_unit",
+      "note": "Complete contract/package suite; not a substitute for real-service tests"
+    },
+    {
+      "command": "docker exec -w /home/frappe/frappe-bench/sites jiji_maintenance_20260908_grhh9w-backend-1 /home/frappe/frappe-bench/env/bin/python -c 'import frappe, pytest; frappe.init(site=\"test.localhost\"); frappe.connect(); frappe.set_user(\"Administrator\"); raise SystemExit(pytest.main([\"-q\", \"../apps/kopos_connector/kopos_connector/kopos/tests/test_promotion_snapshot_persistence_contract.py\", \"../apps/kopos_connector/kopos_connector/kopos/tests/test_promotion_economics_contract.py\", \"../apps/kopos_connector/kopos_connector/kopos/tests/test_catalog_persistence_contract.py\"]))'",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything",
+      "exitStatus": 0,
+      "passed": 7,
+      "evidenceLevel": "real_integration"
+    },
+    {
+      "command": "node JiJiPOS/scripts/validate-development-methodology.mjs",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything",
+      "exitStatus": 0,
+      "evidenceLevel": "static"
+    },
+    {
+      "command": "node JiJiPOS/scripts/validate-agent-guardrails.mjs",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything",
+      "exitStatus": 0,
+      "evidenceLevel": "static"
+    },
+    {
+      "command": "node JiJiPOS/scripts/validate-contract-vocabulary.mjs",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything",
+      "exitStatus": 0,
+      "evidenceLevel": "static"
+    },
+    {
+      "command": "node JiJiPOS/scripts/validate-release-topology.mjs",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything",
+      "exitStatus": 0,
+      "evidenceLevel": "static"
+    },
+    {
+      "command": "node JiJiPOS/scripts/validate-ci-workflows.mjs",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything",
+      "exitStatus": 0,
+      "evidenceLevel": "static"
+    },
+    {
+      "command": "node JiJiPOS/scripts/validate-campaign-source-scope.mjs --require-all",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything",
+      "exitStatus": 1,
+      "evidenceLevel": "static",
+      "reason": "Existing reviewed digest mismatch for kopos/src/services/sale/post-pay.ts. No gate, digest or source policy was relaxed."
+    },
+    {
+      "command": "node .maintenance-colima.gRhh9W/lab.mjs build",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything",
+      "exitStatus": 0,
+      "evidenceLevel": "static",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/build-1788881296920.log.json"
+    },
+    {
+      "command": "node .maintenance-colima.gRhh9W/lab.mjs up",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything",
+      "exitStatus": 0,
+      "evidenceLevel": "real_integration",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/up-1788881429333.log.json"
+    },
+    {
+      "command": "node .maintenance-colima.gRhh9W/lab.mjs smoke",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything",
+      "exitStatus": 0,
+      "evidenceLevel": "real_integration",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/smoke-1788881687518.log.json"
+    },
+    {
+      "command": "node .maintenance-colima.gRhh9W/lab.mjs dump",
+      "cwd": "/Users/victor/dev/jiji/JiJiPOS-Everything",
+      "exitStatus": 0,
+      "evidenceLevel": "real_integration",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/dump-1788881725422.log.json"
+    }
+  ],
+  "browserChecks": {
+    "viewport": {
+      "width": 1280,
+      "height": 720
+    },
+    "workflow": [
+      "Opened the four-step guided setup",
+      "Selected second-item-half-price and both reward frequencies using native controls",
+      "Used calendars and Malaysia AM/PM controls for 2026-09-09 14:00 through 16:59",
+      "Previewed four RM10 items: repeat RM30, once RM35 before tax and extras",
+      "Back through all earlier steps retained name, items, outlet, dates and example",
+      "Saved ordinary inactive offer",
+      "Observed actionable inactive-offer guidance",
+      "Observed expected pair-economics publication block",
+      "Observed outlet-wide review fail its current cost-evidence guard",
+      "Verified cost-check refresh then inactive save succeeds without a manual reload",
+      "Observed high-contrast preview-only warning and cancelled without saving"
+    ],
+    "noNoviceParticipant": true,
+    "publicationConfirmedInBrowser": false,
+    "physicalTabletChecked": false,
+    "cancelledExamplePersisted": false,
+    "savedRehearsalOffers": [
+      {
+        "name": "Afternoon drinks — screenshot test",
+        "isActive": 0,
+        "validFrom": "2026-09-09 14:00:00",
+        "validUpto": "2026-09-09 16:59:59"
+      },
+      {
+        "name": "Screenshot review — drinks offer",
+        "isActive": 0
+      }
+    ],
+    "existingSnapshot": {
+      "name": "KOPOS-PROMO-7F826BCE17821210",
+      "posProfile": "KoPOS Main",
+      "promotionCount": 1,
+      "publishedAt": "2026-09-08 16:23:02.660251",
+      "changedByWalkthrough": false
+    }
+  },
+  "businessState": {
+    "orders": 54,
+    "invoices": 63,
+    "duplicateOrderKeys": [],
+    "duplicateInvoiceKeys": [],
+    "outstandingInvoices": 0,
+    "projections": {
+      "Succeeded": 144,
+      "Reversed": 18
+    },
+    "failedProjections": 0,
+    "queryScopedSnapshots": 0
+  },
+  "screenshotEvidence": {
+    "directory": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-review.Lellpg",
+    "format": "Unedited browser JPEG bytes; file extensions corrected from .png to .jpg without changing bytes",
+    "images": [
+      {
+        "name": "after-01-offer-list.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 69007,
+        "sha256": "2d3a7339dbe7d886f9444c68c440635e140ebbaf714ac3071eadadbdaf2b0a3f"
+      },
+      {
+        "name": "after-02-offer-type.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 59585,
+        "sha256": "b43965a0c36399a31ef062cb9351ec1bf17b149ab4c227bca104e0e425cf97d1"
+      },
+      {
+        "name": "after-03-items-outlets.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 48503,
+        "sha256": "1c03ad0d0047055be191972906c0eb678537ef8d29e37a92eca817fde08f6fab"
+      },
+      {
+        "name": "after-04-dates-example.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 59343,
+        "sha256": "21b5ed8b2e45f2d1a84956da735621309892822ad0417216d9b8fa44e8db50c5"
+      },
+      {
+        "name": "after-05-price-review.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 67999,
+        "sha256": "eabec7cda35a0ed10a6705fd47f4ad01ccad559fd6085e193bddf72ad65d4215"
+      },
+      {
+        "name": "after-05b-corrected-price.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 68955,
+        "sha256": "34127c1c9b31a5ae725b08763ee1c70b3b373afa4682a026a5b976f5d0076bbc"
+      },
+      {
+        "name": "after-06-saved-offer.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 98009,
+        "sha256": "f85b30cda437949fc571fac417183f82f047c37c1c1646fec099bd81bb7dc4fe"
+      },
+      {
+        "name": "after-07-cost-prerequisite.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 51494,
+        "sha256": "afe60ac90ff9f173ab007a593a2f98362a118c40b7226bea264e342a2ac45111"
+      },
+      {
+        "name": "after-08-cost-check.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 54036,
+        "sha256": "3680f77fe3bb187522ef78cc62e44238ac2f0e49b7565d6d00db0459346570d3"
+      },
+      {
+        "name": "after-09-pair-publication-block.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 48463,
+        "sha256": "722f85e4cce2cd36676e1d00545cbe8eac01b74b5dda0a62dbd96cb7cfa376b4"
+      },
+      {
+        "name": "after-10-publication-scope.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 54643,
+        "sha256": "ddadb34c984143252704ad6828de442c1e1749531c15285887c50f78ddeafa79"
+      },
+      {
+        "name": "after-11-outlet-cost-block.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 41024,
+        "sha256": "399ac7d3cc1cbe4f384195429c22a355aa811f61c991a20ecc4a7c2896974500"
+      },
+      {
+        "name": "before-01-offer-list.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 62617,
+        "sha256": "08aa956e658a9e833f8abacb6fab095048366eab00ccf9e78beda7c7a86490d2"
+      },
+      {
+        "name": "before-02-offer-type.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 49286,
+        "sha256": "6570b00b5a2dde104954545341116a70cf539a6045b6ad98a693fec7859922a2"
+      },
+      {
+        "name": "before-03-crowded-choices.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 48669,
+        "sha256": "0826702fbc417f6d4f1daa0b63ec33bf9bf3e089f2d281e3dd0380c435e6d063"
+      },
+      {
+        "name": "before-04-price-review.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 72562,
+        "sha256": "f3595d4a8286b2d8535b2317b6835a07115285378cc9f0d5adb5af908c16dc01"
+      },
+      {
+        "name": "before-05-saved-offer.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 85232,
+        "sha256": "1abb435417642764bd479927cd1ec0c1a04149d7d0d6dfa9d75f40292f30ff95"
+      },
+      {
+        "name": "before-06-cost-check.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 46083,
+        "sha256": "eeb6a65d5c1ba17b58438ab23616bc368c4cb209283c92ba32fc5afdb9db049e"
+      },
+      {
+        "name": "before-07-cost-block.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 38848,
+        "sha256": "57ff8f662101b1f52f670db8eb26de91e0f463ed349d67946d38008f68ca2ce4"
+      },
+      {
+        "name": "final-01-offer-list.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 75372,
+        "sha256": "2f8517141d4d59c7f446dbec2788943be6c7d193fe002fcf919c9feb634b3b9a"
+      },
+      {
+        "name": "final-02-preview-only-warning.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 66582,
+        "sha256": "311c59593d1d0e315b7fa6ea4e126291a8e7532e49cf3138c67c11d82111e334"
+      },
+      {
+        "name": "final-03-saved-after-cost-check.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 98293,
+        "sha256": "432b4ec7cb175810246e4f1a58ed9ef01efc0ab2ec68c3f4558f5bc528965cec"
+      },
+      {
+        "name": "interim-cost-prerequisite.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 52064,
+        "sha256": "397ee9866f942f586850ce69b27018170a6bac0eb2195e444c38a5a499d6df1f"
+      },
+      {
+        "name": "interim-dates-example.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 59127,
+        "sha256": "532246444381d12fef5b739840e82ec3211e77ddd3c5f55bdfbbd699127230b1"
+      },
+      {
+        "name": "interim-empty-reward-choice.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 57972,
+        "sha256": "9e757145987fb125e13fbd8e31ac6d63cb2f79fa5a0daa4a3db2fe8854b08234"
+      },
+      {
+        "name": "interim-items-step.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 48503,
+        "sha256": "1c03ad0d0047055be191972906c0eb678537ef8d29e37a92eca817fde08f6fab"
+      },
+      {
+        "name": "interim-list-cost-hidden.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 65892,
+        "sha256": "2369c40535e3b6a7514120a6f838fc343b565c07979a179abe257743ae916838"
+      },
+      {
+        "name": "interim-price-review.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 68939,
+        "sha256": "7925a82399eca8b4abad65d5b8aa54e77312efe3f26be2c588f7817427898a91"
+      },
+      {
+        "name": "interim-saved-offer.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 99307,
+        "sha256": "e5ef2e999c449f02f7d2df85a16a6cd6f047e0c813ca31344cda0bd728510318"
+      },
+      {
+        "name": "interim-warning-low-contrast.jpg",
+        "mediaType": "image/jpeg",
+        "bytes": 63172,
+        "sha256": "c4063062a7266f048445d40597cb10cbf0328b8d1c4bf4fcb05abf72effc62ff"
+      }
+    ],
+    "iterations": {
+      "before": "sha256:93ed635674e0d79d743db6f4477ea31c63bab2703c7b994b684374d9f952ecc2",
+      "interim": "sha256:1b96a4ae6aaeee5a2b8691fc349656711a9d265525da82c08ac2e0e933beddf1",
+      "after": "sha256:c4c942f2d75fd59d19541a4d95efc9977ae2db348f0b4071b6bc15e86c2af6af",
+      "final-01-offer-list.jpg": "sha256:ad8b541b23dcac980760e497d3e3d7c40ea7e7720b8cfd0bf0c32c682e8cb692",
+      "final-03-saved-after-cost-check.jpg": "sha256:ad8b541b23dcac980760e497d3e3d7c40ea7e7720b8cfd0bf0c32c682e8cb692",
+      "interim-warning-low-contrast.jpg": "sha256:ad8b541b23dcac980760e497d3e3d7c40ea7e7720b8cfd0bf0c32c682e8cb692",
+      "final-02-preview-only-warning.jpg": "sha256:ae38089eaa92d29f991187e14bdd7b583605fe477f593754756006644523cb43"
+    },
+    "notAcceptedAsFinalExhibits": [
+      "before-06-cost-check.jpg: captured during fade",
+      "interim-*: diagnostic/rejected intermediate screens"
+    ],
+    "postCostSaveNote": "Interaction proof on ad8b541b23dc; delivery build changes only pair-warning markup. Delivery full tests rerun."
+  },
+  "failuresRetained": [
+    {
+      "command": "build",
+      "exitStatus": 2,
+      "reason": "No space left on device in Colima",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/build-1788879061763.log.json"
+    },
+    {
+      "command": "build",
+      "exitStatus": 2,
+      "reason": "No space left on device in Colima",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/build-1788879227856.log.json"
+    },
+    {
+      "command": "build",
+      "exitStatus": 2,
+      "reason": "No space left on device in Colima",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/build-1788880445373.log.json"
+    },
+    {
+      "command": "up",
+      "exitStatus": 1,
+      "reason": "Fixture seeding failed while the rehearsal offer was included; passed after restoring it inactive",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/up-1788879528822.log.json"
+    },
+    {
+      "browser": "Cost-check-modified document caused TimestampMismatchError on old UI; corrected with guarded form reload and browser-verified save"
+    },
+    {
+      "browser": "Existing socket.io Invalid origin error; clean-console/realtime acceptance not claimed"
+    }
+  ],
+  "retainedImageArchives": [
+    {
+      "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-review.Lellpg/interim-image-1b96a4ae.tar",
+      "sha256": "46df77fe9a703aba90c66bc403ea3acf46434b9e65074e755c1cbeaecf8b99d9",
+      "image": "sha256:1b96a4ae6aaeee5a2b8691fc349656711a9d265525da82c08ac2e0e933beddf1"
+    },
+    {
+      "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-review.Lellpg/gallery-image-c4c942f2.tar",
+      "sha256": "b42f4426b9407154f5c1d12bfc8cdb881ea7843e4d8294e9f699c65386260117",
+      "image": "sha256:c4c942f2d75fd59d19541a4d95efc9977ae2db348f0b4071b6bc15e86c2af6af"
+    }
+  ],
+  "cleanup": "Only own failed-build containers/layers and an unused intermediate image removed; two used review images archived before removing unused VM cache copies. No database volumes, ERP records, screenshots, wheels, logs or unrelated projects removed. Archives can be restored with docker image load.",
+  "changes": {
+    "newDependencies": [],
+    "newPaidServices": [],
+    "newDataFields": [],
+    "newPricingAuthorities": [],
+    "newReviewFiles": [
+      "docs/PROMOTION_UI_SCREENSHOT_REVIEW_2026-09-08.md",
+      "docs/audit/promotion-ui-review-2026-09-08.json"
+    ],
+    "newPersistentState": "Two synthetic inactive rehearsal offers and test smoke records only; no production changes",
+    "lineCountsThisTurn": {
+      "kopos_connector/public/js/kopos_promotion.js": {
+        "before": 415,
+        "after": 483
+      },
+      "kopos_connector/api/promotion_setup.py": {
+        "before": 173,
+        "after": 177
+      },
+      "kopos_connector/kopos/doctype/kopos_promotion/kopos_promotion_list.js": {
+        "before": 15,
+        "after": 23
+      }
+    },
+    "touchedProductFilesAlreadyOver1500": []
+  },
+  "remaining": [
+    "Reviewed pair-offer cost-rule implementation; previews are not publishability",
+    "Plain-language specific cost error recovery, avoiding stacked generic messages",
+    "Successful outlet confirmation/publication/removal with commissioned synthetic cost data and online tablet",
+    "Guided editing of saved offers and Malaysia staff timezone setup",
+    "Uncoached novice acceptance using normal permissions",
+    "Small-screen, keyboard-only, accessibility and cross-browser checks",
+    "Current restored-production-data, physical-device, pilot, canary and production gates",
+    "Existing source-scope mismatch and wider campaign completion; not waived"
+  ]
+}

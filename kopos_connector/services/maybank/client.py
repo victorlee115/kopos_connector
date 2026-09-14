@@ -5,11 +5,15 @@ import json
 import re
 import secrets
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Any
 from urllib.parse import urlsplit
 
 import requests
+from jsonschema import Draft7Validator
 from requests.adapters import HTTPAdapter
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
+from urllib3.response import HTTPResponse
 from urllib3.util.retry import Retry
 
 import frappe
@@ -43,6 +47,27 @@ MAYBANK_MOCK_PAYMENT_MODES = frozenset(
     }
 )
 TLS_PEER_CERTIFICATE_SHA256_ATTR = "_kopos_tls_peer_certificate_sha256"
+MAX_PROVIDER_RESPONSE_BYTES = 1_048_576
+
+# Validate consumed response fields, allowing additive provider fields/items.
+_AUTH_RESPONSE_VALIDATORS = {
+    "login": Draft7Validator({
+        "type": "object", "required": ["status", "access_token"],
+        "properties": {"status": {"const": "QR000"}},
+    }),
+    "outlet token": Draft7Validator({
+        "type": "object", "required": ["status", "data"],
+        "properties": {"status": {"const": "QR000"}, "data": {
+            "type": "array", "minItems": 1, "items": [{
+                "type": "object", "required": ["outletaccesstoken"],
+                "properties": {"outletaccesstoken": {
+                    "type": "object", "required": ["access_token"],
+                    "properties": {"access_token": {"type": "string", "minLength": 1}},
+                }},
+            }],
+        }},
+    }),
+}
 TLS_VERIFIED_ATTR = "_kopos_tls_verified"
 
 
@@ -65,7 +90,7 @@ def _peer_certificate_der(response: requests.Response) -> bytes | None:
 
 
 class _TlsEvidenceAdapter(HTTPAdapter):
-    """Attach only verified peer-certificate evidence to each response."""
+    """Bound provider bodies and attach verified peer-certificate evidence."""
 
     def send(
         self,
@@ -98,7 +123,39 @@ class _TlsEvidenceAdapter(HTTPAdapter):
             TLS_VERIFIED_ATTR,
             bool(verify is not False and certificate_sha256),
         )
-        return response
+        try:
+            body = None
+            read_failed = False
+            try:
+                # Bound wire payload before decompression, regardless of Content-
+                # Length or chunked framing. urllib3 owns both transport parsing
+                # and bounded decompression; do not implement a second decoder.
+                encoded = response.raw.read(MAX_PROVIDER_RESPONSE_BYTES + 1, decode_content=False)
+                if len(encoded) <= MAX_PROVIDER_RESPONSE_BYTES:
+                    # A short read can precede urllib3's premature-EOF check.
+                    # Force that check before accepting a complete body.
+                    encoded += response.raw.read(1, decode_content=False)
+                if len(encoded) <= MAX_PROVIDER_RESPONSE_BYTES:
+                    with HTTPResponse(
+                        body=BytesIO(encoded), preload_content=False,
+                        headers={"content-encoding": response.headers.get("Content-Encoding", "")},
+                    ) as decoded:
+                        body = decoded.read(MAX_PROVIDER_RESPONSE_BYTES + 1, decode_content=True)
+            except Urllib3HTTPError:
+                read_failed = True
+            # Raise outside the parser exception handler, without raw context.
+            if read_failed:
+                raise requests.RequestException("Maybank response could not be read")
+            if body is None or len(body) > MAX_PROVIDER_RESPONSE_BYTES:
+                raise requests.RequestException("Maybank response exceeds byte limit")
+            # Cache the bounded decoded body before Requests' Session.send can
+            # eagerly read content (including during redirect handling). These
+            # are Requests' own response cache fields, covered by real TLS tests.
+            response._content = body
+            response._content_consumed = True
+            return response
+        finally:
+            response.close()
 
 
 def _exact_body_bytes(value: Any, fieldname: str) -> bytes:
@@ -172,96 +229,31 @@ def _site_cache_key(key: str) -> str:
     return f"{key}:{frappe.local.site}"
 
 
-def _auth_scope_for(
-    username: object,
-    user_type: object,
-    outlet_id: object,
-    base_url: object,
-) -> str:
-    """Build the cache scope shared by provider clients and rotation cleanup."""
-
-    raw = "|".join(
-        [
-            cstr(username),
-            cstr(user_type),
-            cstr(outlet_id),
-            cstr(base_url).rstrip("/"),
-        ]
-    )
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+def _json_response(response: requests.Response, operation: str) -> dict[str, Any]:
+    try:
+        data = response.json()
+    except (ValueError, RecursionError):
+        data = None
+    if not isinstance(data, dict):
+        frappe.throw(f"Maybank {operation} response is invalid", frappe.ValidationError)
+    return data
 
 
-def invalidate_account_auth_cache(account_doc: Any) -> None:
-    """Delete every cached auth token bound to one credential principal.
+def _auth_response(response: requests.Response, operation: str) -> dict[str, Any]:
+    data = _json_response(response, operation)
+    # is_valid avoids secret-bearing validation errors. Raise outside the JSON
+    # exception handler so raw response text is not retained as exception context.
+    if not _AUTH_RESPONSE_VALIDATORS[operation].is_valid(data):
+        frappe.throw(f"Maybank {operation} response is invalid", frappe.ValidationError)
+    return data
 
-    A credential may be shared by several POS Profiles, and historical QR
-    transactions retain their original outlet snapshot after reassignment.  We
-    therefore invalidate profile and transaction outlet scopes, without ever
-    reading or logging the PIN.
-    """
 
-    username = cstr(getattr(account_doc, "username", None)).strip()
-    user_type = cstr(getattr(account_doc, "user_type", None)).strip() or "merchant"
-    base_url = validate_base_url(
-        cstr(getattr(account_doc, "base_url", None)).strip() or DEFAULT_BASE_URL,
-        allow_mock=_explicit_mock_mode_enabled(),
-    )
-    account_name = cstr(getattr(account_doc, "name", None)).strip()
-    if not username or not account_name:
-        return
-
-    outlets: set[str] = set()
-    sources = (
-        (
-            "POS Profile",
-            {
-                "custom_kopos_maybank_qrpaybiz_account": account_name,
-            },
-            "custom_kopos_maybank_outlet_id",
-        ),
-        (
-            "Maybank QR Transaction",
-            {"maybank_qrpaybiz_account": account_name},
-            "outlet_id",
-        ),
-    )
-    for doctype, filters, fieldname in sources:
-        try:
-            rows = frappe.get_all(
-                doctype,
-                filters=filters,
-                fields=[fieldname],
-                limit_page_length=0,
-            )
-        except Exception:
-            # A partially migrated site may not have the historical table yet;
-            # profile cleanup still proceeds and the next migration retries it.
-            rows = []
-        outlets.update(
-            cstr(
-                row.get(fieldname)
-                if isinstance(row, dict)
-                else getattr(row, fieldname, None)
-            ).strip()
-            for row in rows
-        )
-
-    cache = frappe.cache()
-    for outlet_id in sorted(outlet for outlet in outlets if outlet):
-        scope = _auth_scope_for(username, user_type, outlet_id, base_url)
-        for key in (
-            _site_cache_key(f"maybank_jwt:{scope}"),
-            _site_cache_key(f"maybank_outlet_token:{scope}"),
-        ):
-            delete = getattr(cache, "delete", None) or getattr(
-                cache, "delete_value", None
-            )
-            if not callable(delete):
-                frappe.throw(
-                    "Maybank authentication cache cannot be invalidated; credential rotation was not applied",
-                    frappe.ValidationError,
-                )
-            delete(key)
+def _bearer_token(value: object, operation: str) -> str:
+    # RFC 6750 section 2.1: opaque Bearer syntax, not a JWT/signature validator.
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._~+/-]+=*", value):
+        return value
+    frappe.throw(f"Maybank {operation} access token is invalid", frappe.ValidationError)
+    raise AssertionError("frappe.throw must raise")
 
 
 def _config_value(name: str, default: object = None) -> object:
@@ -503,6 +495,10 @@ def _stable_device_id() -> str:
 
 def _create_session() -> requests.Session:
     session = requests.Session()
+    # Validate the configured origin once; never forward credentials or replay
+    # a provider POST via redirects, even to the same origin. Requests owns the
+    # rejection (TooManyRedirects), before sending any redirected request.
+    session.max_redirects = 0
     retry = Retry(
         total=3,
         backoff_factor=1,
@@ -533,11 +529,13 @@ class MaybankClient:
         provider_device_os: str,
         *,
         allow_mock: bool = False,
+        account_revision: tuple[str, str] | None = None,
     ) -> None:
         self.username = username
         self.encrypted_pin = encrypted_pin
         self.user_type = user_type
         self.outlet_id = outlet_id
+        self.account_revision = account_revision
         self.base_url = validate_base_url(base_url, allow_mock=allow_mock)
         self.provider_device_id = _valid_provider_device_id(provider_device_id)
         self.provider_device_name = _valid_provider_metadata(provider_device_name)
@@ -557,30 +555,35 @@ class MaybankClient:
         self.session = _create_session()
 
     def _auth_scope(self) -> str:
-        return _auth_scope_for(
-            self.username,
-            self.user_type,
-            self.outlet_id,
-            self.base_url,
-        )
+        # Frappe saves modified and the encrypted PIN in one DB transaction.
+        # A late response from an old client can populate only its old revision.
+        raw = json.dumps([
+            self.account_revision, self.username, self.user_type,
+            self.outlet_id, self.base_url.rstrip("/"),
+        ], separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def _jwt_cache_key(self) -> str:
-        return _site_cache_key(f"maybank_jwt:{self._auth_scope()}")
+        return _site_cache_key(f"maybank_jwt:v3:{self._auth_scope()}")
 
     def _outlet_token_cache_key(self) -> str:
-        return _site_cache_key(f"maybank_outlet_token:{self._auth_scope()}")
+        return _site_cache_key(f"maybank_outlet_token:v3:{self._auth_scope()}")
 
     def _cache_get(self, key: str) -> str:
+        if self.account_revision is None:
+            return ""
         value = frappe.cache().get(key)
         if isinstance(value, bytes):
             return value.decode()
         return value or ""
 
     def _cache_set(self, key: str, value: str, ttl_seconds: int) -> None:
-        frappe.cache().setex(key, ttl_seconds, value)
+        if self.account_revision is not None:
+            frappe.cache().setex(key, ttl_seconds, value)
 
     def _cache_delete(self, key: str) -> None:
-        frappe.cache().delete(key)
+        if self.account_revision is not None:
+            frappe.cache().delete(key)
 
     def _clear_auth_cache(self) -> None:
         self._cache_delete(self._jwt_cache_key())
@@ -588,7 +591,7 @@ class MaybankClient:
 
     @classmethod
     def from_settings(cls) -> "MaybankClient":
-        """Compatibility-only constructor for legacy tools and migration."""
+        """Uncached compatibility constructor; use a saved account for token reuse."""
         s = frappe.get_single("Maybank Settings")
         if not s.enabled:
             frappe.throw("Maybank QRPayBiz is not enabled")
@@ -620,6 +623,8 @@ class MaybankClient:
         if not resolved_outlet:
             frappe.throw("Maybank outlet ID is required on the POS Profile", frappe.ValidationError)
         encrypted_pin = account_doc.get_password("encrypted_pin") or ""
+        account_name = cstr(getattr(account_doc, "name", None)).strip()
+        modified = cstr(getattr(account_doc, "modified", None)).strip()
         return cls(
             username=cstr(getattr(account_doc, "username", None)),
             encrypted_pin=encrypted_pin,
@@ -630,6 +635,7 @@ class MaybankClient:
             provider_device_name=cstr(getattr(account_doc, PROVIDER_DEVICE_NAME_FIELD, None)),
             provider_device_os=cstr(getattr(account_doc, PROVIDER_DEVICE_OS_FIELD, None)),
             allow_mock=_explicit_mock_mode_enabled(),
+            account_revision=(account_name, modified) if account_name and modified else None,
         )
 
     @classmethod
@@ -687,13 +693,8 @@ class MaybankClient:
             timeout=15,
         )
         resp.raise_for_status()
-        data = resp.json()
-        if data.get("status") != "QR000":
-            frappe.throw(f"Maybank login failed: {data.get('text', 'Unknown error')}")
-
-        token = cstr(data["access_token"])
-        if not token:
-            frappe.throw("Maybank login returned empty access token")
+        data = _auth_response(resp, "login")
+        token = _bearer_token(data["access_token"], "login")
         self._cache_set(cache_key, token, 3540)
         return token
 
@@ -725,19 +726,13 @@ class MaybankClient:
                 timeout=15,
             )
         resp.raise_for_status()
-        data = resp.json()
-        if data.get("status") != "QR000":
-            frappe.throw(
-                f"Maybank outlet token request failed: {data.get('text', 'Unknown error')}"
-            )
-        token_data = data.get("data")
-        if not token_data or not isinstance(token_data, list) or len(token_data) == 0:
-            frappe.throw("Maybank returned empty outlet access token response")
-        outlet_info = token_data[0].get("outletaccesstoken", {})
-        encrypted = outlet_info.get("access_token", "")
-        if not encrypted:
-            frappe.throw("Maybank returned empty encrypted outlet token")
-        outlet_token = decrypt_aes(encrypted, jwt)
+        data = _auth_response(resp, "outlet token")
+        encrypted = data["data"][0]["outletaccesstoken"]["access_token"]
+        try:
+            plaintext = decrypt_aes(encrypted, jwt)
+        except ValueError:
+            plaintext = None
+        outlet_token = _bearer_token(plaintext, "outlet token")
         self._cache_set(cache_key, outlet_token, 3540)
         return outlet_token
 
@@ -766,12 +761,16 @@ class MaybankClient:
             # POST because the provider may have accepted the first request.
             self._clear_auth_cache()
         resp.raise_for_status()
-        return resp.json()
+        return _json_response(resp, "QR creation")
 
     def check_status(self, transaction_refno: str) -> dict:
         if self.base_url == "mock://":
             return self._mock_check_status(transaction_refno)
 
+        return _json_response(self._request_status(transaction_refno), "status")
+
+    def _request_status(self, transaction_refno: str) -> requests.Response:
+        """One owner for status POST and its single, read-only auth refresh."""
         token = self._get_outlet_token()
         endpoint = (
             "v1/mobile/cashier/transactionById"
@@ -795,7 +794,7 @@ class MaybankClient:
                 timeout=10,
             )
         resp.raise_for_status()
-        return resp.json()
+        return resp
 
     def check_status_with_transport_evidence(
         self,
@@ -815,39 +814,12 @@ class MaybankClient:
                 frappe.ValidationError,
             )
 
-        token = self._get_outlet_token()
-        endpoint = (
-            "v1/mobile/cashier/transactionById"
-            if self.user_type == "cashier"
-            else "v1/mobile/merchant/transactionById"
-        )
-        payload = {"transaction_refno": transaction_refno}
-        resp = self.session.post(
-            self.base_url + endpoint,
-            json=payload,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-        )
-        if resp.status_code == 401:
-            self._clear_auth_cache()
-            token = self._get_outlet_token(force_refresh=True)
-            resp = self.session.post(
-                self.base_url + endpoint,
-                json=payload,
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-            )
-        resp.raise_for_status()
+        resp = self._request_status(transaction_refno)
+        result = _json_response(resp, "status")
         transport_evidence = _status_transport_evidence(
             resp,
             transaction_refno,
         )
-        result = resp.json()
-        if not isinstance(result, dict):
-            frappe.throw(
-                "Maybank status response must be a JSON object",
-                frappe.ValidationError,
-            )
         return result, transport_evidence
 
     def _mock_generate_qr(self, amount_rm: str) -> dict:

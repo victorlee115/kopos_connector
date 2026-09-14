@@ -1,0 +1,14 @@
+{
+ "doctype": "DocType", "name": "KoPOS Promotion Publication", "module": "KoPOS",
+ "autoname": "field:request_hash", "engine": "InnoDB", "track_changes": 1,
+ "field_order": ["request_hash", "promotion", "action", "reviewed_revision", "outlet_results", "review_evidence"],
+ "fields": [
+  {"fieldname":"request_hash", "fieldtype":"Data", "label":"Review receipt", "reqd":1, "unique":1, "read_only":1},
+  {"fieldname":"promotion", "fieldtype":"Link", "options":"KoPOS Promotion", "label":"Offer", "reqd":1, "read_only":1},
+  {"fieldname":"action", "fieldtype":"Select", "options":"activate\nstop", "label":"Action", "reqd":1, "read_only":1},
+  {"fieldname":"reviewed_revision", "fieldtype":"Data", "label":"Reviewed draft", "read_only":1},
+  {"fieldname":"outlet_results", "fieldtype":"Code", "options":"JSON", "label":"Published snapshots", "reqd":1, "read_only":1},
+  {"fieldname":"review_evidence", "fieldtype":"Code", "options":"JSON", "label":"Reviewed outlet costs and prior snapshots", "reqd":1, "read_only":1}
+ ],
+ "permissions": [{"role":"System Manager", "read":1}]
+}

@@ -190,9 +190,9 @@ def test_no_page_claims_a_result_it_drew_from_an_absence() -> None:
 
     # Money distinguishes "every shift matched" from "no shift has closed".
     assert '"No shift has been counted yet"' in money
-    assert 'if not grouped["matched"]:' in money
+    assert 'if not counts["matched"]:' in money
     accounted = money.index('"The cash is accounted for"')
-    guard = money.index('if not grouped["matched"]:')
+    guard = money.index('if not counts["matched"]:')
     assert guard < accounted, "the reassurance must sit behind the check for any data at all"
 
     # Stock distinguishes "nothing is short" from "JiJi cannot say yet".
@@ -203,5 +203,5 @@ def test_no_page_claims_a_result_it_drew_from_an_absence() -> None:
     # already saying no shift had ever been counted.
     home = (ROOT / "api" / "director_home.py").read_text(encoding="utf-8")
     assert '"no shift counted yet"' in home
-    assert "any_shift = bool(" in home
+    assert "any_shift = any(counts.values())" in home
     assert '"label": "Cash checks"' in home

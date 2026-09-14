@@ -66,7 +66,7 @@ def test_readiness_validates_configuration_without_provider_transaction() -> Non
             "from_account_doc",
             return_value=client,
         ),
-        patch.object(readiness, "resolve_manual_qr_suspense_account") as suspense,
+        patch.object(readiness, "validate_manual_qr_suspense_account") as suspense,
         patch.object(readiness, "resolve_verified_qr_settlement_account") as bank,
         patch.object(readiness, "validate_settlement_bank_account"),
         patch.object(readiness, "now_datetime", return_value=checked_at),
@@ -87,12 +87,7 @@ def test_readiness_validates_configuration_without_provider_transaction() -> Non
         "reason_code": None,
     }
     suspense.assert_called_once_with(
-        {
-            "device_id": "TAB-1",
-            "pos_profile": "Test POS Profile",
-            "company": "KoPOS Sdn Bhd",
-            "currency": "MYR",
-        }
+        "QR Suspense - TC", company="KoPOS Sdn Bhd", currency="MYR",
     )
     bank.assert_called_once_with(
         "DuitNow QR",
@@ -193,11 +188,6 @@ def test_static_readiness_validates_new_profile_suspense_before_save() -> None:
             "validate_manual_qr_suspense_account",
             return_value="QR Suspense - TC",
         ) as validate_suspense,
-        patch.object(
-            readiness,
-            "resolve_manual_qr_suspense_account",
-            side_effect=AssertionError("readiness reloaded the stale profile"),
-        ),
     ):
         result = readiness.get_payment_readiness_payload(device, profile)
 

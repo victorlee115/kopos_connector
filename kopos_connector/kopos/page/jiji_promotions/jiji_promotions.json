@@ -1,0 +1,9 @@
+{
+ "doctype": "Page",
+ "name": "jiji_promotions",
+ "page_name": "jiji_promotions",
+ "module": "KoPOS",
+ "standard": "Yes",
+ "title": "Offers",
+ "roles": [{"role": "System Manager"}, {"role": "Company Director"}]
+}

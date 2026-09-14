@@ -310,6 +310,7 @@ def get_promotion_snapshot(
     pos_profile: str | None = None,
     current_version: str | None = None,
     device_id: str | None = None,
+    supported_kernel_hash: str | None = None,
 ) -> None:
     """Return the latest KoPOS promotion snapshot for a POS profile."""
     try:
@@ -318,6 +319,7 @@ def get_promotion_snapshot(
             pos_profile=pos_profile,
             current_version=current_version,
             device_id=device_id,
+            supported_kernel_hash=supported_kernel_hash,
         )
         if payload is None:
             _write_response(
@@ -2026,7 +2028,7 @@ def get_payment_readiness(device_id: str | None = None) -> None:
         )
 
 
-@frappe.whitelist(methods=["GET"])
+@frappe.whitelist(methods=["GET", "POST"])
 def get_qr_setup_preview(profile_name: str, config: Any = None) -> None:
     from .qr_setup import get_qr_setup_preview as build_preview
 

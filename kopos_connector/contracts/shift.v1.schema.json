@@ -1,0 +1,159 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://jiji.local/contracts/shift.v1.schema.json",
+  "$comment": "Canonical shift requests and responses after explicit legacy normalization. POS event-time presence, ERP offline-time policy, request identity binding and reconciliation bucket sums remain domain checks. Unknown additive fields are retained.",
+  "definitions": {
+    "OpenShiftApiPayload": {
+      "type": "object",
+      "required": ["idempotency_key", "device_id", "staff_id", "shift_id", "opening_float_sen", "opened_at"],
+      "properties": {
+        "idempotency_key": { "type": "string", "minLength": 1 },
+        "device_id": { "type": "string", "minLength": 1 },
+        "staff_id": { "type": "string", "minLength": 1 },
+        "shift_id": { "type": "string", "minLength": 1 },
+        "opening_float_sen": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "opened_at": { "type": "string" }
+      }
+    },
+    "CloseShiftApiPayload": {
+      "type": "object",
+      "required": ["idempotency_key", "device_id", "staff_id", "shift_id", "counted_cash_sen", "closed_at"],
+      "properties": {
+        "idempotency_key": { "type": "string", "minLength": 1 },
+        "device_id": { "type": "string", "minLength": 1 },
+        "staff_id": { "type": "string", "minLength": 1 },
+        "shift_id": { "type": "string", "minLength": 1 },
+        "fb_shift": { "type": "string", "minLength": 1 },
+        "counted_cash_sen": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "discrepancy_note": { "type": "string" },
+        "closed_at": { "type": "string" }
+      }
+    },
+    "OpenShiftAcceptedApiResponse": {
+      "type": "object",
+      "required": ["status", "fb_shift"],
+      "properties": {
+        "status": { "enum": ["ok", "duplicate"] },
+        "fb_shift": { "type": "string", "minLength": 1 },
+        "shift_id": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    },
+    "OpenShiftConflictCode": { "enum": ["staff_open_shift_conflict", "device_open_shift_conflict"] },
+    "OpenShiftConflictApiResponse": {
+      "type": "object",
+      "required": ["status", "conflict_code", "idempotency_key", "shift_id", "device_id", "staff_id", "conflicting_fb_shift", "conflicting_device_id", "local_release_authorized", "message"],
+      "properties": {
+        "status": { "const": "conflict" },
+        "conflict_code": { "$ref": "#/definitions/OpenShiftConflictCode" },
+        "idempotency_key": { "type": "string", "minLength": 1 },
+        "shift_id": { "type": "string", "minLength": 1 },
+        "device_id": { "type": "string", "minLength": 1 },
+        "staff_id": { "type": "string", "minLength": 1 },
+        "conflicting_fb_shift": { "type": "string", "minLength": 1 },
+        "conflicting_device_id": { "type": "string", "minLength": 1 },
+        "local_release_authorized": { "const": true },
+        "message": { "type": "string", "minLength": 1 }
+      }
+    },
+    "OpenShiftApiResponse": {
+      "oneOf": [{ "$ref": "#/definitions/OpenShiftAcceptedApiResponse" }, { "$ref": "#/definitions/OpenShiftConflictApiResponse" }]
+    },
+    "DeviceOpenShiftApiRecord": {
+      "type": "object",
+      "required": ["fb_shift", "shift_id", "device_id", "staff_id", "opening_float_sen", "opened_at"],
+      "properties": {
+        "fb_shift": { "type": "string", "minLength": 1 },
+        "shift_id": { "type": ["string", "null"] },
+        "device_id": { "type": "string", "minLength": 1 },
+        "staff_id": { "type": "string", "minLength": 1 },
+        "opening_float_sen": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "opened_at": { "type": "string", "minLength": 1 }
+      }
+    },
+    "DeviceOpenShiftStaffConflictApiRecord": {
+      "type": "object",
+      "required": ["conflict_code", "staff_id", "conflicting_fb_shift", "conflicting_device_id", "message"],
+      "properties": {
+        "conflict_code": { "const": "staff_open_shift_conflict" },
+        "staff_id": { "type": "string", "minLength": 1 },
+        "conflicting_fb_shift": { "type": "string", "minLength": 1 },
+        "conflicting_device_id": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 }
+      }
+    },
+    "GetDeviceOpenShiftApiResponse": {
+      "type": "object",
+      "required": ["status", "shift"],
+      "properties": {
+        "status": { "const": "ok" },
+        "shift": { "anyOf": [{ "$ref": "#/definitions/DeviceOpenShiftApiRecord" }, { "type": "null" }] },
+        "staff_conflict": { "anyOf": [{ "$ref": "#/definitions/DeviceOpenShiftStaffConflictApiRecord" }, { "type": "null" }] }
+      }
+    },
+    "CloseShiftCountAmountSummary": {
+      "type": "object",
+      "required": ["count", "amount_sen"],
+      "properties": {
+        "count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "amount_sen": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      }
+    },
+    "CloseShiftUnavailableCountAmountSummary": {
+      "type": "object",
+      "required": ["count", "amount_sen"],
+      "properties": { "count": { "type": "null" }, "amount_sen": { "type": "null" } }
+    },
+    "CloseShiftPendingReconciliationAvailableSummary": {
+      "allOf": [
+        { "$ref": "#/definitions/CloseShiftCountAmountSummary" },
+        { "type": "object", "required": ["blocks_close"], "properties": { "blocks_close": { "const": false }, "report_status": false } }
+      ]
+    },
+    "CloseShiftPendingReconciliationUnavailableSummary": {
+      "allOf": [
+        { "$ref": "#/definitions/CloseShiftUnavailableCountAmountSummary" },
+        { "type": "object", "required": ["blocks_close", "report_status"], "properties": { "blocks_close": { "const": false }, "report_status": { "const": "unavailable" } } }
+      ]
+    },
+    "CloseShiftPendingReconciliationSummary": {
+      "oneOf": [{ "$ref": "#/definitions/CloseShiftPendingReconciliationAvailableSummary" }, { "$ref": "#/definitions/CloseShiftPendingReconciliationUnavailableSummary" }]
+    },
+    "CloseShiftDuplicateQrLiabilitiesAvailableSummary": {
+      "allOf": [
+        { "$ref": "#/definitions/CloseShiftPendingReconciliationAvailableSummary" },
+        {
+          "type": "object", "required": ["accounting_pending", "refund_required"],
+          "properties": {
+            "accounting_pending": { "$ref": "#/definitions/CloseShiftCountAmountSummary" },
+            "refund_required": { "$ref": "#/definitions/CloseShiftCountAmountSummary" }
+          }
+        }
+      ]
+    },
+    "CloseShiftDuplicateQrLiabilitiesUnavailableSummary": {
+      "allOf": [
+        { "$ref": "#/definitions/CloseShiftPendingReconciliationUnavailableSummary" },
+        {
+          "type": "object", "required": ["accounting_pending", "refund_required"],
+          "properties": {
+            "accounting_pending": { "$ref": "#/definitions/CloseShiftUnavailableCountAmountSummary" },
+            "refund_required": { "$ref": "#/definitions/CloseShiftUnavailableCountAmountSummary" }
+          }
+        }
+      ]
+    },
+    "CloseShiftDuplicateQrLiabilitiesSummary": {
+      "oneOf": [{ "$ref": "#/definitions/CloseShiftDuplicateQrLiabilitiesAvailableSummary" }, { "$ref": "#/definitions/CloseShiftDuplicateQrLiabilitiesUnavailableSummary" }]
+    },
+    "CloseShiftApiResponse": {
+      "allOf": [
+        { "$ref": "#/definitions/OpenShiftAcceptedApiResponse" },
+        { "type": "object", "properties": {
+          "pending_reconciliation": { "$ref": "#/definitions/CloseShiftPendingReconciliationSummary" },
+          "duplicate_qr_liabilities": { "$ref": "#/definitions/CloseShiftDuplicateQrLiabilitiesSummary" }
+        } }
+      ]
+    }
+  }
+}

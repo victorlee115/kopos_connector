@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import binascii
 import json
 from datetime import datetime
 from types import SimpleNamespace
@@ -60,7 +61,7 @@ def _static_qr(
             "6304",
         )
     )
-    return f"{before_crc}{static_qr._crc16_ccitt_false(before_crc.encode('ascii'))}"
+    return f"{before_crc}{binascii.crc_hqx(before_crc.encode('ascii'), 0xFFFF):04X}"
 
 
 def _commissioned_device(**overrides: Any) -> SimpleNamespace:
@@ -99,6 +100,33 @@ def test_paynet_static_qr_rejects_crc_tamper() -> None:
 
     with pytest.raises(static_qr.frappe.ValidationError, match="CRC does not match"):
         static_qr.inspect_paynet_static_qr(tampered)
+
+
+def test_static_qr_rejects_reordered_format_indicator_with_valid_crc() -> None:
+    prefix = VALID_STATIC_QR[6:-8] + VALID_STATIC_QR[:6] + "6304"
+    payload = f"{prefix}{binascii.crc_hqx(prefix.encode('ascii'), 0xFFFF):04X}"
+    with pytest.raises(static_qr.frappe.ValidationError, match="format indicator must be first"):
+        static_qr.inspect_paynet_static_qr(payload)
+
+
+@pytest.mark.parametrize("additional", ("", "0", "0x01A", "0305AB", "0301A0301B", "0300"))
+def test_static_qr_rejects_invalid_additional_template_with_valid_crc(additional: str) -> None:
+    with pytest.raises(static_qr.frappe.ValidationError, match="Static QR.*(length|tag|empty)"):
+        static_qr.inspect_paynet_static_qr(_static_qr(extra_top_level=_tlv("62", additional)))
+
+
+def test_static_qr_rejects_empty_unknown_tag_with_valid_crc() -> None:
+    with pytest.raises(static_qr.frappe.ValidationError, match="empty"):
+        static_qr.inspect_paynet_static_qr(_static_qr(extra_top_level="8100"))
+
+
+def test_static_qr_preserves_additional_field_order_and_unknown_nonempty_tags() -> None:
+    payload = _static_qr(extra_top_level=_tlv("62", "0702T10302S1") + "8101Z")
+    inspection = static_qr.inspect_paynet_static_qr(payload)
+    assert inspection["payload"] == payload
+    assert inspection["merchant_id"] == "123456789"
+    lower_crc = payload[:-4] + payload[-4:].lower()
+    assert static_qr.inspect_paynet_static_qr(lower_crc)["payload"] == lower_crc
 
 
 def test_paynet_static_qr_rejects_whitespace_or_control_character_tamper() -> None:

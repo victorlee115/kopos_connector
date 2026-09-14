@@ -8,6 +8,8 @@ from decimal import Decimal, InvalidOperation
 from importlib import import_module
 from typing import Any
 
+from ._qr_reconciliation_context import validate_ledger_account
+
 frappe = import_module("frappe")
 frappe_utils = import_module("frappe.utils")
 
@@ -105,47 +107,13 @@ def resolve_verified_qr_settlement_account(
             frappe.ValidationError,
         )
 
-    account_row = frappe.db.get_value(
-        "Account",
+    validate_ledger_account(
         account,
-        [
-            "name",
-            "account_type",
-            "root_type",
-            "is_group",
-            "disabled",
-            "company",
-            "account_currency",
-        ],
-        as_dict=True,
+        company=resolved_company,
+        currency=resolved_currency,
+        role="Verified QR settlement",
+        require_bank_or_clearing=True,
     )
-    if not account_row:
-        frappe.throw(
-            f"Verified QR settlement account {account} was not found",
-            frappe.ValidationError,
-        )
-    if (
-        cint(_value(account_row, "is_group"))
-        or cint(_value(account_row, "disabled"))
-        or cstr(_value(account_row, "company")).strip() != resolved_company
-        or cstr(_value(account_row, "root_type")).strip() != "Asset"
-    ):
-        frappe.throw(
-            f"Verified QR settlement account {account} must be an enabled non-group Asset account for company {resolved_company}",
-            frappe.ValidationError,
-        )
-    account_type = cstr(_value(account_row, "account_type")).strip()
-    if account_type not in {"", "Bank"}:
-        frappe.throw(
-            f"Verified QR settlement account {account} must be Bank or an untyped Asset clearing account; {account_type or 'unknown'} is not allowed",
-            frappe.ValidationError,
-        )
-    account_currency = cstr(_value(account_row, "account_currency")).strip().upper()
-    if account_currency and account_currency != resolved_currency:
-        frappe.throw(
-            f"Verified QR settlement account {account} currency does not match {resolved_currency}",
-            frappe.ValidationError,
-        )
     return {"account": account, "type": mode_type}
 
 

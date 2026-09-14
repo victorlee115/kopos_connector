@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hmac
+import json
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 import frappe
 from frappe import _
 from frappe.utils import cint, cstr, now_datetime
+from jsonschema import Draft7Validator
 
 from kopos_connector.api.operational_errors import (
     StoreSetupIncompleteError,
@@ -27,6 +30,9 @@ from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
 
 
 KOPOS_DEVICE_API_ROLE = "KoPOS Device API"
+_RECEIPT_HEADER_VALIDATOR = Draft7Validator(json.loads(
+    (Path(__file__).resolve().parents[1] / "contracts/receipt-header.v1.schema.json").read_text()
+))
 
 PRIVILEGED_OPERATION_REASONS = {
     "device_safe_reset",
@@ -535,6 +541,38 @@ def get_device_pos_profile_doc(device_id: str | None = None, name: str | None = 
     return frappe.get_cached_doc("POS Profile", pos_profile)
 
 
+def _receipt_header(profile_doc) -> dict[str, Any]:
+    """Reuse Company/Address; missing print details never disable provisioning."""
+    company = cstr(getattr(profile_doc, "company", None)).strip()
+    business_name = company or "Sales receipt"
+    address_lines: list[str] = []
+    try:
+        business_name = cstr(frappe.db.get_value("Company", company, "company_name")).strip() or business_name
+        address_name = cstr(getattr(profile_doc, "company_address", None)).strip()
+        if address_name:
+            address = frappe.get_doc("Address", address_name)
+            if not any(row.link_doctype == "Company" and row.link_name == company for row in address.links):
+                raise ValueError("Receipt address must belong to the POS Profile company")
+            for value in (
+                address.address_line1, address.address_line2,
+                " ".join(filter(None, [cstr(address.city).strip(), cstr(address.pincode).strip()])),
+                address.state, address.country,
+            ):
+                address_lines.extend(line.strip() for line in cstr(value).splitlines() if line.strip())
+    except Exception as error:
+        log_sanitized_error("Receipt address could not be read; company-only receipt configured", error)
+        address_lines = []
+    header = {"business_name": business_name, "address_lines": address_lines}
+    if not _RECEIPT_HEADER_VALIDATOR.is_valid(header):
+        # Optional printing setup must not disable the register. Do not truncate
+        # an invalid address into something that looks complete or log its value.
+        log_sanitized_error("Receipt details rejected", ValueError("Invalid receipt name or address lines"))
+        header["address_lines"] = []
+        if not _RECEIPT_HEADER_VALIDATOR.is_valid(header):
+            header["business_name"] = "Sales receipt"
+    return header
+
+
 def serialize_device_config(
     device_doc,
     *,
@@ -681,6 +719,7 @@ def serialize_device_config(
         "warehouse": warehouse,
         "currency": currency,
         "tax_rate": get_tax_rate_value(device_id=cstr(device_doc.device_id).strip()),
+        "receipt_header": _receipt_header(profile_doc),
         "allow_training_mode": bool(cint(device_doc.allow_training_mode)),
         "allow_manual_settings_override": bool(
             cint(device_doc.allow_manual_settings_override)

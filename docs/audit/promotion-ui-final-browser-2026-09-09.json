@@ -1,0 +1,362 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-09",
+  "status": "exercised_final_browser_workflow_checked_acceptance_pending",
+  "scope": "Final F in the isolated synthetic Colima fixture after user unlocked Mac again; agent-driven desktop/narrow UI review, not production, full accessibility, novice or physical-device acceptance.",
+  "candidate": {
+    "id": "F",
+    "wheelPath": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-candidate-f.BNP2bo/kopos_connector-1.1.0-py3-none-any.whl",
+    "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+    "imageId": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+    "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+    "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18",
+    "admission": "development_not_checkout_admitted",
+    "site": "test.localhost",
+    "project": "jiji_maintenance_20260908_grhh9w",
+    "url": "http://127.0.0.1:18308/app/jiji_promotions"
+  },
+  "heads": {
+    "pos": "74850c0456ae1aea79be704b72b8528a3a23eaec",
+    "erp": "52f2c69e8d5a0ba24f0765052bab240e3425ffc2",
+    "recheckedUnchanged": true,
+    "dirtyTreesPreserved": true
+  },
+  "sourceFilesRechecked": 16,
+  "previousBlockedReceipt": {
+    "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext/docs/audit/promotion-ui-followup-2026-09-09.json",
+    "sha256": "4b72e169a111f02b67f4a4cd91ed861164d9923d7ab1e168641411bc2822b2d5"
+  },
+  "noProductSourceChangedThisResume": true,
+  "noNewDependenciesOrServices": true,
+  "noNewSchema": true,
+  "browser": {
+    "name": "Codex In-app Browser",
+    "tabId": "6",
+    "url": "http://127.0.0.1:18308/desk/jiji_promotions",
+    "startedFromFreshPage": true,
+    "temporaryViewports": [
+      {
+        "width": 390,
+        "height": 844
+      },
+      {
+        "width": 1280,
+        "height": 800
+      }
+    ],
+    "normalViewportRestored": true,
+    "tabMarkedDeliverable": true,
+    "screenshotMethod": "Native getScreenshot JPEG bytes; corrected file extensions without image modification. Dimensions verified from actual image metadata.",
+    "screenshots": [
+      {
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-f-review.uz1mAh/01-recovered-renamed-draft.jpg",
+        "sha256": "7f0a73c7fe60e6f980524894ff8f87e170ac422e7a83ae74ebf1bc248c5a49ae",
+        "bytes": 26608,
+        "width": 518,
+        "height": 734,
+        "writtenAt": "2026-09-09T03:13:12.302Z",
+        "mimeType": "image/jpeg"
+      },
+      {
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-f-review.uz1mAh/02-products-retained.jpg",
+        "sha256": "b53bc6ae0c45d0fc135208a54c5110afdce05d0efc1fdb5a4c7780011a118d87",
+        "bytes": 33170,
+        "width": 518,
+        "height": 734,
+        "writtenAt": "2026-09-09T03:13:35.180Z",
+        "mimeType": "image/jpeg"
+      },
+      {
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-f-review.uz1mAh/03-overnight-schedule.jpg",
+        "sha256": "40fcbbdfc0c8fdf09a28166c36c7a3097a979e5a15716399f6c8eb0bb02b4d86",
+        "bytes": 25022,
+        "width": 518,
+        "height": 734,
+        "writtenAt": "2026-09-09T03:14:00.396Z",
+        "mimeType": "image/jpeg"
+      },
+      {
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-f-review.uz1mAh/04-quantity-error-focus.jpg",
+        "sha256": "2cedd0f263564af620c8dce05d58e0ac1a3cb083d41b05dd845905122e9c3abe",
+        "bytes": 41661,
+        "width": 518,
+        "height": 734,
+        "writtenAt": "2026-09-09T03:15:03.578Z",
+        "mimeType": "image/jpeg"
+      },
+      {
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-f-review.uz1mAh/05-corrected-receipt-390.jpg",
+        "sha256": "bb68243b4398fbb40cd004b7bc77006d4e3868f7dbf714e3bce38857a47b2833",
+        "bytes": 32493,
+        "width": 390,
+        "height": 844,
+        "writtenAt": "2026-09-09T03:15:42.886Z",
+        "mimeType": "image/jpeg"
+      },
+      {
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-f-review.uz1mAh/06-desktop-reopened-offer.jpg",
+        "sha256": "f45f654c60cf0d9330f462864bc6afebcec4986b219fb535ad04abf34b0f3f53",
+        "bytes": 50019,
+        "width": 1280,
+        "height": 800,
+        "writtenAt": "2026-09-09T03:16:36.128Z",
+        "mimeType": "image/jpeg"
+      },
+      {
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-f-review.uz1mAh/07-desktop-copy-receipt.jpg",
+        "sha256": "254128f131d6860eefe900712634cafbdf07aa9d017139fff51335c17ea6d321",
+        "bytes": 47271,
+        "width": 1280,
+        "height": 800,
+        "writtenAt": "2026-09-09T03:17:54.034Z",
+        "mimeType": "image/jpeg"
+      },
+      {
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-f-review.uz1mAh/08-separate-draft-copy.jpg",
+        "sha256": "225b33f836649caf4fb2cec1f1c7b2f1f3dffe4b936223b13005ed040dc4d55b",
+        "bytes": 60660,
+        "width": 1280,
+        "height": 800,
+        "writtenAt": "2026-09-09T03:19:05.427Z",
+        "mimeType": "image/jpeg"
+      },
+      {
+        "path": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/promotion-ui-f-review.uz1mAh/09-stop-confirmation.jpg",
+        "sha256": "e644e588c38bb01acb9f33ac4c424352d958468f91e81692569dd5509662ad9b",
+        "bytes": 30382,
+        "width": 1280,
+        "height": 800,
+        "writtenAt": "2026-09-09T03:19:52.145Z",
+        "mimeType": "image/jpeg"
+      }
+    ]
+  },
+  "checks": [
+    {
+      "behavior": "Reopen formerly rejected renamed draft",
+      "result": "passed",
+      "evidence": "Friday night drinks — UI review D had Edit and Copy controls and opened with retained values."
+    },
+    {
+      "behavior": "Rename, save and reopen",
+      "result": "passed",
+      "evidence": "Saved Friday night drinks — UI review F; reopened from home card with selected half-second template and retained product/outlet."
+    },
+    {
+      "behavior": "Overnight schedule retained",
+      "result": "passed",
+      "evidence": "Friday 22:00–Saturday 02:00, explicit next-morning wording and correct September 11/18/25 upcoming start dates."
+    },
+    {
+      "behavior": "Correct current-label price receipt",
+      "result": "passed",
+      "examples": [
+        {
+          "quantity": 2,
+          "subtotalSen": 2400,
+          "discountSen": 600,
+          "totalSen": 1800
+        },
+        {
+          "quantity": 3,
+          "subtotalSen": 3600,
+          "discountSen": 600,
+          "totalSen": 3000
+        }
+      ]
+    },
+    {
+      "behavior": "Invalid quantity recovery",
+      "result": "passed",
+      "evidence": "Zero restored previous two and focused explanation; changing to three cleared only the quantity warning and showed RM30."
+    },
+    {
+      "behavior": "Separate inactive copy",
+      "result": "passed",
+      "evidence": "Automatic (copy) name, inherited product/outlet/schedule, changed template to 10%, preview RM12 -> RM10.80, saved separate draft."
+    },
+    {
+      "behavior": "Publication guard",
+      "result": "passed",
+      "evidence": "Both home cards read Draft only · not sent to tills; genuine rollout/legacy checklist left Activate disabled. No activation attempted."
+    },
+    {
+      "behavior": "Stop confirmation",
+      "result": "confirmation_and_cancel_only",
+      "evidence": "Named offer/outlet and reconnect delay were visible. No selected, publication not issued."
+    },
+    {
+      "behavior": "Tablet status",
+      "result": "manual_refresh_checked",
+      "evidence": "Which tills showed Smoke Test Tablet waiting to sync. Manual refresh completed and preserved waiting state; exact real-device delivery unrun."
+    },
+    {
+      "behavior": "Responsive layout",
+      "result": "visually_checked",
+      "evidence": "390x844 and 1280x800; no observed overlap. Long total label wraps but RM amount/minus stay together."
+    }
+  ],
+  "editorTestRerun": {
+    "command": "node --test tests/promotion-setup-ui.test.cjs",
+    "cwd": "worktree-fnb-erpnext",
+    "tests": 18,
+    "exitCode": 0,
+    "evidenceLevel": "mocked_interaction"
+  },
+  "previousFullSuites": {
+    "sameArtifactAndSource": true,
+    "rerunInThisResume": false,
+    "connectorTests": 2045,
+    "subtests": 117,
+    "realFrappeTests": 8,
+    "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/worktree-fnb-erpnext/docs/audit/promotion-ui-followup-2026-09-09.json"
+  },
+  "processChecks": {
+    "checkedAt": "2026-09-09 03:21:04 UTC",
+    "checks": [
+      {
+        "service": "backend",
+        "exitCode": 0,
+        "image": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+        "restartedAt": "2026-09-09T03:01:46.909484209Z",
+        "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+        "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+        "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18"
+      },
+      {
+        "service": "websocket",
+        "exitCode": 0,
+        "image": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+        "restartedAt": "2026-09-09T03:01:46.906671104Z",
+        "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+        "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+        "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18"
+      },
+      {
+        "service": "queue-short",
+        "exitCode": 0,
+        "image": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+        "restartedAt": "2026-09-09T03:01:46.908382117Z",
+        "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+        "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+        "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18"
+      },
+      {
+        "service": "queue-long",
+        "exitCode": 0,
+        "image": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+        "restartedAt": "2026-09-09T03:01:46.909868337Z",
+        "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+        "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+        "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18"
+      },
+      {
+        "service": "scheduler",
+        "exitCode": 0,
+        "image": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+        "restartedAt": "2026-09-09T03:01:46.905673221Z",
+        "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+        "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+        "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18"
+      },
+      {
+        "service": "frontend",
+        "exitCode": 0,
+        "image": "sha256:647d2351aa193b2293349d96c61b2f51d08c5a484dbd735967bfa7f0075c163f",
+        "restartedAt": "2026-09-09T03:01:47.066084885Z",
+        "wheelSha256": "10c034a26d72dc37d8198ed72ae155fcbbf9ea7d3793d35fa3beb4a88a67d2f1",
+        "kernelSha256": "7887a3ec03d1ab4fe0f348e421e039d4b55cbb0332ac9cc15e76649fe85c2983",
+        "editorSha256": "facb6de29e2ff404befd5061bd30b4d23cbd404402aeb1f49ec0ea5bcf8dca18"
+      }
+    ]
+  },
+  "businessState": {
+    "dump": {
+      "log": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/dump-1788924130976.log",
+      "logSha256": "3dff9129e91f8068edff044b57c3f05809ddc030fec52cd0a950623f0ec01f0e",
+      "receipt": "/Users/victor/dev/jiji/JiJiPOS-Everything/.maintenance-colima.gRhh9W/dump-1788924130976.log.json",
+      "receiptSha256": "c18fd5231a94165e9795b8611e1d53092a07205825402e3cde4de113f6eae72d",
+      "exitCode": 0,
+      "startedAt": "2026-09-09T03:22:10.976Z",
+      "endedAt": "2026-09-09T03:22:13.062Z"
+    },
+    "comparisons": [
+      {
+        "key": "sales_invoices",
+        "count": 84,
+        "sha256": "f600d0fcf2e4fdc083d5c0d2ee95171005696ea6a114d654875683f39eae1401",
+        "unchanged": true
+      },
+      {
+        "key": "fb_orders",
+        "count": 72,
+        "sha256": "75be424173e7e074c473f0c4ab504e095fda748db7cca46089f619c8251fd55f",
+        "unchanged": true
+      },
+      {
+        "key": "fb_shifts",
+        "count": 24,
+        "sha256": "2d3c48c0cb1de4bc68b158280bde19107a8574919637b02c55de7cbde6103f67",
+        "unchanged": true
+      },
+      {
+        "key": "promotion_snapshots",
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "unchanged": true
+      }
+    ],
+    "snapshotCoverageLimit": "The dump includes only snapshot versions referenced by baseline FB Orders; empty snapshot list does not prove all published snapshot bytes.",
+    "syntheticDraftWrites": [
+      "Updated existing original draft display label to Friday night drinks — UI review F",
+      "Created Friday night drinks — UI review F (copy) as separate inactive percentage draft"
+    ],
+    "salesChanged": false,
+    "stopOrActivateSent": false
+  },
+  "remainingObservations": [
+    {
+      "kind": "test_environment_realtime_error",
+      "message": "Error connecting to socket.io: Invalid origin",
+      "observedAt": "2026-09-09T03:14:10.836Z",
+      "source": "http://127.0.0.1:18308/assets/frappe/dist/js/desk.bundle.IXQ5HLUF.js",
+      "status": "unresolved",
+      "limit": "Cause not established here; editing/previews/saves/manual refresh worked; live notifications not accepted. No origin checks disabled."
+    },
+    {
+      "kind": "keyboard_continuity",
+      "status": "further_acceptance_required",
+      "message": "Step and invalid-quantity focus worked; successful async save/preview refresh returned focus to page. Not a complete keyboard-only/accessibility audit."
+    },
+    {
+      "kind": "stop_dialog_polish",
+      "status": "remaining_polish",
+      "message": "Standard Frappe Confirm / Yes / No is explicit in its message, but action-specific labels should be evaluated with novices."
+    },
+    {
+      "kind": "automation_timeout",
+      "status": "recovered_by_native_observation",
+      "message": "One browser locator wait timed out while reporting Sample receipt visible; native AX confirmed completed receipt. Not counted as a product failure or silently omitted."
+    }
+  ],
+  "unrun": [
+    "Uncoached novice journeys for all five templates",
+    "Actual stop and offline delivery",
+    "Mixed-price and multi-outlet browser journeys",
+    "Full keyboard-only and accessibility audit",
+    "Live notification delivery after fixture-origin correction",
+    "Physical tablet restart/offline persistence and historical sale sync",
+    "Submitted v2 discounted invoices/GL/refunds, HTTP publication concurrency and load",
+    "Restored recent production data, commissioning, canary/pilot and production verification"
+  ],
+  "fileChanges": {
+    "product": [],
+    "documents": [
+      "worktree-fnb-erpnext/docs/PROMOTION_UI_SCREENSHOT_REVIEW_2026-09-09.md",
+      "JiJiPOS/docs/PROMOTION_UX_IMPLEMENTATION_2026-09-09.md"
+    ],
+    "newReceipt": "worktree-fnb-erpnext/docs/audit/promotion-ui-final-browser-2026-09-09.json",
+    "newScreenshots": 9,
+    "touchedProductFilesOver1500": []
+  }
+}

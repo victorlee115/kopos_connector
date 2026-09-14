@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from functools import lru_cache
 import hashlib
+from importlib.resources import files
 import json
 from typing import Any
 
@@ -9,6 +11,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint as frappe_cint
 from frappe.utils import cstr, flt as frappe_flt, get_datetime, now_datetime
+from jsonschema import Draft7Validator, ValidationError as SchemaValidationError
 
 from kopos_connector.api.catalog import get_default_pos_profile
 from kopos_connector.api.devices import get_device_doc, get_session_roles, require_system_manager
@@ -45,6 +48,17 @@ def sort_string_values(values: list[str]) -> list[str]:
     return sorted(values)
 
 
+@lru_cache(maxsize=1)
+def _canonical_promotion_validator() -> Draft7Validator:
+    # Packaged bytes are generated from POS's versioned contract, never loaded
+    # from a sibling checkout in a running Bench. Historical payloads stay intact.
+    schema = json.loads(
+        files("kopos_connector").joinpath("contracts/promotion.v1.schema.json").read_text()
+    )
+    Draft7Validator.check_schema(schema)
+    return Draft7Validator(schema)
+
+
 def amount_to_sen(value: Any) -> int | None:
     raw_value = cstr(value).strip()
     if not raw_value:
@@ -63,7 +77,9 @@ def build_effective_snapshot_body(
     at_time: Any | None = None,
 ) -> dict[str, Any]:
     evaluation_time = get_datetime(at_time or now_datetime())
-    promotions = get_active_promotions(pos_profile, evaluation_time)
+    # Publish scheduled offers ahead of time so offline tablets can enforce
+    # their existing valid_from guard without an operator publishing at opening.
+    promotions = get_active_promotions(pos_profile, evaluation_time, include_scheduled=True)
     from kopos_connector.api.inventory import validate_promotion_economics_for_publication
 
     for promotion in promotions:
@@ -159,6 +175,7 @@ def ensure_persisted_snapshot(
     pos_profile: str,
     at_time: Any | None = None,
     payload: dict[str, Any] | None = None,
+    atomic: bool = False,
 ) -> tuple[Any, bool]:
     resolved_payload = payload or build_snapshot_payload_for_persistence(
         pos_profile, at_time
@@ -187,6 +204,10 @@ def ensure_persisted_snapshot(
         )
         return snapshot, True
     except frappe.UniqueValidationError:
+        if atomic:
+            # The multi-outlet publication transaction must remain intact.
+            # Frappe rolls back the whole request; a retry checks its receipt.
+            raise
         if hasattr(frappe.db, "rollback"):
             frappe.db.rollback()
         existing = get_snapshot_by_hash(pos_profile, resolved_payload["snapshot_hash"])
@@ -199,6 +220,7 @@ def get_promotion_snapshot_payload(
     pos_profile: str | None = None,
     current_version: str | None = None,
     device_id: str | None = None,
+    supported_kernel_hash: str | None = None,
 ) -> dict[str, Any] | None:
     profile_name = resolve_snapshot_pos_profile(pos_profile, device_id=device_id)
     latest = get_latest_published_snapshot(profile_name)
@@ -207,6 +229,8 @@ def get_promotion_snapshot_payload(
         payload = frappe.parse_json(latest.snapshot_payload or "{}")
         if not isinstance(payload, dict):
             payload = {}
+        if payload.get("schema_version") == 2 and supported_kernel_hash != payload.get("kernel_hash"):
+            frappe.throw(_("This tablet needs a pricing update before it can receive these offers."), frappe.ValidationError)
         payload.update(
             {
                 "snapshot_version": latest.snapshot_version,
@@ -226,13 +250,230 @@ def get_promotion_snapshot_payload(
     return None
 
 
+@frappe.whitelist(methods=["POST"])
+def report_device_promotion_state(device_id, kernel_hash, snapshot_hash=None, snapshot_version=None):
+    from kopos_connector.api.devices import require_device_context, lock_device_for_operational_mutation
+    from kopos_connector.pricing.adapter import runtime_hash
+
+    device = require_device_context(device_id=device_id)
+    if device is None or not cint(device.enabled):
+        frappe.throw(_("Choose an enabled tablet."), frappe.ValidationError)
+    if kernel_hash != runtime_hash():
+        frappe.throw(_("This tablet reports a different pricing version. Update ERP and the tablet together."), frappe.ValidationError)
+    if bool(snapshot_hash) != bool(snapshot_version):
+        frappe.throw(_("The exact saved offer version and hash are both required."), frappe.ValidationError)
+    desired = {"promotion_kernel_hash": kernel_hash}
+    status = "capable"
+    if snapshot_hash:
+        latest = get_latest_published_snapshot(cstr(device.pos_profile))
+        if not latest or latest.snapshot_hash != snapshot_hash or latest.snapshot_version != snapshot_version:
+            return {"status": "not_current"}
+        desired.update({"promotion_snapshot_hash": snapshot_hash, "promotion_snapshot_version": snapshot_version})
+        status = "received"
+    if any(cstr(getattr(device, field, None)) != value for field, value in desired.items()):
+        device = lock_device_for_operational_mutation(device_id=device_id)
+        if snapshot_hash:
+            # Recheck after waiting for the device lock. A later publication is
+            # still safe: the desk compares this exact hash with its latest one.
+            latest = get_latest_published_snapshot(cstr(device.pos_profile))
+            if not latest or latest.snapshot_hash != snapshot_hash or latest.snapshot_version != snapshot_version:
+                return {"status": "not_current"}
+        if any(cstr(getattr(device, field, None)) != value for field, value in desired.items()):
+            if snapshot_hash:
+                desired["promotion_received_at"] = now_datetime()
+            frappe.db.set_value("KoPOS Device", device.name, desired, update_modified=False)
+    return {"status": status, "snapshot_hash": snapshot_hash, "kernel_hash": kernel_hash}
+
+
 def publish_promotion_snapshot(
-    pos_profile: str | None = None, device_id: str | None = None
+    pos_profile: str | None = None, device_id: str | None = None,
+    expected_hash: str | None = None,
 ) -> dict[str, Any]:
     require_company_director_for_promotion_publication()
     profile_name = resolve_snapshot_pos_profile(pos_profile, device_id=device_id)
     _require_director_profile_scope(profile_name)
+    lock_promotion_profiles([profile_name])
+    latest = get_latest_published_snapshot(profile_name)
+    if latest and (frappe.parse_json(latest.snapshot_payload or "{}").get("schema_version") == 2):
+        frappe.throw(_("Use Offers to review, activate or stop an offer. The legacy publisher cannot replace guided offers."))
     payload = build_snapshot_payload_for_persistence(profile_name)
+    if expected_hash is not None and expected_hash != payload["snapshot_hash"]:
+        frappe.throw(
+            _("These offers changed after your review. Review the outlet's offers again before publishing."),
+            frappe.ValidationError,
+        )
+    result = persist_reviewed_snapshot(profile_name, payload)
+    if hasattr(frappe.db, "commit"):
+        frappe.db.commit()
+    return result
+
+
+def lock_promotion_profiles(profiles):
+    for profile in sorted(set(profiles)):
+        frappe.db.sql("SELECT name FROM `tabPOS Profile` WHERE name = %s FOR UPDATE", (profile,))
+
+
+def _offer_affected_profiles(promotion):
+    """Include previously published outlets even after a draft removes one."""
+    from kopos_connector.api.promotion_setup import _document_scope, _check_outlets
+
+    profiles = set(_document_scope(promotion))
+    snapshots = frappe.get_all("KoPOS Promotion Snapshot", filters={"status": SNAPSHOT_STATUS_PUBLISHED},
+                               fields=["pos_profile", "snapshot_payload"], limit_page_length=501)
+    if len(snapshots) > 500:
+        frappe.throw(_("This site has too many outlet snapshots for a single offer review."))
+    for snapshot in snapshots:
+        body = frappe.parse_json(snapshot.snapshot_payload or "{}")
+        if any(row.get("promotion_id") == promotion.name for row in body.get("promotions", [])):
+            profiles.add(cstr(snapshot.pos_profile))
+    _check_outlets(sorted(profiles))
+    return sorted(profiles)
+
+
+def _guided_rollout_issues(profile):
+    """Admission is artifact-bound, not a checkbox a manager can bypass."""
+    manifest = json.loads(files("kopos_connector.pricing").joinpath("runtime.json").read_text())
+    if manifest.get("status") != "checkout_admitted":
+        return [{"title": _("Pricing rollout is not finished"),
+                 "message": _("Drafts and sample receipts are available. Activation stays off until this pricing version has passed its checkout checks."),
+                 "route": [], "action": ""}]
+    meta = frappe.get_meta("KoPOS Device")
+    if not meta.has_field("promotion_kernel_hash"):
+        return [{"title": _("Tablet update needed"), "message": _("The tablet delivery checks have not been installed yet."), "route": ["jiji_staff"]}]
+    devices = frappe.get_all("KoPOS Device", filters={"enabled": 1, "pos_profile": profile},
+                             fields=["device_name", "promotion_kernel_hash"], limit_page_length=501)
+    if not devices or len(devices) > 500 or any(row.promotion_kernel_hash != manifest["bundleSha256"] for row in devices):
+        return [{"title": _("Update the tills at {0}").format(profile),
+                 "message": _("Every enabled till must confirm it understands this pricing version before this offer can be published."),
+                 "route": ["jiji_staff"], "action": _("Check tablets")}]
+    return []
+
+
+def _review_offer_change(promotion, *, action, profiles):
+    from kopos_connector.api.inventory import review_promotion_economics
+    from kopos_connector.api.promotion_setup import _menu_for_profile, _editable_values, _check_items
+    from kopos_connector.pricing.adapter import snapshot_body, time_iso, runtime_hash
+    from kopos_connector.pricing.runtime import calculate
+
+    if action not in {"activate", "stop"}:
+        frappe.throw(_("Choose Activate or Stop."))
+    values = _editable_values(promotion)
+    if action == "activate" and (values is None or cint(getattr(promotion, "pricing_version", 1) or 1) != 2):
+        frappe.throw(_("Save this offer in the guided editor before reviewing activation."))
+    if action == "activate":
+        _check_items(values)
+    selected = set(values["outlets"]) if values else set()
+    issues, targets, economics = [], {}, {}
+    for profile in profiles:
+        latest = get_latest_published_snapshot(profile)
+        previous = frappe.parse_json(latest.snapshot_payload) if latest else {"pos_profile": profile, "promotions": []}
+        rows = [dict(row) for row in previous.get("promotions", []) if row["promotion_id"] != promotion.name]
+        if action == "activate" and profile in selected:
+            if previous.get("schema_version") == 2 and previous.get("kernel_hash") != runtime_hash():
+                frappe.throw(_("{0} has offers from a different pricing release. Ask support to review the upgrade; its published prices have not changed.").format(profile))
+            if previous.get("schema_version", 1) != 2 and rows:
+                issues.append({"title": _("Review older offers at {0}").format(profile),
+                               "message": _("Older offers cannot be silently moved to best-price calculation. Stop and replace them in a planned change before activating this offer. Until then their published prices stay unchanged."),
+                               "route": ["List", "KoPOS Promotion"], "action": _("Review advanced offers")})
+            issues.extend(_guided_rollout_issues(profile))
+            economics[profile] = review_promotion_economics(promotion, profile)
+            if not economics[profile]["ready"]:
+                issues.append({"title": _("Check costs at {0}").format(profile),
+                               "message": economics[profile]["reason"] + ". " + _("Correct the recipe or price, or ask a second director to approve an exception."),
+                               "route": ["jiji_menu_recipes"], "action": _("Check menu & recipes")})
+            rows.append(serialize_promotion(promotion, profile, kernel_version=2))
+            for row in rows:
+                row.setdefault("schedule", None)
+                row["valid_from"] = time_iso(row["valid_from"])
+                row["valid_upto"] = time_iso(row["valid_upto"])
+            menu = _menu_for_profile(profile)
+            frozen = {row["item_code"]: row for row in previous.get("frozen_items", [])}
+            # Keep group membership of previously published items immutable.
+            for item in menu:
+                frozen.setdefault(item["id"], {"item_code": item["id"], "item_group": item["group"]})
+            body = snapshot_body(profile, rows, list(frozen.values()))
+        elif previous.get("schema_version") == 2:
+            body = {key: previous[key] for key in ("schema_version", "kernel_version", "kernel_hash", "pos_profile", "frozen_items")}
+            body["promotions"] = rows
+        else:
+            body = {"pos_profile": profile, "promotions": rows}
+        snapshot_hash = calculate("identity", body)["hash"] if body.get("schema_version") == 2 else compute_snapshot_content_hash(body)
+        targets[profile] = {"body": body, "hash": snapshot_hash, "base_hash": cstr(latest.snapshot_hash) if latest else None}
+    # Content-addressed snapshots may recur after Activate -> Stop -> Activate.
+    # Bind new intent to the append-only receipt count, not wall-clock order.
+    # Old retries return their original receipt before reaching this review.
+    publication_count = frappe.db.count("KoPOS Promotion Publication", {"promotion": promotion.name})
+    review = {"action": action, "promotion": promotion.name, "revision": cstr(promotion.modified),
+              "publication_sequence": publication_count,
+              "targets": {profile: {"base": value["base_hash"], "next": value["hash"]} for profile, value in targets.items()},
+              "economics": economics}
+    return {"expected_hash": calculate("identity", review)["hash"], "issues": issues,
+            "targets": targets, "economics": economics, "revision": cstr(promotion.modified), "evidence": review}
+
+
+def review_offer_change(name, *, action, revision=None):
+    from kopos_connector.api.promotion_setup import _read_editor_document
+
+    require_company_director_for_promotion_publication()
+    promotion = _read_editor_document(name)
+    if action == "activate" and cstr(promotion.modified) != cstr(revision):
+        frappe.throw(_("This draft has changed. Save and review it again before activating."))
+    review = _review_offer_change(promotion, action=action, profiles=_offer_affected_profiles(promotion))
+    return {key: review[key] for key in ("expected_hash", "issues", "revision")}
+
+
+def publish_reviewed_offer_change(name, expected_hash, *, action, revision=None):
+    from kopos_connector.api.promotion_setup import _read_editor_document
+    from kopos_connector.api.inventory import _record_promotion_economics_check
+
+    require_company_director_for_promotion_publication()
+    if not isinstance(expected_hash, str) or len(expected_hash) != 64 or any(c not in "0123456789abcdef" for c in expected_hash):
+        frappe.throw(_("Review this offer before publishing a change."))
+    # Offer, then outlet locks: every multi-outlet change uses this order.
+    frappe.db.sql("SELECT name FROM `tabKoPOS Promotion` WHERE name = %s FOR UPDATE", (name,))
+    promotion = _read_editor_document(name)
+    if frappe.db.exists("KoPOS Promotion Publication", expected_hash):
+        receipt = frappe.get_doc("KoPOS Promotion Publication", expected_hash)
+        if receipt.promotion != name or receipt.action != action:
+            frappe.throw(_("This review receipt belongs to a different action."))
+        results = frappe.parse_json(receipt.outlet_results)
+        for result in results:
+            _require_director_profile_scope(result["pos_profile"])
+        return {"status": "already_published", "outlets": results}
+    profiles = _offer_affected_profiles(promotion)
+    lock_promotion_profiles(profiles)
+    if action == "activate" and cstr(promotion.modified) != cstr(revision):
+        frappe.throw(_("This draft changed after review. Reopen and review the new version."))
+    review = _review_offer_change(promotion, action=action, profiles=profiles)
+    if review["expected_hash"] != expected_hash:
+        frappe.throw(_("The offer, prices, costs or published offers changed after review. Review again; nothing has been sent."))
+    if review["issues"]:
+        frappe.throw(_("Resolve the checks shown on Review before activating this offer."))
+    for economics in review["economics"].values():
+        if not economics["override"]:
+            _record_promotion_economics_check(promotion, source_hash=economics["source_hash"], status="Ready", reason="", commit=False)
+    results = []
+    for profile, target in review["targets"].items():
+        payload = {**target["body"], "snapshot_hash": target["hash"],
+                   "snapshot_version": build_snapshot_version_from_hash(target["hash"]),
+                   "effective_from": now_datetime().isoformat(), "published_at": now_datetime().isoformat()}
+        results.append(persist_reviewed_snapshot(profile, payload, atomic=True))
+    if action == "stop" and cint(promotion.is_active):
+        # Otherwise an old outlet-wide publisher could reintroduce a stopped
+        # legacy offer from its still-active source document.
+        promotion.is_active = 0
+        promotion.save(ignore_permissions=True)
+    frappe.get_doc({"doctype": "KoPOS Promotion Publication", "request_hash": expected_hash,
+                    "promotion": name, "action": action, "reviewed_revision": review["revision"],
+                    "review_evidence": json.dumps(review["evidence"], separators=(",", ":")),
+                    "outlet_results": json.dumps(results, separators=(",", ":"))}).insert(ignore_permissions=True)
+    # Frappe's POST transaction commits the document evidence, all snapshots and
+    # the immutable receipt together. A failure in any outlet rolls everything back.
+    return {"status": "published", "outlets": results}
+
+
+def persist_reviewed_snapshot(profile_name, payload, *, atomic=False):
+    """One persistence owner. Caller owns profile locks and transaction commit."""
     latest = get_latest_published_snapshot(profile_name)
     if latest and cstr(latest.snapshot_hash) == cstr(payload["snapshot_hash"]):
         return {
@@ -242,15 +483,13 @@ def publish_promotion_snapshot(
             "pos_profile": latest.pos_profile,
             "promotion_count": latest.promotion_count,
         }
-    snapshot, created = ensure_persisted_snapshot(profile_name, payload=payload)
+    snapshot, created = ensure_persisted_snapshot(profile_name, payload=payload, atomic=atomic)
     if latest and cstr(latest.name) != cstr(getattr(snapshot, "name", None)):
         latest.status = SNAPSHOT_STATUS_SUPERSEDED
         latest.save(ignore_permissions=True)
     if cstr(getattr(snapshot, "status", None)) != SNAPSHOT_STATUS_PUBLISHED:
         snapshot.status = SNAPSHOT_STATUS_PUBLISHED
         snapshot.save(ignore_permissions=True)
-    if hasattr(frappe.db, "commit"):
-        frappe.db.commit()
     if created:
         return {
             "status": "published",
@@ -714,7 +953,7 @@ def build_snapshot_payload(pos_profile: str) -> dict[str, Any]:
     return build_snapshot_payload_for_persistence(pos_profile)
 
 
-def get_active_promotions(pos_profile: str, at_time=None) -> list[Any]:
+def get_active_promotions(pos_profile: str, at_time=None, *, include_scheduled: bool = False) -> list[Any]:
     at_time = get_datetime(at_time or now_datetime())
     promotions = frappe.get_all(
         "KoPOS Promotion",
@@ -725,13 +964,13 @@ def get_active_promotions(pos_profile: str, at_time=None) -> list[Any]:
     out = []
     for row in promotions:
         doc = frappe.get_doc("KoPOS Promotion", row.name)
-        if not promotion_is_active(doc, pos_profile, at_time):
+        if not promotion_is_active(doc, pos_profile, at_time, include_scheduled=include_scheduled):
             continue
         out.append(doc)
     return out
 
 
-def promotion_is_active(doc, pos_profile: str, at_time) -> bool:
+def promotion_is_active(doc, pos_profile: str, at_time, *, include_scheduled: bool = False) -> bool:
     if cstr(doc.outlet_scope_mode or "all_pos_profiles") == "selected_pos_profiles":
         allowed_profiles = {
             cstr(row.pos_profile)
@@ -741,18 +980,22 @@ def promotion_is_active(doc, pos_profile: str, at_time) -> bool:
         if pos_profile not in allowed_profiles:
             return False
 
-    if doc.valid_from and get_datetime(doc.valid_from) > at_time:
+    if not include_scheduled and doc.valid_from and get_datetime(doc.valid_from) > at_time:
         return False
     if doc.valid_upto and get_datetime(doc.valid_upto) < at_time:
         return False
     return True
 
 
-def serialize_promotion(doc, pos_profile: str) -> dict[str, Any]:
-    return {
+def serialize_promotion(doc, pos_profile: str, *, kernel_version: int = 1) -> dict[str, Any]:
+    if cint(getattr(doc, "pricing_version", 1) or 1) != 1 and kernel_version != 2:
+        raise ValueError("This guided offer requires the reviewed, version-2 publication flow")
+    display_label = cstr(doc.display_label or doc.promotion_name)
+    guided = kernel_version == 2 and cint(getattr(doc, "pricing_version", 1) or 1) == 2
+    payload = {
         "promotion_id": doc.name,
-        "promotion_name": doc.promotion_name,
-        "display_label": cstr(doc.display_label or doc.promotion_name),
+        "promotion_name": display_label if guided else doc.promotion_name,
+        "display_label": display_label,
         "customer_message": cstr(doc.customer_message or ""),
         "promotion_type": doc.promotion_type,
         "activation_mode": cstr(doc.activation_mode or "automatic"),
@@ -769,8 +1012,10 @@ def serialize_promotion(doc, pos_profile: str) -> dict[str, Any]:
         "comparison_basis": cstr(doc.comparison_basis or "base_item_only"),
         "discount_basis": cstr(doc.discount_basis or "base_item_only"),
         "modifier_policy": cstr(doc.modifier_policy or "excluded_by_default"),
-        "valid_from": doc.valid_from,
-        "valid_upto": doc.valid_upto,
+        # MariaDB reloads Datetime fields as datetime objects. Use Frappe's
+        # wire representation before hashing; preserve legacy strings and nulls.
+        "valid_from": cstr(doc.valid_from) if doc.valid_from is not None else None,
+        "valid_upto": cstr(doc.valid_upto) if doc.valid_upto is not None else None,
         "pos_profile": pos_profile,
         "eligible_items": sort_string_values(
             [
@@ -796,6 +1041,28 @@ def serialize_promotion(doc, pos_profile: str) -> dict[str, Any]:
             ]
         ),
     }
+    try:
+        # JSON Schema's numeric model excludes NaN/Infinity; Python's default
+        # JSON encoder does not. Reject them before structural validation.
+        json.dumps(payload, allow_nan=False)
+    except (ValueError, TypeError) as error:
+        raise ValueError(f"Promotion {doc.name} contains a non-JSON snapshot value") from error
+    try:
+        _canonical_promotion_validator().validate(payload)
+    except SchemaValidationError as error:
+        field = "/".join(str(part) for part in error.absolute_path) or "row"
+        raise ValueError(
+            f"Promotion {doc.name} has invalid snapshot field {field}: {error.message}"
+        ) from error
+    if kernel_version == 2:
+        from kopos_connector.pricing.adapter import time_iso
+        from kopos_connector.pricing.runtime import calculate
+
+        schedule = frappe.parse_json(getattr(doc, "schedule_json", None) or "null")
+        payload["schedule"] = calculate("schedule", schedule) if schedule is not None else None
+        payload["valid_from"] = time_iso(doc.valid_from)
+        payload["valid_upto"] = time_iso(doc.valid_upto)
+    return payload
 
 
 def resolve_snapshot_pos_profile(

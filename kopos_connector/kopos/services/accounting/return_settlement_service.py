@@ -10,6 +10,12 @@ from typing import Any
 import frappe
 from frappe.utils import cstr
 
+from kopos_connector.kopos.api.money_contract import (
+    MoneyContractValidationError,
+    persisted_money_to_sen,
+)
+from ._qr_reconciliation_context import validate_ledger_account
+
 
 SETTLEMENT_DOCTYPE = "Journal Entry"
 SETTLEMENT_STATUS = "Posted"
@@ -344,19 +350,25 @@ def _resolve_original_tenders(
                 f"Original tender account {account} has no positive posted receipt",
                 frappe.ValidationError,
             )
-        account_type = cstr(
-            frappe.db.get_value("Account", account, "account_type")
-        ).strip()
-        expected_account_type = {
-            "cash": "Cash",
-            "qr": "Bank",
-            "card": "Bank",
-        }.get(refund_method)
-        if expected_account_type and account_type != expected_account_type:
-            frappe.throw(
-                f"Original {refund_method} tender account {account} must use a {expected_account_type} account",
-                frappe.ValidationError,
+        if refund_method == "qr":
+            # Validate the invoice's actual ledger, never today's Mode of Payment.
+            validate_ledger_account(
+                account,
+                company=cstr(_value(original_invoice, "company")).strip(),
+                currency=cstr(_value(original_invoice, "currency")).strip().upper(),
+                role="Original QR tender",
+                require_bank_or_clearing=True,
             )
+        else:
+            account_type = cstr(
+                frappe.db.get_value("Account", account, "account_type")
+            ).strip()
+            expected_account_type = {"cash": "Cash", "card": "Bank"}.get(refund_method)
+            if expected_account_type and account_type != expected_account_type:
+                frappe.throw(
+                    f"Original {refund_method} tender account {account} must use a {expected_account_type} account",
+                    frappe.ValidationError,
+                )
         tenders.append(
             {
                 "account": account,
@@ -659,12 +671,13 @@ def _gl_amounts_sen(row: Any, account: str) -> tuple[int, int]:
 
 
 def _money_to_sen(value: Any, label: str) -> int:
-    amount = _decimal_value(value, label)
-    sen = amount * SEN_PER_UNIT
-    integral_sen = sen.to_integral_value()
-    if sen != integral_sen:
-        frappe.throw(f"{label} contains fractional sen", frappe.ValidationError)
-    return int(integral_sen)
+    try:
+        return persisted_money_to_sen(
+            0 if value is None or value == "" else value, label
+        )
+    except MoneyContractValidationError as error:
+        frappe.throw(str(error), frappe.ValidationError)
+        raise AssertionError("frappe.throw must raise") from error
 
 
 def _sen_to_amount(value_sen: int) -> Decimal:

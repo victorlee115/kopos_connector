@@ -4,7 +4,9 @@ import hashlib
 from typing import Any
 
 import frappe
-from frappe.utils import cstr, now_datetime
+from frappe.utils import cstr
+
+from kopos_connector.services.maybank.client import _explicit_mock_mode_enabled, validate_base_url
 
 
 LEGACY_DOCTYPE = "Maybank Settings"
@@ -18,7 +20,8 @@ def execute() -> None:
     if callable(reload_doc):
         reload_doc("kopos", "doctype", "maybank_qrpaybiz_account")
         reload_doc("kopos", "doctype", "maybank_qr_transaction")
-    if not frappe.db.table_exists(LEGACY_DOCTYPE) or not frappe.db.table_exists(ACCOUNT_DOCTYPE):
+    # Single DocTypes live in tabSingles, not in their own SQL table.
+    if not frappe.db.exists("DocType", LEGACY_DOCTYPE) or not frappe.db.table_exists(ACCOUNT_DOCTYPE):
         return
 
     legacy = frappe.get_single(LEGACY_DOCTYPE)
@@ -36,11 +39,13 @@ def _ensure_account(legacy: Any) -> str | None:
     username = cstr(getattr(legacy, "username", None)).strip()
     if not username:
         return None
-    base_url = cstr(getattr(legacy, "base_url", None)).strip()
+    base_url = validate_base_url(
+        cstr(getattr(legacy, "base_url", None)), allow_mock=_explicit_mock_mode_enabled()
+    )
     user_type = cstr(getattr(legacy, "user_type", None)).strip().lower() or "merchant"
     existing = frappe.db.get_value(
         ACCOUNT_DOCTYPE,
-        {"username": username, "base_url": base_url, "user_type": user_type},
+        {"username": username, "base_url": base_url, "user_type": user_type, "environment": "production"},
         "name",
     )
     if existing:
@@ -53,6 +58,7 @@ def _ensure_account(legacy: Any) -> str | None:
             "environment": "production",
             "base_url": base_url,
             "username": username,
+            "encrypted_pin": legacy.get_password("encrypted_pin"),
             "user_type": user_type,
             "provider_device_id": cstr(getattr(legacy, "provider_device_id", None)).strip()
             or hashlib.sha256(f"maybank|{username}|{base_url}|{user_type}".encode()).hexdigest()[:32],
@@ -60,12 +66,8 @@ def _ensure_account(legacy: Any) -> str | None:
             "provider_device_os": cstr(getattr(legacy, "provider_device_os", None)).strip(),
         }
     )
-    # Password APIs keep plaintext out of logs and the database document dict.
-    encrypted_pin = legacy.get_password("encrypted_pin") or ""
+    # Native Password saving encrypts __Auth and masks the document field.
     account.insert(ignore_permissions=True)
-    if encrypted_pin:
-        account.set_password("encrypted_pin", encrypted_pin)
-        account.save(ignore_permissions=True)
     return cstr(account.name).strip()
 
 
@@ -150,7 +152,11 @@ def _backfill_transaction_snapshots(account_name: str, profiles: dict[str, list[
             None,
         )
         profile = profile_rows.get(profile_name) if profile_name else None
-        if profile is None or cstr(getattr(profile, "custom_kopos_maybank_outlet_id", None)).strip() != cstr(transaction.get("outlet_id")).strip():
+        if (
+            profile is None
+            or cstr(getattr(profile, "custom_kopos_maybank_qrpaybiz_account", None)).strip() != account_name
+            or cstr(getattr(profile, "custom_kopos_maybank_outlet_id", None)).strip() != cstr(transaction.get("outlet_id")).strip()
+        ):
             continue
         frappe.db.set_value(
             "Maybank QR Transaction",

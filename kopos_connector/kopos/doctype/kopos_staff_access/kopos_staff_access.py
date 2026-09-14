@@ -33,8 +33,6 @@ class KoPOSStaffAccess(Document):
         pin = cstr(getattr(self, "pin", None)).strip()
         pin_hash = cstr(getattr(self, "pin_hash", None)).strip()
         if pin:
-            if not pin.isdigit() or len(pin) != 4:
-                frappe.throw("POS staff PIN must be exactly 4 digits")
             pin_hash = hash_pin(pin)
         if cint(self.active) and not is_supported_pin_hash(pin_hash):
             frappe.throw("Active POS staff access requires a supported PIN verifier")

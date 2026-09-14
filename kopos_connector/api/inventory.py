@@ -15,6 +15,7 @@ from frappe import _
 from frappe.utils import cint, cstr, get_datetime, now_datetime
 
 from kopos_connector.api.cafe_units import amount_phrase, difference_phrase
+from kopos_connector.pricing.runtime import PromotionRuntimeError
 from kopos_connector.api.devices import (
     lock_device_for_operational_mutation,
     require_device_context,
@@ -1466,7 +1467,7 @@ def get_promotion_economics(*, payload: str | dict[str, Any]) -> dict[str, Any]:
         )
         result["source"] = "promotion_document"
         result["economics_hash"] = source_hash
-        below_cost = int(result["gross_profit_sen"]) < 0
+        below_cost = _promotion_has_loss(promotion, items, result)
         _record_promotion_economics_check(
             promotion,
             source_hash=source_hash,
@@ -1484,7 +1485,7 @@ def get_promotion_economics(*, payload: str | dict[str, Any]) -> dict[str, Any]:
             "economics_hash": source_hash,
             "publication_status": result["publication_status"],
         }
-    except (PromotionEconomicsError, RecipeCompilerError) as error:
+    except (PromotionEconomicsError, RecipeCompilerError, PromotionRuntimeError) as error:
         promotion = frappe.get_doc("KoPOS Promotion", promotion_name)
         profile_name = _promotion_profile_name(
             promotion,
@@ -1512,7 +1513,7 @@ def get_promotion_economics(*, payload: str | dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_promotion_economics_items(
-    *, promotion_name: str, pos_profile: str | None,
+    *, promotion_name: str, pos_profile: str | None, promotion: Any = None,
 ) -> list[dict[str, Any]]:
     """Resolve a saved promotion into exact, director-only economics inputs.
 
@@ -1523,9 +1524,8 @@ def _build_promotion_economics_items(
 
     if not frappe.db.exists("DocType", "KoPOS Promotion"):
         raise PromotionEconomicsError("KoPOS Promotion is not installed")
-    promotion = frappe.get_doc("KoPOS Promotion", promotion_name)
-    if not int(promotion.is_active or 0):
-        raise PromotionEconomicsError("the promotion is inactive")
+    promotion = promotion or frappe.get_doc("KoPOS Promotion", promotion_name)
+    guided = int(getattr(promotion, "pricing_version", 1) or 1) == 2
     item_codes = _promotion_item_codes(promotion)
     if promotion.eligible_item_groups:
         group_names = {
@@ -1622,7 +1622,7 @@ def _build_promotion_economics_items(
                 ),
             }
             component_costs.append(component)
-        promoted_price_sen = _promotion_discounted_price_sen(
+        promoted_price_sen = int(baseline_price_sen) if guided else _promotion_discounted_price_sen(
             promotion,
             baseline_price_sen,
         )
@@ -1637,11 +1637,43 @@ def _build_promotion_economics_items(
             "net_revenue_sen": promoted_price_sen,
             "tax_sen": tax_sen,
             "baseline_tax_sen": baseline_tax_sen,
-            "cogs_sen": int(cogs_sen),
+            "cogs_sen": int(cogs_sen.to_integral_value(rounding="ROUND_CEILING")) if guided else int(cogs_sen),
             "item_group": cstr(getattr(item, "item_group", None) if not isinstance(item, dict) else item.get("item_group")),
             "components": component_costs,
         })
+    if guided:
+        from kopos_connector.pricing.adapter import promotion_cost_cases
+
+        resolved = promotion_cost_cases(promotion, profile_name, resolved)
+        for row in resolved:
+            row["tax_sen"] = _tax_for_net_price(row["net_revenue_sen"], tax_rate)
+            row["baseline_tax_sen"] = _tax_for_net_price(row["baseline_price_sen"], tax_rate)
     return resolved
+
+
+def _promotion_has_loss(promotion, items, result):
+    if int(getattr(promotion, "pricing_version", 1) or 1) == 2:
+        return any(row["net_revenue_sen"] < row["cogs_sen"] for row in items)
+    return int(result["gross_profit_sen"]) < 0
+
+
+def review_promotion_economics(promotion, pos_profile):
+    """Read-only editor check; activation records this evidence atomically."""
+    try:
+        items = _build_promotion_economics_items(promotion_name=promotion.name,
+                                                pos_profile=pos_profile, promotion=promotion)
+        source_hash = _promotion_economics_source_hash(promotion, profile_name=pos_profile, resolved_items=items)
+        result = calculate_promotion_economics(items=items)
+        reason = "One or more qualifying baskets sell below ingredient cost" if _promotion_has_loss(promotion, items, result) else ""
+    except (PromotionEconomicsError, RecipeCompilerError, PromotionRuntimeError) as error:
+        source_hash = _promotion_economics_source_hash(promotion, profile_name=pos_profile, error=cstr(error))
+        reason = cstr(error)
+    approved = (cstr(getattr(promotion, "economics_status", "")) == "Override approved"
+                and cstr(getattr(promotion, "economics_override_hash", "")) == source_hash
+                and bool(cstr(getattr(promotion, "economics_override_reason", "")))
+                and bool(cstr(getattr(promotion, "economics_override_by", "")))
+                and cstr(getattr(promotion, "economics_override_by", "")) != cstr(getattr(promotion, "economics_checked_by", "")))
+    return {"source_hash": source_hash, "ready": not reason or approved, "override": approved, "reason": reason}
 
 
 def _promotion_tax_rate(profile: dict[str, Any] | None) -> Decimal:
@@ -2309,6 +2341,8 @@ def _promotion_economics_source_hash(
     return economics_source_hash(
         {
             "promotion": {
+                **({"pricing_version": 2, "schedule_json": cstr(getattr(promotion, "schedule_json", ""))}
+                   if int(getattr(promotion, "pricing_version", 1) or 1) == 2 else {}),
                 "name": cstr(getattr(promotion, "name", "")),
                 "display_label": cstr(getattr(promotion, "display_label", "")),
                 "customer_message": cstr(getattr(promotion, "customer_message", "")),
@@ -2386,6 +2420,7 @@ def _record_promotion_economics_check(
     source_hash: str,
     status: str,
     reason: str,
+    commit: bool = True,
 ) -> None:
     """Persist the latest server-side economics evidence on the Promotion."""
 
@@ -2414,7 +2449,8 @@ def _record_promotion_economics_check(
     promotion.economics_override_at = None
     promotion.flags.allow_economics_review_write = True
     promotion.save(ignore_permissions=True)
-    frappe.db.commit()
+    if commit:
+        frappe.db.commit()
 
 
 def validate_promotion_economics_for_publication(
@@ -2435,7 +2471,7 @@ def validate_promotion_economics_for_publication(
             resolved_items=items,
         )
         result = calculate_promotion_economics(items=items)
-    except (PromotionEconomicsError, RecipeCompilerError) as error:
+    except (PromotionEconomicsError, RecipeCompilerError, PromotionRuntimeError) as error:
         current_hash = _promotion_economics_source_hash(
             promotion,
             profile_name=pos_profile,
@@ -2444,7 +2480,7 @@ def validate_promotion_economics_for_publication(
         result = None
         reason = cstr(error)
 
-    if result is not None and int(result["gross_profit_sen"]) < 0:
+    if result is not None and _promotion_has_loss(promotion, items, result):
         reason = "Promotion price is below calculated COGS"
 
     stored_status = cstr(getattr(promotion, "economics_status", "")).strip()
@@ -2459,7 +2495,7 @@ def validate_promotion_economics_for_publication(
         and override_by
     ):
         return {"source_hash": current_hash, "override": True}
-    if stored_status == "Ready" and stored_hash == current_hash and result is not None:
+    if stored_status == "Ready" and stored_hash == current_hash and result is not None and not _promotion_has_loss(promotion, items, result):
         return {"source_hash": current_hash, "override": False}
     raise PromotionEconomicsError(
         "Promotion publication is blocked because COGS evidence is missing, stale, or below cost; "
@@ -2506,9 +2542,9 @@ def approve_promotion_economics_override(*, payload: str | dict[str, Any]) -> di
             resolved_items=items,
         )
         result = calculate_promotion_economics(items=items)
-        if int(result["gross_profit_sen"]) >= 0:
+        if not _promotion_has_loss(promotion, items, result):
             frappe.throw(_("A one-time override is only required for below-cost or missing/stale COGS evidence"), frappe.ValidationError)
-    except (PromotionEconomicsError, RecipeCompilerError) as error:
+    except (PromotionEconomicsError, RecipeCompilerError, PromotionRuntimeError) as error:
         current_hash = _promotion_economics_source_hash(
             promotion,
             profile_name=profile_name,
@@ -2534,18 +2570,20 @@ def approve_promotion_economics_override(*, payload: str | dict[str, Any]) -> di
 
 
 def _promotion_price_sen(item_code: str, item: Any, price_list: str) -> Decimal:
-    if price_list and frappe.db.exists("DocType", "Item Price"):
-        rows = frappe.get_all(
-            "Item Price",
-            filters={"item_code": item_code, "price_list": price_list, "selling": 1},
-            fields=["price_list_rate", "valid_from", "valid_upto", "modified"],
-            order_by="valid_from desc, modified desc",
-            limit_page_length=20,
+    from kopos_connector.api.catalog import get_item_price_amounts_map
+
+    if price_list:
+        stock_uom = item.get("stock_uom") if isinstance(item, dict) else getattr(item, "stock_uom", "")
+        amounts = get_item_price_amounts_map(
+            [item_code], price_list, {item_code: cstr(stock_uom)},
         )
-        for row in rows:
-            if row.price_list_rate not in (None, ""):
-                return _currency_to_sen(row.price_list_rate, f"{item_code} selling price")
-    return _currency_to_sen(item.standard_rate, f"{item_code} selling price")
+        if item_code not in amounts:
+            raise PromotionEconomicsError(
+                f"{item_code} has no current menu price for this outlet; update its selling price before checking the offer"
+            )
+        return _currency_to_sen(amounts[item_code], f"{item_code} selling price")
+    standard = item.get("standard_rate") if isinstance(item, dict) else getattr(item, "standard_rate", None)
+    return _currency_to_sen(standard, f"{item_code} selling price")
 
 
 def _promotion_discounted_price_sen(promotion: Any, baseline_price_sen: Decimal) -> int:

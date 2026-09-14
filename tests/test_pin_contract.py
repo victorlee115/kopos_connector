@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -29,6 +30,30 @@ CROSS_RUNTIME_HASH = (
 )
 VALID_SALT = "a" * 32
 VALID_KEY = "b" * 64
+NON_ASCII_PINS = ["１２３４", "١٢٣٤", "۱۲۳۴", "²³⁴⁵", "𝟙𝟚𝟛𝟜", "12٣4"]
+
+
+@pytest.mark.parametrize("raw_pin", NON_ASCII_PINS)
+def test_unicode_digits_cannot_create_an_unusable_tablet_pin(raw_pin, monkeypatch):
+    monkeypatch.setattr(pin.hashlib, "scrypt", lambda *a, **k: pytest.fail("reject format before deriving a key"))
+    with pytest.raises(pin.frappe.ValidationError, match="0-9"):
+        pin.hash_pin(raw_pin)
+
+
+@pytest.mark.parametrize("raw_pin", NON_ASCII_PINS)
+def test_unicode_digits_do_not_authenticate_even_with_a_matching_legacy_hash(raw_pin):
+    # Synthetic historical bug-shaped verifier; never read a real user's PIN.
+    key = hashlib.scrypt(raw_pin.encode(), salt=VALID_SALT.encode(), n=256, r=8, p=1, dklen=32).hex()
+    encoded = f"scrypt$256${VALID_SALT}${key}"
+    assert pin.is_supported_pin_hash(encoded)
+    assert not pin.verify_pin(raw_pin, encoded)
+
+
+@pytest.mark.parametrize("raw_pin", [None, 1234, True, b"1234", ["1", "2", "3", "4"]])
+def test_non_string_pin_inputs_fail_cleanly(raw_pin):
+    with pytest.raises(pin.frappe.ValidationError, match="0-9"):
+        pin.hash_pin(raw_pin)
+    assert not pin.verify_pin(raw_pin, CROSS_RUNTIME_HASH)
 
 
 def _typescript_pin_auth_source() -> str | None:

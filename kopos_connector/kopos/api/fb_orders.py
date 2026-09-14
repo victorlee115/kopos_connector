@@ -1961,6 +1961,8 @@ def _calculate_expected_snapshot_promotions(
     snapshot_promotions: list[dict[str, Any]],
     pos_profile: str,
 ) -> tuple[list[dict[str, Any]], list[list[dict[str, Any]]]]:
+    if any("schedule" in rule for rule in snapshot_promotions):
+        frappe.throw("Versioned offers require the shared promotion runtime", frappe.ValidationError)
     sale_datetime = normalize_site_datetime(
         normalized["sale_datetime"],
         fieldname="order.sale_datetime",
@@ -2139,12 +2141,27 @@ def _validate_snapshot_promotion_pricing(
     normalized: dict[str, Any],
     snapshot_promotions: list[dict[str, Any]],
     pos_profile: str,
+    *, snapshot_body: dict[str, Any] | None = None,
 ) -> None:
-    expected_promotions, expected_allocations = (
-        _calculate_expected_snapshot_promotions(
-            normalized, snapshot_promotions, pos_profile
-        )
-    )
+    if snapshot_body is not None:
+        from kopos_connector.pricing.adapter import quote_snapshot
+
+        cart = [{"id": item["line_id"], "menuItemId": item["item_code"], "quantity": item["qty"],
+                 "unitPriceSen": item["unit_price_sen"], "modifierTotalSen": item["modifier_total_sen"],
+                 "modifiers": [], "discountAmountSen": item["discount_amount_sen"] - sum(
+                     allocation["amount_sen"] for allocation in item["promotion_allocations"])}
+                for item in normalized["items"]]
+        result = quote_snapshot(snapshot_body, cart, normalized["sale_datetime"],
+                                selected=[row["promotion_id"] for row in normalized["applied_promotions"]])
+        rules = {row["promotion_id"]: row for row in snapshot_promotions}
+        expected_promotions = [{"promotion_id": row["promotionId"], "promotion_name": row["promotionName"],
+                                "promotion_type": row["promotionType"], "amount_sen": row["amountSen"],
+                                "rule": rules[row["promotionId"]]} for row in result["appliedPromotions"]]
+        expected_allocations = [[{"promotion_id": row["promotionId"], "amount_sen": row["amountSen"],
+                                  "quantity": row["quantity"], "scope": row["scope"]}
+                                 for row in line["promotionAllocations"]] for line in result["items"]]
+    else:
+        expected_promotions, expected_allocations = _calculate_expected_snapshot_promotions(normalized, snapshot_promotions, pos_profile)
     actual_by_id = {
         promotion["promotion_id"]: promotion
         for promotion in normalized["applied_promotions"]
@@ -2287,12 +2304,19 @@ def _validate_published_promotion_snapshot(
             "Promotion snapshot promotions payload is invalid",
             frappe.ValidationError,
         )
-    recomputed_hash = compute_snapshot_content_hash(
-        {
-            "pos_profile": snapshot_payload.get("pos_profile"),
-            "promotions": raw_snapshot_promotions,
-        }
-    )
+    versioned_body = None
+    if "schema_version" in snapshot_payload or "kernel_version" in snapshot_payload:
+        if snapshot_payload.get("schema_version") != 2 or snapshot_payload.get("kernel_version") != 2:
+            frappe.throw("Unsupported promotion snapshot version", frappe.ValidationError)
+        from kopos_connector.pricing.adapter import validate_body
+        from kopos_connector.pricing.runtime import calculate
+
+        versioned_body = {key: snapshot_payload.get(key) for key in (
+            "schema_version", "kernel_version", "kernel_hash", "pos_profile", "promotions", "frozen_items")}
+        validate_body(versioned_body)
+        recomputed_hash = calculate("identity", versioned_body)["hash"]
+    else:
+        recomputed_hash = compute_snapshot_content_hash({"pos_profile": snapshot_payload.get("pos_profile"), "promotions": raw_snapshot_promotions})
     if (
         cstr(snapshot_payload.get("snapshot_version")) != snapshot_version
         or cstr(snapshot_payload.get("snapshot_hash")) != snapshot_hash
@@ -2389,6 +2413,7 @@ def _validate_published_promotion_snapshot(
             normalized,
             raw_snapshot_promotions,
             pos_profile,
+            snapshot_body=versioned_body,
         )
 
     evidence["snapshot"] = {

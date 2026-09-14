@@ -63,17 +63,15 @@ class TestFBServiceContracts(unittest.TestCase):
         self.assertIn('return_invoice.set("payments", [])', content)
         self.assertIn("_validate_full_standard_return_items", content)
 
-    @pytest.mark.inventory_regression
-    def test_return_service_updates_resolved_sale_status(self):
+    def test_return_service_preserves_recipe_history(self):
         content = (
             ERP_ROOT / "kopos" / "services" / "operations" / "return_service.py"
         ).read_text()
-        self.assertIn("Partially Returned", content)
-        self.assertIn("Returned", content)
-        self.assertIn('resolved_sale.db_set("status"', content)
+        self.assertNotIn("FB Resolved Sale", content)
+        self.assertNotIn("resolved_sale.db_set", content)
+        self.assertIn("ensure_return_settlement", content)
 
-    @pytest.mark.inventory_regression
-    def test_return_quantity_guard_locks_resolved_sales_before_validation(self):
+    def test_return_quantity_guard_locks_invoice_items_before_validation(self):
         content = (
             ERP_ROOT
             / "kopos"
@@ -91,7 +89,10 @@ class TestFBServiceContracts(unittest.TestCase):
         self.assertIn("FOR UPDATE", content)
         self.assertIn("return_event.docstatus = 1", content)
         self.assertIn("Partial ERP returns are not supported", content)
-        self.assertIn("ORDER BY name", content)
+        self.assertIn("FROM `tabSales Invoice Item`", content)
+        self.assertIn("ORDER BY idx, name", content)
+        self.assertIn("ORDER BY return_line.original_sales_invoice_item, return_line.name", content)
+        self.assertNotIn("tabFB Resolved Sale", content)
         self.assertIn("lock_and_validate_return_quantities", controller)
 
     @pytest.mark.inventory_regression

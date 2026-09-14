@@ -42,6 +42,7 @@ page_js = {
     "jiji_money": "public/js/jiji_desk.js",
     "jiji_supplies": "public/js/jiji_desk.js",
     "jiji_staff": "public/js/jiji_desk.js",
+    "jiji_promotions": "public/js/jiji_desk.js",
     "jiji_menu_recipes": "public/js/jiji_desk.js",
     "jiji_stock_autopilot": "public/js/jiji_desk.js",
 }

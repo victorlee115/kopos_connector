@@ -1,0 +1,18 @@
+{
+ "doctype": "Workspace Sidebar",
+ "name": "KoPOS Support",
+ "title": "KoPOS Support",
+ "app": "kopos_connector",
+ "module": "KoPOS",
+ "standard": 1,
+ "modified": "2026-09-14 04:37:28.000000",
+ "header_icon": "device-mobile",
+ "items": [
+  {"label": "Home", "type": "Link", "link_type": "Workspace", "link_to": "KoPOS Support"},
+  {"label": "Tablet health", "type": "Link", "link_type": "Report", "link_to": "KoPOS Device Health"},
+  {"label": "Sales updates needing help", "type": "Link", "link_type": "Report", "link_to": "KoPOS Projection Support Queue"},
+  {"label": "Shift checks", "type": "Link", "link_type": "Report", "link_to": "KoPOS Shift Reconciliation"},
+  {"label": "Support overview", "type": "Link", "link_type": "Report", "link_to": "KoPOS Support Report"},
+  {"label": "Tablet setup", "type": "Link", "link_type": "Page", "link_to": "kopos_provisioning"}
+ ]
+}

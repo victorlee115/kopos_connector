@@ -11,7 +11,6 @@ import frappe
 from frappe.utils import cstr, now_datetime
 
 from kopos_connector.kopos.services.accounting.maybank_payment_service import (
-    resolve_manual_qr_suspense_account,
     resolve_verified_qr_settlement_account,
     validate_manual_qr_suspense_account,
 )
@@ -118,13 +117,9 @@ def get_payment_readiness_payload(device_doc: Any, profile_doc: Any) -> dict[str
             account, resolved_outlet = require_provider_binding(profile_doc, for_new_payment=True)
             if currency != "MYR" or not company or not device_id:
                 raise QrAccountingNotConfigured("Automatic QR requires a MYR POS Profile and device")
-            sale_context = {
-                "device_id": device_id,
-                "pos_profile": cstr(getattr(profile_doc, "name", None)).strip(),
-                "company": company,
-                "currency": currency,
-            }
-            resolve_manual_qr_suspense_account(sale_context)
+            validate_manual_qr_suspense_account(
+                profile_suspense_account(profile_doc), company=company, currency=currency,
+            )
             resolve_verified_qr_settlement_account(
                 MAYBANK_MODE_OF_PAYMENT,
                 company,

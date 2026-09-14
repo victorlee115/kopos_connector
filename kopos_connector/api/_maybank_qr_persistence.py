@@ -10,7 +10,11 @@ from typing import Any
 import frappe
 from frappe.utils import cstr, now_datetime
 
-from kopos_connector.utils.diagnostics import redacted_json
+from kopos_connector.utils.diagnostics import (
+    DIAGNOSTIC_OMITTED,
+    DIAGNOSTIC_UNSUPPORTED,
+    redacted_json,
+)
 
 from ._maybank_qr_contract import (
     AMBIGUOUS_IDEMPOTENCY_MESSAGE,
@@ -664,6 +668,15 @@ def _durable_generation_release(attempt: Any) -> str | None:
     evidence = _raw_response_object(attempt)
     if evidence is None:
         return None
+    # Non-empty diagnostic placeholders are not proof of who resolved a
+    # payment or why. Preserve the old redacted-text contract, but never admit
+    # missing/unsupported values produced by bounded diagnostic serialization.
+    for field in ("resolved_by", "resolved_at", "reason", "evidence_reference"):
+        value = evidence.get(field)
+        if not isinstance(value, str) or value.strip() in (
+            DIAGNOSTIC_OMITTED, DIAGNOSTIC_UNSUPPORTED
+        ):
+            return None
     resolution = cstr(evidence.get("resolution")).strip()
     resolved_by = cstr(evidence.get("resolved_by")).strip()
     resolved_at = cstr(evidence.get("resolved_at")).strip()

@@ -286,7 +286,7 @@ def _build_context(
             frappe.ValidationError,
         )
 
-    _validate_ledger_account(
+    validate_ledger_account(
         suspense_account,
         company=company,
         currency=currency,
@@ -326,7 +326,7 @@ def _build_context(
             "QR target bank/clearing account must differ from the suspense account",
             frappe.ValidationError,
         )
-    _validate_ledger_account(
+    validate_ledger_account(
         target_account,
         company=company,
         currency=currency,
@@ -451,7 +451,7 @@ def _find_invoice_payment(invoice: Any, source_payment_id: str) -> Any:
     return matches[0]
 
 
-def _validate_ledger_account(
+def validate_ledger_account(
     account: str,
     *,
     company: str,
@@ -460,6 +460,7 @@ def _validate_ledger_account(
     required_root_type: str = "Asset",
     require_bank_or_clearing: bool,
 ) -> None:
+    """Validate an explicit ledger, without selecting today's payment account."""
     row = frappe.db.get_value(
         "Account",
         account,
@@ -489,13 +490,13 @@ def _validate_ledger_account(
     account_currency = cstr(_value(row, "account_currency")).strip().upper()
     if account_currency and account_currency != currency:
         frappe.throw(
-            f"{role} account {account} currency does not match",
+            f"{role} account {account} currency does not match {currency}",
             frappe.ValidationError,
         )
     account_type = cstr(_value(row, "account_type")).strip()
     if require_bank_or_clearing and account_type not in {"", "Bank"}:
         frappe.throw(
-            f"{role} account {account} must be a Bank account or untyped Asset clearing account",
+            f"{role} account {account} must be a Bank account or untyped Asset clearing account; {account_type} is not allowed",
             frappe.ValidationError,
         )
 

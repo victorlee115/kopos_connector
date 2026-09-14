@@ -121,19 +121,39 @@ class TestFBPublicContracts(unittest.TestCase):
             )
         contracts = (TS_ROOT / "services" / "api" / "fb-contracts.ts").read_text()
         types = (TS_ROOT / "types" / "fb-types.ts").read_text()
-        for token in [
-            "idempotency_key",
-            "device_id",
-            "shift_id",
-            "staff_id",
-            "event_project",
-            "line_id",
-            "item_code",
-            "payment_method",
-            "ingredient_stock_entry",
-            "order_status",
-        ]:
-            self.assertIn(token, contracts)
+        # Request fields also have one generated schema owner. Assert actual
+        # required/property membership, not incidental text in the wrapper.
+        requests = json.loads(
+            (TS_ROOT.parents[1] / "contracts/api/sale-request.v1.schema.json").read_text()
+        )["definitions"]
+        for name, required in {
+            "FbSubmitOrderPayload": ["idempotency_key", "device_id", "shift_id", "staff_id"],
+            "FbSubmitOrderItem": ["line_id", "item_code"],
+            "FbSubmitOrderPayment": ["payment_method"],
+        }.items():
+            self.assertIn(name, contracts)
+            for field in required:
+                self.assertIn(field, requests[name]["required"])
+                self.assertIn(field, requests[name]["properties"])
+        self.assertIn("event_project", requests["FbSubmitOrderPayload"]["properties"])
+        # Receive fields now have one JSON Schema owner; the public module
+        # re-exports its generated types instead of repeating declarations.
+        self.assertIn('from "./generated/wire-contracts"', contracts)
+        definitions = json.loads(
+            (TS_ROOT.parents[1] / "contracts/api/order-response.v1.schema.json").read_text()
+        )["definitions"]
+        for name in ["FbSubmitOrderAcceptedResponse", "FbOrderStatusResponse"]:
+            self.assertIn(name, contracts)
+            response = definitions[name]
+            self.assertEqual(
+                response["properties"]["ingredient_stock_entry"]["type"],
+                ["string", "null"],
+            )
+            self.assertEqual(
+                response["properties"]["order_status"],
+                {"$ref": "#/definitions/FbOrderStatus"},
+            )
+            self.assertIn("order_status", response["required"])
         for token in [
             "FbOrderStatus",
             "FbInvoiceStatus",

@@ -610,7 +610,7 @@ def test_credit_note_clears_stale_optional_resolved_sale_link() -> None:
         custom_kopos_has_modifiers=0,
     )
 
-    service._copy_commercial_line_provenance(
+    service._copy_sale_provenance(
         FakeDoc(items=[original_item]),
         FakeDoc(items=[return_item]),
     )
@@ -627,7 +627,9 @@ def test_credit_note_clears_stale_optional_resolved_sale_link() -> None:
     assert return_item.custom_kopos_modifiers == "{corrupt optional decoration"
 
 
-def test_legacy_resolved_sale_lines_remain_supported() -> None:
+def test_legacy_resolved_sale_lines_remain_supported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     guard = importlib.import_module(
         "kopos_connector.kopos.services.operations.return_guard_service"
     )
@@ -638,3 +640,12 @@ def test_legacy_resolved_sale_lines_remain_supported() -> None:
             {"original_resolved_sale": "RS-1", "qty_returned": "0.75"},
         ]
     ) == [{"original_resolved_sale": "RS-1", "qty_returned": 1.0}]
+
+    def forbidden_sql(*_args, **_kwargs):
+        pytest.fail("legacy-only lines reached the commercial database guard")
+
+    monkeypatch.setattr(guard.frappe.db, "sql", forbidden_sql)
+    with pytest.raises(guard.frappe.ValidationError, match="Sales Invoice item identity"):
+        guard.lock_and_validate_return_quantities(
+            "RETURN-1", [{"original_resolved_sale": "RS-1", "qty_returned": 1}], "SINV-1"
+        )

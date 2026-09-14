@@ -1,0 +1,310 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://jiji.local/contracts/promotion-snapshot.v2.schema.json",
+  "title": "Version-2 immutable promotion content",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kernel_version",
+    "kernel_hash",
+    "pos_profile",
+    "promotions",
+    "frozen_items"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "kernel_version": {
+      "const": 2
+    },
+    "kernel_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "pos_profile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 140
+    },
+    "promotions": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "title": "CanonicalPromotion",
+        "description": "Version-2 promotion row. Runtime validation owns temporal and economic conditions.",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "promotion_id",
+          "promotion_name",
+          "display_label",
+          "customer_message",
+          "promotion_type",
+          "activation_mode",
+          "offline_allowed",
+          "priority",
+          "stacking_policy",
+          "discount_target",
+          "discount_type",
+          "discount_value",
+          "buy_qty",
+          "discount_qty",
+          "repeat_mode",
+          "eligible_scope_mode",
+          "comparison_basis",
+          "discount_basis",
+          "modifier_policy",
+          "valid_from",
+          "valid_upto",
+          "pos_profile",
+          "eligible_items",
+          "min_qty",
+          "min_amount",
+          "eligible_item_groups",
+          "selected_pos_profiles",
+          "schedule"
+        ],
+        "properties": {
+          "promotion_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "promotion_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "display_label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "customer_message": {
+            "type": "string"
+          },
+          "promotion_type": {
+            "type": "string",
+            "enum": [
+              "item_discount",
+              "order_discount",
+              "happy_hour",
+              "buy_x_get_y",
+              "nth_item_discount"
+            ]
+          },
+          "activation_mode": {
+            "type": "string",
+            "enum": [
+              "automatic",
+              "manual_selectable"
+            ]
+          },
+          "offline_allowed": {
+            "type": "boolean"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "stacking_policy": {
+            "type": "string",
+            "enum": [
+              "exclusive",
+              "stackable",
+              "best_price"
+            ]
+          },
+          "discount_target": {
+            "type": "string",
+            "enum": [
+              "cheaper_eligible"
+            ]
+          },
+          "discount_type": {
+            "type": "string",
+            "enum": [
+              "percentage",
+              "fixed_amount",
+              "fixed_price",
+              "free_item"
+            ]
+          },
+          "discount_value": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1.7976931348623157e+308
+          },
+          "buy_qty": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "discount_qty": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "repeat_mode": {
+            "type": "string",
+            "enum": [
+              "once",
+              "repeat"
+            ]
+          },
+          "eligible_scope_mode": {
+            "type": "string",
+            "enum": [
+              "same_item",
+              "eligible_pool"
+            ]
+          },
+          "comparison_basis": {
+            "type": "string",
+            "enum": [
+              "base_item_only"
+            ]
+          },
+          "discount_basis": {
+            "type": "string",
+            "enum": [
+              "base_item_only"
+            ]
+          },
+          "modifier_policy": {
+            "type": "string",
+            "enum": [
+              "excluded_by_default",
+              "include_paid_modifiers"
+            ]
+          },
+          "valid_from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_upto": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pos_profile": {
+            "type": "string",
+            "minLength": 1
+          },
+          "eligible_items": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "min_qty": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "min_amount": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1.7976931348623157e+308
+          },
+          "eligible_item_groups": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "selected_pos_profiles": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "schedule": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "timeZone",
+              "weekdays",
+              "startDate",
+              "endDate",
+              "startMinute",
+              "endMinute"
+            ],
+            "properties": {
+              "timeZone": {
+                "const": "Asia/Kuala_Lumpur"
+              },
+              "weekdays": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 7,
+                "uniqueItems": true,
+                "items": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 7
+                }
+              },
+              "startDate": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+              },
+              "endDate": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+              },
+              "startMinute": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1439
+              },
+              "endMinute": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1440
+              }
+            }
+          }
+        }
+      }
+    },
+    "frozen_items": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item_code",
+          "item_group"
+        ],
+        "properties": {
+          "item_code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 140
+          },
+          "item_group": {
+            "type": "string",
+            "maxLength": 140
+          }
+        }
+      }
+    }
+  }
+}

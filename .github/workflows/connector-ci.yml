@@ -63,6 +63,14 @@ jobs:
       - name: Compile all connector and test sources
         run: python -m compileall -q kopos_connector tests
 
+      - name: Setup Node for ERP form interaction tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Test ERP page and form interactions
+        run: node --test tests/*.test.cjs
+
       - name: Build connector wheel for packaging identity
         run: |
           python -m build \

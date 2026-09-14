@@ -11,18 +11,20 @@
  "field_order": [
   "promotion_name",
   "promotion_type",
-  "column_break_identity",
   "is_active",
   "offline_allowed",
   "activation_mode",
+  "pricing_version",
+  "schedule_json",
+  "column_break_identity",
   "display_label",
   "customer_message",
   "scope_section",
   "priority",
   "stacking_policy",
-  "column_break_scope",
   "outlet_scope_mode",
   "eligible_scope_mode",
+  "column_break_scope",
   "repeat_mode",
   "valid_from",
   "valid_upto",
@@ -55,6 +57,23 @@
  ],
  "fields": [
   {
+   "fieldname": "pricing_version",
+   "fieldtype": "Int",
+   "label": "Pricing version",
+   "default": "1",
+   "read_only": 1,
+   "hidden": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "schedule_json",
+   "fieldtype": "Code",
+   "options": "JSON",
+   "label": "Weekly schedule",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
    "fieldname": "promotion_name",
    "fieldtype": "Data",
    "in_list_view": 1,
@@ -76,17 +95,16 @@
    "fieldtype": "Column Break"
   },
   {
-   "default": "1",
+   "default": "0",
    "fieldname": "is_active",
    "fieldtype": "Check",
-   "in_list_view": 1,
-   "label": "Available to customers"
+   "label": "Include when publishing offers",
+   "description": "New offers start switched off. Saving is not publishing. A Company Director must review and publish the outlet's offers before tablets can receive the changes."
   },
   {
    "default": "1",
    "fieldname": "offline_allowed",
    "fieldtype": "Check",
-   "in_list_view": 1,
    "label": "Allow when the tablet is offline",
    "description": "The tablet may apply this offer using its last approved settings while the store connection is unavailable."
   },
@@ -117,7 +135,6 @@
    "default": "100",
    "fieldname": "priority",
    "fieldtype": "Int",
-   "in_list_view": 1,
    "label": "Which offer wins first",
 	 "description": "A lower number is checked first when more than one offer could apply."
   },
@@ -363,5 +380,6 @@
  "sort_field": "priority",
  "sort_order": "ASC",
  "states": [],
+ "title_field": "promotion_name",
  "track_changes": 1
 }

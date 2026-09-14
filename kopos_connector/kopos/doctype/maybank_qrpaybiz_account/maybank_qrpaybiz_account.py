@@ -15,7 +15,6 @@ from kopos_connector.services.maybank.client import (
     PROVIDER_DEVICE_NAME_FIELD,
     PROVIDER_DEVICE_OS_FIELD,
     _explicit_mock_mode_enabled,
-    invalidate_account_auth_cache,
     validate_base_url,
 )
 
@@ -71,10 +70,11 @@ class MaybankQRPayBizAccount(Document):
                 )
         self._reject_duplicate_active_principal()
 
-    def on_update(self) -> None:
-        if self.has_value_changed("encrypted_pin"):
+    def before_save(self) -> None:
+        # Frappe masks Password fields before on_update; same-length rotations
+        # then look unchanged. Set audit metadata before the normal DB save.
+        if self.encrypted_pin and not self.is_dummy_password(self.encrypted_pin):
             self.credential_rotated_at = now_datetime()
-            invalidate_account_auth_cache(self)
 
     def _reject_duplicate_active_principal(self) -> None:
         if not int(self.enabled or 0):

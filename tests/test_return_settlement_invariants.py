@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import sys
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -15,6 +16,31 @@ from .fake_frappe import install_fake_frappe_modules
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 install_fake_frappe_modules()
+
+
+@pytest.mark.parametrize("value", [
+    "Infinity", "-Infinity", float("inf"), float("-inf"), Decimal("sNaN"),
+    "NaN", float("nan"), False, "90071992547409.92", "-90071992547409.92",
+])
+def test_refund_money_rejects_invalid_persisted_values_with_domain_error(value) -> None:
+    service = importlib.import_module(
+        "kopos_connector.kopos.services.accounting.return_settlement_service"
+    )
+    with pytest.raises(service.frappe.ValidationError, match="refund amount"):
+        service._money_to_sen(value, "refund amount")
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    (None, 0), ("", 0), (0, 0), ("0.00", 0), ("-0.00", 0),
+    (Decimal("12.030000"), 1203), ("-12.03", -1203), ("1.2e1", 1200),
+    ("90071992547409.91", 9007199254740991),
+    ("-90071992547409.91", -9007199254740991),
+])
+def test_refund_money_preserves_exact_persisted_values_and_blank_defaults(value, expected) -> None:
+    service = importlib.import_module(
+        "kopos_connector.kopos.services.accounting.return_settlement_service"
+    )
+    assert service._money_to_sen(value, "refund amount") == expected
 
 
 class FakeDoc(SimpleNamespace):
@@ -204,6 +230,60 @@ def _settlement_fixture(
         lambda doctype: SimpleNamespace(has_field=lambda fieldname: True),
     )
     return service, original_invoice, return_invoice, return_event, journal
+
+
+@pytest.mark.parametrize(("overrides", "accepted"), [
+    ({}, True),
+    ({"account_type": ""}, True),
+    ({"account_type": None}, True),
+    ({"account_type": "", "is_group": "0", "disabled": "0"}, True),
+    ({"account_type": "Cash"}, False),
+    ({"account_type": "Receivable"}, False),
+    ({"company": "Another Company"}, False),
+    ({"account_currency": "USD"}, False),
+    ({"root_type": "Liability"}, False),
+    ({"is_group": 1}, False),
+    ({"disabled": 1}, False),
+])
+def test_qr_refund_validates_original_ledger_without_resolving_current_payment_mode(
+    monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any], accepted: bool,
+) -> None:
+    service = importlib.import_module(
+        "kopos_connector.kopos.services.accounting.return_settlement_service"
+    )
+    account = {
+        "name": "Original QR - CO", "account_type": "Bank", "root_type": "Asset",
+        "company": "Company A", "account_currency": "MYR", "is_group": 0,
+        "disabled": 0, **overrides,
+    }
+    original = FakeDoc(
+        name="SINV-QR-ORIGINAL", company="Company A", currency="MYR",
+        payments=[FakeDoc(mode_of_payment="DuitNow QR", type="Bank",
+                          account=account["name"], custom_fb_source_payment_id="PAY-ORIGINAL")],
+    )
+
+    def get_value(doctype, name, fields, **kwargs):
+        # A renamed/reconfigured Mode of Payment must not redirect the refund.
+        assert (doctype, name) == ("Account", account["name"])
+        return account if kwargs.get("as_dict") else account[fields]
+
+    def get_all(doctype, **kwargs):
+        assert doctype == "GL Entry"
+        assert kwargs["filters"]["voucher_no"] == original.name
+        assert kwargs["filters"]["account"] == ["in", [account["name"]]]
+        return [{"account": account["name"], "debit_in_account_currency": "12.00",
+                 "credit_in_account_currency": "0.00"}]
+
+    monkeypatch.setattr(service.frappe, "db", SimpleNamespace(get_value=get_value))
+    monkeypatch.setattr(service.frappe, "get_all", get_all)
+    if accepted:
+        assert service._resolve_original_tenders(original, "qr", 1200) == [
+            {"account": account["name"], "refund_method": "qr", "amount_sen": 1200}
+        ]
+        assert original.payments[0].custom_fb_source_payment_id == "PAY-ORIGINAL"
+    else:
+        with pytest.raises(service.frappe.ValidationError, match="account"):
+            service._resolve_original_tenders(original, "qr", 1200)
 
 
 def test_full_cash_refund_posts_one_idempotent_journal_with_exact_gl_proof(
@@ -594,31 +674,6 @@ def test_return_guard_uses_two_current_locks_and_aggregates_duplicate_lines(
         guard.lock_and_validate_return_quantities(
             "return-2", duplicate_lines, "SINV-1"
         )
-
-
-@pytest.mark.inventory_regression
-def test_duplicate_return_children_mark_the_resolved_sale_fully_returned(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = importlib.import_module(
-        "kopos_connector.kopos.services.operations.return_service"
-    )
-    resolved_sale = FakeDoc(name="RS-1", qty="1.00", status="Open")
-    monkeypatch.setattr(
-        service.frappe,
-        "get_doc",
-        lambda doctype, name: resolved_sale,
-    )
-    return_event = FakeDoc(
-        lines=[
-            FakeDoc(original_resolved_sale="RS-1", qty_returned="0.50"),
-            FakeDoc(original_resolved_sale="RS-1", qty_returned="0.50"),
-        ]
-    )
-
-    service._update_resolved_sale_statuses(return_event)
-
-    assert resolved_sale.status == "Returned"
 
 
 def test_duplicate_persisted_children_match_an_aggregated_idempotent_retry() -> None:

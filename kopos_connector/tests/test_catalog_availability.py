@@ -1072,6 +1072,21 @@ def test_item_price_selection_rejects_future_expired_and_wrong_uom_rows(
     )
 
     assert result == {"LATTE": 12.0}
+    exact = catalog_module.get_item_price_amounts_map(["LATTE"], "Standard Selling", {"LATTE": "Nos"})
+    from decimal import Decimal
+    assert exact == {"LATTE": Decimal("12")}
+    assert isinstance(exact["LATTE"], Decimal)
+
+
+def test_exact_price_owner_does_not_round_through_binary_float(catalog_module, monkeypatch):
+    from decimal import Decimal
+    monkeypatch.setattr(catalog_module.frappe, "get_all", lambda *args, **kwargs: [{
+        "name": "EXACT", "item_code": "LATTE", "price_list_rate": Decimal("123456789012.345"),
+        "valid_from": None, "valid_upto": None, "modified": "2026-09-09", "uom": "Nos",
+    }])
+    result = catalog_module.get_item_price_amounts_map(["LATTE"], "Selling", {"LATTE": "Nos"})
+    assert result["LATTE"] == Decimal("123456789012.345")
+    assert catalog_module.money_to_sen(result["LATTE"]) == 12345678901235
 
 
 @pytest.mark.parametrize(

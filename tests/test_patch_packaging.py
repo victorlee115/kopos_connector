@@ -28,6 +28,7 @@ EXPECTED_PATCHES = (
     "kopos_connector.patches.consolidate_inventory_policy_cogs_account",
     "kopos_connector.patches.simplify_kopos_support_workspace_copy",
     "kopos_connector.patches.simplify_jiji_business_workspace",
+    "kopos_connector.patches.migrate_branch_scoped_maybank_qr # 2026-09-13 native-singleton-password-repair",
 )
 EXPECTED_ACCEPTANCE_MODULES = (
     "kopos_connector.acceptance.maybank_uat_accounting",
@@ -69,7 +70,8 @@ def test_patch_manifest_is_ordered_unique_and_importable() -> None:
     assert patch_entries == EXPECTED_PATCHES
     assert len(patch_entries) == len(set(patch_entries))
     for patch_path in patch_entries:
-        patch_module = importlib.import_module(patch_path)
+        # Frappe keeps the full patch identity but imports its first token.
+        patch_module = importlib.import_module(patch_path.split(maxsplit=1)[0])
         assert callable(getattr(patch_module, "execute", None))
 
 

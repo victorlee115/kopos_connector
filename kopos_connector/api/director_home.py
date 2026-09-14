@@ -23,7 +23,7 @@ from frappe.utils import add_days, cint, cstr, getdate, nowdate
 
 from kopos_connector.api.cafe_money import company_currency, money_sen, money_text
 from kopos_connector.api.director_scope import DirectorContext, resolve_director_context
-from kopos_connector.api.shift_money import closed_shifts, group_shifts
+from kopos_connector.api.shift_money import shift_money_overview
 
 # Long enough to see a shape, short enough to still be this week.
 TAKINGS_DAYS = 7
@@ -225,14 +225,14 @@ def _recent_takings(company: str) -> dict[str, Any]:
     }
 
 
-def _shift_money(company: str) -> dict[str, list[dict[str, Any]]]:
+def _shift_money(company: str) -> dict[str, Any]:
     """Closed shifts, split the way the Money page splits them.
 
     Delegated to shift_money so Home and the Money page cannot disagree about
     how many shifts need a director. cash_variance is written by the shift
     close path and is never recomputed.
     """
-    return group_shifts(closed_shifts(company), company_currency(company))
+    return shift_money_overview(company)
 
 
 def _staff_access(context: DirectorContext) -> dict[str, int]:
@@ -314,7 +314,9 @@ def get_director_home(*, company: str | None = None) -> dict[str, Any]:
     # A café that has never closed a shift has nothing to check, which is
     # not the same as having checked everything. The Money page says so;
     # the tile beside it must not say the opposite.
-    any_shift = bool(shift_money["matched"] or unmatched_shifts or shift_money["missing_count"])
+    counts = shift_money.get("counts") or {key: len(shift_money[key]) for key in ("matched", "needs_review", "missing_count")}
+    any_shift = any(counts.values())
+    has_money_issues = bool(counts["needs_review"] + counts["missing_count"])
     drafts = cint(areas["supplies"]["value"] or 0)
     staff = areas["staff"]["value"] or {"people": 0, "needs_pin": 0}
     menu = areas["menu"]["value"] or {}
@@ -323,10 +325,10 @@ def get_director_home(*, company: str | None = None) -> dict[str, Any]:
     items_missing_recipe = cint(menu.get("items_missing_recipe"))
 
     # Worst first, and only one of them is the next step.
-    if money_issues:
-        first = money_issues[0]
-        missing_count = len(uncounted_shifts)
-        different_count = len(unmatched_shifts)
+    if has_money_issues:
+        first = money_issues[0] if money_issues else None
+        missing_count = counts["missing_count"]
+        different_count = counts["needs_review"]
         if missing_count and different_count:
             missing_verb = "needs" if missing_count == 1 else "need"
             money_title = (
@@ -348,7 +350,7 @@ def get_director_home(*, company: str | None = None) -> dict[str, Any]:
         next_step = {
             "area": "money",
             "title": money_title,
-            "detail": f"Start with {cstr(first.get('person'))}.",
+            "detail": f"Start with {cstr(first.get('person'))}." if first else "Open Money to see the latest cash checks.",
             "action": "See the shifts",
             "route": ["jiji_money"],
         }
@@ -406,7 +408,7 @@ def get_director_home(*, company: str | None = None) -> dict[str, Any]:
         }
 
     waiting = []
-    if money_issues and drafts:
+    if has_money_issues and drafts:
         waiting.append({
             "title": (
                 "1 supplier order waiting for you"
@@ -497,10 +499,10 @@ def get_director_home(*, company: str | None = None) -> dict[str, Any]:
             {
                 "key": "money",
                 "label": "Cash checks",
-                "value": str(len(money_issues)) if any_shift else "\u2014",
-                "detail": "Could not check" if areas["money"]["status"] != "ready" else ("to check" if money_issues else "all counted and matched" if any_shift else "no shift counted yet"),
+                "value": str(counts["needs_review"] + counts["missing_count"]) if any_shift else "\u2014",
+                "detail": "Could not check" if areas["money"]["status"] != "ready" else ("to check" if has_money_issues else "all counted and matched" if any_shift else "no shift counted yet"),
                 "route": ["jiji_money"],
-                "attention": bool(money_issues),
+                "attention": has_money_issues,
             },
         ],
     }

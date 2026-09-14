@@ -82,8 +82,9 @@ def test_missing_cash_count_is_never_presented_as_zero_work() -> None:
 
     assert 'uncounted_shifts = shift_money["missing_count"]' in source
     assert "money_issues = [*uncounted_shifts, *unmatched_shifts]" in source
-    assert '"value": str(len(money_issues))' in source
-    assert '"attention": bool(money_issues)' in source
+    assert '"value": str(counts["needs_review"] + counts["missing_count"])' in source
+    assert 'has_money_issues = bool(counts["needs_review"] + counts["missing_count"])' in source
+    assert '"attention": has_money_issues' in source
     assert "still need a cash count" in source
 
 

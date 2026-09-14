@@ -30,6 +30,10 @@
   "app_min_version",
   "last_seen_at",
   "last_sync_at",
+  "promotion_kernel_hash",
+  "promotion_snapshot_hash",
+  "promotion_snapshot_version",
+  "promotion_received_at",
   "inventory_report_schema_version",
   "inventory_report_revision",
   "inventory_observed_at",
@@ -54,6 +58,10 @@
   "device_users"
  ],
  "fields": [
+  {"fieldname":"promotion_kernel_hash","fieldtype":"Data","label":"Supported promotion calculation","read_only":1,"no_copy":1},
+  {"fieldname":"promotion_snapshot_hash","fieldtype":"Data","label":"Saved offer snapshot hash","read_only":1,"no_copy":1},
+  {"fieldname":"promotion_snapshot_version","fieldtype":"Data","label":"Saved offer version","read_only":1,"no_copy":1},
+  {"fieldname":"promotion_received_at","fieldtype":"Datetime","label":"Offer version acknowledged","read_only":1,"no_copy":1},
   {
    "fieldname": "device_id",
    "fieldtype": "Data",

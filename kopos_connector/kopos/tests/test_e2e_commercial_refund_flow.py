@@ -7,6 +7,7 @@ from frappe.tests.utils import FrappeTestCase
 
 from kopos_connector.api.fb_returns import process_return_payload
 from kopos_connector.kopos.api.fb_orders import submit_order_payload
+from kopos_connector.kopos.api.money_contract import persisted_money_to_sen
 from kopos_connector.kopos.tests.frappe_test_fixtures import (
     build_sen_v1_sale_payload,
     create_open_test_shift,
@@ -167,6 +168,103 @@ class TestEndToEndCommercialRefundFlow(FrappeTestCase):
             [first["settlement_document"]],
         )
 
+    def test_qr_clearing_refund_retains_original_account_after_payment_mode_changes(self) -> None:
+        """Real ERPNext ledger/credit-note proof; no provider or current-config fallback."""
+        cash_invoice = frappe.get_doc("Sales Invoice", self.order.sales_invoice)
+        parent = frappe.db.get_value(
+            "Account", {"company": cash_invoice.company, "root_type": "Asset", "is_group": 1}, "name"
+        )
+        self.assertTrue(parent, "Refund fixture requires the company's native Asset group")
+        suffix = frappe.generate_hash(length=10)
+        accounts = []
+        for label, account_type in (("Original QR Clearing", ""), ("Replacement QR Bank", "Bank")):
+            account = frappe.get_doc({
+                "doctype": "Account", "account_name": f"{label} {suffix}",
+                "parent_account": parent, "company": cash_invoice.company,
+                "account_currency": cash_invoice.currency, "is_group": 0,
+                "account_type": account_type,
+            }).insert(ignore_permissions=True)
+            accounts.append(account.name)
+        clearing, replacement = accounts
+        mode = frappe.get_doc("Mode of Payment", "DuitNow QR")
+        mode_account = next(row for row in mode.accounts if row.company == cash_invoice.company)
+        mode_account.default_account = clearing
+        mode.save(ignore_permissions=True)
+        profile_name = frappe.db.get_value(
+            "KoPOS Device", {"device_id": self.order.device_id}, "pos_profile"
+        )
+        profile = frappe.get_doc("POS Profile", profile_name)
+        profile.custom_kopos_manual_qr_suspense_account = clearing
+        profile.save(ignore_permissions=True)
+
+        # Use the real sale API and immutable FB Order binding. This synthetic
+        # manual confirmation exercises accounting, not live provider acceptance.
+        sale = build_sen_v1_sale_payload(self.shift, prefix="KOPOS-E2E-QR-REFUND")
+        payment = sale["order"]["payments"][0]
+        payment_id = payment["payment_id"]
+        reference = f"QR-REFUND-REFERENCE-{suffix}"
+        captured_at = frappe.utils.now_datetime().isoformat()
+        payment.update({
+            "payment_method": "DuitNow QR", "payment_channel_code": "static_qr",
+            "reference_no": reference, "external_transaction_id": f"static-{suffix}",
+            "manual_confirmation_warning_acknowledged": True,
+            "manual_confirmation_evidence": {
+                "evidence_kind": "no_receipt_acknowledgement", "captured_at": captured_at,
+                "upload_status": "not_required", "reconciliation_status": "pending_reconciliation",
+                "local_confirmed_at": captured_at, "local_confirmed_by": self.shift.staff_id,
+                "local_confirmation_reference": reference,
+                "reconciliation_idempotency_key": f"QR-REFUND-RECONCILIATION-{suffix}",
+                "evidence_captured_device_id": self.order.device_id,
+                "no_receipt_acknowledged": True, "no_receipt_reason_code": "receipt_unavailable",
+            },
+        })
+        sale_result = submit_order_payload(sale)
+        qr_order = frappe.get_doc("FB Order", sale_result["fb_order"])
+        original = frappe.get_doc("Sales Invoice", qr_order.sales_invoice)
+        self.assertEqual(original.custom_fb_order, qr_order.name)
+        self.assertEqual(original.payments[0].account, clearing)
+        self.assertEqual(original.payments[0].custom_fb_source_payment_id, payment_id)
+        self.assertEqual(persisted_money_to_sen(original.outstanding_amount, "original outstanding"), 0)
+
+        # A later configuration change must not move historical refund money.
+        mode.reload()
+        mode_account = next(row for row in mode.accounts if row.company == cash_invoice.company)
+        mode_account.default_account = replacement
+        mode.save(ignore_permissions=True)
+        payload = {
+            **self._payload(return_to_stock=False), "fb_order": qr_order.name,
+            "original_sales_invoice": original.name, "refund_method": "qr",
+        }
+        first = process_return_payload(payload, require_manager_approval=False)
+        duplicate = process_return_payload(payload, require_manager_approval=False)
+        self.assertEqual(first["status"], "ok")
+        self.assertEqual(duplicate["status"], "duplicate")
+        self.assertEqual(first["settlement_document"], duplicate["settlement_document"])
+        self.assertEqual(first["return_sales_invoice"], duplicate["return_sales_invoice"])
+        credit = frappe.get_doc("Sales Invoice", first["return_sales_invoice"])
+        self.assertEqual(credit.docstatus, 1)
+        self.assertEqual(persisted_money_to_sen(credit.outstanding_amount, "credit outstanding"), 0)
+        journal = frappe.get_doc("Journal Entry", first["settlement_document"])
+        self.assertEqual(journal.docstatus, 1)
+        gl = frappe.get_all("GL Entry", filters={
+            "voucher_type": "Journal Entry", "voucher_no": journal.name, "is_cancelled": 0,
+        }, fields=["account", "debit_in_account_currency", "credit_in_account_currency"])
+        self.assertNotIn(replacement, {row.account for row in gl})
+        tender_credit = sum(
+            persisted_money_to_sen(row.credit_in_account_currency, "refund GL credit")
+            - persisted_money_to_sen(row.debit_in_account_currency, "refund GL debit")
+            for row in gl if row.account == clearing
+        )
+        self.assertEqual(tender_credit, persisted_money_to_sen(original.grand_total, "original total"))
+        original.reload()
+        self.assertEqual(original.payments[0].account, clearing)
+        self.assertEqual(original.payments[0].custom_fb_source_payment_id, payment_id)
+        mode.reload()
+        self.assertEqual(
+            next(row.default_account for row in mode.accounts if row.company == cash_invoice.company),
+            replacement,
+        )
+
     def test_historical_invoice_without_order_line_reference_refunds_without_optional_recipe_rows(
         self,
     ) -> None:
@@ -193,10 +291,14 @@ class TestEndToEndCommercialRefundFlow(FrappeTestCase):
                 update_modified=False,
             )
 
-        with patch(
-            "kopos_connector.kopos.services.operations.return_guard_service._lock_and_validate_legacy_return_quantities",
-            side_effect=AssertionError("cashier refund used legacy recipe identity"),
-        ):
+        native_sql = frappe.db.sql
+
+        def commercial_sql(query, *args, **kwargs):
+            self.assertNotIn("tabFB Resolved Sale", str(query))
+            return native_sql(query, *args, **kwargs)
+
+        # Observe the real boundary, not the name of a removed private helper.
+        with patch.object(frappe.db, "sql", side_effect=commercial_sql):
             result = process_return_payload(
                 self._payload(return_to_stock=False),
                 require_manager_approval=False,

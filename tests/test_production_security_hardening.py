@@ -260,40 +260,81 @@ def test_provider_login_uses_persisted_device_metadata() -> None:
     assert request["device_os"] == "Android 16"
 
 
-def test_rotating_a_shared_account_invalidates_profile_and_historical_outlet_tokens() -> None:
+def test_invalid_outlet_token_padding_is_not_cached_and_next_response_recovers() -> None:
+    client = maybank_client.MaybankClient(
+        username="merchant", encrypted_pin="synthetic", user_type="corporate",
+        outlet_id="OUTLET-1", base_url=maybank_client.DEFAULT_BASE_URL,
+        provider_device_id=VALID_DEVICE_ID,
+        provider_device_name=maybank_client.DEFAULT_DEVICE_NAME,
+        provider_device_os=maybank_client.DEFAULT_DEVICE_OS,
+    )
+    response = Mock(status_code=200)
+    # Independent OpenSSL vectors: invalid 02 padding, then valid plaintext x.
+    response.json.side_effect = [
+        {"status": "QR000", "data": [{"outletaccesstoken": {"access_token": token}}]}
+        for token in (
+            "U2FsdGVkX18BAgMEBQYHCHpS3nfYWVHUCskgkbR1Oqg=",
+            "U2FsdGVkX18BAgMEBQYHCLFOl3zZokIMBeSFz8tjmeY=",
+        )
+    ]
+    client.session = Mock()
+    client.session.post.return_value = response
+    client._get_jwt = Mock(return_value="synthetic-provider-passphrase")
+    client._outlet_token_cache_key = Mock(return_value="synthetic-outlet-cache-key")
+    client._cache_get = Mock(return_value="")
+    client._cache_set = Mock()
+    with pytest.raises(maybank_client.frappe.ValidationError, match="Maybank outlet token"):
+        client._get_outlet_token()
+    client._cache_set.assert_not_called()
+    assert client.session.post.call_count == 1
+    assert client._get_outlet_token() == "x"
+    client._cache_set.assert_called_once_with(client._outlet_token_cache_key(), "x", 3540)
+    assert client.session.post.call_count == 2
+
+
+def test_saved_account_revision_scopes_current_and_historical_outlet_tokens() -> None:
     account = SimpleNamespace(
         name="Maybank QRPayBiz Account - Shared",
+        modified="2026-09-13 00:00:00.000001",
         username="merchant",
         user_type="merchant",
         base_url=maybank_client.DEFAULT_BASE_URL,
+        provider_device_id=VALID_DEVICE_ID,
+        provider_device_name=maybank_client.DEFAULT_DEVICE_NAME,
+        provider_device_os=maybank_client.DEFAULT_DEVICE_OS,
+        get_password=Mock(return_value="1234"),
     )
-    cache = Mock()
-    with (
-        patch.object(
-            maybank_client.frappe,
-            "get_all",
-            side_effect=[
-                [{"custom_kopos_maybank_outlet_id": "OUTLET-A"}],
-                [{"outlet_id": "OUTLET-B"}],
-            ],
-        ),
-        patch.object(maybank_client.frappe, "cache", return_value=cache),
-        patch.object(maybank_client.frappe.local, "site", "test.localhost", create=True),
-    ):
-        maybank_client.invalidate_account_auth_cache(account)
+    clients = []
+    try:
+        with patch.object(maybank_client.frappe.local, "site", "test.localhost", create=True):
+            for modified in (account.modified, "2026-09-13 00:00:00.000002"):
+                account.modified = modified
+                for outlet in ("OUTLET-A", "OUTLET-B"):
+                    clients.append(maybank_client.MaybankClient.from_account_doc(account, outlet))
+            assert len({client._jwt_cache_key() for client in clients}) == 4
+            assert len({client._outlet_token_cache_key() for client in clients}) == 4
+            assert all("v3:" in client._jwt_cache_key() for client in clients)
+            assert clients[0].account_revision == (account.name, "2026-09-13 00:00:00.000001")
+    finally:
+        for client in clients:
+            client.session.close()
 
-    expected = []
-    for outlet in ("OUTLET-A", "OUTLET-B"):
-        scope = maybank_client._auth_scope_for(
-            "merchant", "merchant", outlet, maybank_client.DEFAULT_BASE_URL
-        )
-        expected.extend(
-            [
-                f"maybank_jwt:{scope}:test.localhost",
-                f"maybank_outlet_token:{scope}:test.localhost",
-            ]
-        )
-    assert [call.args[0] for call in cache.delete.call_args_list] == expected
+
+def test_client_without_saved_revision_does_not_read_write_or_clear_shared_cache() -> None:
+    client = maybank_client.MaybankClient(
+        username="merchant", encrypted_pin="1234", user_type="merchant",
+        outlet_id="OUTLET-1", base_url=maybank_client.DEFAULT_BASE_URL,
+        provider_device_id=VALID_DEVICE_ID, provider_device_name=maybank_client.DEFAULT_DEVICE_NAME,
+        provider_device_os=maybank_client.DEFAULT_DEVICE_OS,
+    )
+    try:
+        with patch.object(maybank_client.frappe, "cache") as cache:
+            assert client._cache_get("unused-test-key") == ""
+            client._cache_set("unused-test-key", "synthetic", 3540)
+            client._cache_delete("unused-test-key")
+        cache.assert_not_called()
+    finally:
+        client.session.close()
 
 
 def test_maybank_account_rejects_non_https_provider_url() -> None:
@@ -353,6 +394,8 @@ def test_after_migrate_initializes_provider_identity() -> None:
         patch.object(install_module, "ensure_kopos_module_defs"),
         patch.object(install_module, "ensure_kopos_custom_fields"),
         patch.object(install_module, "create_fb_custom_fields"),
+        patch.object(install_module, "ensure_sales_invoice_rate_precision"),
+        patch.object(install_module, "ensure_native_change_ledger_entries"),
         patch.object(
             install_module,
             "ensure_maybank_provider_device_id",

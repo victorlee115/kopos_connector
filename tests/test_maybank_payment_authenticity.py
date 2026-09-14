@@ -56,6 +56,9 @@ def _install_verified_qr_account_policy(
     root_type: str = "Asset",
     mode_type: str = "Bank",
     account_currency: str = "MYR",
+    company: str = "Test Company",
+    is_group: int = 0,
+    disabled: int = 0,
 ) -> None:
     mode_module = SimpleNamespace(
         get_mode_of_payment_info=lambda mode, company: [
@@ -73,9 +76,9 @@ def _install_verified_qr_account_policy(
             "name": "QR Clearing - TC",
             "account_type": account_type,
             "root_type": root_type,
-            "is_group": 0,
-            "disabled": 0,
-            "company": "Test Company",
+            "is_group": is_group,
+            "disabled": disabled,
+            "company": company,
             "account_currency": account_currency,
         },
     )
@@ -113,8 +116,11 @@ def test_verified_qr_account_accepts_bank_or_untyped_asset_clearing(
     [
         ({"account_type": "Cash"}, "Cash is not allowed"),
         ({"account_type": "Receivable"}, "Receivable is not allowed"),
-        ({"account_type": "Bank", "root_type": "Liability"}, "Asset account"),
+        ({"account_type": "Bank", "root_type": "Liability"}, "Asset ledger"),
         ({"account_type": "Bank", "mode_type": "Cash"}, "must use type Bank"),
+        ({"account_type": "Bank", "is_group": 1}, "enabled"),
+        ({"account_type": "Bank", "disabled": 1}, "enabled"),
+        ({"account_type": "Bank", "company": "Another Company"}, "company"),
         (
             {"account_type": "Bank", "account_currency": "USD"},
             "currency does not match MYR",
@@ -123,7 +129,7 @@ def test_verified_qr_account_accepts_bank_or_untyped_asset_clearing(
 )
 def test_verified_qr_account_rejects_unsafe_accounting_destination(
     monkeypatch: pytest.MonkeyPatch,
-    overrides: dict[str, str],
+    overrides: dict[str, Any],
     message: str,
 ) -> None:
     _install_verified_qr_account_policy(monkeypatch, **overrides)

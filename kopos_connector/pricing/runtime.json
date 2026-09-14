@@ -1,0 +1,26 @@
+{
+  "formatVersion": 1,
+  "kernelVersion": 2,
+  "miniRacerVersion": "0.14.1",
+  "bundleSha256": "73df87636eff228ba7b6c42ea39bcdc1470f603ac0147f921c79699a57dd6c21",
+  "bundleBytes": 90716,
+  "sourceHashes": {
+    "node_modules/@noble/hashes/_md.js": "a112f0fe1b15db00f2638618c436a17be1c5e13baf19d02fcc29016ae1db2233",
+    "node_modules/@noble/hashes/_u64.js": "e48c0cfc10810439a4807b46db136ce603a3fa09b62584f513ef2f3ca496af54",
+    "node_modules/@noble/hashes/sha2.js": "3ddc587c588283cbceed4dd9929cefcce06a0c231b54d4c6f0f99c478c686c00",
+    "node_modules/@noble/hashes/utils.js": "11319ec0a8132a0c2ced8c98af33ae9274c001d6baf4f4709c4a6115e031a3c5",
+    "node_modules/canonicalize/lib/canonicalize.js": "8a22f6848f00747463146fbfb11619944fc5800cf8f1ff0dfb9eb6489a05fe21",
+    "node_modules/dinero.js/dist/esm/bigint/currencies/index.js": "a7cb1cbbc1bdbcd50ec99c39b6647d0094abc6c3ebff79b185b2700cc1c7eb0d",
+    "node_modules/dinero.js/dist/esm/bigint/index.js": "ff10bcd42fe580d09f15459ef0596cc3b34eda717e987a19565bf7f3c135c430",
+    "node_modules/dinero.js/dist/esm/trimScale-C3-DjbPM.js": "b9357170ab1b746b089ed6a1f851f41157215fe9544cde6310bc63d1cfd304ef",
+    "node_modules/edmonds-blossom-fixed/app/blossom.js": "d747ac7d01bc819e3f97dd47d4cb35cd3c5bc9cc271cf752ee81b925786c502c",
+    "src/services/promotions/engine.ts": "776c4a57a50b5b563aad8b2804aa4ece23e2bfb4000f24971ce7fa236c5e2ed4",
+    "src/services/promotions/identity.ts": "6cfd74916f860e50b6814acad940c534209381583365063ee6aacdeb36a903a1",
+    "src/services/promotions/kernel.ts": "47b606ad79ff6646ce676cd88df780518e260060216ceb660624ec2979a2c66b",
+    "src/services/promotions/schedule.ts": "88f26dc56dbd2eef32282beab5d495c90c5e426be4362c1f149c05d2f4d4a5a5",
+    "src/services/promotions/time-guard.ts": "6aa581a8508bd515aa9b08a080e41c471692dbcf246641c23f24a90d569ed985",
+    "src/services/sync/generated/promotion-contracts.ts": "f3f5d2e4aa3a33a987528b6093e448ebf7d2dfa52bf40a3bf9fdb81fbe13c269",
+    "src/utils/money.ts": "3cc8b4138a08e06701cdc1b7e46cb0044bc60223a59844fbd6f507990e9517f4"
+  },
+  "status": "development_not_checkout_admitted"
+}

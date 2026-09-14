@@ -105,8 +105,6 @@ def test_mixed_suites_keep_only_optional_behavior_behind_inventory_marker() -> N
         },
         "kopos_connector/tests/test_fb_service_contracts.py": {
             "test_ingredient_stock_service_uses_fb_order_sale_datetime",
-            "test_return_service_updates_resolved_sale_status",
-            "test_return_quantity_guard_locks_resolved_sales_before_validation",
             "test_no_float_valuation_helper_survives_outside_the_guided_path",
         },
         "tests/test_task6_shift_lifecycle.py": {
@@ -119,6 +117,10 @@ def test_mixed_suites_keep_only_optional_behavior_behind_inventory_marker() -> N
 
 
 def test_commercial_failure_boundaries_remain_in_default_selection() -> None:
+    assert {
+        "test_return_quantity_guard_locks_invoice_items_before_validation",
+        "test_return_service_preserves_recipe_history",
+    }.isdisjoint(_marked_test_names("kopos_connector/tests/test_fb_service_contracts.py"))
     relative = "kopos_connector/tests/test_fb_order_stock_policy.py"
     marked = _marked_test_names(relative)
     assert {

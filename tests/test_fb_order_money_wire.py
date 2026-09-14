@@ -339,6 +339,31 @@ def test_paid_order_rejects_complimentary_fields() -> None:
         fb_orders._normalize_submit_order_payload(payload)
 
 
+@pytest.mark.parametrize("keep_valid_row", [False, True])
+def test_null_modifier_marker_keeps_money_and_existing_durable_diagnostic(
+    keep_valid_row: bool,
+) -> None:
+    payload = _sen_payload()
+    rows = payload["order"]["items"][0]["modifiers"]
+    if not keep_valid_row:
+        rows.clear()
+    rows.append(None)
+    before = deepcopy(payload)
+    first = fb_orders._normalize_submit_order_payload(payload)
+    for _ in range(2):
+        result = fb_orders._normalize_submit_order_payload(payload)
+        assert result["request_fingerprint"] == first["request_fingerprint"]
+        assert result["accepted_sale_fingerprint"] == first["accepted_sale_fingerprint"]
+        assert result["items"][0]["modifier_total_sen"] == 200
+        assert result["items"][0]["line_total_sen"] == 3300
+        assert result["grand_total_sen"] == 4482
+        assert result["items"][0]["selected_modifier_diagnostics"] == [
+            {"row_index": 2 if keep_valid_row else 1, "reason": "invalid_contract"}
+        ]
+        assert len(result["items"][0]["selected_modifiers"]) == int(keep_valid_row)
+        assert payload == before
+
+
 def test_invalid_modifier_decoration_preserves_sale_and_records_redacted_warning() -> None:
     payload = _sen_payload()
     payload["order"]["items"][0]["modifiers"].append(

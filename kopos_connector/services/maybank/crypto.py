@@ -2,10 +2,11 @@ import base64
 import hashlib
 
 from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
 
 
 def encrypt_pin(pin: str, username: str) -> str:
-    """PBKDF2-HMAC-SHA1 matching CryptoJS.PBKDF2(pin, username, {keySize:32, iterations:1000}).
+    """Match the provider's legacy CryptoJS PBKDF2 (explicit SHA1, 1000 iterations).
 
     keySize:32 means 32 * 4 = 128 bytes derived key.
     .toString() gives hex string.  .substring(0,64) takes first 64 hex chars.
@@ -25,6 +26,7 @@ def decrypt_aes(encrypted_b64: str, passphrase: str) -> str:
 
     Uses OpenSSL-compatible EVP_BytesToKey (MD5) for key derivation.
     Input: base64("Salted__" + salt + ciphertext)
+    Validate PKCS#7 padding; this does not authenticate AES-CBC ciphertext.
     """
     raw = base64.b64decode(encrypted_b64)
     if raw[:8] != b"Salted__":
@@ -44,5 +46,4 @@ def decrypt_aes(encrypted_b64: str, passphrase: str) -> str:
 
     cipher = AES.new(key, AES.MODE_CBC, iv)
     decrypted = cipher.decrypt(ciphertext)
-    pad_len = decrypted[-1]
-    return decrypted[:-pad_len].decode("utf-8")
+    return unpad(decrypted, AES.block_size).decode("utf-8")

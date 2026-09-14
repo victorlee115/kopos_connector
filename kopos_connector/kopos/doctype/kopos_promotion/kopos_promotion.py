@@ -1,19 +1,37 @@
 # Copyright (c) 2026, KoPOS and contributors
 # For license information, please see license.txt
 
+from decimal import Decimal, InvalidOperation
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import cstr, flt
+from frappe.utils import cstr, flt, get_datetime
 
 
 class KoPOSPromotion(Document):
     def validate(self):
+        self.validate_pricing_version()
         self.validate_date_range()
         self.validate_outlet_scope()
         self.validate_discount_rule()
         self.validate_economics_review_state()
         self.set_defaults()
+
+    def validate_pricing_version(self):
+        version = int(getattr(self, "pricing_version", 1) or 1)
+        if version not in {1, 2}:
+            frappe.throw(_("This offer's pricing version is not supported."), frappe.ValidationError)
+        schedule = getattr(self, "schedule_json", None)
+        if schedule and version != 2:
+            frappe.throw(_("Use the guided editor to set a repeating schedule."), frappe.ValidationError)
+        if schedule:
+            from kopos_connector.pricing.runtime import calculate
+
+            calculate("schedule", frappe.parse_json(schedule))
+        before = self.get_doc_before_save()
+        if before and int(getattr(before, "pricing_version", 1) or 1) == 2 and version != 2:
+            frappe.throw(_("A guided offer cannot be changed back to legacy pricing."), frappe.ValidationError)
 
     def validate_economics_review_state(self):
         """Keep review evidence writable only through the server review APIs."""
@@ -55,7 +73,7 @@ class KoPOSPromotion(Document):
     def set_defaults(self):
         if not self.display_label:
             self.display_label = self.promotion_name
-        if not self.customer_message and self.discount_type == "percentage":
+        if int(getattr(self, "pricing_version", 1) or 1) == 1 and not self.customer_message and self.discount_type == "percentage":
             if self.promotion_type in {"nth_item_discount", "buy_x_get_y"}:
                 self.customer_message = _(
                     "{0}% off the cheaper drink. Add-ons excluded."
@@ -66,9 +84,9 @@ class KoPOSPromotion(Document):
                 )
 
     def validate_date_range(self):
-        if self.valid_from and self.valid_upto and self.valid_from > self.valid_upto:
+        if self.valid_from and self.valid_upto and get_datetime(self.valid_from) > get_datetime(self.valid_upto):
             frappe.throw(
-                _("Valid Up To must be on or after Valid From"),
+                _("Choose an end date and time that is on or after the start."),
                 frappe.ValidationError,
             )
 
@@ -85,14 +103,22 @@ class KoPOSPromotion(Document):
             )
 
     def validate_discount_rule(self):
+        try:
+            value = Decimal(str(self.discount_value or 0))
+        except InvalidOperation:
+            frappe.throw(_("Enter a valid discount amount."), frappe.ValidationError)
+        if not value.is_finite():
+            frappe.throw(_("Enter a finite discount amount."), frappe.ValidationError)
         if (
             self.discount_type in {"percentage", "fixed_amount", "fixed_price"}
-            and flt(self.discount_value) <= 0
+            and value <= 0
         ):
             frappe.throw(
                 _("Discount Value must be greater than 0"),
                 frappe.ValidationError,
             )
+        if self.discount_type == "percentage" and value > 100:
+            frappe.throw(_("Percent off must be greater than 0 and no more than 100."), frappe.ValidationError)
 
         if self.promotion_type in {"nth_item_discount", "buy_x_get_y"}:
             if int(self.buy_qty or 0) <= 0:

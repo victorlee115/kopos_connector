@@ -2,3 +2,5 @@ frappe>=16.0.0,<17.0.0
 erpnext>=16.0.0,<17.0.0
 pycryptodome>=3.20.0
 jsonschema>=4.0.0
+urllib3>=2.7.0,<3.0.0
+mini-racer==0.14.1

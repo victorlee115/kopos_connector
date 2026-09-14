@@ -28,6 +28,7 @@ class JiJiHome {
 			single_column: true,
 		});
 		this.page.set_primary_action(__("Refresh"), () => this.load(), "refresh");
+		this.page.add_inner_button(__("Offers"), () => jiji.desk.go(["jiji_promotions"]));
 		this.body = jiji.desk.page(this.page);
 		this.load();
 	}

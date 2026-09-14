@@ -27,6 +27,8 @@ dependencies = [
     "pycryptodome>=3.20.0",
     "jsonschema>=4.0.0",
     "requests>=2.31.0,<3.0.0",
+    "urllib3>=2.7.0,<3.0.0",
+    "mini-racer==0.14.1",
 ]
 
 [project.urls]

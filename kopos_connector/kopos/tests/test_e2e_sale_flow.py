@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import frappe
@@ -116,6 +117,40 @@ class TestEndToEndSaleFlow(FrappeTestCase):
         self.assertTrue(
             all(row.resolved_components_snapshot == "[]" for row in fb_order.items)
         )
+
+    def test_priced_null_modifier_marker_is_diagnosed_without_blocking_invoice_or_retry(self) -> None:
+        for adjustment in (-200, 200):
+            with self.subTest(adjustment=adjustment):
+                payload = build_sen_v1_sale_payload(self.shift, prefix="KOPOS-E2E-MODIFIER-MARKER")
+                item = payload["order"]["items"][0]
+                item["unit_price_sen"] = 1200 - adjustment
+                item["modifier_total_sen"] = adjustment
+                item["modifiers"] = [None]
+                result = submit_order_payload(payload)
+                replay = submit_order_payload(payload)
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(replay["status"], "duplicate")
+                self.assertEqual(replay["fb_order"], result["fb_order"])
+                self.assertEqual(replay["sales_invoice"], result["sales_invoice"])
+                order = frappe.get_doc("FB Order", result["fb_order"])
+                invoice = frappe.get_doc("Sales Invoice", result["sales_invoice"])
+                row = order.items[0]
+                self.assertEqual(Decimal(str(row.modifier_total)), Decimal(adjustment) / 100)
+                self.assertEqual(Decimal(str(row.line_total)), Decimal("12"))
+                self.assertEqual(row.commercial_modifier_snapshot_status, "Degraded")
+                self.assertEqual(row.dropped_modifier_count, 1)
+                self.assertEqual(frappe.parse_json(row.commercial_modifier_diagnostic_json),
+                                 [{"row_index": 1, "reason": "invalid_contract"}])
+                self.assertEqual(row.commercial_modifier_snapshot_json, "[]")
+                self.assertEqual(invoice.docstatus, 1)
+                self.assertEqual(invoice.update_stock, 0)
+                self.assertEqual(Decimal(str(invoice.grand_total)), Decimal("12"))
+                self.assertEqual(Decimal(str(invoice.outstanding_amount)), Decimal("0"))
+                self.assertEqual(invoice.payments[0].custom_fb_source_payment_id,
+                                 payload["order"]["payments"][0]["payment_id"])
+                self.assertEqual(frappe.get_all("Sales Invoice",
+                                 filters={"custom_fb_idempotency_key": payload["idempotency_key"], "docstatus": 1},
+                                 pluck="name"), [invoice.name])
 
     def test_corrupt_optional_recipe_and_modifier_metadata_cannot_block_sale(self) -> None:
         payload = build_sen_v1_sale_payload(

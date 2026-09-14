@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import frappe
@@ -62,33 +61,3 @@ def ensure_existing_return_event_settlement(doc: Any) -> str:
         settlement_document = ensure_return_settlement(doc, return_invoice)
     refresh_fb_shift_cash(shift_name)
     return settlement_document
-
-
-def _update_resolved_sale_statuses(doc: Any) -> None:
-    quantities_by_sale: dict[str, Decimal] = {}
-    for line in doc.get("lines") or []:
-        resolved_sale_name = getattr(line, "original_resolved_sale", None)
-        qty_returned = _quantity_decimal(
-            getattr(line, "qty_returned", 0), "returned quantity"
-        )
-        if not resolved_sale_name or qty_returned <= 0:
-            continue
-        quantities_by_sale[resolved_sale_name] = (
-            quantities_by_sale.get(resolved_sale_name, Decimal("0")) + qty_returned
-        )
-
-    for resolved_sale_name, qty_returned in sorted(quantities_by_sale.items()):
-        resolved_sale = frappe.get_doc("FB Resolved Sale", resolved_sale_name)
-        total_qty = _quantity_decimal(
-            getattr(resolved_sale, "qty", 0), "resolved sale quantity"
-        )
-        next_status = "Returned" if qty_returned >= total_qty else "Partially Returned"
-        resolved_sale.db_set("status", next_status, update_modified=False)
-
-
-def _quantity_decimal(value: Any, label: str) -> Decimal:
-    try:
-        return Decimal(str(value or 0).strip() or "0")
-    except (InvalidOperation, ValueError) as error:
-        frappe.throw(f"Invalid {label}: {value}", frappe.ValidationError)
-        raise ValueError(f"Invalid {label}: {value}") from error

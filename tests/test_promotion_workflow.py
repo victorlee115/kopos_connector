@@ -1,6 +1,10 @@
 import json
+import hashlib
+import os
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import patch
 
 from .fake_frappe import install_fake_frappe_modules
@@ -15,6 +19,7 @@ from kopos_connector.api.orders import (
     determine_reconciliation_status,
 )
 from kopos_connector.api.promotions import (
+    _canonical_promotion_validator,
     build_effective_snapshot_body,
     build_snapshot_version_from_hash,
     classify_reconciliation_severity,
@@ -72,8 +77,8 @@ class PromotionWorkflowTests(unittest.TestCase):
             "KOPOS-PROMO-ABCDEF1234567890",
         )
 
-    def test_effective_snapshot_hash_is_stable_when_child_rows_are_reordered(self):
-        promotion_a = SimpleNamespace(
+    def _new_promotion(self):
+        return SimpleNamespace(
             name="PROMO-1",
             promotion_name="Promo",
             display_label="Promo",
@@ -110,6 +115,67 @@ class PromotionWorkflowTests(unittest.TestCase):
                 SimpleNamespace(pos_profile="POS-A"),
             ],
         )
+
+    def test_promotion_dates_preserve_legacy_strings_and_nulls(self):
+        promotion = self._new_promotion()
+        for value in (None, "", "2026-09-08 00:00:00", "2026-09-08 00:00:00.123456"):
+            with self.subTest(value=value):
+                promotion.valid_from = promotion.valid_upto = value
+                row = serialize_promotion(promotion, "KoPOS Main")
+                self.assertEqual(row["valid_from"], value)
+                self.assertEqual(row["valid_upto"], value)
+                self.assertEqual(len(compute_snapshot_content_hash(row)), 64)
+
+    def test_generated_contract_rejects_invalid_outbound_snapshot_fields(self):
+        for field, value in (("promotion_type", "unknown"), ("stacking_policy", "unknown"),
+                             ("discount_value", -1), ("priority", 9007199254740992)):
+            with self.subTest(field=field):
+                promotion = self._new_promotion()
+                setattr(promotion, field, value)
+                with self.assertRaisesRegex(ValueError, f"invalid snapshot field {field}"):
+                    serialize_promotion(promotion, "KoPOS Main")
+
+    def test_outbound_snapshot_refuses_non_json_money_without_changing_valid_rows(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            promotion = self._new_promotion()
+            promotion.discount_value = value
+            with self.assertRaisesRegex(ValueError, "non-JSON snapshot value"):
+                serialize_promotion(promotion, "KoPOS Main")
+        promotion = self._new_promotion()
+        first = serialize_promotion(promotion, "KoPOS Main")
+        _canonical_promotion_validator().validate(first)
+        self.assertEqual(first, serialize_promotion(promotion, "KoPOS Main"))
+        self.assertEqual(compute_snapshot_content_hash(first), compute_snapshot_content_hash(json.loads(json.dumps(first))))
+
+    def test_packaged_contract_is_the_exact_pos_authority(self):
+        source_root = os.environ.get("KOPOS_TYPESCRIPT_ROOT")
+        if not source_root:
+            self.skipTest("KOPOS_TYPESCRIPT_ROOT required for cross-repository contract parity")
+        source = Path(source_root).parent.parent / "contracts/api/promotion.v1.schema.json"
+        packaged = Path(__file__).resolve().parents[1] / "kopos_connector/contracts/promotion.v1.schema.json"
+        self.assertEqual(packaged.read_bytes(), source.read_bytes())
+        self.assertEqual(hashlib.sha256(packaged.read_bytes()).hexdigest(),
+                         "76667e1815e4307d30935dc397afcd714d32b83db6e7c3b72d18045b5716e21d")
+
+    def test_persisted_promotion_dates_hash_like_their_existing_wire_strings(self):
+        promotion = self._new_promotion()
+        for microsecond in (0, 123456):
+            with self.subTest(microsecond=microsecond):
+                promotion.valid_from = datetime(2026, 9, 8, microsecond=microsecond)
+                promotion.valid_upto = datetime(2026, 9, 9, microsecond=microsecond)
+                row = serialize_promotion(promotion, "KoPOS Main")
+                self.assertEqual(row["valid_from"], str(promotion.valid_from))
+                self.assertEqual(row["valid_upto"], str(promotion.valid_upto))
+                promotion.valid_from = str(promotion.valid_from)
+                promotion.valid_upto = str(promotion.valid_upto)
+                legacy_row = serialize_promotion(promotion, "KoPOS Main")
+                self.assertEqual(
+                    compute_snapshot_content_hash(row),
+                    compute_snapshot_content_hash(legacy_row),
+                )
+
+    def test_effective_snapshot_hash_is_stable_when_child_rows_are_reordered(self):
+        promotion_a = self._new_promotion()
         promotion_b = SimpleNamespace(
             **{
                 **promotion_a.__dict__,
@@ -218,6 +284,7 @@ class PromotionWorkflowTests(unittest.TestCase):
             snapshot_hash="hash-1",
             pos_profile="KoPOS Main",
             promotion_count=1,
+            snapshot_payload='{"pos_profile":"KoPOS Main","promotions":[]}',
         )
         with (
             patch(
@@ -308,7 +375,7 @@ class PromotionWorkflowTests(unittest.TestCase):
             result = publish_promotion_snapshot(pos_profile="KoPOS Main")
 
         build_payload.assert_called_once_with("KoPOS Main")
-        ensure_snapshot.assert_called_once_with("KoPOS Main", payload=payload)
+        ensure_snapshot.assert_called_once_with("KoPOS Main", payload=payload, atomic=False)
         self.assertEqual(result["status"], "published")
         self.assertEqual(result["snapshot_version"], "snap-1")
 
@@ -361,7 +428,7 @@ class PromotionWorkflowTests(unittest.TestCase):
         ):
             result = publish_promotion_snapshot(pos_profile="KoPOS Main")
 
-        ensure_snapshot.assert_called_once_with("KoPOS Main", payload=payload)
+        ensure_snapshot.assert_called_once_with("KoPOS Main", payload=payload, atomic=False)
         self.assertEqual(result["status"], "published")
         self.assertEqual(result["promotion_count"], 0)
         self.assertEqual(result["snapshot_version"], "empty-snap-1")

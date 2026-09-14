@@ -462,6 +462,85 @@ def test_smoke_selling_price_list_is_enabled_and_myr(monkeypatch) -> None:
     }
 
 
+@pytest.mark.parametrize("changed_field", [None, "enabled", "selling", "buying", "currency"])
+def test_smoke_price_list_only_saves_an_actual_fixture_correction(monkeypatch, changed_field) -> None:
+    install_fake_frappe_modules()
+    import frappe
+    from kopos_connector import smoke
+
+    saves = []
+
+    class PriceList(SimpleNamespace):
+        def get(self, field):
+            return getattr(self, field, None)
+
+        def update(self, values):
+            self.__dict__.update(values)
+
+        def save(self, *, ignore_permissions):
+            assert ignore_permissions is True
+            saves.append(self.name)
+
+    values = {"enabled": 1, "selling": 1, "buying": 0, "currency": "MYR"}
+    doc = PriceList(name=smoke.SMOKE_SELLING_PRICE_LIST, price_not_uom_dependent=1, **values)
+    if changed_field:
+        setattr(doc, changed_field, {"enabled": 0, "selling": 0, "buying": 1, "currency": "USD"}[changed_field])
+    monkeypatch.setattr(frappe.db, "exists", lambda *args: doc.name)
+    monkeypatch.setattr(frappe, "get_doc", lambda *args: doc)
+    for _ in range(2):
+        assert smoke._ensure_selling_price_list("MYR") == doc.name
+        assert {key: doc.get(key) for key in values} == values
+        assert doc.price_not_uom_dependent == 1
+        assert saves == ([doc.name] if changed_field else [])
+
+
+@pytest.mark.parametrize("changed_field", [
+    None, "company", "currency", "selling_price_list", "warehouse", "customer",
+    "write_off_account", "write_off_cost_center", "write_off_limit",
+    "custom_kopos_enable_sst", "custom_kopos_sst_rate", "Cash", "DuitNow QR",
+])
+def test_smoke_pos_profile_saves_only_a_real_correction(monkeypatch, changed_field) -> None:
+    install_fake_frappe_modules()
+    import frappe
+    from kopos_connector import smoke
+
+    saves = []
+
+    class Profile(SimpleNamespace):
+        def get(self, field):
+            return getattr(self, field, None)
+
+        def append(self, field, values):
+            getattr(self, field).append(SimpleNamespace(**values))
+
+        def save(self, *, ignore_permissions):
+            assert ignore_permissions is True
+            saves.append(self.name)
+
+    values = {"company": "Company A", "currency": "MYR", "selling_price_list": "Retail MYR",
+              "warehouse": "Shop A", "customer": "Walk-in", "write_off_account": "Rounding A",
+              "write_off_cost_center": "Main A", "write_off_limit": 0,
+              "custom_kopos_enable_sst": smoke.SMOKE_ENABLE_SST,
+              "custom_kopos_sst_rate": smoke.SMOKE_SST_RATE_PERCENT}
+    profile = Profile(name="KoPOS Main", **values, custom_kopos_qr_clearing_account="Keep QR Ledger",
+                      payments=[SimpleNamespace(mode_of_payment=mode, default=int(mode == "Cash"))
+                                for mode in ("Cash", "DuitNow QR")])
+    if changed_field in ("Cash", "DuitNow QR"):
+        profile.payments = [row for row in profile.payments if row.mode_of_payment != changed_field]
+    elif changed_field:
+        setattr(profile, changed_field, 1 if isinstance(values[changed_field], (int, float)) else "wrong")
+    monkeypatch.setattr(frappe.db, "exists", lambda *args: profile.name)
+    monkeypatch.setattr(frappe, "get_doc", lambda *args: profile)
+    monkeypatch.setattr(smoke, "_get_demo_currency", lambda company: "MYR")
+    monkeypatch.setattr(smoke, "_ensure_selling_price_list", lambda currency: "Retail MYR")
+    for _ in range(2):
+        assert smoke._ensure_pos_profile("Company A", "Shop A", "Walk-in", "Rounding A", "Main A") == profile.name
+        assert {field: profile.get(field) for field in values} == values
+        assert {row.mode_of_payment for row in profile.payments} == {"Cash", "DuitNow QR"}
+        assert profile.custom_kopos_qr_clearing_account == "Keep QR Ledger"
+        assert saves == ([profile.name] if changed_field else [])
+
+
 def test_smoke_product_is_priced_on_the_profile_catalogue(monkeypatch) -> None:
     install_fake_frappe_modules()
 
@@ -479,6 +558,9 @@ def test_smoke_product_is_priced_on_the_profile_catalogue(monkeypatch) -> None:
             assert ignore_permissions is True
             self.inserted = True
 
+        def update(self, values: dict[str, Any]) -> None:
+            self.__dict__.update(values)
+
     item_price = ItemPrice()
     monkeypatch.setattr(frappe.db, "get_value", lambda *args: None)
     monkeypatch.setattr(frappe, "new_doc", lambda doctype: item_price)
@@ -493,6 +575,39 @@ def test_smoke_product_is_priced_on_the_profile_catalogue(monkeypatch) -> None:
     assert item_price.currency == "MYR"
     assert item_price.selling == 1
     assert item_price.inserted is True
+
+
+@pytest.mark.parametrize("changed_field", [None, "price_list_rate", "currency", "selling"])
+def test_smoke_item_price_only_saves_an_actual_fixture_correction(monkeypatch, changed_field) -> None:
+    install_fake_frappe_modules()
+    import frappe
+    from kopos_connector import smoke
+
+    saves = []
+
+    class ItemPrice(SimpleNamespace):
+        def get(self, field):
+            return getattr(self, field, None)
+
+        def update(self, values):
+            self.__dict__.update(values)
+
+        def save(self, *, ignore_permissions):
+            assert ignore_permissions is True
+            saves.append(self.name)
+
+    values = {"item_code": smoke.DEMO_DRINK_ITEM, "price_list": smoke.SMOKE_SELLING_PRICE_LIST,
+              "uom": "Nos", "price_list_rate": 12.0, "currency": "MYR", "selling": 1}
+    doc = ItemPrice(name="RETAINED-PRICE", customer="untouched", **values)
+    if changed_field:
+        setattr(doc, changed_field, {"price_list_rate": 11.75, "currency": "USD", "selling": 0}[changed_field])
+    monkeypatch.setattr(frappe.db, "get_value", lambda *args: doc.name)
+    monkeypatch.setattr(frappe, "get_doc", lambda *args: doc)
+    for _ in range(2):
+        assert smoke._ensure_smoke_item_price(smoke.DEMO_DRINK_ITEM, "MYR") == doc.name
+        assert {key: doc.get(key) for key in values} == values
+        assert doc.customer == "untouched"
+        assert saves == ([doc.name] if changed_field else [])
 
 
 def test_smoke_bin_proof_is_scoped_to_its_recipe_ingredients(monkeypatch) -> None:

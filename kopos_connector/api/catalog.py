@@ -1185,6 +1185,20 @@ def get_item_prices_map(
     selling_price_list: str | None = None,
     item_uoms: Mapping[str, str] | None = None,
 ) -> dict[str, float]:
+    # Preserve the legacy catalog currency shape. New monetary consumers use
+    # the exact owner below and convert to integer sen before a float boundary.
+    return {
+        item: flt(amount)
+        for item, amount in get_item_price_amounts_map(item_codes, selling_price_list, item_uoms).items()
+    }
+
+
+def get_item_price_amounts_map(
+    item_codes: list[str],
+    selling_price_list: str | None = None,
+    item_uoms: Mapping[str, str] | None = None,
+) -> dict[str, Decimal]:
+    """The catalog's single price-list/date/UOM selection owner."""
     normalized_item_codes = sorted(
         {cstr(item_code).strip() for item_code in item_codes if cstr(item_code).strip()}
     )
@@ -1211,7 +1225,7 @@ def get_item_prices_map(
         order_by="item_code asc, uom asc, valid_from desc, modified desc, name asc",
     )
     current_date = now_datetime().date()
-    selected: dict[str, tuple[tuple[int, date, str, str], float]] = {}
+    selected: dict[str, tuple[tuple[int, date, str, str], Decimal]] = {}
     for row in rows:
         item_code = cstr(row.get("item_code")).strip()
         if not item_code or row.get("price_list_rate") is None:
@@ -1236,7 +1250,13 @@ def get_item_prices_map(
         )
         existing = selected.get(item_code)
         if existing is None or rank > existing[0]:
-            selected[item_code] = (rank, flt(row.get("price_list_rate")))
+            try:
+                amount = Decimal(str(row.get("price_list_rate")))
+            except (InvalidOperation, ValueError, TypeError):
+                frappe.throw(_("Menu price is invalid for {0}.").format(item_code), frappe.ValidationError)
+            if not amount.is_finite():
+                frappe.throw(_("Menu price must be finite for {0}.").format(item_code), frappe.ValidationError)
+            selected[item_code] = (rank, amount)
     return {item_code: value for item_code, (_, value) in selected.items()}
 
 

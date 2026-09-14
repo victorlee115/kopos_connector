@@ -61,11 +61,11 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
         )
 
         _copy_invoice_dimensions(original_invoice, return_invoice)
-        _copy_promotion_provenance(original_invoice, return_invoice)
-        _copy_commercial_line_provenance(original_invoice, return_invoice)
+        _copy_sale_provenance(original_invoice, return_invoice)
         if hasattr(return_invoice, "custom_fb_idempotency_key"):
             return_invoice.custom_fb_idempotency_key = None
         return_invoice.is_pos = 0
+        return_invoice.update_outstanding_for_self = 1
         if hasattr(return_invoice, "set"):
             return_invoice.set("payments", [])
         else:
@@ -74,6 +74,21 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
         _clear_optional_return_links(return_doc, return_invoice)
         if hasattr(return_invoice, "set_missing_values"):
             return_invoice.set_missing_values()
+        write_off_sen = _money_to_sen(
+            _value(original_invoice, "write_off_amount"), "original Sales Invoice write_off_amount"
+        )
+        if write_off_sen:
+            # ERPNext posts write-off GL only for retail Sales Invoices. Retain
+            # that native accounting mode only AFTER defaults are filled: the
+            # current POS Profile must not replace the historical rounding account.
+            # Leave all tender movement to the existing settlement Journal Entry.
+            return_invoice.is_pos = 1
+            return_invoice.write_off_amount = _sen_to_amount(-write_off_sen)
+            return_invoice.base_write_off_amount = _sen_to_amount(-_money_to_sen(
+                _value(original_invoice, "base_write_off_amount"), "original Sales Invoice base_write_off_amount"
+            ))
+            return_invoice.write_off_account = _value(original_invoice, "write_off_account")
+            return_invoice.write_off_cost_center = _value(original_invoice, "write_off_cost_center")
         if hasattr(return_invoice, "calculate_taxes_and_totals"):
             return_invoice.calculate_taxes_and_totals()
         return_invoice.update_stock = 0
@@ -252,11 +267,11 @@ def _copy_invoice_dimensions(original_invoice: Any, return_invoice: Any) -> None
             setattr(return_invoice, fieldname, getattr(original_invoice, fieldname))
 
 
-def _copy_promotion_provenance(
+def _copy_sale_provenance(
     original_invoice: Any,
     return_invoice: Any,
 ) -> None:
-    """Restore immutable promotion evidence omitted by standard no-copy mapping."""
+    """Restore immutable sale evidence omitted by native no-copy mapping once."""
     for fieldname in PROMOTION_INVOICE_FIELDS:
         if hasattr(original_invoice, fieldname):
             setattr(return_invoice, fieldname, _value(original_invoice, fieldname))
@@ -272,7 +287,7 @@ def _copy_promotion_provenance(
 
     unmatched_original_items = list(original_items)
     for return_item in return_items:
-        original_item = _match_original_promotion_item(
+        original_item = _match_original_sale_item(
             return_item,
             unmatched_original_items,
         )
@@ -282,38 +297,14 @@ def _copy_promotion_provenance(
                 "original Sales Invoice item",
                 frappe.ValidationError,
             )
-        setattr(
-            return_item,
-            PROMOTION_ITEM_FIELD,
-            _value(original_item, PROMOTION_ITEM_FIELD),
-        )
-        unmatched_original_items.remove(original_item)
-
-
-def _copy_commercial_line_provenance(
-    original_invoice: Any,
-    return_invoice: Any,
-) -> None:
-    """Keep cashier-sale identity and modifier evidence on the credit note."""
-    original_items = list(_value(original_invoice, "items") or [])
-    unmatched_original_items = list(original_items)
-    for return_item in list(_value(return_invoice, "items") or []):
-        original_item = _match_original_promotion_item(
-            return_item,
-            unmatched_original_items,
-        )
-        if original_item is None:
-            frappe.throw(
-                "Cannot preserve commercial provenance: return item has no unique original Sales Invoice item",
-                frappe.ValidationError,
-            )
         for fieldname in (
+            PROMOTION_ITEM_FIELD,
             "custom_fb_order_line_ref",
             "custom_kopos_modifiers",
             "custom_kopos_modifier_total",
             "custom_kopos_has_modifiers",
         ):
-            if hasattr(original_item, fieldname):
+            if fieldname == PROMOTION_ITEM_FIELD or hasattr(original_item, fieldname):
                 setattr(return_item, fieldname, _value(original_item, fieldname))
         unmatched_original_items.remove(original_item)
 
@@ -337,7 +328,7 @@ def _clear_optional_return_links(return_doc: Any, return_invoice: Any) -> None:
             return_item.custom_fb_resolved_sale = None
 
 
-def _match_original_promotion_item(
+def _match_original_sale_item(
     return_item: Any,
     original_items: list[Any],
 ) -> Any | None:
@@ -356,6 +347,9 @@ def _match_original_promotion_item(
                 f"{original_item_name} is ambiguous",
                 frappe.ValidationError,
             )
+        # An explicit native source reference cannot fall back to decoration
+        # belonging to a different row. Aliases are only for absent references.
+        return None
 
     for fieldname, label in (
         ("custom_fb_order_line_ref", "FB Order line reference"),

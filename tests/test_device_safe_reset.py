@@ -642,7 +642,7 @@ class DeviceSafeResetTests(unittest.TestCase):
 
     def test_system_manager_desk_workflow_imports_v2_code_and_issues_approval_qr(self) -> None:
         script = Path(
-            "kopos_connector/page/kopos_provisioning/kopos_provisioning.js"
+            "kopos_connector/kopos/page/kopos_provisioning/kopos_provisioning.js"
         ).read_text()
         self.assertIn("KOPOS-ERP-CREDENTIAL-RECOVERY-V2.", script)
         self.assertNotIn("KOPOS-ERP-CREDENTIAL-RECOVERY-V1.", script)

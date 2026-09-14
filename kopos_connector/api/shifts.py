@@ -9,10 +9,12 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from jsonschema import Draft7Validator
 
 frappe = importlib.import_module("frappe")
 frappe_utils = importlib.import_module("frappe.utils")
@@ -52,6 +54,25 @@ MAX_FUTURE_TIMESTAMP_SKEW_SECONDS = 300
 
 # Module logger for audit logging
 _audit_logger = logging.getLogger(__name__)
+
+_SHIFT_SCHEMA = json.loads((Path(__file__).resolve().parents[1] / "contracts" / "shift.v1.schema.json").read_text())
+_SHIFT_REQUEST_VALIDATORS = {
+    name: Draft7Validator({**_SHIFT_SCHEMA, "$ref": f"#/definitions/{name}"})
+    for name in ("OpenShiftApiPayload", "CloseShiftApiPayload")
+}
+
+
+def _validate_shift_request(name: str, payload: dict[str, Any]) -> None:
+    """Shared structure after legacy parsing; never mutate or authorize input."""
+    error = next(_SHIFT_REQUEST_VALIDATORS[name].iter_errors(payload), None)
+    if error is None:
+        return
+    if error.validator == "required":
+        field = next(key for key in error.validator_value if key not in payload)
+    else:
+        field = ".".join(str(part) for part in error.path) or "shift request"
+    message = f"{field} is required" if error.validator in ("required", "minLength") else f"{field} does not satisfy the shift request contract"
+    frappe.throw(_(message), frappe.ValidationError)
 
 
 # -----------------------------------------------------------------------------
@@ -882,14 +903,11 @@ def open_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
     opened_at = frappe.utils.cstr(payload.get("opened_at")).strip()
     manager_approval_token = payload.get("manager_approval_token")  # Optional
 
-    if not idempotency_key:
-        frappe.throw(_("idempotency_key is required"), frappe.ValidationError)
-    if not device_id:
-        frappe.throw(_("device_id is required"), frappe.ValidationError)
-    if not staff_id:
-        frappe.throw(_("staff_id is required"), frappe.ValidationError)
-    if not shift_id:
-        frappe.throw(_("shift_id is required"), frappe.ValidationError)
+    _validate_shift_request("OpenShiftApiPayload", {
+        "idempotency_key": idempotency_key, "device_id": device_id,
+        "staff_id": staff_id, "shift_id": shift_id,
+        "opening_float_sen": opening_float_sen, "opened_at": opened_at,
+    })
     device_doc = get_device_doc(device_id=device_id)
     if not device_doc:
         frappe.throw(
@@ -1181,14 +1199,13 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
     ).strip()
     closed_at = frappe.utils.cstr(payload.get("closed_at")).strip()
 
-    if not idempotency_key:
-        frappe.throw(_("idempotency_key is required"), frappe.ValidationError)
-    if not device_id:
-        frappe.throw(_("device_id is required"), frappe.ValidationError)
-    if not staff_id:
-        frappe.throw(_("staff_id is required"), frappe.ValidationError)
-    if not shift_id:
-        frappe.throw(_("shift_id is required"), frappe.ValidationError)
+    _validate_shift_request("CloseShiftApiPayload", {
+        "idempotency_key": idempotency_key, "device_id": device_id,
+        "staff_id": staff_id, "shift_id": shift_id,
+        "counted_cash_sen": counted_cash_sen, "closed_at": closed_at,
+        "discrepancy_note": discrepancy_note,
+        **({"fb_shift": fb_shift} if fb_shift else {}),
+    })
     device_doc = get_device_doc(device_id=device_id)
     if not device_doc:
         frappe.throw(
@@ -1415,16 +1432,15 @@ def get_device_open_shift_payload(
     filters: dict[str, Any] = {"device_id": device_id, "status": "Open"}
     fields = ["name", "shift_code", "device_id", "staff_id", "opening_float", "opened_at"]
 
-    try:
-        entries = frappe.get_all(
-            "FB Shift",
-            filters=filters,
-            fields=fields,
-            order_by="creation desc",
-            limit=10,
-        )
-    except Exception:
-        return None
+    # A failed query is not proof that no shift exists. The public API already
+    # diagnoses failures and returns an error; do not turn one into an empty success.
+    entries = frappe.get_all(
+        "FB Shift",
+        filters=filters,
+        fields=fields,
+        order_by="creation desc",
+        limit=10,
+    )
 
     for entry in entries:
         custom_device_id = cstr(entry.get("device_id"))
@@ -1435,7 +1451,7 @@ def get_device_open_shift_payload(
             "shift_id": cstr(entry.get("shift_code")) or None,
             "device_id": device_id,
             "staff_id": cstr(entry.get("staff_id")),
-            "opening_float_sen": int(round(flt(entry.get("opening_float", 0)) * 100)),
+            "opening_float_sen": _persisted_money_sen(entry.get("opening_float"), "opening_float"),
             "opened_at": _format_datetime_iso(entry.get("opened_at")),
         }
 
@@ -1443,16 +1459,13 @@ def get_device_open_shift_payload(
     if not resolved_staff_id:
         return None
 
-    try:
-        staff_entries = frappe.get_all(
-            "FB Shift",
-            filters={"staff_id": resolved_staff_id, "status": "Open"},
-            fields=["name", "device_id", "staff_id"],
-            order_by="creation desc",
-            limit=10,
-        )
-    except Exception:
-        return None
+    staff_entries = frappe.get_all(
+        "FB Shift",
+        filters={"staff_id": resolved_staff_id, "status": "Open"},
+        fields=["name", "device_id", "staff_id"],
+        order_by="creation desc",
+        limit=10,
+    )
 
     for entry in staff_entries:
         conflicting_device_id = cstr(entry.get("device_id")).strip()

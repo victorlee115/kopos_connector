@@ -1,0 +1,10 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://jiji.local/contracts/receipt-header.v1.schema.json",
+  "type": "object",
+  "required": ["business_name", "address_lines"],
+  "properties": {
+    "business_name": { "type": "string", "minLength": 1, "maxLength": 140, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
+    "address_lines": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 140, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" } }
+  }
+}

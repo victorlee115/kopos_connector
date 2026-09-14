@@ -60,18 +60,25 @@ class JiJiMoney {
 		document.head.appendChild(style);
 	}
 
-	load() {
+	load(offset = 0) {
+		const requestId = this.requestId = (this.requestId || 0) + 1;
 		frappe.call({
 			method: "kopos_connector.api.shift_money.get_shift_money",
 			type: "GET",
-			callback: (response) => this.render(response.message || {}),
-			error: () =>
+			args: { offset },
+			callback: (response) => {
+				if (requestId !== this.requestId) return;
+				this.render(response.message || {});
+			},
+			error: () => {
+				if (requestId !== this.requestId) return;
 				this.body.empty().append(
 					jiji.desk.notice(
 						__("JiJi could not read your shifts just now"),
-						__("Nothing is wrong with your records. Try Refresh in a moment."),
+						__("Your records have not been changed. Try Refresh in a moment."),
 					),
-				),
+				);
+			},
 		});
 	}
 
@@ -108,9 +115,24 @@ class JiJiMoney {
 			summary.append(box);
 		});
 		this.body.append(summary);
+		this.body.append(jiji.desk.label(__("Counts cover all closed shifts. Details show up to 50 shifts per category.")));
 
 		this.appendGroup(__("Did not match"), data.needs_review || []);
 		this.appendGroup(__("Never counted"), data.missing_count || []);
+		if (Number.isSafeInteger(data.offset) && data.offset > 0) {
+			$("<button>").addClass("btn btn-default").text(__("Newer shifts"))
+				.on("click", (event) => {
+					$(event.currentTarget).prop("disabled", true);
+					this.load(Math.max(0, data.offset - 50));
+				}).appendTo(this.body);
+		}
+		if (Number.isSafeInteger(data.next_offset) && data.next_offset > 0) {
+			$("<button>").addClass("btn btn-default").text(__("Older shifts"))
+				.on("click", (event) => {
+					$(event.currentTarget).prop("disabled", true);
+					this.load(data.next_offset);
+				}).appendTo(this.body);
+		}
 
 	}
 

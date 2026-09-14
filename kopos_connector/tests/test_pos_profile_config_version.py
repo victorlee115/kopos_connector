@@ -46,6 +46,7 @@ def test_pos_profile_extension_and_fixed_stock_events_have_separate_lifecycles()
     }
     assert pos_profile.SERIALIZED_POS_PROFILE_FIELDS == (
         "company",
+        "company_address",
         "warehouse",
         "currency",
         "custom_kopos_enable_sst",
@@ -97,6 +98,7 @@ def test_profile_rename_invalidates_devices_after_parent_lifecycle(
     ("fieldname", "next_value"),
     (
         ("company", "Another Company"),
+        ("company_address", "New Branch Address"),
         ("warehouse", "Another Warehouse - KMY"),
         ("currency", "SGD"),
         ("custom_kopos_enable_sst", 0),

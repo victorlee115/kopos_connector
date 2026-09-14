@@ -1,0 +1,112 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:jiji:pricing:private-worker-response:v1",
+  "description": "Private Python/V8 process protocol structure, not a second pricing or schedule evaluator. Cart extras are retained; economic consistency remains the shared kernel's responsibility.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ok", "artifact"],
+  "properties": {
+    "ok": {"type": "boolean"},
+    "artifact": {"$ref": "#/definitions/hash"},
+    "result": {},
+    "message": {"type": "string", "maxLength": 600}
+  },
+  "oneOf": [
+    {"properties": {"ok": {"const": true}}, "required": ["result"], "not": {"required": ["message"]}},
+    {"properties": {"ok": {"const": false}}, "required": ["message"], "not": {"required": ["result"]}}
+  ],
+  "definitions": {
+    "sen": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "identifier": {"type": "string", "minLength": 1, "maxLength": 256},
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "date": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "instant": {"type": "string", "pattern": "^(?:[0-9]{4}|[+-][0-9]{6})-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"},
+    "schedule": {
+      "type": "object", "additionalProperties": false,
+      "required": ["timeZone", "weekdays", "startDate", "endDate", "startMinute", "endMinute"],
+      "properties": {
+        "timeZone": {"const": "Asia/Kuala_Lumpur"},
+        "weekdays": {"type": "array", "minItems": 1, "maxItems": 7, "uniqueItems": true, "items": {"type": "integer", "minimum": 1, "maximum": 7}},
+        "startDate": {"$ref": "#/definitions/date"},
+        "endDate": {"$ref": "#/definitions/date"},
+        "startMinute": {"type": "integer", "minimum": 0, "maximum": 1439},
+        "endMinute": {"type": "integer", "minimum": 0, "maximum": 1440}
+      }
+    },
+    "occurrences": {
+      "type": "array", "maxItems": 3,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["start", "end"],
+        "properties": {"start": {"$ref": "#/definitions/instant"}, "end": {"$ref": "#/definitions/instant"}}
+      }
+    },
+    "identity": {
+      "type": "object", "additionalProperties": false, "required": ["canonical", "hash", "version"],
+      "properties": {
+        "canonical": {"type": "string", "minLength": 1, "maxLength": 1048576},
+        "hash": {"$ref": "#/definitions/hash"},
+        "version": {"type": "string", "pattern": "^KOPOS-PROMO-[0-9A-F]{16}$"}
+      }
+    },
+    "basket_totals": {"type": "array", "maxItems": 1275, "items": {"$ref": "#/definitions/sen"}},
+    "allocation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["promotionId", "amountSen", "quantity", "scope"],
+      "properties": {
+        "promotionId": {"$ref": "#/definitions/identifier"},
+        "amountSen": {"$ref": "#/definitions/sen"},
+        "quantity": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "scope": {"const": "line"}
+      }
+    },
+    "item": {
+      "type": "object",
+      "required": ["id", "menuItemId", "quantity", "unitPriceSen", "modifierTotalSen", "discountAmountSen", "lineTotalSen", "modifiers", "promotionAllocations"],
+      "properties": {
+        "id": {"$ref": "#/definitions/identifier"},
+        "menuItemId": {"$ref": "#/definitions/identifier"},
+        "quantity": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "unitPriceSen": {"$ref": "#/definitions/sen"},
+        "modifierTotalSen": {"$ref": "#/definitions/sen"},
+        "discountAmountSen": {"$ref": "#/definitions/sen"},
+        "lineTotalSen": {"$ref": "#/definitions/sen"},
+        "modifiers": {"type": "array", "items": {"type": "object"}},
+        "promotionAllocations": {"type": "array", "maxItems": 50, "items": {"$ref": "#/definitions/allocation"}}
+      }
+    },
+    "applied": {
+      "type": "object", "additionalProperties": false,
+      "required": ["promotionId", "promotionName", "promotionType", "amountSen"],
+      "properties": {
+        "promotionId": {"$ref": "#/definitions/identifier"},
+        "promotionName": {"type": "string"},
+        "promotionType": {"type": "string"},
+        "amountSen": {"$ref": "#/definitions/sen"}
+      }
+    },
+    "quote": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kernelVersion", "status", "searchNodes", "reason"],
+          "properties": {
+            "kernelVersion": {"const": 2}, "status": {"const": "incomplete"},
+            "searchNodes": {"type": "integer", "minimum": 0, "maximum": 50001},
+            "reason": {"enum": ["snapshot_unavailable", "input_limit", "candidate_limit", "search_limit"]}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kernelVersion", "status", "searchNodes", "items", "appliedPromotions", "totalDiscountSen"],
+          "properties": {
+            "kernelVersion": {"const": 2}, "status": {"const": "complete"},
+            "searchNodes": {"type": "integer", "minimum": 0, "maximum": 50000},
+            "items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/definitions/item"}},
+            "appliedPromotions": {"type": "array", "maxItems": 50, "items": {"$ref": "#/definitions/applied"}},
+            "totalDiscountSen": {"$ref": "#/definitions/sen"}
+          }
+        }
+      ]
+    }
+  }
+}

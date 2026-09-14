@@ -24,6 +24,7 @@ DESK_PAGES = (
     "jiji_money",
     "jiji_supplies",
     "jiji_staff",
+    "jiji_promotions",
     "jiji_menu_recipes",
     "jiji_stock_autopilot",
 )

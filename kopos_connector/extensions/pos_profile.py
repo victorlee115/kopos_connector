@@ -12,6 +12,7 @@ from frappe.utils import cint, cstr, flt, now_datetime
 # and unrelated POS Profile saves must not churn managed device config versions.
 SERIALIZED_POS_PROFILE_FIELDS = (
     "company",
+    "company_address",
     "warehouse",
     "currency",
     "custom_kopos_enable_sst",
@@ -97,6 +98,7 @@ def bump_bound_device_config_versions(profile_name: str) -> None:
 def _profile_config_signature(profile_doc: Any) -> tuple[Any, ...]:
     return (
         cstr(_value(profile_doc, "company")).strip(),
+        cstr(_value(profile_doc, "company_address")).strip(),
         cstr(_value(profile_doc, "warehouse")).strip(),
         cstr(_value(profile_doc, "currency")).strip(),
         cint(_value(profile_doc, "custom_kopos_enable_sst")),

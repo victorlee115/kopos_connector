@@ -1517,20 +1517,23 @@ def _ensure_pos_profile(
     selling_price_list = _ensure_selling_price_list(currency)
     if existing:
         doc = frappe.get_doc("POS Profile", existing)
-        doc.company = company
-        doc.currency = currency
-        doc.selling_price_list = selling_price_list
-        doc.warehouse = warehouse
-        doc.customer = customer
-        doc.write_off_account = write_off_account
-        doc.write_off_cost_center = write_off_cost_center
-        doc.write_off_limit = 0
-        _apply_smoke_pos_profile_tax_config(doc)
+        values = {
+            "company": company, "currency": currency, "selling_price_list": selling_price_list,
+            "warehouse": warehouse, "customer": customer, "write_off_account": write_off_account,
+            "write_off_cost_center": write_off_cost_center, "write_off_limit": 0,
+        }
+        changed = any(_value(doc, field) != value for field, value in values.items())
+        for field, value in values.items():
+            setattr(doc, field, value)
+        changed = _apply_smoke_pos_profile_tax_config(doc) or changed
         if not any(row.mode_of_payment == "Cash" for row in doc.payments):
             doc.append("payments", {"mode_of_payment": "Cash", "default": 1})
+            changed = True
         if not any(row.mode_of_payment == "DuitNow QR" for row in doc.payments):
             doc.append("payments", {"mode_of_payment": "DuitNow QR", "default": 0})
-        doc.save(ignore_permissions=True)
+            changed = True
+        if changed:
+            doc.save(ignore_permissions=True)
         return doc.name
 
     doc = frappe.get_doc(
@@ -1561,10 +1564,11 @@ def _ensure_selling_price_list(currency: str) -> str:
     existing = frappe.db.exists("Price List", SMOKE_SELLING_PRICE_LIST)
     if existing:
         doc = frappe.get_doc("Price List", existing)
-        doc.enabled = 1
-        doc.selling = 1
-        doc.buying = 0
-        doc.currency = currency
+        values = {"enabled": 1, "selling": 1, "buying": 0, "currency": currency}
+        # ERPNext's save hook writes every child Item Price even on a no-op.
+        if all(doc.get(field) == value for field, value in values.items()):
+            return str(doc.name)
+        doc.update(values)
         doc.save(ignore_permissions=True)
         return str(doc.name)
 
@@ -1594,12 +1598,12 @@ def _ensure_smoke_item_price(item_code: str, currency: str) -> str:
         if existing
         else frappe.new_doc("Item Price")
     )
-    doc.item_code = item_code
-    doc.price_list = SMOKE_SELLING_PRICE_LIST
-    doc.uom = "Nos"
-    doc.price_list_rate = Decimal("12.00")
-    doc.currency = currency
-    doc.selling = 1
+    values = {**filters, "price_list_rate": Decimal("12.00"), "currency": currency, "selling": 1}
+    # Re-seeding an already correct fixture must not update its audit timestamps
+    # or invoke Item Price save hooks. Real corrections still use Frappe save.
+    if existing and all(doc.get(field) == value for field, value in values.items()):
+        return cstr(doc.name)
+    doc.update(values)
     if existing:
         doc.save(ignore_permissions=True)
     else:

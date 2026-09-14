@@ -1,5 +1,8 @@
 import importlib
+import subprocess
+import sys
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +27,50 @@ from kopos_connector.kopos.api.money_contract import (
     require_money_contract_version,
     sen_to_decimal,
 )
+
+
+def test_money_contract_import_is_independent_of_frappe_and_order_apis() -> None:
+    # A fresh interpreter catches eager package imports hidden by suite order.
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", """
+import sys
+sys.path.insert(0, sys.argv[1])
+from kopos_connector.kopos.api.money_contract import parse_sen, sen_to_decimal
+assert parse_sen("1250", "amount_sen") == 1250
+assert str(sen_to_decimal(1250)) == "12.5"
+assert "frappe" not in sys.modules
+assert "kopos_connector.api" not in sys.modules
+assert "kopos_connector.kopos.api.fb_orders" not in sys.modules
+""", str(Path(__file__).resolve().parents[1])],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("module_name", [
+    "kopos_connector.utils.manager_approval",
+    "kopos_connector.kopos.api.fb_orders",
+    "kopos_connector.kopos.doctype.fb_order.fb_order",
+    "kopos_connector.api",
+])
+def test_money_contract_consumers_import_in_fresh_process(module_name: str) -> None:
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", """
+import importlib, sys
+sys.path.insert(0, sys.argv[1])
+from tests.fake_frappe import install_fake_frappe_modules
+install_fake_frappe_modules()
+importlib.import_module(sys.argv[2])
+from kopos_connector.kopos.api import fb_orders
+from kopos_connector.api import fb_orders as public_orders
+assert public_orders.fb_orders_impl is fb_orders
+assert callable(public_orders.submit_order)
+assert callable(public_orders.get_order_status)
+assert callable(public_orders.retry_failed_projections)
+""", str(Path(__file__).resolve().parents[1]), module_name],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_live_contract_accepts_integer_sen_and_rejects_decimal_aliases() -> None:

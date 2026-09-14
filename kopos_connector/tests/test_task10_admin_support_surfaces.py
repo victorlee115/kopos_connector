@@ -73,7 +73,7 @@ def test_workspace_is_system_manager_support_only_and_uses_canonical_links() -> 
 
 
 def test_provisioning_page_and_buttons_stay_system_manager_only() -> None:
-    page = load_json("page/kopos_provisioning/kopos_provisioning.json")
+    page = load_json("kopos/page/kopos_provisioning/kopos_provisioning.json")
     assert roles_from_rows(page["roles"]) == {"System Manager"}
 
     provisioning_api = (CONNECTOR_ROOT / "api/provisioning.py").read_text()
@@ -84,6 +84,27 @@ def test_provisioning_page_and_buttons_stay_system_manager_only() -> None:
     assert '(frappe.user_roles || []).includes("System Manager")' in install_source
     assert "The one-time setup link is hidden after creation" in install_source
     assert "<code>${koposEscapeHtml(payload.provisioning_link)}</code>" not in install_source
+
+
+def test_support_navigation_uses_native_app_level_definitions() -> None:
+    workspace = load_json("kopos/workspace/kopos_support/kopos_support.json")
+    sidebar = load_json("workspace_sidebar/kopos_support.json")
+    icon = load_json("desktop_icon/kopos_support.json")
+    assert sidebar["doctype"] == "Workspace Sidebar"
+    assert icon["doctype"] == "Desktop Icon"
+    for document in (sidebar, icon):
+        assert document["name"] == "KoPOS Support"
+        assert document["app"] == "kopos_connector"
+        assert document["standard"] == 1
+        assert document["modified"]
+    assert sidebar["items"] == [
+        {"label": "Home", "type": "Link", "link_type": "Workspace", "link_to": workspace["name"]},
+        *[{"label": row["label"], "type": "Link", "link_type": row["type"], "link_to": row["link_to"]}
+          for row in workspace["shortcuts"]],
+    ]
+    assert icon["link_type"] == "Workspace Sidebar"
+    assert icon["link_to"] == sidebar["name"]
+    assert roles_from_rows(icon["roles"]) == ADMIN_ROLES
 
 
 def test_support_reports_exclude_cashier_roles_and_secret_fields() -> None:
