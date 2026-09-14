@@ -123,6 +123,7 @@ def _account_row(**overrides: Any) -> dict[str, Any]:
         "is_group": 0,
         "disabled": 0,
         "root_type": "Asset",
+        "account_type": "",
         "account_currency": "MYR",
     }
     row.update(overrides)
@@ -288,6 +289,9 @@ def test_static_winner_late_generation_is_durably_fenced_and_replays_exactly(
         ("Manual QR Suspense - TC", _account_row(account_currency="USD")),
         ("Manual QR Suspense - TC", _account_row(account_currency="")),
         ("Manual QR Suspense - TC", _account_row(is_group=None)),
+        ("Manual QR Suspense - TC", _account_row(account_type="Receivable")),
+        ("Manual QR Suspense - TC", _account_row(account_type="Stock")),
+        ("Manual QR Suspense - TC", _account_row(account_type="Cash")),
     ],
     ids=[
         "setting-missing",
@@ -299,6 +303,9 @@ def test_static_winner_late_generation_is_durably_fenced_and_replays_exactly(
         "currency-mismatch",
         "currency-missing",
         "ledger-flags-invalid",
+        "receivable-account",
+        "stock-account",
+        "cash-account",
     ],
 )
 def test_invalid_suspense_account_is_durably_fenced_without_provider_contact(
@@ -335,10 +342,14 @@ def test_invalid_suspense_account_is_durably_fenced_without_provider_contact(
     def get_value(
         doctype: str,
         name: str,
-        fields: list[str],
+        fields: list[str] | str,
         *,
-        as_dict: bool,
+        as_dict: bool = False,
     ) -> dict[str, Any] | None:
+        if doctype == "Company":
+            # A blank account currency means the company default; none is configured here.
+            assert (name, fields, as_dict) == ("Test Company", "default_currency", False)
+            return None
         assert doctype == "Account"
         assert name == "Manual QR Suspense - TC"
         assert fields == [
@@ -346,6 +357,7 @@ def test_invalid_suspense_account_is_durably_fenced_without_provider_contact(
             "is_group",
             "disabled",
             "root_type",
+            "account_type",
             "account_currency",
         ]
         assert as_dict is True
@@ -1302,3 +1314,47 @@ def test_late_old_provider_result_stays_fenced_after_replacement_reservation(
             existing=old_attempt,
         )
     assert replacement_attempt["status"] == "pending"
+
+
+@pytest.mark.parametrize(
+    ("account_row", "company_currency", "accepted"),
+    [
+        (_account_row(account_type="Bank"), None, True),
+        (_account_row(account_type=""), None, True),
+        (_account_row(account_currency=""), "MYR", True),
+        (_account_row(account_currency=""), "USD", False),
+        (_account_row(account_type="Receivable"), None, False),
+        (_account_row(account_type="Fixed Asset"), None, False),
+    ],
+    ids=["bank", "untyped-clearing", "blank-currency-company-myr", "blank-currency-company-usd", "receivable", "fixed-asset"],
+)
+def test_manual_suspense_ledger_uses_shared_qr_ledger_policy(
+    monkeypatch: Any,
+    account_row: dict[str, Any],
+    company_currency: str | None,
+    accepted: bool,
+) -> None:
+    cleared: list[bool] = []
+
+    def get_value(doctype: str, name: str, fields: Any, *, as_dict: bool = False) -> Any:
+        if doctype == "Company":
+            assert (name, fields) == ("Test Company", "default_currency")
+            return company_currency
+        assert (doctype, name, as_dict) == ("Account", "Manual QR Suspense - TC", True)
+        return account_row
+
+    monkeypatch.setattr(maybank_payment_service.frappe.db, "get_value", get_value)
+    monkeypatch.setattr(maybank_payment_service.frappe, "clear_last_message", lambda: cleared.append(True))
+
+    def validate() -> str:
+        return maybank_payment_service.validate_manual_qr_suspense_account(
+            " Manual QR Suspense - TC ", company="Test Company", currency="myr"
+        )
+
+    if accepted:
+        assert validate() == "Manual QR Suspense - TC"
+        assert cleared == []
+    else:
+        with pytest.raises(maybank_payment_service.QrAccountingNotConfigured, match="Manual QR suspense account"):
+            validate()
+        assert cleared == [True]

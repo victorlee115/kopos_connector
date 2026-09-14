@@ -869,40 +869,22 @@ def validate_manual_qr_suspense_account(
         raise QrAccountingNotConfigured(
             "Manual QR Suspense Account is required on the POS Profile"
         )
-    account_row = frappe.db.get_value(
-        "Account",
-        normalized_account,
-        ["company", "is_group", "disabled", "root_type", "account_currency"],
-        as_dict=True,
-    )
-    if not account_row:
-        raise QrAccountingNotConfigured("Manual QR suspense account was not found")
-    if (
-        not cstr(company).strip()
-        or cstr(_value(account_row, "company")).strip() != cstr(company).strip()
-    ):
-        raise QrAccountingNotConfigured("Manual QR suspense account belongs to another company")
-    is_group = _strict_account_flag(_value(account_row, "is_group"))
-    disabled = _strict_account_flag(_value(account_row, "disabled"))
-    if is_group is None or disabled is None or is_group or disabled:
-        raise QrAccountingNotConfigured("Manual QR suspense account must be an enabled ledger account")
-    if cstr(_value(account_row, "root_type")).strip() != "Asset":
-        raise QrAccountingNotConfigured("Manual QR suspense account must be an Asset account")
-    account_currency = cstr(_value(account_row, "account_currency")).strip().upper()
-    order_currency = cstr(currency).strip().upper()
-    if not order_currency or account_currency != order_currency:
-        raise QrAccountingNotConfigured("Manual QR suspense account currency does not match FB Order")
+    try:
+        # New pending QR payments follow the shared QR ledger policy. Reconciling
+        # an already posted invoice validates its saved suspense ledger separately.
+        validate_ledger_account(
+            normalized_account,
+            company=company,
+            currency=currency,
+            role="Manual QR suspense",
+            require_bank_or_clearing=True,
+        )
+    except frappe.ValidationError as error:
+        # Callers report configuration readiness themselves; do not also leave
+        # Frappe's queued popup message on an otherwise handled response.
+        frappe.clear_last_message()
+        raise QrAccountingNotConfigured(str(error)) from error
     return normalized_account
-
-
-def _strict_account_flag(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int) and value in {0, 1}:
-        return value
-    if isinstance(value, str) and value.strip() in {"0", "1"}:
-        return int(value.strip())
-    return None
 
 
 def _reject_maybank_reference(reference: str) -> None:

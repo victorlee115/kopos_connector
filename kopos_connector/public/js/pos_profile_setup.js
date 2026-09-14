@@ -56,6 +56,15 @@
       dialog.set_primary_action(__("Review settings"), prepare);
       dialog.get_primary_btn().prop("disabled", busy);
     };
+    const settings = () => JSON.stringify(fields.map(field => dialog.get_value(prefix + field) ?? original[field]));
+    let savedSettings = null;
+    // A click that blurs a Link control makes Frappe validate it again and fire
+    // onchange with an unchanged value. Only a real change invalidates work.
+    const settingChanged = () => {
+      if (!dialog || closed || settings() === savedSettings) return;
+      savedSettings = settings();
+      invalidate();
+    };
     const configValues = () => ({
       ...Object.fromEntries(fields.map(field => [prefix + field, dialog.get_value(prefix + field) ?? original[field]])),
       custom_kopos_static_qr_payload: payload,
@@ -64,7 +73,7 @@
     const enabled = (value) => value === 1 || value === true || value === "1";
     const accountField = (field, label, extra = {}) => ({
       fieldtype: "Link", fieldname: prefix + field, label: __(label), options: "Account", default: original[field],
-      only_select: true, onchange: invalidate,
+      only_select: true, onchange: settingChanged,
       get_query: () => ({ filters: { company: profile.company, is_group: 0, disabled: 0,
         root_type: "Asset", account_currency: profile.currency, ...extra } }),
     });
@@ -83,8 +92,10 @@
         busy = true;
         dialog.get_primary_btn().prop("disabled", true);
         const current = generation;
+        const staleReview = () => { if (current !== generation) throw new Error(__("Your settings changed while they were being checked. Review them again.")); };
         const preview = await requestPreview("get_qr_setup_preview", profile, config);
-        if (closed || current !== generation) return;
+        if (closed) return;
+        staleReview();
         requireSavedForm(frm, profile);
         if (preview.profile_modified !== config.expected_modified) {
           throw new Error(__("Someone changed this POS Profile. Close setup, reload the profile, and review again."));
@@ -97,10 +108,12 @@
         }
         dialog.clear_alert();
         await dialog.set_value("review", review(preview, config));
-        if (closed || current !== generation) return;
+        if (closed) return;
+        staleReview();
         dialog.set_df_property("review", "hidden", 0);
         await dialog.set_value("merchant_confirmed", 0);
-        if (closed || current !== generation) return;
+        if (closed) return;
+        staleReview();
         reviewed = { config, preview };
         dialog.set_df_property("merchant_confirmed", "hidden", !enabled(config.custom_kopos_static_qr_enabled));
         dialog.refresh_sections();
@@ -150,20 +163,20 @@
       fields: [
         { fieldtype: "HTML", fieldname: "intro", options: `<p><strong>${escape(profile.name)}</strong> — ${escape(profile.company)}</p>`
           + `<p>${__("Use the reusable store QR issued by your bank. Your image is read on this device, not uploaded; the decoded payment code is checked and saved in ERP.")}</p>` },
-        { fieldtype: "Check", fieldname: prefix + "static_qr_enabled", label: __("Accept payments with my store QR"), default: original.static_qr_enabled, onchange: invalidate },
+        { fieldtype: "Check", fieldname: prefix + "static_qr_enabled", label: __("Accept payments with my store QR"), default: original.static_qr_enabled, onchange: settingChanged },
         { fieldtype: "HTML", fieldname: "image", options:
           `<label>${__("1. Choose your bank QR image")}<input type="file" class="form-control" accept="image/png,image/jpeg,image/webp"></label>`
           + `<p class="text-muted">${__("PNG, JPG or WebP, up to 5 MB. Use a clear image containing only your store's QR code. No camera permission is needed.")}</p>`
           + `<p role="status" aria-live="polite" class="qr-image-status">${payload ? __("A saved QR is available. Choose an image only to replace it.") : __("No store QR has been added yet.")}</p><div id="${decoderId}"></div>` },
         { fieldtype: "Section Break", label: __("2. Choose the payment account") },
-        { ...accountField("manual_qr_suspense_account", "QR payments awaiting confirmation", { account_type: ["!=", "Cash"] }),
+        { ...accountField("manual_qr_suspense_account", "QR payments awaiting confirmation", { account_type: ["in", ["Bank", ""]] }),
           description: __("Keep the existing account unless your accounts adviser asks you to change it. This does not change company-wide payment accounts.") },
         { fieldtype: "Section Break", label: __("Automatic bank confirmation (optional)"), collapsible: 1 },
         { fieldtype: "HTML", fieldname: "automatic_help", options: `<p>${__("Leave this off to use your store QR with manual payment confirmation. Enable only after your Maybank merchant login and accounts have been set up.")}</p>` },
-        { fieldtype: "Check", fieldname: prefix + "automatic_qr_enabled", label: __("Confirm payments automatically with Maybank"), default: original.automatic_qr_enabled, onchange: invalidate },
+        { fieldtype: "Check", fieldname: prefix + "automatic_qr_enabled", label: __("Confirm payments automatically with Maybank"), default: original.automatic_qr_enabled, onchange: settingChanged },
         { fieldtype: "Link", fieldname: prefix + "maybank_qrpaybiz_account", label: __("Maybank merchant login"), options: "Maybank QRPayBiz Account", only_select: true,
-          default: original.maybank_qrpaybiz_account, get_query: () => ({ filters: { enabled: 1 } }), onchange: invalidate },
-        { fieldtype: "Data", fieldname: prefix + "maybank_outlet_id", label: __("Maybank outlet ID"), default: original.maybank_outlet_id, onchange: invalidate },
+          default: original.maybank_qrpaybiz_account, get_query: () => ({ filters: { enabled: 1 } }), onchange: settingChanged },
+        { fieldtype: "Data", fieldname: prefix + "maybank_outlet_id", label: __("Maybank outlet ID"), default: original.maybank_outlet_id, onchange: settingChanged },
         accountField("qr_clearing_account", "Confirmed QR payment account", { account_type: ["in", ["Bank", ""]] }),
         accountField("qr_settlement_bank_account", "Bank account receiving settlements", { account_type: "Bank" }),
         { fieldtype: "Section Break", label: __("3. Review before saving") },
@@ -178,6 +191,7 @@
     // Each opening takes a fresh profile revision. Release the old file input
     // and handlers after Frappe finishes hiding this one-use dialog.
     dialog.$wrapper.one("hidden.bs.modal", () => dialog.$wrapper.remove());
+    savedSettings = settings();
     frm.__kopos_qr_setup = dialog;
     dialog.fields_dict.image.$wrapper.find("input").on("change", async (event) => {
       const file = event.target.files?.[0];

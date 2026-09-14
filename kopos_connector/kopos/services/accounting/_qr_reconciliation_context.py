@@ -476,8 +476,13 @@ def validate_ledger_account(
     )
     if not row:
         frappe.throw(f"{role} account {account} was not found", frappe.ValidationError)
-    _require_equal(f"{role} account company", _value(row, "company"), company)
-    if int(_value(row, "is_group") or 0) or int(_value(row, "disabled") or 0):
+    resolved_company = cstr(company).strip()
+    if not resolved_company or cstr(_value(row, "company")).strip() != resolved_company:
+        frappe.throw(
+            f"{role} account {account} belongs to another company",
+            frappe.ValidationError,
+        )
+    if _account_flag(_value(row, "is_group")) != 0 or _account_flag(_value(row, "disabled")) != 0:
         frappe.throw(
             f"{role} account {account} must be an enabled ledger account",
             frappe.ValidationError,
@@ -487,10 +492,15 @@ def validate_ledger_account(
             f"{role} account {account} must be an {required_root_type} ledger",
             frappe.ValidationError,
         )
-    account_currency = cstr(_value(row, "account_currency")).strip().upper()
-    if account_currency and account_currency != currency:
+    expected_currency = cstr(currency).strip().upper()
+    # ERPNext's get_account_currency treats a blank account currency as the
+    # company's default currency; apply the same rule without importing ERPNext.
+    account_currency = cstr(_value(row, "account_currency")).strip().upper() or cstr(
+        frappe.db.get_value("Company", resolved_company, "default_currency")
+    ).strip().upper()
+    if not expected_currency or account_currency != expected_currency:
         frappe.throw(
-            f"{role} account {account} currency does not match {currency}",
+            f"{role} account {account} currency does not match {expected_currency or 'the document currency'}",
             frappe.ValidationError,
         )
     account_type = cstr(_value(row, "account_type")).strip()
@@ -499,6 +509,17 @@ def validate_ledger_account(
             f"{role} account {account} must be a Bank account or untyped Asset clearing account; {account_type} is not allowed",
             frappe.ValidationError,
         )
+
+
+def _account_flag(value: Any) -> int | None:
+    """Return a stored Check value, or None for anything MariaDB would not store."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int) and value in {0, 1}:
+        return value
+    if isinstance(value, str) and value.strip() in {"0", "1"}:
+        return int(value.strip())
+    return None
 
 
 def _configured_failure_variance_account(

@@ -189,6 +189,7 @@ def install_fake_frappe_modules() -> None:
         "throw",
         lambda message, exc=None: _raise((exc or ValidationError)(message)),
     )
+    setattr(frappe_module, "clear_last_message", lambda: None)
     setattr(frappe_module, "parse_json", lambda value: json.loads(value))
     setattr(frappe_module, "as_json", lambda value: json.dumps(value, sort_keys=True))
     setattr(frappe_module, "get_traceback", lambda: "fake traceback")

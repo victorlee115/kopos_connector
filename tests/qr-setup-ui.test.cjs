@@ -152,6 +152,35 @@ test("old preview responses cannot restore a review invalidated by a new account
   const work = d.action(); await d.set_value("custom_kopos_manual_qr_suspense_account", "New Account");
   waiting.resolve({ message: { preview: h.preview() } }); await work;
   assert.equal(d.label, "Review settings"); assert.equal(d.fields_dict.review.df.hidden, 1);
+  assert.match(d.alert, /changed while they were being checked/);
+});
+
+// Real Frappe re-validates a focused Link control when the Review click blurs it and
+// fires onchange with the same value while the preview request is still in flight.
+test("revalidating an unchanged account during review still shows that review", async () => {
+  const h = harness(), d = h.open(); await h.import(d); const waiting = deferred(); h.transport = () => waiting.promise;
+  const work = d.action(); await d.set_value("custom_kopos_manual_qr_suspense_account", "QR Suspense");
+  waiting.resolve({ message: { preview: h.preview(h.requests.at(-1).args.config) } }); await work;
+  assert.equal(d.label, "Save QR settings"); assert.equal(d.visibleReview, true); assert.equal(d.alert, null);
+  assert.equal(h.requests.length, 1);
+});
+
+test("revalidating an unchanged account after review keeps the review and confirmation", async () => {
+  const h = harness(), d = h.open(); await h.import(d); await d.action(); await d.set_value("merchant_confirmed", 1);
+  await d.set_value("custom_kopos_manual_qr_suspense_account", "QR Suspense");
+  assert.equal(d.label, "Save QR settings"); assert.equal(d.fields_dict.review.df.hidden, 0);
+  await d.action(); assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[1].args.config.confirmed_static_qr_sha256, "exact-payload-hash");
+});
+
+test("revalidating an unchanged account during image reading keeps the decoded QR", async () => {
+  const h = harness(), d = h.open(), waiting = deferred(); h.decoder = () => waiting.promise;
+  const work = h.import(d); await Promise.resolve(); await Promise.resolve();
+  await d.set_value("custom_kopos_manual_qr_suspense_account", "QR Suspense");
+  waiting.resolve("DECODED-DURING-REVALIDATION"); await work;
+  await d.action();
+  assert.equal(d.label, "Save QR settings");
+  assert.equal(h.requests.at(-1).args.config.custom_kopos_static_qr_payload, "DECODED-DURING-REVALIDATION");
 });
 
 test("a changed server revision or unavailable enabled lane cannot be saved", async () => {
@@ -183,6 +212,10 @@ test("account selectors use native Link controls scoped to current company and c
     const { filters } = field.get_query();
     assert.equal(filters.company, "Company"); assert.equal(filters.account_currency, "MYR");
     assert.equal(filters.is_group, 0); assert.equal(filters.disabled, 0); assert.equal(filters.root_type, "Asset");
+  }
+  // Same Bank-or-untyped-clearing policy the server applies to pending and confirmed QR ledgers.
+  for (const name of ["manual_qr_suspense_account", "qr_clearing_account"]) {
+    assert.deepEqual(JSON.parse(JSON.stringify(d.fields_dict["custom_kopos_" + name].df.get_query().filters.account_type)), ["in", ["Bank", ""]]);
   }
 });
 

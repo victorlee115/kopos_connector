@@ -67,6 +67,26 @@ class TestQrSetupContract(FrappeTestCase):
         self.assertFalse(preview['changes_are_company_wide'])
         self.assertEqual(self._business_config(), before)
 
+    def test_suspense_ledger_uses_shared_qr_ledger_policy_without_popup(self):
+        company = self.profile.company
+        receivable = frappe.db.get_value('Account', {'company': company, 'root_type': 'Asset', 'account_type': 'Receivable', 'is_group': 0, 'disabled': 0}, 'name')
+        untyped = frappe.db.get_value('Account', {'company': company, 'root_type': 'Asset', 'account_type': '', 'is_group': 0, 'disabled': 0}, 'name')
+        self.assertTrue(receivable and untyped, 'Requires the standard ERPNext chart in the smoke company')
+        before = self._business_config()
+        for account, ready in ((receivable, False), (untyped, True), (self.bank, True)):
+            with self.subTest(account=account):
+                frappe.clear_messages()
+                self.diagnostic.reset_mock()
+                config = self._config()
+                config['custom_kopos_manual_qr_suspense_account'] = account
+                preview = qr_setup.get_qr_setup_preview(self.profile.name, config)
+                self.assertEqual(preview['static_qr']['ready'], ready)
+                # Readiness reports the lane itself; no queued Frappe popup may leak.
+                self.assertEqual(frappe.local.message_log, [])
+                self.assertEqual(self.diagnostic.call_count, 0 if ready else 1)
+        self.diagnostic.reset_mock()
+        self.assertEqual(self._business_config(), before)
+
     def test_confirmed_save_reloads_metadata_and_retry_does_not_recommission(self):
         config = self._config()
         preview = qr_setup.get_qr_setup_preview(self.profile.name, config)
