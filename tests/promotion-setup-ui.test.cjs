@@ -165,6 +165,13 @@ test("offer validation identifies the specific missing or invalid field", () => 
   page.editor.values = {name:"Tea offer",kind:"amount",value:"0"};
   assert.equal(page.validateStep(), false);
   assert.match(errors.at(-1), /^Enter an amount/);
+  // A cleared <input type=time> parses to NaN minutes.
+  page.editor.step = 2;
+  page.editor.values = {schedule:{weekdays:[1],startMinute:NaN,endMinute:1020}};
+  assert.equal(page.validateStep(), false);
+  assert.match(errors.at(-1), /^Choose both a From and an Until time/);
+  page.editor.values.schedule.startMinute = 840;
+  assert.equal(page.validateStep(), true);
 });
 
 test("leaving Review invalidates an in-flight sample without accepting its late response", async () => {

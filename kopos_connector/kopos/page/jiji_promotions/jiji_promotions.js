@@ -272,6 +272,8 @@ class JiJiOffers {
 			: "Enter an amount greater than RM0, with no more than two decimal places, such as 1.50.";
 		if (step === 1 && (!values.items.length || !values.outlets.length)) message = "Choose at least one product and one outlet.";
 		if (step === 2 && values.schedule && (!values.schedule.weekdays.length || values.schedule.startMinute === values.schedule.endMinute)) message = "Choose at least one day and different opening and closing times.";
+		// A cleared time input yields NaN minutes; ask for a time instead of sending it.
+		if (step === 2 && values.schedule && !(Number.isInteger(values.schedule.startMinute) && Number.isInteger(values.schedule.endMinute))) message = "Choose both a From and an Until time.";
 		if (message) { this.error(__(message)); return false; }
 		return true;
 	}

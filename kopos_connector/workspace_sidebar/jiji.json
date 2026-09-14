@@ -1,0 +1,19 @@
+{
+ "doctype": "Workspace Sidebar",
+ "name": "JiJi",
+ "title": "JiJi",
+ "app": "kopos_connector",
+ "module": "KoPOS",
+ "standard": 1,
+ "modified": "2026-09-15 20:00:00.000000",
+ "header_icon": "coffee",
+ "items": [
+  {"label": "Home", "type": "Link", "link_type": "Page", "link_to": "jiji_home"},
+  {"label": "Money", "type": "Link", "link_type": "Page", "link_to": "jiji_money"},
+  {"label": "Menu", "type": "Link", "link_type": "Page", "link_to": "jiji_menu_recipes"},
+  {"label": "Offers", "type": "Link", "link_type": "Page", "link_to": "jiji_promotions"},
+  {"label": "Stock", "type": "Link", "link_type": "Page", "link_to": "jiji_stock_autopilot"},
+  {"label": "Supplies", "type": "Link", "link_type": "Page", "link_to": "jiji_supplies"},
+  {"label": "Staff", "type": "Link", "link_type": "Page", "link_to": "jiji_staff"}
+ ]
+}

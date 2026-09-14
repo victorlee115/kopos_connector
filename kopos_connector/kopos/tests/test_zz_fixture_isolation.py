@@ -58,6 +58,29 @@ class TestBroadFixtureIsolation(FrappeTestCase):
             self.assertEqual(document.standard, 1)
             self.assertEqual(document.app, "kopos_connector")
 
+    def test_jiji_navigation_is_app_owned_after_migration_and_import_is_repeatable(self) -> None:
+        from frappe.modules.import_file import import_file_by_path
+
+        frappe.set_user("Administrator")
+        sidebar = frappe.get_doc("Workspace Sidebar", "JiJi")
+        icon = frappe.get_doc("Desktop Icon", "JiJi")
+        for document in (sidebar, icon):
+            self.assertEqual((document.standard, document.app), (1, "kopos_connector"))
+        self.assertEqual([row.link_to for row in sidebar.items], [
+            "jiji_home", "jiji_money", "jiji_menu_recipes", "jiji_promotions",
+            "jiji_stock_autopilot", "jiji_supplies", "jiji_staff",
+        ])
+        self.assertTrue(all(frappe.db.exists("Page", row.link_to) for row in sidebar.items))
+        self.assertEqual((icon.link_type, icon.link_to), ("Workspace Sidebar", sidebar.name))
+        workspace_roles = sorted(row.role for row in frappe.get_doc("Workspace", "JiJi").roles)
+        self.assertEqual(sorted(row.role for row in icon.roles), workspace_roles)
+        tables = ("Workspace Sidebar", "Workspace Sidebar Item", "Desktop Icon", "Has Role")
+        before = {table: frappe.get_all(table, fields=["*"], order_by="name") for table in tables}
+        for _ in range(2):
+            for folder in ("workspace_sidebar", "desktop_icon"):
+                self.assertFalse(import_file_by_path(frappe.get_app_path("kopos_connector", folder, "jiji.json")))
+            self.assertEqual({table: frappe.get_all(table, fields=["*"], order_by="name") for table in tables}, before)
+
     def test_native_support_import_is_repeatable_and_preserves_personal_sidebar(self) -> None:
         from frappe.modules.import_file import import_file_by_path
 

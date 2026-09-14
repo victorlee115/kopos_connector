@@ -56,6 +56,7 @@ def test_standard_provisioning_page_uses_the_native_module_directory() -> None:
 @pytest.mark.parametrize("asset", [AUTHORING_DOCUMENT, "kopos_connector/contracts/promotion.v1.schema.json",
     PROVISIONING_PAGE + ".json", PROVISIONING_PAGE + ".js",
     "kopos_connector/workspace_sidebar/kopos_support.json", "kopos_connector/desktop_icon/kopos_support.json",
+    "kopos_connector/workspace_sidebar/jiji.json", "kopos_connector/desktop_icon/jiji.json",
     "kopos_connector/contracts/promotion-snapshot.v2.schema.json",
     "kopos_connector/contracts/shift.v1.schema.json", "kopos_connector/contracts/receipt-header.v1.schema.json",
     "kopos_connector/pricing/runtime.js", "kopos_connector/pricing/runtime.json", "kopos_connector/pricing/worker.py",

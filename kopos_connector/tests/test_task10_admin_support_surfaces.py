@@ -107,6 +107,30 @@ def test_support_navigation_uses_native_app_level_definitions() -> None:
     assert roles_from_rows(icon["roles"]) == ADMIN_ROLES
 
 
+def test_jiji_navigation_uses_native_app_level_definitions() -> None:
+    """Upgraded sites get no generated JiJi sidebar or icon; ship them like KoPOS Support."""
+    workspace = load_json("kopos/workspace/jiji/jiji.json")
+    sidebar = load_json("workspace_sidebar/jiji.json")
+    icon = load_json("desktop_icon/jiji.json")
+    for document in (sidebar, icon):
+        assert document["name"] == workspace["name"] == "JiJi"
+        assert document["app"] == "kopos_connector"
+        assert document["standard"] == 1
+        assert document["modified"]
+    pages = [{"label": row["label"], "type": "Link", "link_type": row["type"], "link_to": row["link_to"]}
+             for row in workspace["shortcuts"]]
+    # One Home (the director's page, which the desktop tile opens first) and
+    # Offers beside Menu, so the Offers page keeps this sidebar.
+    offers = {"label": "Offers", "type": "Link", "link_type": "Page", "link_to": "jiji_promotions"}
+    assert sidebar["items"] == [*pages[:3], offers, *pages[3:]]
+    assert sidebar["items"][0]["link_to"] == "jiji_home"
+    assert (icon["link_type"], icon["link_to"]) == ("Workspace Sidebar", sidebar["name"])
+    assert roles_from_rows(icon["roles"]) == roles_from_rows(workspace["roles"])
+    # The connector ships no /assets files: a wheel installed without asset
+    # links would render a broken image instead of Frappe's letter tile.
+    assert not (CONNECTOR_ROOT / "public/icons").exists()
+
+
 def test_support_reports_exclude_cashier_roles_and_secret_fields() -> None:
     report_paths = [
         "kopos/report/kopos_device_health/kopos_device_health.json",
