@@ -152,3 +152,20 @@ def test_every_erp_call_in_the_tablet_client_is_allowlisted_with_its_method(auth
         if path not in module.ALLOWED_DEVICE_API_PATHS or not methods <= module.DEVICE_API_HTTP_METHODS[path]
     }
     assert refused == {}
+
+
+def test_gate_runs_after_frappe_authenticates_tablet_api_keys():
+    # Frappe runs before_request hooks before validate_auth() reads API keys, so a
+    # gate registered there saw every tablet key request as Guest and let it through.
+    import ast
+
+    hooks = ast.parse((Path(__file__).resolve().parents[1] / "hooks.py").read_text())
+    assigned = {
+        target.id: ast.literal_eval(node.value)
+        for node in hooks.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name) and target.id in {"auth_hooks", "before_request"}
+    }
+    assert assigned.get("auth_hooks") == ["kopos_connector.auth.enforce_device_api_restrictions"]
+    assert "kopos_connector.auth.enforce_device_api_restrictions" not in assigned.get("before_request", [])

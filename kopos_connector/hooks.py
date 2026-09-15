@@ -200,7 +200,6 @@ scheduler_events = {
 
 # Request Events
 # --------------
-before_request = ["kopos_connector.auth.enforce_device_api_restrictions"]
 # after_request = ["kopos_connector.utils.after_request"]
 
 # Job Events
@@ -227,6 +226,6 @@ before_request = ["kopos_connector.auth.enforce_device_api_restrictions"]
 # Authentication and authorization
 # --------------------------------
 
-# auth_hooks = [
-# 	"kopos_connector.auth.auth"
-# ]
+# Frappe authenticates API keys in validate_auth(), after before_request hooks
+# have run, so the device endpoint gate must be an auth hook to see tablet keys.
+auth_hooks = ["kopos_connector.auth.enforce_device_api_restrictions"]
