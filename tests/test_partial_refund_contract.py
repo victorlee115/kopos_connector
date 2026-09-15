@@ -304,7 +304,7 @@ def test_order_refunds_list_submitted_refunds_oldest_first_with_their_allocation
 
     assert queries[0]["doctype"] == "FB Return Event"
     assert queries[0]["filters"] == {"original_sales_invoice": "SINV-1", "docstatus": 1}
-    assert queries[0]["order_by"] == "creation asc, name asc"
+    assert queries[0]["order_by"] == "name asc"
     assert result == {
         "status": "ok",
         "sales_invoice": "SINV-1",

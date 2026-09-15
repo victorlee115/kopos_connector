@@ -175,7 +175,9 @@ def list_order_refunds(sales_invoice: str) -> dict[str, Any]:
             "approved_by_manager",
             "refund_allocation",
         ],
-        order_by="creation asc, name asc",
+        # Names come from a per-day counter assigned while the sale is locked, so
+        # they keep allocation order even when the server clock steps back.
+        order_by="name asc",
     )
     refunds = []
     for row in rows or []:

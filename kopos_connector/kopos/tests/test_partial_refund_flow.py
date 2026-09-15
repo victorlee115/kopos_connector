@@ -5,6 +5,7 @@ from typing import Any
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
+from frappe.utils import add_to_date
 
 from kopos_connector.api.fb_returns import list_order_refunds, process_return_payload
 from kopos_connector.api.order_history import query_return_events_by_return_invoice, serialize_refund_row
@@ -147,6 +148,11 @@ class TestPartialRefundFlow(FrappeTestCase):
         self.assertEqual([row["refund_allocation"]["isFinal"] for row in listed], [False, False, True])
         self.assertTrue(all(row["settlement_status"] == "Posted" and row["amount_sen"] == row["refund_allocation"]["amountSen"] for row in listed))
         self.assertEqual(sum(row["amount_sen"] for row in listed), sale.total_sen)
+        # A server clock that steps back can stamp the last refund before the first;
+        # the list must still follow the order ERP allocated them.
+        first_created = frappe.db.get_value("FB Return Event", listed[0]["return_event"], "creation")
+        frappe.db.set_value("FB Return Event", listed[2]["return_event"], "creation", add_to_date(first_created, seconds=-1), update_modified=False)
+        self.assertEqual([row["return_id"] for row in list_order_refunds(order.sales_invoice)["refunds"]], [return_id for return_id, _lines in plan])
         events = query_return_events_by_return_invoice(credit_notes)
         history_row = serialize_refund_row({"name": credit_notes[2], "return_against": original.name}, items=[], payments=[], return_event=events[credit_notes[2]])
         self.assertEqual((history_row["return_id"], history_row["refund_allocation"]), (plan[2][0], listed[2]["refund_allocation"]))
