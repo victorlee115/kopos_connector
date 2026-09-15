@@ -432,6 +432,85 @@ def test_serialize_invoice_row_returns_kopos_display_number_and_modifiers(
     ]
 
 
+def test_history_rows_carry_the_cash_rounding_write_off(order_history_module):
+    """A rounded cash sale's grand_total is before rounding; the tablet needs the write-off."""
+    assert "write_off_amount" in order_history_module.get_invoice_fields()
+    sale = order_history_module.serialize_invoice_row(
+        {"name": "ACC-SINV-2026-00013", "grand_total": "12.960000000", "write_off_amount": "0.010000000"},
+        items=[],
+        payments=[],
+    )
+    credit_note = order_history_module.serialize_invoice_row(
+        {"name": "ACC-SINV-2026-00015", "grand_total": "-12.960000000", "write_off_amount": "-0.010000000"},
+        items=[],
+        payments=[],
+    )
+    legacy = order_history_module.serialize_invoice_row({"name": "ACC-SINV-2026-00001", "grand_total": 12}, items=[], payments=[])
+
+    assert (sale["grand_total"], sale["write_off_amount"]) == ("12.96", "0.01")
+    assert (credit_note["grand_total"], credit_note["write_off_amount"]) == ("-12.96", "-0.01")
+    assert legacy["write_off_amount"] == "0.00"
+
+
+def test_history_cash_payment_reports_the_applied_amount_and_change(order_history_module, monkeypatch):
+    """The invoice row holds the RM13.00 tender; the tablet records RM12.95 applied and RM0.05 change."""
+    def fake_get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        filters = kwargs.get("filters") or {}
+        if doctype == "FB Shift":
+            return [{"name": "FB-SHIFT-001", "opened_at": datetime(2026, 3, 13, 8, 0), "creation": datetime(2026, 3, 13, 8, 0)}]
+        if doctype == "Sales Invoice" and filters.get("is_return") == 0:
+            return [
+                {"name": "PINV-CASH", "docstatus": 1, "is_return": 0, "custom_fb_order": "FB-CASH", "company": "KoPOS Cafe",
+                 "pos_profile": "POS-MAIN", "posting_date": "2026-03-13", "posting_time": "10:00:00",
+                 "creation": datetime(2026, 3, 13, 10, 0), "grand_total": "12.96", "write_off_amount": "0.01"},
+                {"name": "PINV-QR", "docstatus": 1, "is_return": 0, "custom_fb_order": "FB-QR", "company": "KoPOS Cafe",
+                 "pos_profile": "POS-MAIN", "posting_date": "2026-03-13", "posting_time": "10:01:00",
+                 "creation": datetime(2026, 3, 13, 10, 1), "grand_total": "12.00"},
+            ]
+        if doctype == "Sales Invoice Payment":
+            return [
+                {"parent": "PINV-CASH", "idx": 1, "mode_of_payment": "Cash", "amount": "13.00", "account": "Cash - K", "type": "Cash"},
+                {"parent": "PINV-QR", "idx": 1, "mode_of_payment": "DuitNow QR", "amount": "12.00", "account": "Bank - K", "type": "Bank"},
+            ]
+        if doctype == "FB Order Payment":
+            assert filters == {"parent": ["in", ["FB-CASH", "FB-QR"]], "parenttype": "FB Order"}
+            return [
+                {"parent": "FB-CASH", "idx": 1, "payment_method": "Cash", "amount": "12.95"},
+                {"parent": "FB-QR", "idx": 1, "payment_method": "DuitNow QR", "amount": "12.00"},
+            ]
+        return []
+
+    monkeypatch.setattr(order_history_module.frappe, "get_all", fake_get_all)
+
+    result = order_history_module.get_order_history_payload(device_id="DEVICE-1")
+    payments = {order["name"]: order["payments"] for order in result["orders"]}
+
+    assert payments["PINV-CASH"] == [{
+        "idx": 1, "mode_of_payment": "Cash", "amount": "12.95", "account": "Cash - K", "type": "Cash",
+        "default": False, "tendered_amount": "13.00", "change_amount": "0.05",
+    }]
+    assert payments["PINV-QR"] == [{
+        "idx": 1, "mode_of_payment": "DuitNow QR", "amount": "12.00", "account": "Bank - K", "type": "Bank", "default": False,
+    }]
+
+
+@pytest.mark.parametrize(
+    "order_payments",
+    [
+        [],
+        [{"payment_method": "Cash", "amount": "12.95"}, {"payment_method": "Cash", "amount": "0.05"}],
+        [{"payment_method": "DuitNow QR", "amount": "12.95"}],
+        [{"payment_method": "Cash", "amount": "13.05"}],
+        [{"payment_method": "Cash", "amount": "0"}],
+    ],
+    ids=["no_order_payments", "different_count", "different_method", "more_than_tendered", "zero"],
+)
+def test_history_payment_rows_stay_as_tendered_unless_the_order_agrees(order_history_module, order_payments):
+    invoice_payments = [{"idx": 1, "mode_of_payment": "Cash", "amount": "13.00"}]
+
+    assert order_history_module.with_applied_payment_amounts(invoice_payments, order_payments) is invoice_payments
+
+
 def test_serialize_order_row_keeps_complimentary_value_and_manager_evidence(
     order_history_module,
 ):
@@ -849,6 +928,7 @@ def test_get_order_history_returns_refunds_separately_with_decimal_strings(
             "discount_amount": "0.00",
             "grand_total": "-3.50",
             "rounded_total": "0.00",
+            "write_off_amount": "0.00",
             "paid_amount": "-3.50",
             "change_amount": "0.00",
             "items": [

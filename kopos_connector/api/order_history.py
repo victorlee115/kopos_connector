@@ -126,6 +126,7 @@ def get_order_history_payload(
             order_by="parent asc, idx asc",
         )
         return_events_by_invoice = query_return_events_by_return_invoice(refund_names)
+        fb_payments_by_order = query_fb_order_payments_by_order(page_rows)
         fb_items_by_order = query_fb_order_items_by_order(invoice_rows + refund_rows)
         fb_headers_by_order = query_fb_order_headers(invoice_rows + refund_rows)
 
@@ -144,7 +145,10 @@ def get_order_history_payload(
                 row,
                 items=fb_items_by_order.get(cstr(row.get("custom_fb_order")).strip())
                 or items_by_parent.get(cstr(row.get("name")).strip(), []),
-                payments=payments_by_parent.get(cstr(row.get("name")).strip(), []),
+                payments=with_applied_payment_amounts(
+                    payments_by_parent.get(cstr(row.get("name")).strip(), []),
+                    fb_payments_by_order.get(cstr(row.get("custom_fb_order")).strip(), []),
+                ),
                 fb_order=fb_headers_by_order.get(
                     cstr(row.get("custom_fb_order")).strip()
                 ),
@@ -875,6 +879,66 @@ def query_fb_order_items_by_order(
     return grouped
 
 
+def query_fb_order_payments_by_order(
+    invoice_rows: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    fb_order_names = sorted(
+        {
+            cstr(row.get("custom_fb_order")).strip()
+            for row in invoice_rows
+            if cstr(row.get("custom_fb_order")).strip()
+        }
+    )
+    if not fb_order_names:
+        return {}
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in frappe.get_all(
+        "FB Order Payment",
+        filters={"parent": ["in", fb_order_names], "parenttype": "FB Order"},
+        fields=["parent", "idx", "payment_method", "amount"],
+        order_by="parent asc, idx asc",
+    ):
+        grouped.setdefault(cstr(row.get("parent")).strip(), []).append(dict(row))
+    return grouped
+
+
+def with_applied_payment_amounts(
+    invoice_payments: list[dict[str, Any]],
+    order_payments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Report cash change the way the tablet records a payment.
+
+    A KoPOS Sales Invoice payment row holds the tender, so cash includes the
+    change; the FB Order payment holds the amount applied to the sale. Rows are
+    left untouched unless both lists agree, which invoice creation enforces.
+    """
+    if not order_payments or len(order_payments) != len(invoice_payments):
+        return invoice_payments
+    reported = []
+    for invoice_payment, order_payment in zip(invoice_payments, order_payments):
+        tendered = Decimal(decimal_string(invoice_payment.get("amount")))
+        applied = Decimal(decimal_string(order_payment.get("amount")))
+        if (
+            cstr(invoice_payment.get("mode_of_payment")).strip()
+            != cstr(order_payment.get("payment_method")).strip()
+            or applied <= 0
+            or applied > tendered
+        ):
+            return invoice_payments
+        if applied == tendered:
+            reported.append(invoice_payment)
+            continue
+        reported.append(
+            {
+                **invoice_payment,
+                "amount": applied,
+                "tendered_amount": tendered,
+                "change_amount": tendered - applied,
+            }
+        )
+    return reported
+
+
 def query_fb_order_headers(
     invoice_rows: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
@@ -1001,6 +1065,9 @@ def serialize_invoice_row(
         "discount_amount": money_string(row.get("discount_amount")),
         "grand_total": money_string(row.get("grand_total")),
         "rounded_total": money_string(row.get("rounded_total")),
+        # Cash rounding is booked as a write-off: the amount paid is
+        # grand_total - write_off_amount.
+        "write_off_amount": money_string(row.get("write_off_amount")),
         "paid_amount": money_string(row.get("paid_amount")),
         "change_amount": money_string(row.get("change_amount")),
         "items": [serialize_item_row(item) for item in items],
@@ -1087,7 +1154,7 @@ def serialize_item_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def serialize_payment_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    payment = {
         "idx": cint(row.get("idx")),
         "mode_of_payment": cstr(row.get("mode_of_payment")),
         "amount": money_string(row.get("amount")),
@@ -1095,6 +1162,10 @@ def serialize_payment_row(row: dict[str, Any]) -> dict[str, Any]:
         "type": empty_to_none(row.get("type")),
         "default": bool(cint(row.get("default"))),
     }
+    if "tendered_amount" in row:
+        payment["tendered_amount"] = money_string(row.get("tendered_amount"))
+        payment["change_amount"] = money_string(row.get("change_amount"))
+    return payment
 
 
 def get_invoice_fields() -> list[str]:
@@ -1125,6 +1196,7 @@ def get_invoice_fields() -> list[str]:
         "discount_amount",
         "grand_total",
         "rounded_total",
+        "write_off_amount",
         "paid_amount",
         "change_amount",
         "custom_kopos_refund_reason_code",
