@@ -884,6 +884,58 @@ class PosProvisioningTests(unittest.TestCase):
             ],
         )
 
+    def test_provisioning_by_pos_profile_keeps_the_tablet_name(self):
+        fake_device = SimpleNamespace(
+            name="KOPOS-DEVICE-001",
+            device_id="tab-a-001",
+            pos_profile="Counter 1",
+            api_user="device-001@kopos.local",
+        )
+        names = []
+        for token, requested_name in (("token-1", None), ("token-2", "Front counter")):
+            cache = _FakeCache()
+            with (
+                patch.object(
+                    provisioning.frappe, "session", SimpleNamespace(user="Administrator")
+                ),
+                patch.object(
+                    provisioning.frappe.db, "get_value", return_value="KOPOS-DEVICE-001"
+                ),
+                patch.object(provisioning, "get_device_doc", return_value=fake_device),
+                patch.object(
+                    provisioning,
+                    "serialize_device_config",
+                    return_value={
+                        "device_id": "tab-a-001",
+                        "device_name": "Tablet A",
+                        "pos_profile": "Counter 1",
+                        "config_version": 3,
+                        "users": [],
+                    },
+                ),
+                patch.object(provisioning.frappe, "generate_hash", return_value=token),
+                patch.object(provisioning.frappe, "cache", return_value=cache),
+                patch.object(
+                    provisioning.frappe.utils,
+                    "get_url",
+                    return_value="https://erp.example.com",
+                ),
+                patch.object(provisioning, "get_qr_svg_code", return_value=b"svg-data"),
+            ):
+                result = provisioning.create_pos_provisioning(
+                    pos_profile="Counter 1",
+                    api_key="api-key",
+                    api_secret="api-secret",
+                    device_name=requested_name,
+                )
+            cached = json.loads(cache.values[f"kopos:provisioning:{token}"].decode())
+            names.append((cached["setup"]["device_name"], result["setup_preview"]["device_name"]))
+
+        self.assertEqual(
+            names,
+            [("Tablet A", "Tablet A"), ("Front counter", "Front counter")],
+        )
+
     def test_redeem_pos_provisioning_returns_setup_and_invalidates_token(self):
         cache = _FakeCache()
         cache.values["kopos:provisioning:token-123"] = json.dumps(

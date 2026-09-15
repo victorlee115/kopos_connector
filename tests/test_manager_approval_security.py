@@ -847,6 +847,240 @@ def test_token_use_rechecks_refund_permission_and_explicit_admin_mode(monkeypatc
     )
 
 
+@pytest.mark.parametrize(
+    ("grand_total", "write_off_amount", "paid_sen"),
+    [
+        (Decimal("12.960000000"), Decimal("0.010000000"), 1295),
+        (Decimal("12.930000000"), Decimal("-0.020000000"), 1295),
+        (Decimal("12.000000000"), Decimal("0E-9"), 1200),
+        (Decimal("12.000000000"), None, 1200),
+    ],
+)
+def test_sales_invoice_approval_binds_the_amount_the_customer_paid(
+    monkeypatch, grand_total, write_off_amount, paid_sen
+):
+    """Cash rounding is a write-off on the invoice; the tablet asks for the rounded total."""
+    invoice = SimpleNamespace(
+        doctype="Sales Invoice",
+        name="SINV-1",
+        custom_fb_order="FB-ORDER-1",
+        custom_fb_device_id="DEVICE-1",
+        custom_fb_shift="SHIFT-1",
+        grand_total=grand_total,
+        write_off_amount=write_off_amount,
+    )
+    monkeypatch.setattr(
+        manager_approval.frappe,
+        "get_doc",
+        lambda doctype, name: SimpleNamespace(staff_id="cashier@example.com", shift="SHIFT-1"),
+    )
+
+    scope = manager_approval.build_sales_invoice_approval_scope(
+        invoice, context={"reason": "wrong item"}
+    )
+
+    assert scope["amount_sen"] == paid_sen
+    manager_approval.validate_requested_scope({"amount_sen": paid_sen}, scope)
+
+
+STAFF_ACCESS = "kopos_connector.kopos.services.inventory_autopilot.staff_access"
+
+
+def _central_access(user: str, pin: str, level: str = "Manager") -> dict[str, object]:
+    manager = level == "Manager"
+    return {
+        "user": user,
+        "access_level": level,
+        "pin_hash": hash_pin(pin, cost=256),
+        "active": True,
+        "can_manager_override": manager,
+        "can_refund": manager,
+        "can_void": manager,
+        "source": "central",
+    }
+
+
+def _refuse_legacy_device_rows(query: str, *_args, **_kwargs):
+    if "tabKoPOS Device User" in query:
+        raise AssertionError("legacy device rows must not decide a central outlet")
+    if "tabKoPOS Device`" in query:
+        return [
+            {
+                "name": "KOPOS-DEVICE-1",
+                "enabled": 1,
+                "pos_profile": "Outlet A",
+                "central_staff_access_locked": 1,
+            }
+        ]
+    raise AssertionError(f"unexpected query: {query}")
+
+
+def test_central_staff_access_decides_device_manager_approval(monkeypatch):
+    access = {
+        "central-manager@example.com": _central_access(
+            "central-manager@example.com", "2468"
+        ),
+        "central-staff@example.com": _central_access(
+            "central-staff@example.com", "1357", level="Staff"
+        ),
+    }
+    lookups: list[tuple[object, str]] = []
+    limiter_failures: list[tuple[str, str]] = []
+
+    def find(device_doc, user, **_kwargs):
+        lookups.append((device_doc, user))
+        return access.get(user)
+
+    monkeypatch.setattr(f"{STAFF_ACCESS}.central_staff_access_exists_for_device", lambda *_a, **_k: True)
+    monkeypatch.setattr(f"{STAFF_ACCESS}.find_staff_access_for_device", find)
+    monkeypatch.setattr(manager_approval.frappe.db, "sql", _refuse_legacy_device_rows)
+    monkeypatch.setattr(
+        manager_approval.frappe.db,
+        "get_value",
+        lambda doctype, *_args, **_kwargs: 1 if doctype == "User" else None,
+    )
+    monkeypatch.setattr(
+        manager_approval.frappe.db,
+        "set_value",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("approval must not write a central manager's PIN state")
+        ),
+    )
+    monkeypatch.setattr(
+        manager_approval,
+        "_record_manager_pin_rate_limit_failure",
+        lambda device_name, manager_id: limiter_failures.append((device_name, manager_id)),
+    )
+    monkeypatch.setattr(
+        manager_approval.frappe,
+        "session",
+        SimpleNamespace(user="device-api@example.com"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "kopos_connector.api.devices.get_session_roles",
+        lambda user=None: ["KoPOS Device API"],
+    )
+    device = SimpleNamespace(name="KOPOS-DEVICE-1", enabled=1, config_version=4)
+
+    for action in ("void_order", "refund_order", "close_shift"):
+        assert manager_approval.authorize_manager_for_device(
+            device,
+            manager_id="central-manager@example.com",
+            manager_pin="2468",
+            action=action,
+        ) == "central-manager@example.com"
+    assert lookups[0] == (device, "central-manager@example.com")
+    assert device.config_version == 4
+    assert limiter_failures == []
+
+    for manager_id, pin in (
+        ("central-manager@example.com", "1234"),
+        ("central-staff@example.com", "1357"),
+        ("legacy-only-manager@example.com", "1234"),
+    ):
+        with pytest.raises(
+            manager_approval.frappe.ValidationError,
+            match="Manager credentials are invalid",
+        ):
+            manager_approval.authorize_manager_for_device(
+                device,
+                manager_id=manager_id,
+                manager_pin=pin,
+                action="refund_order",
+            )
+    assert limiter_failures == [
+        ("KOPOS-DEVICE-1", "central-manager@example.com"),
+        ("KOPOS-DEVICE-1", "central-staff@example.com"),
+        ("KOPOS-DEVICE-1", "legacy-only-manager@example.com"),
+    ]
+
+
+def test_token_use_rechecks_central_staff_access(monkeypatch):
+    current: dict[str, object] = {
+        "access": _central_access("central-manager@example.com", "2468")
+    }
+    devices: list[object] = []
+
+    def find(device_doc, user, **_kwargs):
+        devices.append(device_doc)
+        assert user == "central-manager@example.com"
+        if isinstance(current["access"], Exception):
+            raise current["access"]
+        return current["access"]
+
+    def exists(device_doc, **_kwargs):
+        return bool(getattr(device_doc, "central_staff_access_locked", 0))
+
+    monkeypatch.setattr(f"{STAFF_ACCESS}.central_staff_access_exists_for_device", exists)
+    monkeypatch.setattr(f"{STAFF_ACCESS}.find_staff_access_for_device", find)
+    monkeypatch.setattr(manager_approval.frappe.db, "sql", _refuse_legacy_device_rows)
+    monkeypatch.setattr(
+        manager_approval.frappe.db,
+        "get_value",
+        lambda doctype, *_args, **_kwargs: 1 if doctype == "User" else None,
+    )
+
+    def use(action: str = "refund_order") -> None:
+        manager_approval._validate_manager_action_authorization_at_use(
+            device_id="DEVICE-1",
+            manager_id="central-manager@example.com",
+            action=action,
+            authorization_mode="device_manager",
+        )
+
+    use()
+    use("void_order")
+    assert (devices[0].name, devices[0].pos_profile) == ("KOPOS-DEVICE-1", "Outlet A")
+
+    for revoked in (
+        None,
+        _central_access("central-manager@example.com", "2468", level="Staff"),
+        manager_approval.frappe.ValidationError("ambiguous legacy PIN verifier"),
+    ):
+        current["access"] = revoked
+        with pytest.raises(
+            manager_approval.ManagerApprovalTokenVerificationError,
+            match="no longer authorized for this action",
+        ):
+            use()
+
+
+@pytest.mark.parametrize(
+    "token_kind",
+    ["not_text", "list_payload", "non_ascii_signature", "short_signature"],
+)
+def test_malformed_approval_token_is_refused_as_invalid_format(token_kind):
+    with patch.object(manager_approval, "_get_signing_secret", return_value="s" * 64):
+        payload = _approval_payload()
+        signature = manager_approval._create_token_signature(payload)
+        encoded = manager_approval._encode_token(payload, signature)
+        token: object = {
+            "not_text": ["v1", "payload", "signature"],
+            "list_payload": "v1.{0}.{1}".format(
+                b'["device_id"]'.hex(),
+                manager_approval._create_token_signature(["device_id"]),
+            ),
+            "non_ascii_signature": encoded[: -len(signature)] + "é" * 64,
+            "short_signature": encoded[:-1],
+        }[token_kind]
+
+        with pytest.raises(
+            manager_approval.ManagerApprovalTokenVerificationError,
+            match="Invalid manager approval token format",
+        ):
+            manager_approval.verify_manager_approval_token(
+                token,
+                device_id="DEVICE-1",
+                staff_id="cashier@example.com",
+                action="close_shift",
+                shift_id="SHIFT-1",
+                resource_id="SHIFT-1",
+                amount_sen=12_500,
+                context_hash=CONTEXT_HASH,
+            )
+
+
 def test_signing_secret_fails_closed_when_not_configured(monkeypatch):
     monkeypatch.setattr(manager_approval.frappe, "conf", {}, raising=False)
     with pytest.raises(manager_approval.frappe.ValidationError, match="must be configured"):

@@ -16,9 +16,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import time
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
+from types import SimpleNamespace
 from typing import Any
 
 import frappe
@@ -92,6 +94,7 @@ ACTION_PERMISSION_FIELDS = {
     "refund_order": "can_refund",
 }
 AUTHORIZATION_MODES = {"device_manager", "system_manager"}
+SIGNATURE_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
 def _get_signing_secret() -> str:
@@ -141,6 +144,8 @@ def _decode_token(token: str) -> tuple[dict[str, Any], str] | None:
 
     Returns None if the token format is invalid.
     """
+    if not isinstance(token, str):
+        return None
     try:
         parts = token.split(".")
         if len(parts) != 3 or parts[0] != "v1":
@@ -149,9 +154,13 @@ def _decode_token(token: str) -> tuple[dict[str, Any], str] | None:
         encoded_message, signature = parts[1], parts[2]
         message = bytes.fromhex(encoded_message).decode("utf-8")
         payload = json.loads(message)
-        return payload, signature
     except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
         return None
+    # hmac.compare_digest rejects non-ASCII text with TypeError, and every
+    # caller reads the payload as an object.
+    if not isinstance(payload, dict) or not SIGNATURE_PATTERN.fullmatch(signature):
+        return None
+    return payload, signature
 
 
 def canonical_context_hash(context: Mapping[str, Any] | None) -> str:
@@ -271,7 +280,7 @@ def authorize_manager_for_device(
         verify_pin(raw_pin, DUMMY_PIN_HASH)
         _record_manager_pin_rate_limit_failure(device_name, limiter_identity)
         frappe.throw(_("Manager credentials are invalid"), frappe.ValidationError)
-    manager_row = _load_manager_row_for_update(device_name, resolved_manager)
+    manager_row = _load_approving_manager(device_doc, resolved_manager)
     if not manager_row:
         verify_pin(raw_pin, DUMMY_PIN_HASH)
         _record_manager_pin_rate_limit_failure(device_name, resolved_manager)
@@ -293,14 +302,20 @@ def authorize_manager_for_device(
         )
 
     pin_hash = cstr(_row_value(manager_row, "pin_hash")).strip()
+    central = _row_value(manager_row, "source") == "central"
     if not verify_pin(raw_pin, pin_hash):
         _record_manager_pin_rate_limit_failure(device_name, resolved_manager)
-        _record_failed_pin_attempt(manager_row, now)
+        if not central:
+            _record_failed_pin_attempt(manager_row, now)
         frappe.throw(_("Manager credentials are invalid"), frappe.ValidationError)
 
     _validate_enabled_erp_user(resolved_manager)
     _clear_manager_pin_rate_limit(device_name, resolved_manager)
     _validate_device_manager_action_permission(manager_row, action)
+    if central:
+        # Central access has no PIN failure fields and its verifier changes only
+        # through its own document, which versions every affected device.
+        return resolved_manager
 
     updates: dict[str, Any] = {
         "pin_failed_attempts": 0,
@@ -348,6 +363,24 @@ def _persist_successful_manager_pin_verification(
         update_modified=True,
     )
     device_doc.config_version = next_version
+
+
+def _load_approving_manager(device_doc: Any, manager_id: str) -> Any | None:
+    """Return the manager as the tablet and the shift, stock and order paths see them.
+
+    Once the device's outlet has central staff access, the legacy device rows
+    stay behind read-only and must neither grant nor refuse approval.
+    """
+    from kopos_connector.kopos.services.inventory_autopilot.staff_access import (
+        central_staff_access_exists_for_device,
+        find_staff_access_for_device,
+    )
+
+    if central_staff_access_exists_for_device(device_doc):
+        return find_staff_access_for_device(device_doc, manager_id)
+    return _load_manager_row_for_update(
+        cstr(getattr(device_doc, "name", None)).strip(), manager_id
+    )
 
 
 def _load_manager_row_for_update(device_name: str, manager_id: str) -> Any | None:
@@ -577,10 +610,16 @@ def build_sales_invoice_approval_scope(
             _("Sales Invoice approval scope is incomplete"),
             frappe.ValidationError,
         )
+    # Cash rounding is booked as a write-off, so grand_total is before rounding.
+    # A manager approves what the customer paid, the total the tablet shows.
     amount_sen = abs(
         money_to_sen(
             getattr(invoice_doc, "grand_total", None),
             "Sales Invoice grand_total",
+        )
+        - money_to_sen(
+            getattr(invoice_doc, "write_off_amount", None) or 0,
+            "Sales Invoice write_off_amount",
         )
     )
     return {
@@ -1029,7 +1068,7 @@ def _validate_manager_action_authorization_at_use(
 
     device_rows = frappe.db.sql(
         """
-        SELECT name, enabled
+        SELECT name, enabled, pos_profile, central_staff_access_locked
         FROM `tabKoPOS Device`
         WHERE device_id = %s
         LIMIT 2
@@ -1044,10 +1083,14 @@ def _validate_manager_action_authorization_at_use(
         raise ManagerApprovalTokenVerificationError(
             _("Approving manager is no longer authorized for this device")
         )
-    manager_row = _load_manager_row_for_update(
-        cstr(_row_value(device_rows[0], "name")).strip(),
-        manager_id,
-    )
+    try:
+        manager_row = _load_approving_manager(
+            SimpleNamespace(**device_rows[0]), manager_id
+        )
+    except frappe.ValidationError as error:
+        raise ManagerApprovalTokenVerificationError(
+            _("Approving manager is no longer authorized for this action")
+        ) from error
     if (
         not manager_row
         or not cint(_row_value(manager_row, "active"))

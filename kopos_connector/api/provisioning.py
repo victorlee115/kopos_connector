@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hmac
 import json
-import re
 from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
@@ -89,21 +88,6 @@ def ensure_device_api_credentials(
     }
 
 
-def _delete_stale_device_api_secret(user_email: str) -> None:
-    try:
-        frappe.db.delete(
-            "__Auth",
-            {
-                "doctype": "User",
-                "name": user_email,
-                "fieldname": "api_secret",
-            },
-        )
-    except Exception as error:
-        log_sanitized_error("KoPOS stale device API secret cleanup failed", error)
-        return
-
-
 def create_device_provisioning_qr(
     device: str | None = None,
     erpnext_url: str | None = None,
@@ -165,11 +149,11 @@ def create_pos_provisioning(
         device_doc = get_device_doc(name=device)
     elif cstr(pos_profile).strip():
         profile_name = cstr(pos_profile).strip()
-        device_name = frappe.db.get_value(
+        profile_device = frappe.db.get_value(
             "KoPOS Device", {"pos_profile": profile_name, "enabled": 1}, "name"
         )
-        if device_name:
-            device_doc = get_device_doc(name=device_name)
+        if profile_device:
+            device_doc = get_device_doc(name=profile_device)
         else:
             frappe.throw(_("KoPOS Device is required"))
     else:
@@ -218,12 +202,6 @@ def create_pos_provisioning(
         )
     setup_payload["provisioning_user"] = provisioning_user
     setup_payload["erpnext_url"] = base_url
-    normalized_safe_reset_metadata = _normalize_safe_reset_metadata(
-        safe_reset_metadata,
-        setup_config_version=cint(setup_payload.get("config_version") or 0),
-    )
-    if normalized_safe_reset_metadata is not None:
-        setup_payload.update(normalized_safe_reset_metadata)
     if cstr(device_name).strip():
         setup_payload["device_name"] = cstr(device_name).strip()
     if cstr(device_prefix).strip():
@@ -245,12 +223,6 @@ def create_pos_provisioning(
         f"kopos://provision?base_url={quote(base_url, safe='')}"
         f"&token={quote(token, safe='')}"
     )
-    if normalized_safe_reset_metadata is not None:
-        provisioning_link += (
-            "&provisioning_mode=safe_reset"
-            f"&request_id={quote(normalized_safe_reset_metadata['request_id'], safe='')}"
-            f"&reset_id={quote(normalized_safe_reset_metadata['reset_id'], safe='')}"
-        )
     provisioning_qr_svg = get_qr_svg_code(provisioning_link).decode()
 
     _persist_cached_value(
@@ -279,8 +251,6 @@ def create_pos_provisioning(
             "device_prefix": setup_payload.get("device_prefix"),
         },
     }
-    if normalized_safe_reset_metadata is not None:
-        response.update(normalized_safe_reset_metadata)
     return response
 
 
@@ -353,24 +323,6 @@ def redeem_pos_provisioning(
         "expires_at": payload.get("expires_at"),
         "setup": setup,
     }
-
-
-def _normalize_safe_reset_metadata(
-    metadata: Mapping[str, Any] | None,
-    *,
-    setup_config_version: int,
-) -> dict[str, Any] | None:
-    if metadata is None:
-        return None
-    del setup_config_version
-    frappe.throw(
-        _(
-            "Legacy single-phase safe reset provisioning metadata is rejected; "
-            "use safe reset protocol version 2"
-        ),
-        frappe.ValidationError,
-    )
-    raise ValueError("Legacy safe reset provisioning is rejected")
 
 
 def _validate_cached_provisioning_setup(setup: dict[str, Any]) -> None:
@@ -527,18 +479,6 @@ def _delete_cached_value(key: str) -> None:
     make_key = getattr(cache, "make_key", None)
     storage_key = make_key(key) if callable(make_key) else key
     _delete_unconfirmed_cached_value(cache, storage_key)
-
-
-def _peek_cached_value(key: str) -> str | None:
-    """Read a token without consuming it so proof checks cannot burn a valid QR."""
-    cache = frappe.cache()
-    make_key = getattr(cache, "make_key", None)
-    get_direct = getattr(cache, "get", None)
-    if not callable(make_key) or not callable(get_direct):
-        raise RuntimeError(
-            "Frappe Redis cache does not support atomic token consumption or token prevalidation"
-        )
-    return _decode_cached_value(get_direct(make_key(key)))
 
 
 def _consume_cached_value(key: str) -> str | None:
