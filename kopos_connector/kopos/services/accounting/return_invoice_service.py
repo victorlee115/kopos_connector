@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 import frappe
@@ -12,6 +12,10 @@ import frappe
 from kopos_connector.kopos.api.money_contract import (
     MoneyContractValidationError,
     persisted_money_to_sen,
+)
+from kopos_connector.kopos.services.accounting.refund_allocation import (
+    RefundAllocation,
+    parse_stored_allocation,
 )
 
 from kopos_connector.utils.diagnostics import (
@@ -70,14 +74,21 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
             return_invoice.set("payments", [])
         else:
             return_invoice.payments = []
-        _validate_full_standard_return_items(return_doc, return_invoice)
+        allocation = parse_stored_allocation(_value(return_doc, "refund_allocation"))
+        leftover_sen = 0
+        if allocation is None:
+            _validate_full_standard_return_items(return_doc, return_invoice)
+        else:
+            leftover_sen = _apply_allocated_return_items(original_invoice, return_invoice, allocation)
         _clear_optional_return_links(return_doc, return_invoice)
         if hasattr(return_invoice, "set_missing_values"):
             return_invoice.set_missing_values()
         write_off_sen = _money_to_sen(
             _value(original_invoice, "write_off_amount"), "original Sales Invoice write_off_amount"
         )
-        if write_off_sen:
+        if allocation is not None:
+            _apply_allocated_return_totals(original_invoice, return_invoice, allocation, leftover_sen)
+        elif write_off_sen:
             # ERPNext posts write-off GL only for retail Sales Invoices. Retain
             # that native accounting mode only AFTER defaults are filled: the
             # current POS Profile must not replace the historical rounding account.
@@ -91,6 +102,8 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
             return_invoice.write_off_cost_center = _value(original_invoice, "write_off_cost_center")
         if hasattr(return_invoice, "calculate_taxes_and_totals"):
             return_invoice.calculate_taxes_and_totals()
+        if allocation is not None:
+            assert_allocated_return_totals(return_invoice, allocation)
         return_invoice.update_stock = 0
         if hasattr(return_invoice, "paid_amount"):
             return_invoice.paid_amount = 0
@@ -107,6 +120,146 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
         _rollback_savepoint(savepoint)
         _log_error("Return sales invoice creation failed")
         raise
+
+
+RATE_QUANTUM = Decimal("0.000001")
+
+
+def _apply_allocated_return_items(
+    original_invoice: Any, return_invoice: Any, allocation: RefundAllocation
+) -> int:
+    """Keep only the refunded lines, each posting exactly its allocated net.
+
+    ERPNext refuses a return rate above the sold rate. A floor allocation can
+    give a later refund one sen more than rate x quantity; that leftover is
+    returned and posted through the native document discount instead.
+    """
+    requested = {line.line_id: line for line in allocation.lines}
+    originals = {cstr(_value(item, "name")).strip(): item for item in (_value(original_invoice, "items") or [])}
+    kept = []
+    leftover_sen = 0
+    for item in list(_value(return_invoice, "items") or []):
+        original_item = originals.get(cstr(_value(item, "sales_invoice_item")).strip())
+        line_id = cstr(_value(original_item, "custom_fb_order_line_ref")).strip() if original_item is not None else ""
+        line = requested.pop(line_id, None) if line_id else None
+        if line is None:
+            continue
+        sold_rate = Decimal(cstr(_value(original_item, "rate") or 0))
+        rate = (Decimal(line.net_sen) / Decimal(100) / Decimal(line.quantity)).quantize(RATE_QUANTUM, rounding=ROUND_HALF_UP)
+        rate = min(rate, sold_rate)
+        native_sen = int((rate * line.quantity * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        if native_sen > line.net_sen or line.net_sen - native_sen > 1:
+            frappe.throw(
+                "This refund cannot be posted exactly at the sold item rate",
+                frappe.ValidationError,
+            )
+        leftover_sen += line.net_sen - native_sen
+        for fieldname, value in (
+            ("qty", -line.quantity),
+            ("stock_qty", -line.quantity),
+            ("price_list_rate", rate),
+            ("base_price_list_rate", rate),
+            ("discount_percentage", 0),
+            ("discount_amount", 0),
+            ("margin_rate_or_amount", 0),
+            ("rate_with_margin", 0),
+            ("rate", rate),
+        ):
+            setattr(item, fieldname, value)
+        kept.append(item)
+    if requested or not kept:
+        frappe.throw(
+            "The refund lines no longer match the original Sales Invoice items",
+            frappe.ValidationError,
+        )
+    return_invoice.set("items", kept)
+    return leftover_sen
+
+
+def _apply_allocated_return_totals(
+    original_invoice: Any, return_invoice: Any, allocation: RefundAllocation, leftover_sen: int
+) -> None:
+    original_taxes = list(_value(original_invoice, "taxes") or [])
+    return_invoice.set("taxes", [])
+    if allocation.tax_sen:
+        if len(original_taxes) != 1 or cstr(_value(original_taxes[0], "charge_type")) != "Actual":
+            frappe.throw(
+                "This sale's tax cannot be split for a part refund",
+                frappe.ValidationError,
+            )
+        tax = original_taxes[0]
+        return_invoice.append(
+            "taxes",
+            {
+                "charge_type": "Actual",
+                "account_head": _value(tax, "account_head"),
+                "description": _value(tax, "description"),
+                "cost_center": _value(tax, "cost_center"),
+                "included_in_print_rate": 0,
+                "dont_recompute_tax": 1,
+                "tax_amount": _sen_to_amount(-allocation.tax_sen),
+                "base_tax_amount": _sen_to_amount(-allocation.tax_sen),
+            },
+        )
+    # The POS-captured rounding is the only rounding authority, as at sale time.
+    return_invoice.disable_rounded_total = 1
+    return_invoice.rounded_total = 0
+    return_invoice.write_off_amount = 0
+    return_invoice.base_write_off_amount = 0
+    if allocation.rounding_sen:
+        from kopos_connector.kopos.services.accounting.sales_invoice_service import (
+            _resolve_write_off_defaults,
+        )
+
+        defaults = _resolve_write_off_defaults(_value(original_invoice, "company"))
+        return_invoice.is_pos = 1
+        return_invoice.write_off_amount = _sen_to_amount(allocation.rounding_sen)
+        return_invoice.base_write_off_amount = _sen_to_amount(allocation.rounding_sen)
+        return_invoice.write_off_account = _value(original_invoice, "write_off_account") or defaults.get("account")
+        return_invoice.write_off_cost_center = _value(original_invoice, "write_off_cost_center") or defaults.get("cost_center")
+    return_invoice.additional_discount_percentage = 0
+    return_invoice.discount_amount = 0
+    return_invoice.base_discount_amount = 0
+    if leftover_sen:
+        # ERPNext's discount_amount arithmetic uses floats.
+        return_invoice.apply_discount_on = "Net Total"
+        return_invoice.discount_amount = float(_sen_to_amount(leftover_sen))
+        return_invoice.base_discount_amount = float(_sen_to_amount(leftover_sen))
+
+
+def assert_allocated_return_totals(return_invoice: Any, allocation: RefundAllocation) -> None:
+    """Prove the credit note posts exactly the allocation, per income account."""
+    items = list(_value(return_invoice, "items") or [])
+    net_by_account: dict[str, int] = {}
+    for item in items:
+        account = cstr(_value(item, "income_account")).strip()
+        net_by_account[account] = net_by_account.get(account, 0) - _money_to_sen(
+            _value(item, "net_amount"), "return item net_amount"
+        )
+    payable_sen = -(
+        _money_to_sen(_value(return_invoice, "grand_total"), "return grand_total")
+        - _money_to_sen(_value(return_invoice, "write_off_amount"), "return write_off_amount")
+    )
+    allocated_net = {line.line_id: line.net_sen for line in allocation.lines}
+    if len(net_by_account) != 1 and any(
+        -_money_to_sen(_value(item, "net_amount"), "return item net_amount")
+        != allocated_net.get(cstr(_value(item, "custom_fb_order_line_ref")).strip())
+        for item in items
+    ):
+        frappe.throw(
+            "A part refund across different income accounts could not be posted exactly",
+            frappe.ValidationError,
+        )
+    if (
+        sum(net_by_account.values()) != allocation.net_sen
+        or -_money_to_sen(_value(return_invoice, "total_taxes_and_charges"), "return taxes") != allocation.tax_sen
+        or _money_to_sen(_value(return_invoice, "write_off_amount"), "return write_off_amount") != allocation.rounding_sen
+        or payable_sen != allocation.amount_sen
+    ):
+        frappe.throw(
+            "The credit note does not match the refund allocation",
+            frappe.ValidationError,
+        )
 
 
 def _make_standard_return_invoice(original_invoice_name: str):

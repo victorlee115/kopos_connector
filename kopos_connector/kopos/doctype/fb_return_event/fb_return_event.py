@@ -57,6 +57,7 @@ class FBReturnEvent(Document):
                 for line in self.get("lines") or []
             ],
             self.original_sales_invoice,
+            partial=bool(self.get("refund_allocation_version")),
         )
 
     def on_submit(self):

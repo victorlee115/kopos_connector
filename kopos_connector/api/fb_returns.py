@@ -10,6 +10,17 @@ import frappe
 from frappe.utils import cint, cstr, flt
 
 from kopos_connector.api.devices import lock_device_for_operational_mutation
+from kopos_connector.kopos.services.accounting.refund_allocation import (
+    REFUND_ALLOCATION_VERSION,
+    RefundAllocation,
+    RefundAllocationError,
+    RefundableSale,
+    RefundableSaleLine,
+    allocate_refund,
+    parse_stored_allocation,
+    refund_position,
+    serialize_allocation,
+)
 from kopos_connector.kopos.services.operations.commercial_return_identity import (
     build_full_commercial_return_lines as _build_full_commercial_return_lines,
 )
@@ -21,6 +32,8 @@ from kopos_connector.utils.manager_approval import (
     build_sales_invoice_approval_scope,
     canonical_context_hash,
     load_consumed_manager_approval_proof,
+    money_to_sen,
+    parse_integer_sen,
     verify_manager_approval_token,
 )
 
@@ -28,6 +41,14 @@ from kopos_connector.utils.manager_approval import (
 REFUND_METHODS = {"cash", "qr", "card", "voucher"}
 INVENTORY_EVALUATION_INCLUDED = "included_evaluated"
 LEGACY_INVENTORY_EVALUATION_EXCLUDED = "excluded_not_evaluated"
+REFUND_ALLOCATION_MESSAGES = {
+    "unknown_line": "A refund line is not part of this sale.",
+    "duplicate_line": "A refund line is listed twice.",
+    "invalid_quantity": "Refund quantities must be whole numbers above zero.",
+    "exceeds_remaining": "Those items have already been refunded.",
+    "nothing_to_refund": "These items have no paid amount left to refund. Add another item.",
+    "invalid_sale": "This sale's saved amounts cannot be used for a part refund. Ask support.",
+}
 
 
 @frappe.whitelist(methods=["POST"])
@@ -56,10 +77,12 @@ def process_return_payload(
         scope,
         include_inventory_evaluation=False,
     )
-    lock_and_validate_return_quantities(
+    partial = bool(validated.get("refund_allocation_version"))
+    returned_by_item = lock_and_validate_return_quantities(
         validated["return_id"],
         validated["lines"],
         validated["original_sales_invoice"],
+        partial=partial,
     )
     existing_return = _get_existing_return_name_current(validated["return_id"])
     if existing_return:
@@ -76,6 +99,16 @@ def process_return_payload(
             return_doc,
             require_approval_proof=require_manager_approval,
         )
+    allocation = None
+    if partial:
+        # Only a new refund is priced. A replay keeps the allocation it was
+        # created with, whatever other refunds of the sale came later.
+        allocation = _allocate_partial_refund(validated, returned_by_item)
+        if allocation.amount_sen != validated["amount_sen"]:
+            frappe.throw(
+                "The refund amount changed. Review the refund again.",
+                frappe.ValidationError,
+            )
     approval: dict[str, Any] | None = None
     if require_manager_approval:
         approval = verify_manager_approval_token(
@@ -89,7 +122,7 @@ def process_return_payload(
             context_hash=scope["context_hash"],
             idempotency_key=validated["return_id"],
         )
-    return_doc = _build_return_event(validated, approval=approval)
+    return_doc = _build_return_event(validated, approval=approval, allocation=allocation)
     try:
         return_doc.insert(ignore_permissions=True)
         return_doc.submit()
@@ -110,6 +143,18 @@ def process_return_payload(
 
 def build_refund_approval_scope(payload: dict[str, Any]) -> dict[str, Any]:
     validated = _validate_payload(payload)
+    if validated.get("refund_allocation_version"):
+        # Ask a manager only for an amount ERP would post now. Processing prices
+        # the refund again under locks before anything is created.
+        allocation = _allocate_partial_refund(
+            validated,
+            _submitted_returned_quantities(validated),
+        )
+        if allocation.amount_sen != validated["amount_sen"]:
+            frappe.throw(
+                "The refund amount changed. Review the refund again.",
+                frappe.ValidationError,
+            )
     return _build_refund_approval_scope(validated)
 
 
@@ -156,6 +201,16 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     lines = payload.get("lines")
     manager_approval_token = cstr(payload.get("manager_approval_token")).strip()
+    refund_allocation_version = cstr(payload.get("refund_allocation_version")).strip()
+    requested_amount_sen = None
+    partial_lines: list[tuple[str, int]] = []
+    if refund_allocation_version:
+        if refund_allocation_version != REFUND_ALLOCATION_VERSION:
+            frappe.throw("This refund allocation version is not supported", frappe.ValidationError)
+        requested_amount_sen = parse_integer_sen(payload.get("amount_sen"))
+        if requested_amount_sen <= 0:
+            frappe.throw("amount_sen must be greater than 0", frappe.ValidationError)
+        partial_lines = _parse_partial_refund_lines(lines)
 
     if not return_id:
         frappe.throw("return_id is required", frappe.ValidationError)
@@ -202,7 +257,10 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             for row in lines
         )
     )
-    if not isinstance(lines, list) or not lines or legacy_recipe_lines:
+    if refund_allocation_version:
+        # Tablet line identities are bound to invoice items once it is locked.
+        lines = []
+    elif not isinstance(lines, list) or not lines or legacy_recipe_lines:
         if not original_sales_invoice:
             frappe.throw("lines must contain at least one row", frappe.ValidationError)
         # Older offline payloads named recipe-era FB Resolved Sale rows. A
@@ -303,16 +361,19 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             frappe.ValidationError,
         )
     fb_order = fb_order or resolved_fb_order
+    if refund_allocation_version:
+        validated_lines = _map_partial_refund_lines(partial_lines, original_invoice)
     _validate_return_lines_belong_to_invoice(
         validated_lines,
         original_sales_invoice,
         fb_order,
     )
-    validated_lines = _validate_full_return_lines(
-        validated_lines,
-        original_sales_invoice,
-        fb_order,
-    )
+    if not refund_allocation_version:
+        validated_lines = _validate_full_return_lines(
+            validated_lines,
+            original_sales_invoice,
+            fb_order,
+        )
     return {
         "return_id": return_id,
         "device_id": device_id,
@@ -326,7 +387,164 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "legacy_return_to_stock_normalized": legacy_return_to_stock_normalized,
         "lines": validated_lines,
         "manager_approval_token": manager_approval_token,
+        "refund_allocation_version": refund_allocation_version or None,
+        "amount_sen": requested_amount_sen,
     }
+
+
+def _parse_partial_refund_lines(lines: Any) -> list[tuple[str, int]]:
+    if not isinstance(lines, list) or not lines:
+        frappe.throw("Choose at least one item to refund", frappe.ValidationError)
+    parsed: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    for index, row in enumerate(lines, start=1):
+        if not isinstance(row, Mapping):
+            frappe.throw(f"lines[{index}] must be an object", frappe.ValidationError)
+        line_ref = cstr(row.get("original_fb_order_line_ref")).strip()
+        quantity = row.get("qty_returned")
+        if not line_ref:
+            frappe.throw(f"lines[{index}] requires original_fb_order_line_ref", frappe.ValidationError)
+        if line_ref in seen:
+            frappe.throw(REFUND_ALLOCATION_MESSAGES["duplicate_line"], frappe.ValidationError)
+        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
+            frappe.throw(REFUND_ALLOCATION_MESSAGES["invalid_quantity"], frappe.ValidationError)
+        seen.add(line_ref)
+        parsed.append((line_ref, quantity))
+    return parsed
+
+
+def _map_partial_refund_lines(
+    partial_lines: list[tuple[str, int]], original_invoice: Any
+) -> list[dict[str, Any]]:
+    """Bind tablet line identities to the invoice's own items, never to client fields."""
+    items_by_ref: dict[str, list[str]] = {}
+    for item in original_invoice.get("items") or []:
+        line_ref = cstr(getattr(item, "custom_fb_order_line_ref", None)).strip()
+        if line_ref:
+            items_by_ref.setdefault(line_ref, []).append(cstr(item.name).strip())
+    mapped = []
+    for line_ref, quantity in partial_lines:
+        item_names = items_by_ref.get(line_ref) or []
+        if len(item_names) != 1:
+            frappe.throw(REFUND_ALLOCATION_MESSAGES["unknown_line"], frappe.ValidationError)
+        mapped.append(
+            {
+                "original_sales_invoice_item": item_names[0],
+                "original_fb_order_line_ref": line_ref,
+                "original_resolved_sale": None,
+                "qty_returned": float(quantity),
+                "commercial_modifier_snapshot_json": "",
+            }
+        )
+    return aggregate_return_lines(mapped)
+
+
+def _refundable_sale(validated: dict[str, Any]) -> RefundableSale:
+    """The paid sale as ERP posted it, cross-checked against its FB Order."""
+    invoice = frappe.get_doc("Sales Invoice", validated["original_sales_invoice"])
+    lines = []
+    for item in invoice.get("items") or []:
+        line_ref = cstr(getattr(item, "custom_fb_order_line_ref", None)).strip()
+        quantity = Decimal(cstr(getattr(item, "qty", None) or 0))
+        if not line_ref or quantity <= 0 or quantity != quantity.to_integral_value():
+            frappe.throw(REFUND_ALLOCATION_MESSAGES["invalid_sale"], frappe.ValidationError)
+        lines.append(
+            RefundableSaleLine(
+                line_ref,
+                int(quantity),
+                money_to_sen(getattr(item, "amount", None), "Sales Invoice Item amount"),
+            )
+        )
+    write_off_sen = money_to_sen(getattr(invoice, "write_off_amount", None) or 0, "Sales Invoice write_off_amount")
+    grand_total_sen = money_to_sen(getattr(invoice, "grand_total", None), "Sales Invoice grand_total")
+    sale = RefundableSale(
+        lines=tuple(lines),
+        tax_sen=money_to_sen(getattr(invoice, "total_taxes_and_charges", None) or 0, "Sales Invoice total_taxes_and_charges"),
+        rounding_sen=-write_off_sen,
+        total_sen=grand_total_sen - write_off_sen,
+        cash_unit_sen=5 if validated["refund_method"] == "cash" else 1,
+    )
+    order = frappe.get_doc("FB Order", validated["fb_order"]) if validated.get("fb_order") else None
+    if order is not None:
+        order_lines = {
+            cstr(getattr(row, "line_id", None)).strip(): money_to_sen(getattr(row, "line_total", None), "FB Order line_total")
+            for row in order.get("items") or []
+        }
+        if (
+            order_lines != {line.line_id: line.line_total_sen for line in sale.lines}
+            or money_to_sen(getattr(order, "tax_total", None) or 0, "FB Order tax_total") != sale.tax_sen
+            or money_to_sen(getattr(order, "rounding_adjustment", None) or 0, "FB Order rounding_adjustment") != sale.rounding_sen
+            or money_to_sen(getattr(order, "grand_total", None), "FB Order grand_total") != sale.total_sen
+        ):
+            frappe.throw(REFUND_ALLOCATION_MESSAGES["invalid_sale"], frappe.ValidationError)
+    return sale
+
+
+def _submitted_returned_quantities(validated: dict[str, Any]) -> dict[str, Decimal]:
+    rows = frappe.db.sql(
+        """
+        SELECT return_line.original_sales_invoice_item, return_line.qty_returned
+        FROM `tabFB Return Event Line` AS return_line
+        INNER JOIN `tabFB Return Event` AS return_event
+            ON return_event.name = return_line.parent
+        WHERE return_line.parenttype = 'FB Return Event'
+            AND return_event.docstatus = 1
+            AND return_event.original_sales_invoice = %s
+            AND return_event.return_id != %s
+        """,
+        (validated["original_sales_invoice"], validated["return_id"]),
+        as_dict=True,
+    )
+    returned: dict[str, Decimal] = {}
+    for row in rows or []:
+        item = cstr(_row_value(row, "original_sales_invoice_item")).strip()
+        returned[item] = returned.get(item, Decimal("0")) + Decimal(cstr(_row_value(row, "qty_returned") or 0))
+    return returned
+
+
+def _allocate_partial_refund(
+    validated: dict[str, Any], returned_by_item: Mapping[str, Decimal]
+) -> RefundAllocation:
+    sale = _refundable_sale(validated)
+    invoice = frappe.get_doc("Sales Invoice", validated["original_sales_invoice"])
+    line_by_item = {
+        cstr(item.name).strip(): cstr(getattr(item, "custom_fb_order_line_ref", None)).strip()
+        for item in invoice.get("items") or []
+    }
+    before = []
+    for item, quantity in returned_by_item.items():
+        if quantity != quantity.to_integral_value() or item not in line_by_item:
+            frappe.throw(REFUND_ALLOCATION_MESSAGES["invalid_sale"], frappe.ValidationError)
+        before.append({"line_id": line_by_item[item], "quantity": int(quantity)})
+    request = [
+        {"line_id": cstr(line["original_fb_order_line_ref"]).strip(), "quantity": int(Decimal(cstr(line["qty_returned"])))}
+        for line in validated["lines"]
+    ]
+    try:
+        position = refund_position(sale, before)
+        allocation = allocate_refund(sale, before, request)
+    except RefundAllocationError as error:
+        frappe.throw(REFUND_ALLOCATION_MESSAGES.get(error.code, str(error)), frappe.ValidationError)
+        raise AssertionError("unreachable") from error
+    if _posted_refund_amount_sen(validated) != position["amount_sen"]:
+        frappe.throw(
+            "Earlier refunds of this sale do not match its saved amounts. Ask support.",
+            frappe.ValidationError,
+        )
+    return allocation
+
+
+def _posted_refund_amount_sen(validated: dict[str, Any]) -> int:
+    rows = frappe.get_all(
+        "FB Return Event",
+        filters={
+            "original_sales_invoice": validated["original_sales_invoice"],
+            "docstatus": 1,
+            "return_id": ["!=", validated["return_id"]],
+        },
+        fields=["settlement_amount"],
+    )
+    return sum(money_to_sen(_row_value(row, "settlement_amount") or 0, "FB Return Event settlement_amount") for row in rows or [])
 
 
 def _lock_sales_invoice_cash_shift(sales_invoice: str) -> str:
@@ -345,7 +563,10 @@ def _lock_sales_invoice_cash_shift(sales_invoice: str) -> str:
 
 
 def _build_return_event(
-    validated: dict[str, Any], *, approval: dict[str, Any] | None = None
+    validated: dict[str, Any],
+    *,
+    approval: dict[str, Any] | None = None,
+    allocation: RefundAllocation | None = None,
 ):
     doc = frappe.new_doc("FB Return Event")
     doc.return_id = validated["return_id"]
@@ -360,6 +581,10 @@ def _build_return_event(
         doc.approval_token_id = approval["token_id"]
         doc.approved_by_manager = approval["manager_id"]
     doc.status = "Draft"
+    if allocation is not None:
+        doc.refund_allocation_version = allocation.version
+        doc.refund_allocation = serialize_allocation(allocation)
+        doc.refund_amount = Decimal(allocation.amount_sen) / Decimal(100)
     for line in validated["lines"]:
         doc.append("lines", line)
     return doc
@@ -373,6 +598,8 @@ def _build_refund_approval_scope(validated: dict[str, Any]) -> dict[str, Any]:
         invoice,
         context=_return_approval_context(validated),
     )
+    if validated.get("refund_allocation_version"):
+        scope["amount_sen"] = validated["amount_sen"]
     if scope["device_id"] != validated["device_id"]:
         frappe.throw(
             "Refund device_id does not match the ERP Sales Invoice",
@@ -394,13 +621,17 @@ def _return_approval_context(validated: dict[str, Any]) -> dict[str, Any]:
             or line.get("original_resolved_sale")
         ),
     )
-    return {
+    context = {
         "reason_code": cstr(validated["reason_code"]).strip(),
         "reason_text": cstr(validated.get("reason_text")).strip() or None,
         "refund_method": cstr(validated["refund_method"]).strip().lower(),
         "return_to_stock": cint(validated["return_to_stock"]),
         "lines": lines,
     }
+    if validated.get("refund_allocation_version"):
+        # Historical full-refund hashes stay byte-identical without this key.
+        context["refund_allocation_version"] = validated["refund_allocation_version"]
+    return context
 
 
 def _return_request_fingerprint(
@@ -526,6 +757,13 @@ def _validate_existing_return_matches(validated: dict[str, Any], return_doc: Any
     ):
         frappe.throw(
             "return_id was already used with a different canonical payload",
+            frappe.ValidationError,
+        )
+    if cstr(getattr(return_doc, "refund_allocation_version", None)).strip() != cstr(
+        validated.get("refund_allocation_version")
+    ).strip():
+        frappe.throw(
+            "return_id was already used with a different refund type",
             frappe.ValidationError,
         )
     existing_invoice = cstr(getattr(return_doc, "original_sales_invoice", None)).strip()
@@ -679,6 +917,9 @@ def _serialize_return_response(
         "inventory_evaluation": INVENTORY_EVALUATION_INCLUDED,
         "reversal_stock_entries": [],
     }
+    allocation = parse_stored_allocation(getattr(return_doc, "refund_allocation", None))
+    if allocation is not None:
+        response["refund_allocation"] = allocation.to_wire()
     if require_approval_proof:
         response.update(
             load_consumed_manager_approval_proof(

@@ -267,7 +267,10 @@ def create_sales_invoice(fb_order: Any) -> str | None:
                     "warehouse": _value(order_doc, "booth_warehouse") or None,
                     "custom_fb_order_line_ref": _value(order_item, "line_id") or None,
                 }
-                if zero_total_paid:
+                zero_value_line = line_total == Decimal("0.00")
+                if zero_total_paid or zero_value_line:
+                    # ERPNext replaces a zero rate with the Item Price list rate
+                    # unless the row states its own price and discount.
                     row["price_list_rate"] = Decimal("0.00")
                 if complimentary:
                     menu_unit_value = _priced_unit_value(
@@ -284,7 +287,7 @@ def create_sales_invoice(fb_order: Any) -> str | None:
                             "is_free_item": 0,
                         }
                     )
-                elif zero_total_paid and _money_sen(
+                elif zero_value_line and _money_sen(
                     _optional_money_value(_value(order_item, "discount_amount")),
                     f"FB Order {order_doc.name} item {_value(order_item, 'line_id') or item_code} discount_amount",
                 ) > 0:

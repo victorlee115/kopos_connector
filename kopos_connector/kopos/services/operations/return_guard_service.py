@@ -14,8 +14,15 @@ def lock_and_validate_return_quantities(
     return_id: str,
     lines: list[dict[str, Any]],
     original_sales_invoice: str | None = None,
-) -> None:
-    """Serialize a full commercial return against current submitted return rows."""
+    *,
+    partial: bool = False,
+) -> dict[str, Decimal]:
+    """Serialize a commercial return against current submitted return rows.
+
+    A full return names every invoice item at its sold quantity. An allocated
+    partial return may name a subset. Both are refused above what remains, and
+    both return the quantity other submitted returns already took per item.
+    """
     normalized_lines = aggregate_return_lines(lines)
     commercial_lines = [
         line
@@ -27,10 +34,11 @@ def lock_and_validate_return_quantities(
             "Every cashier return line requires a Sales Invoice item identity",
             frappe.ValidationError,
         )
-    _lock_and_validate_commercial_return_quantities(
+    return _lock_and_validate_commercial_return_quantities(
         return_id,
         commercial_lines,
         original_sales_invoice,
+        partial=partial,
     )
 
 
@@ -38,7 +46,9 @@ def _lock_and_validate_commercial_return_quantities(
     return_id: str,
     lines: list[dict[str, Any]],
     original_sales_invoice: str | None,
-) -> None:
+    *,
+    partial: bool,
+) -> dict[str, Decimal]:
     invoice_name = cstr(original_sales_invoice).strip()
     if not invoice_name:
         frappe.throw(
@@ -72,20 +82,27 @@ def _lock_and_validate_commercial_return_quantities(
         )
         for line in lines
     }
-    if not purchased_by_item or set(requested_by_item) != set(purchased_by_item):
-        frappe.throw(
-            "Partial ERP returns are not supported; refund lines must exactly match the full Sales Invoice",
-            frappe.ValidationError,
-        )
-
-    for line in lines:
-        invoice_item = cstr(line.get("original_sales_invoice_item")).strip()
-        purchased = purchased_by_item[invoice_item]
-        if _to_decimal(line.get("qty_returned"), "return quantity") != purchased["qty"]:
+    if partial:
+        if not purchased_by_item or not set(requested_by_item) <= set(purchased_by_item):
+            frappe.throw(
+                "Refund lines must belong to the original Sales Invoice",
+                frappe.ValidationError,
+            )
+    else:
+        if not purchased_by_item or set(requested_by_item) != set(purchased_by_item):
             frappe.throw(
                 "Partial ERP returns are not supported; refund lines must exactly match the full Sales Invoice",
                 frappe.ValidationError,
             )
+
+        for line in lines:
+            invoice_item = cstr(line.get("original_sales_invoice_item")).strip()
+            purchased = purchased_by_item[invoice_item]
+            if _to_decimal(line.get("qty_returned"), "return quantity") != purchased["qty"]:
+                frappe.throw(
+                    "Partial ERP returns are not supported; refund lines must exactly match the full Sales Invoice",
+                    frappe.ValidationError,
+                )
 
     invoice_item_names = sorted(purchased_by_item)
     placeholders = ", ".join(["%s"] * len(invoice_item_names))
@@ -120,6 +137,7 @@ def _lock_and_validate_commercial_return_quantities(
                 f"Return quantity for Sales Invoice Item {invoice_item} exceeds purchased quantity",
                 frappe.ValidationError,
             )
+    return returned_by_item
 
 
 def aggregate_return_lines(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:

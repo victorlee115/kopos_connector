@@ -30,6 +30,10 @@
         "settlement_status",
         "settlement_amount",
         "settlement_tenders_json",
+        "refund_allocation_section",
+        "refund_allocation_version",
+        "refund_amount",
+        "refund_allocation",
         "lines_section",
         "lines"
     ],
@@ -172,6 +176,30 @@
             "read_only": 1
         },
         {
+            "fieldname": "refund_allocation_section",
+            "fieldtype": "Section Break",
+            "label": "Part Refund"
+        },
+        {
+            "fieldname": "refund_allocation_version",
+            "fieldtype": "Data",
+            "label": "Refund Allocation Version",
+            "read_only": 1
+        },
+        {
+            "fieldname": "refund_amount",
+            "fieldtype": "Currency",
+            "label": "Refund Amount",
+            "read_only": 1
+        },
+        {
+            "fieldname": "refund_allocation",
+            "fieldtype": "Code",
+            "label": "Refund Allocation",
+            "options": "JSON",
+            "read_only": 1
+        },
+        {
             "fieldname": "lines_section",
             "fieldtype": "Section Break",
             "label": "Return Lines"
@@ -184,7 +212,7 @@
         }
     ],
     "is_submittable": 1,
-    "modified": "2026-04-14 00:00:00.000000",
+    "modified": "2026-09-15 21:00:00.000000",
     "modified_by": "Administrator",
     "module": "KoPOS",
     "name": "FB Return Event",

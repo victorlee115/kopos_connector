@@ -759,7 +759,7 @@ def test_completed_refund_retry_is_verified_before_token_consumption(
         "_return_request_fingerprint",
         lambda value, approval_scope, **_kwargs: "f" * 64,
     )
-    monkeypatch.setattr(api, "lock_and_validate_return_quantities", lambda *args: None)
+    monkeypatch.setattr(api, "lock_and_validate_return_quantities", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         api,
         "_get_existing_return_name_current",
@@ -823,7 +823,7 @@ def test_new_refund_consumes_token_with_exact_server_scope(
         "_return_request_fingerprint",
         lambda value, approval_scope, **_kwargs: "f" * 64,
     )
-    monkeypatch.setattr(api, "lock_and_validate_return_quantities", lambda *args: None)
+    monkeypatch.setattr(api, "lock_and_validate_return_quantities", lambda *args, **kwargs: {})
     monkeypatch.setattr(api, "_get_existing_return_name_current", lambda key: None)
 
     def verify_approval(token: str, **bindings: Any) -> dict[str, str]:
@@ -834,7 +834,7 @@ def test_new_refund_consumes_token_with_exact_server_scope(
     monkeypatch.setattr(
         api,
         "_build_return_event",
-        lambda value, *, approval=None: return_doc,
+        lambda value, *, approval=None, allocation=None: return_doc,
     )
     monkeypatch.setattr(
         api,

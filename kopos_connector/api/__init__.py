@@ -1746,6 +1746,8 @@ def _to_public_fb_return_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "inventory_evaluation": payload.get("inventory_evaluation"),
         "lines": payload.get("lines"),
         "manager_approval_token": payload.get("manager_approval_token"),
+        "refund_allocation_version": payload.get("refund_allocation_version"),
+        "amount_sen": payload.get("amount_sen"),
     }
 
 

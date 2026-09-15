@@ -447,9 +447,13 @@ class TestSalesInvoiceService(unittest.TestCase):
         self.assertEqual(invoice.write_off_cost_center, "Main - WP")
         self.assertEqual(invoice.payments[0].amount, Decimal("12.95"))
         self.assertEqual(invoice["items"][0].is_free_item, 0)
-        self.assertEqual(invoice["items"][1].rate, Decimal("0.00"))
-        self.assertEqual(invoice["items"][1].amount, Decimal("0.00"))
-        self.assertEqual(invoice["items"][1].is_free_item, 1)
+        # A fully discounted line inside a paid sale states its menu price and a
+        # 100% discount; a bare zero rate is replaced by ERPNext's Item Price.
+        free_line = invoice["items"][1]
+        self.assertEqual(
+            (free_line.price_list_rate, free_line.rate, free_line.amount, free_line.discount_percentage, free_line.discount_amount, free_line.is_free_item),
+            (Decimal("12.00"), Decimal("0.00"), Decimal("0.00"), Decimal("100.00"), Decimal("12.00"), 0),
+        )
         bind_qr.assert_called_once_with(order, "SINV-CASH-001")
 
     def test_complimentary_invoice_keeps_full_price_discount_and_no_payment(self):

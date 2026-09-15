@@ -217,6 +217,8 @@ def test_process_refund_wrapper_executes_fb_return_target(monkeypatch: Any) -> N
         "inventory_evaluation": None,
         "lines": [],
         "manager_approval_token": None,
+        "refund_allocation_version": None,
+        "amount_sen": None,
     }
     assert captured["response"] == {"status": "ok", "return_id": "return-1"}
 

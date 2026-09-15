@@ -15,6 +15,7 @@ from kopos_connector.kopos.api.money_contract import (
     persisted_money_to_sen,
 )
 from ._qr_reconciliation_context import validate_ledger_account
+from .refund_allocation import parse_stored_allocation
 
 
 SETTLEMENT_DOCTYPE = "Journal Entry"
@@ -27,7 +28,7 @@ def ensure_return_settlement(
     fb_return_event: Any,
     return_sales_invoice: str,
 ) -> str:
-    """Create or recover one submitted, GL-proven full-refund settlement."""
+    """Create or recover one submitted, GL-proven refund settlement."""
     return_doc = _coerce_doc("FB Return Event", fb_return_event)
     if not return_doc:
         frappe.throw("FB Return Event is required for refund settlement")
@@ -50,12 +51,8 @@ def ensure_return_settlement(
             frappe.ValidationError,
         )
 
-    total_sen = _validate_full_return_invoice(original_invoice, return_invoice)
-    tenders = _resolve_original_tenders(
-        original_invoice=original_invoice,
-        refund_method=refund_method,
-        expected_total_sen=total_sen,
-    )
+    total_sen = _validate_return_invoice(original_invoice, return_invoice, return_doc)
+    tenders = _refund_tenders(original_invoice, refund_method, total_sen)
     _require_settlement_link_field()
 
     settlement_document = _find_existing_settlement(return_doc)
@@ -120,11 +117,11 @@ def assert_return_settlement_posted(fb_return_event: Any) -> dict[str, Any]:
         "Sales Invoice", cstr(_value(return_doc, "original_sales_invoice")).strip()
     )
     return_invoice = frappe.get_doc("Sales Invoice", return_invoice_name)
-    total_sen = _validate_full_return_invoice(original_invoice, return_invoice)
-    tenders = _resolve_original_tenders(
-        original_invoice=original_invoice,
-        refund_method=cstr(_value(return_doc, "refund_method")).strip().lower(),
-        expected_total_sen=total_sen,
+    total_sen = _validate_return_invoice(original_invoice, return_invoice, return_doc)
+    tenders = _refund_tenders(
+        original_invoice,
+        cstr(_value(return_doc, "refund_method")).strip().lower(),
+        total_sen,
     )
     return _validate_settlement(
         return_doc=return_doc,
@@ -147,7 +144,68 @@ def get_settlement_cash_adjustment_sen(fb_return_event: Any) -> int:
     return -int(evidence["tender_credit_sen"])
 
 
+def _validate_return_invoice(original_invoice: Any, return_invoice: Any, return_doc: Any) -> int:
+    """Return the refund amount the credit note must settle."""
+    allocation = parse_stored_allocation(_value(return_doc, "refund_allocation"))
+    if allocation is None:
+        return _validate_full_return_invoice(original_invoice, return_invoice)
+    from .return_invoice_service import assert_allocated_return_totals
+
+    _validate_return_invoice_identity(original_invoice, return_invoice)
+    assert_allocated_return_totals(return_invoice, allocation)
+    return allocation.amount_sen
+
+
+def _refund_tenders(original_invoice: Any, refund_method: str, total_sen: int) -> list[dict[str, Any]]:
+    """Refund from the sale's own tender ledger; a part refund needs exactly one."""
+    original_total_sen = _invoice_payable_total_sen(original_invoice, "original Sales Invoice")
+    tenders = _resolve_original_tenders(
+        original_invoice=original_invoice,
+        refund_method=refund_method,
+        expected_total_sen=original_total_sen,
+    )
+    if total_sen == original_total_sen:
+        return tenders
+    if len(tenders) != 1:
+        frappe.throw(
+            "A part refund needs the sale's single original tender account",
+            frappe.ValidationError,
+        )
+    return [{**tenders[0], "amount_sen": total_sen}]
+
+
 def _validate_full_return_invoice(original_invoice: Any, return_invoice: Any) -> int:
+    _validate_return_invoice_identity(original_invoice, return_invoice)
+    original_grand_total_sen = _money_to_sen(
+        _value(original_invoice, "grand_total"), "original Sales Invoice grand_total"
+    )
+    return_grand_total_sen = _money_to_sen(
+        _value(return_invoice, "grand_total"), "return Sales Invoice grand_total"
+    )
+    if (
+        original_grand_total_sen <= 0
+        or return_grand_total_sen != -original_grand_total_sen
+    ):
+        frappe.throw(
+            "Partial ERP returns are not supported; return Sales Invoice total must exactly reverse the original invoice",
+            frappe.ValidationError,
+        )
+
+    original_total_sen = _invoice_payable_total_sen(
+        original_invoice, "original Sales Invoice"
+    )
+    return_total_sen = _invoice_payable_total_sen(
+        return_invoice, "return Sales Invoice"
+    )
+    if original_total_sen <= 0 or return_total_sen != -original_total_sen:
+        frappe.throw(
+            "Return Sales Invoice rounded payable total must exactly reverse the original invoice",
+            frappe.ValidationError,
+        )
+    return original_total_sen
+
+
+def _validate_return_invoice_identity(original_invoice: Any, return_invoice: Any) -> None:
     if int(_value(original_invoice, "docstatus") or 0) != 1:
         frappe.throw(
             f"Original Sales Invoice {original_invoice.name} is not submitted",
@@ -179,33 +237,6 @@ def _validate_full_return_invoice(original_invoice: Any, return_invoice: Any) ->
                 f"Return Sales Invoice {return_invoice.name} has mismatched {fieldname}",
                 frappe.ValidationError,
             )
-
-    original_grand_total_sen = _money_to_sen(
-        _value(original_invoice, "grand_total"), "original Sales Invoice grand_total"
-    )
-    return_grand_total_sen = _money_to_sen(
-        _value(return_invoice, "grand_total"), "return Sales Invoice grand_total"
-    )
-    if (
-        original_grand_total_sen <= 0
-        or return_grand_total_sen != -original_grand_total_sen
-    ):
-        frappe.throw(
-            "Partial ERP returns are not supported; return Sales Invoice total must exactly reverse the original invoice",
-            frappe.ValidationError,
-        )
-
-    original_total_sen = _invoice_payable_total_sen(
-        original_invoice, "original Sales Invoice"
-    )
-    return_total_sen = _invoice_payable_total_sen(
-        return_invoice, "return Sales Invoice"
-    )
-    if original_total_sen <= 0 or return_total_sen != -original_total_sen:
-        frappe.throw(
-            "Return Sales Invoice rounded payable total must exactly reverse the original invoice",
-            frappe.ValidationError,
-        )
 
     original_outstanding_sen = _money_to_sen(
         _value(original_invoice, "outstanding_amount") or 0,
@@ -239,7 +270,6 @@ def _validate_full_return_invoice(original_invoice: Any, return_invoice: Any) ->
             "Refund settlement currently requires a company-currency Sales Invoice with conversion_rate 1",
             frappe.ValidationError,
         )
-    return original_total_sen
 
 
 def _invoice_payable_total_sen(invoice: Any, label: str) -> int:
@@ -413,7 +443,7 @@ def _create_settlement_journal_entry(
     journal.company = original_invoice.company
     journal.posting_date = _value(return_invoice, "posting_date")
     journal.user_remark = (
-        f"KoPOS full refund settlement for {return_doc.name}; "
+        f"KoPOS refund settlement for {return_doc.name}; "
         f"credit note {return_invoice.name}"
     )
     journal.custom_fb_return_event = return_doc.name
