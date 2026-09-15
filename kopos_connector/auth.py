@@ -37,6 +37,8 @@ ALLOWED_DEVICE_API_PATHS = frozenset(
         "/api/method/kopos_connector.api.get_order_history",
         "/api/method/kopos_connector.api.void_order",
         "/api/method/kopos_connector.api.process_refund",
+        "/api/method/kopos_connector.api.get_order_refunds",
+        "/api/method/kopos_connector.api.process_remake",
         "/api/method/kopos_connector.api.request_shift_manager_approval",
         "/api/method/kopos_connector.api.generate_maybank_qr",
         "/api/method/kopos_connector.api.get_maybank_qr_readiness",
@@ -49,6 +51,8 @@ ALLOWED_DEVICE_API_PATHS = frozenset(
         "/api/method/kopos_connector.api.fb_orders.get_order_status",
         "/api/method/kopos_connector.api.fb_orders.retry_failed_projections",
         "/api/method/kopos_connector.api.get_edge_snapshot",
+        "/api/method/kopos_connector.api.get_stock_update_status",
+        "/api/method/kopos_connector.api.promotions.report_device_promotion_state",
         "/api/method/kopos_connector.api.claim_count_task",
         "/api/method/kopos_connector.api.create_availability_hold",
         "/api/method/kopos_connector.api.release_availability_hold",
@@ -107,6 +111,10 @@ DEVICE_API_HTTP_METHODS.update(
         "/api/method/kopos_connector.api.get_order_history": frozenset({"POST"}),
         "/api/method/kopos_connector.api.void_order": frozenset({"POST"}),
         "/api/method/kopos_connector.api.process_refund": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.process_remake": frozenset({"POST"}),
+        "/api/method/kopos_connector.api.promotions.report_device_promotion_state": frozenset(
+            {"POST"}
+        ),
         "/api/method/kopos_connector.api.request_shift_manager_approval": frozenset(
             {"POST"}
         ),

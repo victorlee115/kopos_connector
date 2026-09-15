@@ -187,8 +187,9 @@ def test_a_stale_part_refund_amount_is_refused_before_any_approval_is_consumed(m
     monkeypatch.setattr(api, "_allocate_partial_refund", lambda *_args: allocation_module.parse_stored_allocation(
         '{"version":"refund-allocation-v1","lines":[{"lineId":"LINE-1","quantity":1,"netSen":335}],"netSen":335,"taxSen":0,"roundingSen":0,"amountSen":335,"isFinal":false}'))
     monkeypatch.setattr(api, "verify_manager_approval_token", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("approval consumed")))
-    with pytest.raises(api.frappe.ValidationError, match="refund amount changed"):
+    with pytest.raises(api.frappe.ValidationError, match="refund amount changed") as refused:
         api.process_return_payload({}, require_manager_approval=True)
+    assert refused.value.error_code == "refund_changed"
 
 
 def test_a_part_refund_replay_is_not_priced_again(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -279,3 +280,75 @@ def test_part_refund_settles_from_the_single_original_tender_account(monkeypatch
     monkeypatch.setattr(settlement, "_resolve_original_tenders", lambda **_kwargs: [{"account": "Cash A", "amount_sen": 1000}, {"account": "Cash B", "amount_sen": 1205}])
     with pytest.raises(settlement.frappe.ValidationError, match="single original tender account"):
         settlement._refund_tenders(original, "cash", 335)
+
+
+def test_order_refunds_list_submitted_refunds_oldest_first_with_their_allocations(monkeypatch: pytest.MonkeyPatch) -> None:
+    stored = {
+        "version": "refund-allocation-v1", "lines": [{"lineId": "LINE-1", "quantity": 1, "netSen": 335}],
+        "netSen": 335, "taxSen": 0, "roundingSen": 0, "amountSen": 335, "isFinal": False,
+    }
+    queries: list[dict[str, Any]] = []
+
+    def get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        queries.append({"doctype": doctype, **kwargs})
+        return [
+            {"name": "FB-RET-1", "return_id": "order-1-refund-a", "return_sales_invoice": "SINV-RET-1", "settlement_status": "Posted",
+             "settlement_amount": Decimal("3.35"), "refund_method": "Cash", "reason_text": " Wrong size ", "approved_by_manager": "manager@example.com",
+             "refund_allocation": json.dumps(stored)},
+            {"name": "FB-RET-2", "return_id": "order-1-refund-full", "return_sales_invoice": None, "settlement_status": "Pending",
+             "settlement_amount": None, "refund_method": "cash", "reason_text": "", "approved_by_manager": None, "refund_allocation": None},
+        ]
+
+    monkeypatch.setattr(api.frappe, "get_all", get_all)
+    result = api.list_order_refunds("SINV-1")
+
+    assert queries[0]["doctype"] == "FB Return Event"
+    assert queries[0]["filters"] == {"original_sales_invoice": "SINV-1", "docstatus": 1}
+    assert queries[0]["order_by"] == "creation asc, name asc"
+    assert result == {
+        "status": "ok",
+        "sales_invoice": "SINV-1",
+        "refunds": [
+            {"return_id": "order-1-refund-a", "return_event": "FB-RET-1", "return_sales_invoice": "SINV-RET-1", "settlement_status": "Posted",
+             "amount_sen": 335, "refund_method": "cash", "reason_text": "Wrong size", "approval_manager_id": "manager@example.com",
+             "refund_allocation": stored},
+            {"return_id": "order-1-refund-full", "return_event": "FB-RET-2", "return_sales_invoice": None, "settlement_status": "Pending",
+             "amount_sen": 0, "refund_method": "cash", "reason_text": None, "approval_manager_id": None, "refund_allocation": None},
+        ],
+    }
+    monkeypatch.setattr(api.frappe, "get_all", lambda *_args, **_kwargs: [{"name": "FB-RET-3", "refund_allocation": '{"version": "v0"}'}])
+    with pytest.raises(allocation_module.RefundAllocationError):
+        api.list_order_refunds("SINV-1")
+
+
+def test_order_refunds_are_read_only_by_the_tablet_that_made_the_sale(monkeypatch: pytest.MonkeyPatch) -> None:
+    public = importlib.import_module("kopos_connector.api")
+    captured: dict[str, Any] = {}
+    devices: list[str] = []
+
+    class FakeDB:
+        def get_value(self, doctype: str, name: str, fieldname: str) -> Any:
+            assert (doctype, fieldname) == ("Sales Invoice", "custom_fb_device_id")
+            return {"SINV-1": "DEVICE-A"}.get(name)
+
+        def rollback(self) -> None:
+            captured["rolled_back"] = True
+
+    def require_device_context(device_id: str) -> None:
+        devices.append(device_id)
+        if device_id != "DEVICE-A":
+            raise public.frappe.ValidationError("not authorized for KoPOS Device")
+
+    monkeypatch.setattr(public.frappe, "db", FakeDB())
+    monkeypatch.setattr(public, "require_device_context", require_device_context)
+    monkeypatch.setattr(api, "list_order_refunds", lambda name: {"status": "ok", "sales_invoice": name, "refunds": []})
+    monkeypatch.setattr(public, "_write_response", lambda payload, http_status_code=200: captured.update(payload=payload, http_status_code=http_status_code))
+
+    public.get_order_refunds(sales_invoice=" SINV-1 ")
+    assert (devices, captured["http_status_code"], captured["payload"]) == (["DEVICE-A"], 200, {"status": "ok", "sales_invoice": "SINV-1", "refunds": []})
+
+    for name, message in ((None, "sales_invoice is required"), ("SINV-UNKNOWN", "is not a tablet sale")):
+        captured.clear()
+        public.get_order_refunds(sales_invoice=name)
+        assert captured["http_status_code"] == 400 and message in captured["payload"]["message"]
+        assert captured["rolled_back"] is True

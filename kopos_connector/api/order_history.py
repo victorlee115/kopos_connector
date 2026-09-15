@@ -28,6 +28,9 @@ from kopos_connector.api.devices import (
     get_authenticated_device_doc,
     get_device_doc,
 )
+from kopos_connector.kopos.services.accounting.refund_allocation import (
+    parse_stored_allocation,
+)
 
 
 DEFAULT_LIMIT = 50
@@ -122,6 +125,7 @@ def get_order_history_payload(
             get_invoice_payment_fields(),
             order_by="parent asc, idx asc",
         )
+        return_events_by_invoice = query_return_events_by_return_invoice(refund_names)
         fb_items_by_order = query_fb_order_items_by_order(invoice_rows + refund_rows)
         fb_headers_by_order = query_fb_order_headers(invoice_rows + refund_rows)
 
@@ -153,6 +157,7 @@ def get_order_history_payload(
                 items=fb_items_by_order.get(cstr(row.get("custom_fb_order")).strip())
                 or refund_items_by_parent.get(cstr(row.get("name")).strip(), []),
                 payments=refund_payments_by_parent.get(cstr(row.get("name")).strip(), []),
+                return_event=return_events_by_invoice.get(cstr(row.get("name")).strip()),
             )
             for row in refund_rows
         ],
@@ -1029,17 +1034,36 @@ def serialize_order_row(
     }
 
 
+def query_return_events_by_return_invoice(
+    return_invoice_names: list[str],
+) -> dict[str, dict[str, Any]]:
+    if not return_invoice_names:
+        return {}
+    rows = frappe.get_all(
+        "FB Return Event",
+        filters={"docstatus": 1, "return_sales_invoice": ["in", return_invoice_names]},
+        fields=["return_sales_invoice", "return_id", "refund_allocation"],
+    )
+    return {cstr(row.get("return_sales_invoice")).strip(): dict(row) for row in rows}
+
+
 def serialize_refund_row(
     row: dict[str, Any],
     *,
     items: list[dict[str, Any]],
     payments: list[dict[str, Any]],
+    return_event: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # A part refund carries its allocation so a tablet keeps the rest of the
+    # order refundable; a refund without one returned the whole order.
+    allocation = parse_stored_allocation((return_event or {}).get("refund_allocation"))
     return {
         **serialize_invoice_row(row, items=items, payments=payments),
         "return_against": cstr(row.get("return_against")),
         "refund_reason_code": empty_to_none(row.get("custom_kopos_refund_reason_code")),
         "refund_reason": empty_to_none(row.get("custom_kopos_refund_reason")),
+        "return_id": empty_to_none((return_event or {}).get("return_id")),
+        "refund_allocation": allocation.to_wire() if allocation is not None else None,
     }
 
 

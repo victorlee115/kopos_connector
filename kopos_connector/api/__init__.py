@@ -1698,6 +1698,40 @@ def process_refund(**kwargs: Any) -> None:
         )
 
 
+@frappe.whitelist(methods=["GET"])
+def get_order_refunds(sales_invoice: str | None = None) -> None:
+    """Submitted refunds of one tablet sale, read by that tablet before it refunds again."""
+    from .fb_returns import list_order_refunds
+
+    try:
+        invoice_name = frappe.utils.cstr(sales_invoice).strip()
+        if not invoice_name:
+            frappe.throw(_("sales_invoice is required"), frappe.ValidationError)
+        device_id = frappe.utils.cstr(
+            frappe.db.get_value("Sales Invoice", invoice_name, "custom_fb_device_id")
+        ).strip()
+        if not device_id:
+            frappe.throw(
+                _("Sales Invoice {0} is not a tablet sale").format(invoice_name),
+                frappe.ValidationError,
+            )
+        require_device_context(device_id=device_id)
+        _write_response(list_order_refunds(invoice_name))
+    except frappe.ValidationError as exc:
+        frappe.db.rollback()
+        _write_response(_validation_error_payload(exc), http_status_code=400)
+    except Exception as error:
+        frappe.db.rollback()
+        log_sanitized_error("KoPOS get_order_refunds failed", error)
+        _write_response(
+            {
+                "status": "error",
+                "message": "Unexpected server error while reading refunds",
+            },
+            http_status_code=500,
+        )
+
+
 @frappe.whitelist(methods=["POST"])
 def process_remake(**kwargs: Any) -> None:
     """Record one manager-approved full-line remake and evaluate inventory."""
@@ -2390,6 +2424,7 @@ __all__ = [
     "get_stock_update_status",
     "get_item_modifiers",
     "get_order_history",
+    "get_order_refunds",
     "get_promotion_review_queue",
     "get_promotion_snapshot",
     "get_refund_reasons",

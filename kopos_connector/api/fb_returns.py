@@ -10,6 +10,7 @@ import frappe
 from frappe.utils import cint, cstr, flt
 
 from kopos_connector.api.devices import lock_device_for_operational_mutation
+from kopos_connector.api.operational_errors import RefundChangedError
 from kopos_connector.kopos.services.accounting.refund_allocation import (
     REFUND_ALLOCATION_VERSION,
     RefundAllocation,
@@ -107,7 +108,7 @@ def process_return_payload(
         if allocation.amount_sen != validated["amount_sen"]:
             frappe.throw(
                 "The refund amount changed. Review the refund again.",
-                frappe.ValidationError,
+                RefundChangedError,
             )
     approval: dict[str, Any] | None = None
     if require_manager_approval:
@@ -153,9 +154,49 @@ def build_refund_approval_scope(payload: dict[str, Any]) -> dict[str, Any]:
         if allocation.amount_sen != validated["amount_sen"]:
             frappe.throw(
                 "The refund amount changed. Review the refund again.",
-                frappe.ValidationError,
+                RefundChangedError,
             )
     return _build_refund_approval_scope(validated)
+
+
+def list_order_refunds(sales_invoice: str) -> dict[str, Any]:
+    """Submitted refunds of one sale, oldest first, so its tablet can record any it missed."""
+    rows = frappe.get_all(
+        "FB Return Event",
+        filters={"original_sales_invoice": sales_invoice, "docstatus": 1},
+        fields=[
+            "name",
+            "return_id",
+            "return_sales_invoice",
+            "settlement_status",
+            "settlement_amount",
+            "refund_method",
+            "reason_text",
+            "approved_by_manager",
+            "refund_allocation",
+        ],
+        order_by="creation asc, name asc",
+    )
+    refunds = []
+    for row in rows or []:
+        allocation = parse_stored_allocation(_row_value(row, "refund_allocation"))
+        refunds.append(
+            {
+                "return_id": cstr(_row_value(row, "return_id")).strip(),
+                "return_event": cstr(_row_value(row, "name")).strip(),
+                "return_sales_invoice": cstr(_row_value(row, "return_sales_invoice")).strip() or None,
+                "settlement_status": cstr(_row_value(row, "settlement_status")).strip(),
+                "amount_sen": money_to_sen(
+                    _row_value(row, "settlement_amount") or 0,
+                    "FB Return Event settlement_amount",
+                ),
+                "refund_method": cstr(_row_value(row, "refund_method")).strip().lower(),
+                "reason_text": cstr(_row_value(row, "reason_text")).strip() or None,
+                "approval_manager_id": cstr(_row_value(row, "approved_by_manager")).strip() or None,
+                "refund_allocation": allocation.to_wire() if allocation is not None else None,
+            }
+        )
+    return {"status": "ok", "sales_invoice": sales_invoice, "refunds": refunds}
 
 
 def _get_request_payload() -> dict[str, Any]:

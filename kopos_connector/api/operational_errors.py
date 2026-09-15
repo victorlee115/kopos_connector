@@ -33,3 +33,9 @@ class ShiftAlreadyOpenedError(OperationalValidationError):
 
 class ShiftAlreadyClosedError(OperationalValidationError):
     error_code = "shift_already_closed"
+
+
+class RefundChangedError(OperationalValidationError):
+    """The refund the tablet showed is no longer what ERP would post."""
+
+    error_code = "refund_changed"

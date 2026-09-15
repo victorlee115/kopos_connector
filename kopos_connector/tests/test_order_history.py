@@ -882,8 +882,46 @@ def test_get_order_history_returns_refunds_separately_with_decimal_strings(
             "return_against": "PINV-001",
             "refund_reason_code": "other",
             "refund_reason": "Wrong order",
+            "return_id": None,
+            "refund_allocation": None,
         }
     ]
+
+
+def test_history_refund_rows_carry_the_part_refund_allocation(order_history_module, monkeypatch):
+    allocation = {
+        "version": "refund-allocation-v1",
+        "lines": [{"lineId": "LINE-1", "quantity": 1, "netSen": 1275}],
+        "netSen": 1275,
+        "taxSen": 102,
+        "roundingSen": -2,
+        "amountSen": 1375,
+        "isFinal": False,
+    }
+    queries: list[dict[str, Any]] = []
+
+    def fake_get_all(doctype: str, **kwargs: Any) -> list[dict[str, Any]]:
+        queries.append({"doctype": doctype, **kwargs})
+        return [
+            {"return_sales_invoice": "CN-001", "return_id": "order-1-refund-a", "refund_allocation": json.dumps(allocation)},
+            {"return_sales_invoice": "CN-002", "return_id": "order-1-refund-full", "refund_allocation": None},
+        ]
+
+    monkeypatch.setattr(order_history_module.frappe, "get_all", fake_get_all)
+    events = order_history_module.query_return_events_by_return_invoice(["CN-001", "CN-002"])
+
+    assert queries[0]["doctype"] == "FB Return Event"
+    assert queries[0]["filters"] == {"docstatus": 1, "return_sales_invoice": ["in", ["CN-001", "CN-002"]]}
+    assert order_history_module.query_return_events_by_return_invoice([]) == {}
+    part = order_history_module.serialize_refund_row(
+        {"name": "CN-001", "return_against": "PINV-001"}, items=[], payments=[], return_event=events["CN-001"]
+    )
+    assert part["return_id"] == "order-1-refund-a"
+    assert part["refund_allocation"] == allocation
+    whole = order_history_module.serialize_refund_row(
+        {"name": "CN-002", "return_against": "PINV-001"}, items=[], payments=[], return_event=events["CN-002"]
+    )
+    assert (whole["return_id"], whole["refund_allocation"]) == ("order-1-refund-full", None)
 
 
 def test_get_order_history_returns_only_exact_durably_voided_kopos_invoices(
