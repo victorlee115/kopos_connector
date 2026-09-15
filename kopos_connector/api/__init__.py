@@ -1506,6 +1506,11 @@ def _process_sales_invoice_void_payload(payload: dict[str, Any]) -> dict[str, An
         }
     if invoice.docstatus != 1:
         frappe.throw(_("Sales Invoice {0} is not submitted").format(sales_invoice), frappe.ValidationError)
+    from kopos_connector.kopos.services.accounting.return_invoice_service import (
+        require_open_shift_for_void,
+    )
+
+    require_open_shift_for_void(invoice_cash_shift)
     approval = verify_manager_approval_token(
         manager_approval_token,
         device_id=scope["device_id"],
@@ -1806,6 +1811,11 @@ def _resolve_manager_approval_scope(payload: dict[str, Any]) -> dict[str, Any]:
                 _("Sales Invoice {0} is not submitted").format(invoice_name),
                 frappe.ValidationError,
             )
+        from kopos_connector.kopos.services.accounting.return_invoice_service import (
+            require_open_shift_for_void,
+        )
+
+        require_open_shift_for_void(getattr(invoice, "custom_fb_shift", None))
         scope = build_sales_invoice_approval_scope(
             invoice,
             context={"reason": frappe.utils.cstr(payload.get("reason")).strip()},

@@ -221,9 +221,14 @@
             "group": "Orders",
             "link_doctype": "FB Order",
             "link_fieldname": "shift"
+        },
+        {
+            "group": "Refunds Paid",
+            "link_doctype": "FB Return Event",
+            "link_fieldname": "refund_shift"
         }
     ],
-    "modified": "2026-04-14 00:00:00.000000",
+    "modified": "2026-09-15 23:00:00.000000",
     "modified_by": "Administrator",
     "module": "KoPOS",
     "name": "FB Shift",

@@ -1034,3 +1034,19 @@ def test_device_and_invoice_item_dump_include_accounting_configuration(
     assert items[0]["income_account"] == "Sales - JC"
     assert items[0]["cost_center"] == "Main - JC"
     assert items[0]["project"] == "EVENT-1"
+
+
+def test_shift_cash_counts_a_later_refund_in_the_shift_that_paid_it() -> None:
+    """A refund of a closed shift's sale leaves that shift as counted and reduces the paying shift."""
+    state = _passing_state()["data"]
+    shift_one = dict(state["fb_shifts"][0], expected_cash=312.0, cash_variance=-12.0)
+    shift_two = {"name": "SHIFT-2", "status": "Closed", "opening_float": 100.0, "expected_cash": 88.0,
+                 "counted_cash": 88.0, "cash_variance": 0.0}
+    refund = dict(state["return_records"][0], refund_shift="SHIFT-2")
+
+    for shift in (shift_one, shift_two):
+        assert smoke._shift_expected_cash_matches_state(shift, state["sales_invoices"], [refund]) is True
+    # Counted in the sale's shift instead, both shifts would disagree with ERP.
+    legacy = dict(refund, refund_shift=None)
+    assert smoke._shift_expected_cash_matches_state(shift_one, state["sales_invoices"], [legacy]) is False
+    assert smoke._shift_expected_cash_matches_state(shift_two, state["sales_invoices"], [legacy]) is False

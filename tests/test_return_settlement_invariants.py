@@ -903,7 +903,11 @@ def test_shift_cash_uses_posted_settlement_cash_outflow(
                     "payment_amount": "20.00",
                 }
             ]
+        if "FROM `tabFB Return Event`" in query and "IFNULL(return_event.refund_shift, '') = ''" in query:
+            # Refunds recorded before Refund Shift; none in this shift.
+            return []
         if "FROM `tabFB Return Event`" in query:
+            assert "return_event.refund_shift = %s" in query
             return [
                 {
                     "name": "FB-RETURN-1",
@@ -946,7 +950,7 @@ def test_shift_cash_uses_posted_settlement_cash_outflow(
 
     service.refresh_fb_shift_cash("SHIFT-1")
 
-    assert len(sql_calls) == 3
+    assert len(sql_calls) == 4
     assert all("FOR UPDATE" in query for query in sql_calls)
     assert updates == [
         (
@@ -1017,3 +1021,110 @@ def test_success_and_duplicate_api_responses_expose_same_settlement_proof(
         require_approval_proof=True,
     )
     assert recovered | persisted_proof == recovered
+
+
+def _refund_shift_fakes(monkeypatch, shifts, open_by_device, invoice_shift="SHIFT-SALE", device="DEVICE-A"):
+    service = importlib.import_module(
+        "kopos_connector.kopos.services.accounting.return_invoice_service"
+    )
+    locked: list[str] = []
+
+    def sql(query: str, params: Any, *, as_dict: bool) -> list[dict[str, Any]]:
+        assert as_dict is True and "FOR UPDATE" in query and "WHERE name = %s" in query
+        locked.append(params[0])
+        return [shifts[params[0]]] if params[0] in shifts else []
+
+    def get_all(doctype: str, *, filters: dict[str, Any], pluck: str, order_by: str, limit: int) -> list[str]:
+        assert (doctype, pluck, order_by, limit) == ("FB Shift", "name", "name asc", 2)
+        assert filters["status"] == "Open"
+        return open_by_device.get(filters["device_id"], [])[:limit]
+
+    monkeypatch.setattr(service.frappe.db, "sql", sql)
+    monkeypatch.setattr(service.frappe, "get_all", get_all, raising=False)
+    monkeypatch.setattr(
+        service.frappe.db,
+        "get_value",
+        lambda doctype, name, fields, **_kwargs: {"custom_fb_shift": invoice_shift, "custom_fb_device_id": device},
+    )
+    return service, locked
+
+
+def _shift(name: str, status: str, warehouse: str = "Outlet A - CO") -> dict[str, Any]:
+    return {"name": name, "status": status, "company": "CO", "warehouse": warehouse, "opening_float": "100.00", "counted_cash": None}
+
+
+def test_refund_is_paid_by_the_sale_shift_while_it_is_open(monkeypatch):
+    service, locked = _refund_shift_fakes(monkeypatch, {"SHIFT-SALE": _shift("SHIFT-SALE", "Open")}, {})
+    refund = SimpleNamespace(original_sales_invoice="SINV-1", refund_method="cash", refund_shift=None)
+
+    assert service.resolve_refund_shift(refund) == "SHIFT-SALE"
+    assert locked == ["SHIFT-SALE"]
+
+
+def test_refund_of_a_closed_shift_sale_is_paid_by_the_tablet_open_shift(monkeypatch):
+    shifts = {"SHIFT-SALE": _shift("SHIFT-SALE", "Closed"), "SHIFT-NOW": _shift("SHIFT-NOW", "Open")}
+    service, locked = _refund_shift_fakes(monkeypatch, shifts, {"DEVICE-A": ["SHIFT-NOW"]})
+    refund = SimpleNamespace(original_sales_invoice="SINV-1", refund_method="cash", refund_shift=None)
+
+    assert service.resolve_refund_shift(refund) == "SHIFT-NOW"
+    assert locked == ["SHIFT-SALE", "SHIFT-NOW"]
+
+
+@pytest.mark.parametrize(
+    ("method", "open_shifts"),
+    [
+        ("cash", []),
+        ("cash", ["SHIFT-A", "SHIFT-B"]),
+        # The tablet's shift closed after it was listed, or is open at another outlet.
+        ("cash", ["SHIFT-CLOSED-SINCE"]),
+        ("cash", ["SHIFT-ELSEWHERE"]),
+        ("card", []),
+    ],
+)
+def test_refund_of_a_closed_shift_sale_without_one_open_drawer(monkeypatch, method, open_shifts):
+    shifts = {
+        "SHIFT-SALE": _shift("SHIFT-SALE", "Closed"),
+        "SHIFT-CLOSED-SINCE": _shift("SHIFT-CLOSED-SINCE", "Closed"),
+        "SHIFT-ELSEWHERE": _shift("SHIFT-ELSEWHERE", "Open", warehouse="Outlet B - CO"),
+    }
+    service, _locked = _refund_shift_fakes(monkeypatch, shifts, {"DEVICE-A": open_shifts})
+    refund = SimpleNamespace(original_sales_invoice="SINV-1", refund_method=method, refund_shift=None)
+    operational_errors = importlib.import_module("kopos_connector.api.operational_errors")
+
+    if method == "cash":
+        with pytest.raises(operational_errors.ShiftRequiredError, match="drawer that is open now"):
+            service.resolve_refund_shift(refund)
+    else:
+        assert service.resolve_refund_shift(refund) is None
+
+
+@pytest.mark.parametrize(
+    ("chosen", "accepted"),
+    [
+        (_shift("SHIFT-OTHER", "Open"), True),
+        (_shift("SHIFT-OTHER", "Closed"), False),
+        (_shift("SHIFT-OTHER", "Open", warehouse="Outlet B - CO"), False),
+    ],
+)
+def test_a_chosen_refund_shift_must_be_open_at_the_sale_outlet(monkeypatch, chosen, accepted):
+    shifts = {"SHIFT-SALE": _shift("SHIFT-SALE", "Closed"), "SHIFT-OTHER": chosen}
+    service, _locked = _refund_shift_fakes(monkeypatch, shifts, {})
+    refund = SimpleNamespace(original_sales_invoice="SINV-1", refund_method="cash", refund_shift="SHIFT-OTHER")
+
+    if accepted:
+        assert service.resolve_refund_shift(refund) == "SHIFT-OTHER"
+    else:
+        with pytest.raises(service.frappe.ValidationError, match="open shift of the sale's outlet"):
+            service.resolve_refund_shift(refund)
+
+
+@pytest.mark.parametrize(("status", "error"), [("Open", None), ("Closed", "ShiftAlreadyClosedError"), ("Closing", "ShiftRequiredError")])
+def test_a_void_needs_the_sale_shift_open(monkeypatch, status, error):
+    service, _locked = _refund_shift_fakes(monkeypatch, {"SHIFT-SALE": _shift("SHIFT-SALE", status)}, {})
+    operational_errors = importlib.import_module("kopos_connector.api.operational_errors")
+
+    if error is None:
+        service.require_open_shift_for_void("SHIFT-SALE")
+    else:
+        with pytest.raises(getattr(operational_errors, error), match="refund the sale instead"):
+            service.require_open_shift_for_void("SHIFT-SALE")

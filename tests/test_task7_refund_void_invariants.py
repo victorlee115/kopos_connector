@@ -662,6 +662,7 @@ def test_void_updates_only_commercial_order_projection_and_shift(monkeypatch):
         return []
 
     cash_sql_calls: list[str] = []
+    shift_state = {"status": "Open"}
 
     def db_get_value(doctype: str, _name: Any, fieldname: Any, **_kwargs: Any) -> Any:
         if doctype == "Sales Invoice" and fieldname == "custom_fb_shift":
@@ -681,6 +682,7 @@ def test_void_updates_only_commercial_order_projection_and_shift(monkeypatch):
             return [
                 {
                     "name": "SHIFT-1",
+                    "status": shift_state["status"],
                     "opening_float": 100.0,
                     "counted_cash": 100.0,
                 }
@@ -765,6 +767,8 @@ def test_void_updates_only_commercial_order_projection_and_shift(monkeypatch):
             "manager_approval_token": "signed-token",
         }
     )
+    # A retry of a void made while the shift was open still answers after it closes.
+    shift_state["status"] = "Closed"
     duplicate = api._process_sales_invoice_void_payload(
         {
             "sales_invoice": "SINV-1",
@@ -820,3 +824,26 @@ def test_void_updates_only_commercial_order_projection_and_shift(monkeypatch):
     assert shift.cash_variance == Decimal("-12")
     assert cash_sql_calls
     assert all("FOR UPDATE" in query for query in cash_sql_calls)
+
+    # A new void of a sale whose shift has closed is refused before any approval is used.
+    invoice.docstatus = 1
+    for fieldname in (
+        "custom_fb_void_idempotency_key",
+        "custom_fb_void_request_fingerprint",
+        "custom_fb_void_manager",
+        "custom_fb_void_approval_token_id",
+    ):
+        setattr(invoice, fieldname, None)
+    operational_errors = importlib.import_module("kopos_connector.api.operational_errors")
+    with pytest.raises(operational_errors.ShiftAlreadyClosedError, match="refund the sale instead"):
+        api._process_sales_invoice_void_payload(
+            {
+                "sales_invoice": "SINV-1",
+                "device_id": "DEVICE-A",
+                "idempotency_key": "void-idem-2",
+                "reason": "Operator correction",
+                "manager_approval_token": "signed-token-2",
+            }
+        )
+    assert len(approval_calls) == 1
+    assert invoice.cancel_count == 1

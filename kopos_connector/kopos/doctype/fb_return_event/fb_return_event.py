@@ -1,6 +1,9 @@
 import frappe
 from frappe.model.document import Document
 
+from kopos_connector.kopos.services.accounting.return_invoice_service import (
+    resolve_refund_shift,
+)
 from kopos_connector.kopos.services.operations.return_guard_service import (
     lock_and_validate_return_quantities,
 )
@@ -59,6 +62,7 @@ class FBReturnEvent(Document):
             self.original_sales_invoice,
             partial=bool(self.get("refund_allocation_version")),
         )
+        self.refund_shift = resolve_refund_shift(self)
 
     def on_submit(self):
         process_return_event(self)

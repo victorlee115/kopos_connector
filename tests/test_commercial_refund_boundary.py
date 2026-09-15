@@ -541,6 +541,13 @@ def test_cashier_return_has_no_inventory_import_or_stock_call(
         "get_doc",
         lambda doctype, name: original_invoice,
     )
+    monkeypatch.setattr(
+        service.frappe.db,
+        "get_value",
+        lambda doctype, name, fieldname: original_invoice.custom_fb_shift
+        if (doctype, name, fieldname) == ("Sales Invoice", "SINV-1", "custom_fb_shift")
+        else None,
+    )
     monkeypatch.setattr(service, "lock_fb_shift_cash_scope", lambda shift: None)
     monkeypatch.setattr(service, "elevate_device_api_user", lambda: nullcontext())
     monkeypatch.setattr(service, "create_return_sales_invoice", lambda doc: "SINV-RETURN-1")
@@ -557,6 +564,12 @@ def test_cashier_return_has_no_inventory_import_or_stock_call(
 
     assert service.process_return_event(return_event) == ("SINV-RETURN-1", None)
     assert refreshes == ["SHIFT-1"]
+
+    # A refund recorded against the shift that paid it is counted there.
+    return_event.refund_shift = "SHIFT-2"
+    refreshes.clear()
+    assert service.process_return_event(return_event) == ("SINV-RETURN-1", None)
+    assert refreshes == ["SHIFT-2"]
 
 
 def test_credit_note_validates_commercial_line_identity_without_resolved_sale() -> None:

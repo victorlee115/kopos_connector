@@ -536,7 +536,7 @@ def lock_fb_shift_cash_scope(shift_name: Any) -> Any:
 
     rows = frappe.db.sql(
         """
-        SELECT name, opening_float, counted_cash
+        SELECT name, status, company, warehouse, opening_float, counted_cash
         FROM `tabFB Shift`
         WHERE name = %s
         LIMIT 1
@@ -548,6 +548,77 @@ def lock_fb_shift_cash_scope(shift_name: Any) -> Any:
     if not rows:
         frappe.throw(f"FB Shift {shift} was not found", frappe.ValidationError)
     return rows[0]
+
+
+def resolve_refund_shift(return_doc: Any) -> str | None:
+    """Lock and return the open shift whose drawer pays a refund.
+
+    A closed shift stays as it was counted, so the refund is counted in the shift
+    chosen on it, else the sale's shift while that is open, else the sale's tablet's
+    open shift. The drawer must be open at the sale's outlet; only a cash refund
+    needs one.
+    """
+    invoice = frappe.db.get_value(
+        "Sales Invoice",
+        _value(return_doc, "original_sales_invoice"),
+        ["custom_fb_shift", "custom_fb_device_id"],
+        as_dict=True,
+    ) or {}
+    sale_shift = lock_fb_shift_cash_scope(_value(invoice, "custom_fb_shift"))
+
+    def open_at_sale_outlet(shift: Any) -> bool:
+        return cstr(_value(shift, "status")).strip() == "Open" and all(
+            cstr(_value(shift, field)).strip() == cstr(_value(sale_shift, field)).strip()
+            for field in ("company", "warehouse")
+        )
+
+    chosen = cstr(_value(return_doc, "refund_shift")).strip()
+    if chosen:
+        if not open_at_sale_outlet(lock_fb_shift_cash_scope(chosen)):
+            frappe.throw("Refund Shift must be an open shift of the sale's outlet", frappe.ValidationError)
+        return chosen
+    if open_at_sale_outlet(sale_shift):
+        return cstr(_value(sale_shift, "name")).strip()
+    device_id = cstr(_value(invoice, "custom_fb_device_id")).strip()
+    open_shifts = frappe.get_all(
+        "FB Shift",
+        filters={"device_id": device_id, "status": "Open"},
+        pluck="name",
+        order_by="name asc",
+        limit=2,
+    ) if device_id else []
+    if len(open_shifts) == 1:
+        shift = lock_fb_shift_cash_scope(open_shifts[0])
+        if open_at_sale_outlet(shift):
+            return cstr(_value(shift, "name")).strip()
+    if cstr(_value(return_doc, "refund_method")).strip().lower() == "cash":
+        from kopos_connector.api.operational_errors import ShiftRequiredError
+
+        frappe.throw(
+            "A cash refund of this sale comes out of a drawer that is open now. Open a shift on "
+            f"{device_id or 'the sale tablet'} or choose the open shift in Refund Shift.",
+            ShiftRequiredError,
+        )
+    return None
+
+
+def refund_cash_shift(return_doc: Any) -> str:
+    """The shift a refund's cash is counted in; refunds recorded before Refund Shift stay with their sale's shift."""
+    return cstr(_value(return_doc, "refund_shift")).strip() or cstr(
+        frappe.db.get_value("Sales Invoice", _value(return_doc, "original_sales_invoice"), "custom_fb_shift")
+    ).strip()
+
+
+def require_open_shift_for_void(shift_name: Any) -> None:
+    """A void takes the sale out of its shift's cash, so it is refused once that shift has closed."""
+    status = cstr(_value(lock_fb_shift_cash_scope(shift_name), "status")).strip()
+    if status != "Open":
+        from kopos_connector.api.operational_errors import ShiftAlreadyClosedError, ShiftRequiredError
+
+        frappe.throw(
+            f"This sale's shift is {status or 'missing'}; refund the sale instead of voiding it.",
+            ShiftAlreadyClosedError if status == "Closed" else ShiftRequiredError,
+        )
 
 
 def refresh_fb_shift_cash(shift_name: Any) -> None:
@@ -695,9 +766,7 @@ def _get_locked_shift_sales_cash_sen(shift: str) -> int:
 
 
 def _get_locked_shift_return_cash_adjustment_sen(shift: str) -> int:
-    rows = frappe.db.sql(
-        """
-        SELECT
+    columns = """
             return_event.name,
             return_event.refund_method,
             return_event.settlement_doctype,
@@ -706,13 +775,16 @@ def _get_locked_shift_return_cash_adjustment_sen(shift: str) -> int:
             return_event.settlement_tenders_json,
             settlement.name AS settlement_name,
             settlement.docstatus AS settlement_docstatus
+    """
+    # Refunds are counted in the shift that paid them; refunds recorded before
+    # Refund Shift existed stay with their sale's shift, where they were counted.
+    rows = list(frappe.db.sql(
+        f"""
+        SELECT {columns}
         FROM `tabFB Return Event` AS return_event
-        INNER JOIN `tabFB Order` AS fb_order
-            ON fb_order.sales_invoice = return_event.original_sales_invoice
         LEFT JOIN `tabJournal Entry` AS settlement
             ON settlement.name = return_event.settlement_document
-        WHERE fb_order.shift = %s
-            AND fb_order.status = 'Submitted'
+        WHERE return_event.refund_shift = %s
             AND return_event.docstatus = 1
             AND return_event.settlement_status = 'Posted'
         ORDER BY return_event.name
@@ -720,7 +792,26 @@ def _get_locked_shift_return_cash_adjustment_sen(shift: str) -> int:
         """,
         (shift,),
         as_dict=True,
-    )
+    ) or [])
+    rows += list(frappe.db.sql(
+        f"""
+        SELECT {columns}
+        FROM `tabFB Return Event` AS return_event
+        INNER JOIN `tabFB Order` AS fb_order
+            ON fb_order.sales_invoice = return_event.original_sales_invoice
+        LEFT JOIN `tabJournal Entry` AS settlement
+            ON settlement.name = return_event.settlement_document
+        WHERE fb_order.shift = %s
+            AND fb_order.status = 'Submitted'
+            AND IFNULL(return_event.refund_shift, '') = ''
+            AND return_event.docstatus = 1
+            AND return_event.settlement_status = 'Posted'
+        ORDER BY return_event.name
+        FOR UPDATE
+        """,
+        (shift,),
+        as_dict=True,
+    ) or [])
     total_adjustment_sen = 0
     seen_events: set[str] = set()
     for row in rows or []:

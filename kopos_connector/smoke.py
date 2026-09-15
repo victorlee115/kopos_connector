@@ -6655,6 +6655,7 @@ def _collect_return_records(
         "settlement_status",
         "settlement_amount",
         "settlement_tenders_json",
+        "refund_shift",
         "status",
         "docstatus",
     ]
@@ -6884,11 +6885,17 @@ def _shift_expected_cash_matches_state(
             cash_sales_sen += invoice_cash_tender_sen - (
                 _money_sen(invoice.get("change_amount")) or 0
             )
+    # A refund is counted in the shift that paid it; refunds recorded before
+    # Refund Shift existed stay with their sale's shift.
     cash_refunds_sen = sum(
         abs(_money_sen(row.get("settlement_amount")) or 0)
         for row in returns
         if row.get("refund_method") == "cash"
-        and str(row.get("original_sales_invoice") or "") in invoice_by_name
+        and (
+            str(row.get("refund_shift")) == shift_name
+            if row.get("refund_shift")
+            else str(row.get("original_sales_invoice") or "") in invoice_by_name
+        )
     )
     calculated_sen = (
         (_money_sen(shift.get("opening_float")) or 0)

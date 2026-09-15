@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from collections import defaultdict
 from typing import Any
+from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_to_date
 
+import kopos_connector.api.fb_returns as fb_returns_api
 from kopos_connector.api.fb_returns import list_order_refunds, process_return_payload
 from kopos_connector.api.order_history import query_return_events_by_return_invoice, serialize_refund_row
 from kopos_connector.kopos.api.fb_orders import submit_order_payload
 from kopos_connector.kopos.api.money_contract import persisted_money_to_sen
+from kopos_connector.kopos.services.accounting.return_invoice_service import refresh_fb_shift_cash
 from kopos_connector.kopos.services.accounting.refund_allocation import (
     REFUND_ALLOCATION_VERSION,
     RefundableSale,
@@ -39,6 +42,13 @@ class TestPartialRefundFlow(FrappeTestCase):
 
     def tearDown(self) -> None:
         frappe.db.rollback()
+
+    def _open_shift(self, device_id: str) -> Any:
+        """Another open shift at the sale's outlet. Not the fixture helper: its base setup commits."""
+        shift = frappe.new_doc("FB Shift")
+        shift.update({"shift_code": f"{PREFIX}-SHIFT-{frappe.generate_hash(length=10)}", "device_id": device_id, "staff_id": frappe.session.user,
+                      "warehouse": self.shift.warehouse, "company": self.shift.company, "opening_float": 3.0, "status": "Open"})
+        return shift.insert(ignore_permissions=True)
 
     def _sale(self, lines: list[tuple[int, ...]], *, tax_sen: int, qr: dict[str, Any] | None = None) -> tuple[Any, list[str], RefundableSale]:
         """A cash sale rounded to 5 sen, or a manually confirmed QR sale when ``qr`` evidence is given.
@@ -124,6 +134,7 @@ class TestPartialRefundFlow(FrappeTestCase):
             self.assertTrue(all(float(item.rate) <= float(next(row.rate for row in original.items if row.name == item.sales_invoice_item)) for item in credit.items))
             event = frappe.get_doc("FB Return Event", response["return_event"])
             self.assertEqual((_sen(event.settlement_amount), _sen(event.refund_amount)), (allocation.amount_sen, allocation.amount_sen))
+            self.assertEqual(event.refund_shift, self.shift.name)
             credit_notes.append(credit.name)
             journals.append(response["settlement_document"])
             total_refunded += allocation.amount_sen
@@ -156,6 +167,63 @@ class TestPartialRefundFlow(FrappeTestCase):
         events = query_return_events_by_return_invoice(credit_notes)
         history_row = serialize_refund_row({"name": credit_notes[2], "return_against": original.name}, items=[], payments=[], return_event=events[credit_notes[2]])
         self.assertEqual((history_row["return_id"], history_row["refund_allocation"]), (plan[2][0], listed[2]["refund_allocation"]))
+
+    def test_cash_refund_of_a_closed_shift_sale_is_counted_in_the_drawer_that_pays_it(self) -> None:
+        order, (line,), sale = self._sale([(3, 3600)], tax_sen=0)
+        refresh_fb_shift_cash(self.shift.name)
+        counted_sen = _sen(frappe.db.get_value("FB Shift", self.shift.name, "expected_cash"))
+        frappe.db.set_value("FB Shift", self.shift.name, {"status": "Closed", "counted_cash": counted_sen / 100, "cash_variance": 0}, update_modified=False)
+        for name in frappe.get_all("FB Shift", filters={"device_id": self.shift.device_id, "status": "Open"}, pluck="name"):
+            frappe.db.set_value("FB Shift", name, "status", "Closed", update_modified=False)
+        first = allocate_refund(sale, [], [{"line_id": line, "quantity": 1}])
+
+        def choosing(shift_name: str):
+            build = fb_returns_api._build_return_event
+
+            def build_with_refund_shift(*args: Any, **kwargs: Any) -> Any:
+                doc = build(*args, **kwargs)
+                doc.refund_shift = shift_name
+                return doc
+
+            return patch.object(fb_returns_api, "_build_return_event", build_with_refund_shift)
+
+        def refused(pattern: str, return_id: str) -> None:
+            # A refused request is rolled back, as the HTTP request would be.
+            frappe.db.savepoint("refused_refund")
+            try:
+                with self.assertRaisesRegex(frappe.ValidationError, pattern):
+                    self._refund(order, return_id, [(line, 1)], first.amount_sen)
+            finally:
+                frappe.db.rollback(save_point="refused_refund")
+                frappe.clear_messages()
+            self.assertFalse(frappe.db.exists("FB Return Event", {"return_id": return_id}))
+
+        # The sale's tablet has no open drawer, and a closed shift cannot be chosen.
+        refused("drawer that is open now", f"{PREFIX}-NO-DRAWER-{frappe.generate_hash(length=8)}")
+        with choosing(self.shift.name):
+            refused("open shift of the sale's outlet", f"{PREFIX}-CLOSED-{frappe.generate_hash(length=8)}")
+
+        # A drawer open on another tablet at the outlet, chosen on the refund.
+        other = self._open_shift(f"{PREFIX}-OTHER-{frappe.generate_hash(length=8)}")
+        with choosing(other.name):
+            chosen = self._refund(order, f"{PREFIX}-CHOSEN-{frappe.generate_hash(length=8)}", [(line, 1)], first.amount_sen)
+        # The sale's tablet opens its next shift, which pays the next refund without a choice.
+        paying = self._open_shift(self.shift.device_id)
+        second = allocate_refund(sale, [{"line_id": line, "quantity": 1}], [{"line_id": line, "quantity": 1}])
+        later = self._refund(order, f"{PREFIX}-LATER-{frappe.generate_hash(length=8)}", [(line, 1)], second.amount_sen)
+
+        self.assertEqual(
+            [frappe.db.get_value("FB Return Event", response["return_event"], "refund_shift") for response in (chosen, later)],
+            [other.name, paying.name],
+        )
+        closed = frappe.db.get_value("FB Shift", self.shift.name, ["status", "expected_cash", "cash_variance"], as_dict=True)
+        self.assertEqual((closed.status, _sen(closed.expected_cash), _sen(closed.cash_variance)), ("Closed", counted_sen, 0))
+        for shift in (self.shift, other, paying):
+            refresh_fb_shift_cash(shift.name)
+        self.assertEqual(
+            [_sen(frappe.db.get_value("FB Shift", shift.name, "expected_cash")) for shift in (self.shift, other, paying)],
+            [counted_sen, _sen(other.opening_float) - first.amount_sen, _sen(paying.opening_float) - second.amount_sen],
+        )
 
     def test_stale_conflicting_and_full_after_part_requests_are_refused(self) -> None:
         order, (line,), sale = self._sale([(2, 2400)], tax_sen=0)

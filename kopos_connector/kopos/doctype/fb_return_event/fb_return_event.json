@@ -26,6 +26,7 @@
         "settlement_section",
         "settlement_doctype",
         "settlement_document",
+        "refund_shift",
         "column_break_settlement",
         "settlement_status",
         "settlement_amount",
@@ -150,6 +151,16 @@
             "read_only": 1
         },
         {
+            "description": "The open shift whose drawer pays a cash refund. Leave empty to use the sale's shift while it is open, otherwise the sale's tablet's open shift.",
+            "fieldname": "refund_shift",
+            "fieldtype": "Link",
+            "in_standard_filter": 1,
+            "label": "Refund Shift",
+            "link_filters": "[[\"FB Shift\",\"status\",\"=\",\"Open\"]]",
+            "options": "FB Shift",
+            "search_index": 1
+        },
+        {
             "fieldname": "column_break_settlement",
             "fieldtype": "Column Break"
         },
@@ -212,7 +223,7 @@
         }
     ],
     "is_submittable": 1,
-    "modified": "2026-09-15 21:00:00.000000",
+    "modified": "2026-09-15 23:00:00.000000",
     "modified_by": "Administrator",
     "module": "KoPOS",
     "name": "FB Return Event",

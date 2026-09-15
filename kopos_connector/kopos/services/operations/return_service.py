@@ -11,6 +11,7 @@ from kopos_connector.kopos.services.accounting.return_invoice_service import (
     create_return_sales_invoice,
     lock_fb_shift_cash_scope,
     refresh_fb_shift_cash,
+    refund_cash_shift,
 )
 from kopos_connector.kopos.services.accounting.return_settlement_service import (
     ensure_return_settlement,
@@ -18,10 +19,7 @@ from kopos_connector.kopos.services.accounting.return_settlement_service import 
 
 
 def process_return_event(doc: Any) -> tuple[str | None, str | None]:
-    original_invoice = frappe.get_doc(
-        "Sales Invoice", getattr(doc, "original_sales_invoice", None)
-    )
-    shift_name = getattr(original_invoice, "custom_fb_shift", None)
+    shift_name = refund_cash_shift(doc)
     lock_fb_shift_cash_scope(shift_name)
     with elevate_device_api_user():
         return_invoice = create_return_sales_invoice(doc)
@@ -52,10 +50,7 @@ def ensure_existing_return_event_settlement(doc: Any) -> str:
             f"FB Return Event {getattr(doc, 'name', '')} has no return Sales Invoice",
             frappe.ValidationError,
         )
-    original_invoice = frappe.get_doc(
-        "Sales Invoice", getattr(doc, "original_sales_invoice", None)
-    )
-    shift_name = getattr(original_invoice, "custom_fb_shift", None)
+    shift_name = refund_cash_shift(doc)
     lock_fb_shift_cash_scope(shift_name)
     with elevate_device_api_user():
         settlement_document = ensure_return_settlement(doc, return_invoice)
