@@ -17,7 +17,7 @@ from kopos_connector.kopos.services.accounting.sales_invoice_service import (
     _apply_rounding,
     _append_payment_rows,
     _build_modifier_snapshot,
-    enforce_static_qr_payment_accounts,
+    enforce_manual_qr_payment_accounts,
     _is_zero_total_paid_order,
     _resolve_line_rate,
     _resolve_customer,
@@ -837,15 +837,23 @@ class TestSalesInvoiceService(unittest.TestCase):
             }
         )
 
-        with patch(
-            "kopos_connector.kopos.services.accounting.sales_invoice_service._resolve_mode_of_payment_context",
-            return_value={"account": "QR Clearing - TC", "type": "Bank"},
+        with (
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service._resolve_mode_of_payment_context",
+                return_value={"account": "QR Clearing - TC", "type": "Bank"},
+            ),
+            patch(
+                "kopos_connector.kopos.services.accounting.sales_invoice_service.validate_manual_qr_suspense_account",
+                return_value="Manual QR Suspense - TC",
+            ) as validate_suspense,
         ):
             _append_payment_rows(invoice, order)
 
         self.assertEqual(len(invoice.payments), 1)
         self.assertEqual(invoice.payments[0].account, "Manual QR Suspense - TC")
         self.assertEqual(invoice.payments[0].amount, Decimal("12.95"))
+        # The stored account is still checked against this invoice's company and currency.
+        validate_suspense.assert_called_once()
 
     def test_static_qr_pre_registration_projects_to_profile_suspense(self):
         """Invoice projection must not inherit a legacy Cash MOP mapping."""
@@ -893,7 +901,7 @@ class TestSalesInvoiceService(unittest.TestCase):
         resolve_suspense.assert_called_once_with(order)
         self.assertEqual(invoice.payments[0].account, "Manual QR Suspense - TC")
 
-    def test_native_invoice_before_save_refresh_cannot_restore_cash_for_static_qr(self):
+    def test_native_invoice_before_save_refresh_cannot_restore_cash_for_a_manual_qr_row(self):
         order = self.make_fb_order_stub()
         order.payments = [
             frappe._dict(
@@ -932,7 +940,7 @@ class TestSalesInvoiceService(unittest.TestCase):
                 return_value="Manual QR Suspense - TC",
             ) as validate_suspense,
         ):
-            enforce_static_qr_payment_accounts(invoice)
+            enforce_manual_qr_payment_accounts(invoice)
 
         validate_suspense.assert_called_once()
         self.assertEqual(invoice_payment.account, "Manual QR Suspense - TC")

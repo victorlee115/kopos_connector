@@ -35,13 +35,13 @@ class KoPOSSalesInvoiceIntegrityMixin:
         if callable(parent_before_save):
             parent_before_save()
         # ERPNext's native hook resets payment rows from Mode of Payment.  The
-        # connector must restore only branch-scoped static-QR suspense rows
-        # after that refresh, before the document is posted.
+        # connector must restore the branch-scoped suspense account of every
+        # manually confirmed QR row after that refresh, before posting.
         from kopos_connector.kopos.services.accounting.sales_invoice_service import (
-            enforce_static_qr_payment_accounts,
+            enforce_manual_qr_payment_accounts,
         )
 
-        enforce_static_qr_payment_accounts(self)
+        enforce_manual_qr_payment_accounts(self)
 
     def before_cancel(self) -> None:
         if _is_original_kopos_sale(self):

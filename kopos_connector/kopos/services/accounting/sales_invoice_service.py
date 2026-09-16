@@ -19,6 +19,9 @@ from kopos_connector.kopos.api.money_contract import (
     sen_to_decimal,
 )
 from kopos_connector.kopos.services.accounting.maybank_payment_service import (
+    MAYBANK_MODE_OF_PAYMENT,
+    QR_PAYMENT_CHANNELS,
+    STATIC_QR_PAYMENT_CHANNEL,
     bind_qr_payment_settlement,
     normalize_qr_token,
     resolve_manual_qr_suspense_account,
@@ -34,8 +37,6 @@ from kopos_connector.utils.diagnostics import (
     rollback_to_savepoint,
 )
 
-MAYBANK_MODE_OF_PAYMENT = "duitnow qr"
-STATIC_QR_PAYMENT_CHANNEL = "static qr"
 
 
 def _completion_kind(order_doc: Any) -> str:
@@ -1192,33 +1193,6 @@ def _append_payment_rows(invoice: Any, order_doc: Any) -> None:
                     ),
                     qr_clearing_account,
                 )
-        elif payment_channel == "static qr":
-            # Static QR is a manual, pending-reconciliation tender.  Its
-            # order-level payment snapshot is the accounting authority, but
-            # the order may reach invoice projection before the registration
-            # hook has populated that snapshot.  Resolve the current POS
-            # Profile only for that pre-registration gap; never fall back to
-            # the company-wide Mode of Payment (which is commonly mapped to
-            # Cash in legacy sites).
-            suspense_account = str(
-                _value(payment, "suspense_account") or ""
-            ).strip()
-            if suspense_account:
-                suspense_account = validate_manual_qr_suspense_account(
-                    suspense_account,
-                    company=str(invoice.company),
-                    currency=str(
-                        _value(invoice, "currency")
-                        or _value(order_doc, "currency")
-                    ),
-                )
-            else:
-                suspense_account = resolve_manual_qr_suspense_account(order_doc)
-            payment_meta = _resolve_mode_of_payment_context(
-                str(mode_of_payment),
-                str(invoice.company),
-            )
-            payment_meta["account"] = suspense_account
         else:
             payment_meta = _resolve_mode_of_payment_context(
                 str(mode_of_payment),
@@ -1228,15 +1202,17 @@ def _append_payment_rows(invoice: Any, order_doc: Any) -> None:
         if payment_meta.get("type"):
             payment_row["type"] = payment_meta["type"]
 
-        if settlement_status == "pending_reconciliation":
-            suspense_account = str(
-                _value(payment, "suspense_account") or ""
-            ).strip()
-            if not suspense_account:
-                raise ValueError(
-                    "static_qr pending reconciliation requires a suspense account"
-                )
-            payment_row["account"] = suspense_account
+        # A manually confirmed QR tender waits in the suspense ledger until it is
+        # reconciled, whichever QR channel took it.
+        if is_manual_qr_tender(payment):
+            payment_row["account"] = manual_qr_suspense_account(
+                order_doc,
+                payment,
+                company=str(invoice.company),
+                currency=str(
+                    _value(invoice, "currency") or _value(order_doc, "currency")
+                ),
+            )
 
         if not str(payment_row.get("account") or "").strip():
             raise ValueError(
@@ -1305,15 +1281,66 @@ def _resolve_mode_of_payment_context(
     }
 
 
-def enforce_static_qr_payment_accounts(invoice: Any) -> None:
-    """Reapply static-QR suspense accounts after ERPNext's native refresh.
+def is_manual_qr_tender(payment: Any) -> bool:
+    """A QR tender whose money waits in the suspense ledger until it is reconciled.
 
-    ERPNext's ``Sales Invoice.before_save`` intentionally resets every payment
-    row to the company-wide Mode of Payment account.  That is correct for
-    ordinary tenders, but it would silently turn a manual QR sale into Cash
-    when the standard DuitNow QR mode is still mapped to a legacy cash account.
-    KoPOS therefore reapplies only the branch-scoped static-QR rows after the
-    native hook has run, using the payment snapshot stored on the FB Order.
+    Static QR is always confirmed by hand. A Maybank QR tender waits only when it was
+    confirmed manually; a provider-verified one settles through its own account. A row
+    that registration has not stamped yet is treated as waiting, because the ledger it
+    must not fall back to is the company-wide Mode of Payment.
+    """
+
+    settlement = normalize_qr_token(_value(payment, "settlement_status"))
+    if settlement in {"verified", "reconciled", "reconciliation failed"}:
+        return False
+    channel = normalize_qr_token(_value(payment, "payment_channel_code"))
+    is_qr_tender = channel in QR_PAYMENT_CHANNELS or (
+        not channel
+        and normalize_qr_token(_value(payment, "payment_method")) == MAYBANK_MODE_OF_PAYMENT
+    )
+    if not is_qr_tender:
+        return False
+    return (
+        channel == STATIC_QR_PAYMENT_CHANNEL
+        or settlement == "pending reconciliation"
+        or bool(_value(payment, "is_manual_confirmation"))
+    )
+
+
+def manual_qr_suspense_account(
+    order_doc: Any,
+    payment: Any,
+    *,
+    company: str,
+    currency: str,
+) -> str:
+    """The suspense ledger a manually confirmed QR tender waits in.
+
+    The FB Order payment snapshot is the accounting authority. An order can reach
+    invoice projection before registration has written that snapshot, so the branch's
+    POS Profile answers for that gap; the company-wide Mode of Payment never does,
+    because legacy sites still map DuitNow QR to Cash.
+    """
+
+    stored_account = str(_value(payment, "suspense_account") or "").strip()
+    if not stored_account:
+        return resolve_manual_qr_suspense_account(order_doc)
+    return validate_manual_qr_suspense_account(
+        stored_account,
+        company=company,
+        currency=currency,
+    )
+
+
+def enforce_manual_qr_payment_accounts(invoice: Any) -> None:
+    """Reapply manual-QR suspense accounts after ERPNext's native refresh.
+
+    ERPNext's ``Sales Invoice.before_save`` resets every payment row to the
+    company-wide Mode of Payment account.  That is correct for ordinary tenders, but
+    it would silently turn a manually confirmed QR sale into Cash when the standard
+    DuitNow QR mode is still mapped to a legacy cash account.  KoPOS therefore
+    reapplies the branch-scoped suspense account of every pending-reconciliation QR
+    row after the native hook has run, using the payment snapshot on the FB Order.
     """
 
     order_name = str(_value(invoice, "custom_fb_order") or "").strip()
@@ -1346,37 +1373,23 @@ def enforce_static_qr_payment_accounts(invoice: Any) -> None:
         if source_payment is None:
             continue
 
-        payment_channel = normalize_qr_token(
-            _value(source_payment, "payment_channel_code")
-        )
-        settlement_status = normalize_qr_token(
-            _value(source_payment, "settlement_status")
-        )
-        is_static_qr = payment_channel == STATIC_QR_PAYMENT_CHANNEL or (
-            not payment_channel
-            and settlement_status == "pending reconciliation"
-            and normalize_qr_token(_value(source_payment, "payment_method"))
-            == MAYBANK_MODE_OF_PAYMENT
-        )
-        if not is_static_qr:
+        if not is_manual_qr_tender(source_payment):
             continue
 
-        suspense_account = str(
-            _value(source_payment, "suspense_account") or ""
-        ).strip()
-        if suspense_account:
-            suspense_account = validate_manual_qr_suspense_account(
-                suspense_account,
+        setattr(
+            invoice_payment,
+            "account",
+            manual_qr_suspense_account(
+                order_doc,
+                source_payment,
                 company=str(_value(invoice, "company") or ""),
                 currency=str(
                     _value(invoice, "currency")
                     or _value(order_doc, "currency")
                     or ""
                 ),
-            )
-        else:
-            suspense_account = resolve_manual_qr_suspense_account(order_doc)
-        setattr(invoice_payment, "account", suspense_account)
+            ),
+        )
 
 
 def _resolve_payment_tender_and_change_sen(
