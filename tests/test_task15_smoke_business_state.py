@@ -808,53 +808,52 @@ def test_sales_invoice_dump_requests_return_and_void_provenance_fields(
     }.issubset(captured_fields)
 
 
-def test_closed_shift_rejection_absence_passes_when_no_docs_exist(monkeypatch) -> None:
-    def fake_get_rows(
-        doctype: str,
-        *,
-        filters: dict[str, Any] | None = None,
-        fields: list[str] | None = None,
-        order_by: str | None = None,
-    ) -> list[dict[str, Any]]:
+def _late_sale_rows(order_extra: dict[str, Any] | None = None, shift_extra: dict[str, Any] | None = None):
+    order = {
+        "name": "FB-ORDER-LATE", "order_id": "order-late", "shift": "FB-SHIFT-1", "device_id": "DEVICE-1",
+        "status": "Submitted", "grand_total": "12.00", "recorded_after_shift_close": 1, **(order_extra or {}),
+    }
+    shift = {
+        "name": "FB-SHIFT-1", "status": "Closed", "opening_float": "300.00", "expected_cash": "350.00",
+        "counted_cash": "338.00", "cash_variance": "-12.00", **(shift_extra or {}),
+    }
+
+    def fake_get_rows(doctype: str, *, filters=None, fields=None, order_by=None, **_kwargs):
+        if doctype == "FB Order":
+            return [order]
+        if doctype == "Sales Invoice":
+            return [{"name": "SI-LATE", "custom_fb_shift": order["shift"], "custom_fb_device_id": "DEVICE-1", "docstatus": 1}]
+        if doctype == "FB Shift":
+            return [shift]
         return []
 
-    monkeypatch.setattr(smoke, "_get_rows", fake_get_rows)
+    return fake_get_rows
 
-    result = smoke.assert_closed_shift_rejection_absence_json("closed-shift-reject-1")
+
+def test_a_sale_recorded_after_its_shift_closed_passes_when_it_is_marked_and_counted(monkeypatch) -> None:
+    monkeypatch.setattr(smoke, "_get_rows", _late_sale_rows())
+
+    result = smoke.assert_sale_recorded_after_shift_close_json("closed-shift-late-1")
 
     assert result["pass"] is True
     assert result["failures"] == []
-    assert result["summary"] == {
-        "idempotency_key": "closed-shift-reject-1",
-        "fb_orders": 0,
-        "sales_invoices": 0,
-    }
+    assert result["summary"]["sale_sen"] == 1200
+    assert result["summary"]["cash_variance_sen"] == -1200
 
 
-def test_closed_shift_rejection_absence_fails_when_docs_exist(monkeypatch) -> None:
-    def fake_get_rows(
-        doctype: str,
-        *,
-        filters: dict[str, Any] | None = None,
-        fields: list[str] | None = None,
-        order_by: str | None = None,
-    ) -> list[dict[str, Any]]:
-        if doctype == "FB Order":
-            return [{"name": "FB-ORDER-BAD", "external_idempotency_key": "closed-shift-reject-1"}]
-        if doctype == "Sales Invoice":
-            return [{"name": "SI-BAD", "custom_fb_idempotency_key": "closed-shift-reject-1"}]
-        return []
+def test_a_sale_recorded_after_its_shift_closed_fails_when_it_is_not_marked_or_not_counted(monkeypatch) -> None:
+    monkeypatch.setattr(
+        smoke,
+        "_get_rows",
+        _late_sale_rows({"recorded_after_shift_close": 0}, {"expected_cash": "338.00", "cash_variance": "-12.00"}),
+    )
 
-    monkeypatch.setattr(smoke, "_get_rows", fake_get_rows)
-
-    result = smoke.assert_closed_shift_rejection_absence_json("closed-shift-reject-1")
+    result = smoke.assert_sale_recorded_after_shift_close_json("closed-shift-late-1")
 
     assert result["pass"] is False
-    assert {
-        failure["assertion"] for failure in result["failures"]
-    } == {
-        "no_fb_order_created_for_closed_shift_rejection",
-        "no_sales_invoice_created_for_closed_shift_rejection",
+    assert {failure["assertion"] for failure in result["failures"]} == {
+        "sale_marked_recorded_after_shift_close",
+        "closed_shift_variance_shows_the_late_sale",
     }
 
 

@@ -217,12 +217,13 @@ def submit_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     validated = _validate_new_submit_order_state(normalized)
     try:
-        _validate_submit_shift(
+        locked_shift = _validate_submit_shift(
             shift_name=validated["shift"],
             device_id=validated["device_id"],
             staff_id=validated["staff_id"],
             lock=True,
         )
+        validated["recorded_after_shift_close"] = recorded_after_shift_close(locked_shift)
         order_doc = _build_fb_order(validated)
         order_doc.insert(ignore_permissions=True)
         order_doc.submit()
@@ -584,12 +585,13 @@ def prepare_automatic_qr_sale_payload(payload: dict[str, Any]) -> dict[str, Any]
 
     validated = _validate_new_submit_order_state(normalized)
     try:
-        _validate_submit_shift(
+        locked_shift = _validate_submit_shift(
             shift_name=validated["shift"],
             device_id=validated["device_id"],
             staff_id=validated["staff_id"],
             lock=True,
         )
+        validated["recorded_after_shift_close"] = recorded_after_shift_close(locked_shift)
         order_doc = _build_fb_order(validated)
         # Freeze the authenticated commercial line snapshot before the first
         # insert without consulting recipe or inventory state.
@@ -3200,6 +3202,7 @@ def _build_fb_order(validated: dict[str, Any]):
     order_doc.sale_datetime = validated["sale_datetime"]
     order_doc.device_id = validated["device_id"]
     order_doc.shift = validated["shift"]
+    order_doc.recorded_after_shift_close = validated.get("recorded_after_shift_close", 0)
     order_doc.staff_id = validated["staff_id"]
     order_doc.event_project = validated["event_project"]
     order_doc.booth_warehouse = validated["booth_warehouse"]
@@ -4091,9 +4094,18 @@ def _validate_submit_shift(
             f"shift {shift_name} does not belong to staff {staff_id}",
             ShiftOwnedByOtherError,
         )
-    if shift_status != "Open":
+    # A tablet can ring up sales while ERP has already closed its shift, offline or
+    # after an office close. That money went into the drawer of the shift it names, so
+    # the sale is recorded there and marked; the shift's expected cash and variance
+    # then show it. A cancelled or exception shift takes no sales.
+    if shift_status not in {"Open", "Closing", "Closed"}:
         frappe.throw(
-            f"shift {shift_name} is {shift_status or 'missing'}; new FB Orders require an Open FB Shift",
-            ShiftAlreadyClosedError if shift_status == "Closed" else ShiftRequiredError,
+            f"shift {shift_name} is {shift_status or 'missing'}; new FB Orders require an FB Shift that took sales",
+            ShiftRequiredError,
         )
     return shift_doc
+
+
+def recorded_after_shift_close(shift_doc: Any) -> int:
+    """A sale reaching ERP after its shift closed is kept visible on the FB Order."""
+    return 0 if cstr(getattr(shift_doc, "status", None)).strip() == "Open" else 1

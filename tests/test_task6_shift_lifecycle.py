@@ -132,8 +132,8 @@ def _patch_submit_dependencies(monkeypatch: pytest.MonkeyPatch, shift_status: st
     return built
 
 
-@pytest.mark.parametrize("shift_status", ["Closed", "Closing", "Exception", "Cancelled"])
-def test_submit_order_payload_rejects_non_open_shift_before_creating_order(
+@pytest.mark.parametrize("shift_status", ["Exception", "Cancelled"])
+def test_submit_order_payload_refuses_a_shift_that_took_no_sales(
     monkeypatch: pytest.MonkeyPatch,
     shift_status: str,
 ) -> None:
@@ -141,11 +141,42 @@ def test_submit_order_payload_rejects_non_open_shift_before_creating_order(
 
     with pytest.raises(
         fb_orders.frappe.ValidationError,
-        match="new FB Orders require an Open FB Shift",
+        match="new FB Orders require an FB Shift that took sales",
     ):
         fb_orders.submit_order_payload(_submit_payload())
 
     assert built["value"] is False
+
+
+@pytest.mark.parametrize(
+    ("shift_status", "expected_marker"),
+    [("Open", 0), ("Closing", 1), ("Closed", 1)],
+)
+def test_submit_order_payload_marks_a_sale_recorded_after_its_shift_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    shift_status: str,
+    expected_marker: int,
+) -> None:
+    # The tablet rang this sale up on its own shift; ERP records it there and says so.
+    built = _patch_submit_dependencies(monkeypatch, shift_status)
+    recorded: dict[str, Any] = {}
+
+    def build_order(validated: dict[str, Any]) -> SimpleNamespace:
+        built["value"] = True
+        recorded.update(validated)
+        raise _StopAfterBuild
+
+    monkeypatch.setattr(fb_orders, "_build_fb_order", build_order)
+
+    with pytest.raises(_StopAfterBuild):
+        fb_orders.submit_order_payload(_submit_payload())
+
+    assert built["value"] is True
+    assert recorded["recorded_after_shift_close"] == expected_marker
+
+
+class _StopAfterBuild(Exception):
+    """Stops the submit path once the FB Order fields are known."""
 
 
 def _device_doc() -> SimpleNamespace:

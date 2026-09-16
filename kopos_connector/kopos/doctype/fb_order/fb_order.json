@@ -27,6 +27,7 @@
         "column_break_1",
         "device_id",
         "shift",
+        "recorded_after_shift_close",
         "staff_id",
         "location_section",
         "event_project",
@@ -192,6 +193,14 @@
             "options": "FB Shift",
             "reqd": 1,
             "search_index": 1
+        },
+        {
+            "description": "The sale reached ERP after its shift was closed, so the shift's expected cash and variance include it.",
+            "fieldname": "recorded_after_shift_close",
+            "fieldtype": "Check",
+            "in_standard_filter": 1,
+            "label": "Recorded After Shift Close",
+            "read_only": 1
         },
         {
             "fieldname": "staff_id",
@@ -447,7 +456,7 @@
             "link_fieldname": "source_name"
         }
     ],
-    "modified": "2026-07-12 00:00:00.000000",
+    "modified": "2026-09-16 23:00:00.000000",
     "modified_by": "Administrator",
     "module": "KoPOS",
     "name": "FB Order",

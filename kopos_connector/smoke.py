@@ -2394,7 +2394,9 @@ def assert_smoke_business_state_json(
     )
 
 
-def assert_closed_shift_rejection_absence_json(idempotency_key: str) -> dict[str, Any]:
+def assert_sale_recorded_after_shift_close_json(idempotency_key: str) -> dict[str, Any]:
+    """A sale the tablet rang up after ERP closed its shift is recorded on that shift and says so."""
+
     key = str(idempotency_key or "").strip()
     failures: list[dict[str, Any]] = []
     assertions: dict[str, bool] = {"idempotency_key_present": bool(key)}
@@ -2407,31 +2409,40 @@ def assert_closed_shift_rejection_absence_json(idempotency_key: str) -> dict[str
     fb_orders = _get_rows(
         "FB Order",
         filters={"external_idempotency_key": key},
-        fields=["name", "order_id", "external_idempotency_key", "device_id", "status"],
+        fields=["name", "order_id", "shift", "device_id", "status", "grand_total", "recorded_after_shift_close"],
         order_by="creation asc, name asc",
     )
     sales_invoices = _get_rows(
         "Sales Invoice",
         filters={"custom_fb_idempotency_key": key},
-        fields=["name", "custom_fb_idempotency_key", "custom_fb_device_id", "docstatus"],
+        fields=["name", "custom_fb_shift", "custom_fb_device_id", "docstatus"],
         order_by="creation asc, name asc",
     )
-    assertions["no_fb_order_created_for_closed_shift_rejection"] = not fb_orders
-    assertions["no_sales_invoice_created_for_closed_shift_rejection"] = not sales_invoices
-    if fb_orders:
-        failures.append(
-            {
-                "assertion": "no_fb_order_created_for_closed_shift_rejection",
-                "detail": fb_orders,
-            }
+    order = fb_orders[0] if fb_orders else {}
+    shift = (
+        _get_rows(
+            "FB Shift",
+            filters={"name": order.get("shift")},
+            fields=["name", "status", "opening_float", "expected_cash", "counted_cash", "cash_variance"],
         )
-    if sales_invoices:
-        failures.append(
-            {
-                "assertion": "no_sales_invoice_created_for_closed_shift_rejection",
-                "detail": sales_invoices,
-            }
-        )
+        or [{}]
+    )[0] if order.get("shift") else {}
+    sale_sen = _money_sen(order.get("grand_total")) or 0
+    expected_sen = _money_sen(shift.get("expected_cash")) or 0
+    counted_sen = _money_sen(shift.get("counted_cash")) or 0
+    variance_sen = _money_sen(shift.get("cash_variance"))
+
+    def expect(name: str, passed: bool, detail: Any) -> None:
+        assertions[name] = passed
+        if not passed:
+            failures.append({"assertion": name, "detail": detail})
+
+    expect("one_fb_order_recorded_after_close", len(fb_orders) == 1, fb_orders)
+    expect("one_submitted_sales_invoice_after_close", len(sales_invoices) == 1 and sales_invoices[0].get("docstatus") == 1, sales_invoices)
+    expect("sale_marked_recorded_after_shift_close", bool(order.get("recorded_after_shift_close")), order)
+    expect("sale_kept_its_own_shift", bool(order.get("shift")) and sales_invoices and sales_invoices[0].get("custom_fb_shift") == order.get("shift"), {"order": order, "invoices": sales_invoices})
+    expect("closed_shift_expected_cash_includes_the_late_sale", shift.get("status") == "Closed" and sale_sen > 0 and expected_sen >= sale_sen, shift)
+    expect("closed_shift_variance_shows_the_late_sale", variance_sen is not None and variance_sen == counted_sen - expected_sen, shift)
     return {
         "pass": all(assertions.values()),
         "assertions": assertions,
@@ -2440,6 +2451,11 @@ def assert_closed_shift_rejection_absence_json(idempotency_key: str) -> dict[str
             "idempotency_key": key,
             "fb_orders": len(fb_orders),
             "sales_invoices": len(sales_invoices),
+            "shift": shift.get("name"),
+            "sale_sen": sale_sen,
+            "expected_cash_sen": expected_sen,
+            "counted_cash_sen": counted_sen,
+            "cash_variance_sen": variance_sen,
         },
     }
 
