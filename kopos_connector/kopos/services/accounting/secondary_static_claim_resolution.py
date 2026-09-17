@@ -1,9 +1,13 @@
 # pyright: reportMissingImports=false
 """Finance-only resolution for a static claim received after Maybank won.
 
-Cashiers can create the evidence-bound claim, but only a non-device System
-Manager may decide whether a second bank credit exists.  This service never
-creates or changes a sale, invoice, stock movement, or winning payment.
+Cashiers can create the evidence-bound claim; deciding whether a second bank
+credit exists is a finance decision. That authority is enforced by the only
+caller, `api.resolve_secondary_static_qr_claim`, which requires a System Manager
+and refuses any session holding the device API role; this service assumes it and
+does not re-check the session, so a second caller would have to enforce it too.
+This service never creates or changes a sale, invoice, stock movement, or
+winning payment.
 """
 
 from __future__ import annotations
