@@ -39,7 +39,6 @@ class TestFBPublicContracts(unittest.TestCase):
                 ("get_order_status", "GET"),
                 ("retry_failed_projections", "POST"),
             ],
-            "api/fb_returns.py": [("process_return", "POST")],
         }
         for relative, methods in expected.items():
             content = (ERP_ROOT / relative).read_text()
@@ -53,6 +52,18 @@ class TestFBPublicContracts(unittest.TestCase):
                 else:
                     self.assertIn("@frappe.whitelist()", content, f"{relative}:{method}")
                 self.assertIn(f"def {method}", content, f"{relative}:{method}")
+
+    def test_refunds_have_one_public_entry_point(self):
+        """A refund enters over HTTP only through `kopos_connector.api.process_refund`.
+
+        `api/fb_returns.py` holds the refund logic and is called in-process; a
+        second whitelisted door there would be a second contract to maintain and
+        a second surface to guard.
+        """
+        returns = (ERP_ROOT / "api/fb_returns.py").read_text()
+        self.assertNotIn("@frappe.whitelist", returns)
+        public_api = (ERP_ROOT / "api/__init__.py").read_text()
+        self.assertIn('@frappe.whitelist(methods=["POST"])\ndef process_refund(', public_api)
 
     @pytest.mark.inventory_regression
     def test_optional_operational_api_methods_are_whitelisted(self):

@@ -332,33 +332,49 @@ def test_standard_credit_note_is_non_pos_and_duplicate_reuses_invoice(
     assert shift.expected_cash == 112.0
 
 
-def test_direct_return_route_requires_device_before_return_event(monkeypatch):
+def test_public_refund_route_requires_device_before_return_event(monkeypatch):
+    api = importlib.import_module("kopos_connector.api")
     fb_returns = importlib.import_module("kopos_connector.api.fb_returns")
+    captured = {}
 
     monkeypatch.setattr(
-        fb_returns,
-        "_get_request_payload",
-        lambda: {
-            "return_id": "refund-idem-1",
+        api,
+        "_get_submit_payload",
+        lambda kwargs: {
+            "idempotency_key": "refund-idem-1",
             "original_sales_invoice": "SINV-1",
             "lines": [{"original_resolved_sale": "RS-1", "qty_returned": 1}],
         },
     )
     monkeypatch.setattr(
-        fb_returns,
+        api,
         "lock_device_for_operational_mutation",
         lambda device_id: (_ for _ in ()).throw(
-            fb_returns.frappe.ValidationError("device_id is required")
+            api.frappe.ValidationError("device_id is required")
         ),
     )
     monkeypatch.setattr(
-        fb_returns.frappe,
+        fb_returns,
+        "process_return_payload",
+        lambda *args, **kwargs: pytest.fail("a refund must not run without a device"),
+    )
+    monkeypatch.setattr(
+        api.frappe,
         "new_doc",
         lambda doctype: pytest.fail(f"{doctype} should not be created"),
     )
+    monkeypatch.setattr(
+        api,
+        "_write_response",
+        lambda payload, http_status_code=200: captured.update(
+            {"response": payload, "http_status_code": http_status_code}
+        ),
+    )
 
-    with pytest.raises(fb_returns.frappe.ValidationError, match="device_id is required"):
-        fb_returns.process_return()
+    api.process_refund()
+
+    assert captured["http_status_code"] == 400
+    assert "device_id is required" in str(captured["response"])
 
 
 def test_return_rejects_over_refund_and_duplicate_payload_mismatch(monkeypatch):

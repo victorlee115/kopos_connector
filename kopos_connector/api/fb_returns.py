@@ -9,7 +9,6 @@ from typing import Any
 import frappe
 from frappe.utils import cint, cstr, flt
 
-from kopos_connector.api.devices import lock_device_for_operational_mutation
 from kopos_connector.api.operational_errors import RefundChangedError
 from kopos_connector.kopos.services.accounting.refund_allocation import (
     REFUND_ALLOCATION_VERSION,
@@ -50,13 +49,6 @@ REFUND_ALLOCATION_MESSAGES = {
     "nothing_to_refund": "These items have no paid amount left to refund. Add another item.",
     "invalid_sale": "This sale's saved amounts cannot be used for a part refund. Ask support.",
 }
-
-
-@frappe.whitelist(methods=["POST"])
-def process_return() -> dict[str, Any]:
-    payload = _get_request_payload()
-    lock_device_for_operational_mutation(device_id=cstr(payload.get("device_id")))
-    return process_return_payload(payload, require_manager_approval=True)
 
 
 def process_return_payload(
@@ -199,15 +191,6 @@ def list_order_refunds(sales_invoice: str) -> dict[str, Any]:
             }
         )
     return {"status": "ok", "sales_invoice": sales_invoice, "refunds": refunds}
-
-
-def _get_request_payload() -> dict[str, Any]:
-    request_json = None
-    if getattr(frappe, "request", None):
-        request_json = frappe.request.get_json(silent=True)
-    if isinstance(request_json, Mapping):
-        return dict(request_json)
-    return dict(frappe.form_dict or {})
 
 
 def _get_existing_return_name_current(return_id: str) -> str | None:
@@ -397,20 +380,14 @@ def _validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             frappe.ValidationError,
         )
     _validate_original_invoice(original_invoice, original_sales_invoice, device_id)
-    resolved_fb_order = _resolve_fb_order(original_invoice, fb_order)
-    if fb_order and resolved_fb_order and fb_order != resolved_fb_order:
-        frappe.throw(
-            f"FB Order {fb_order} does not match Sales Invoice {original_sales_invoice}",
-            frappe.ValidationError,
-        )
-    fb_order = fb_order or resolved_fb_order
+    # An FB Order sent by the client is checked against the invoice's own one in
+    # the refund approval scope; here it only falls back when none was sent.
+    fb_order = (
+        fb_order or cstr(getattr(original_invoice, "custom_fb_order", None)).strip() or None
+    )
     if refund_allocation_version:
         validated_lines = _map_partial_refund_lines(partial_lines, original_invoice)
-    _validate_return_lines_belong_to_invoice(
-        validated_lines,
-        original_sales_invoice,
-        fb_order,
-    )
+    _validate_return_lines_name_invoice_items(validated_lines)
     if not refund_allocation_version:
         validated_lines = _validate_full_return_lines(
             validated_lines,
@@ -753,16 +730,12 @@ def _validate_original_invoice(
         )
 
 
-def _resolve_fb_order(original_invoice: Any, fb_order: str | None) -> str | None:
-    if fb_order:
-        return fb_order
-    return cstr(getattr(original_invoice, "custom_fb_order", None)).strip() or None
+def _validate_return_lines_name_invoice_items(lines: list[dict[str, Any]]) -> None:
+    """Every refund line must name the Sales Invoice item it returns.
 
-
-def _validate_return_lines_belong_to_invoice(
-    lines: list[dict[str, Any]], original_sales_invoice: str, fb_order: str | None
-) -> None:
-    del original_sales_invoice, fb_order
+    Belonging to the sale is proven after this: part-refund lines are mapped onto
+    the invoice's own items, and a full refund must equal the whole invoice.
+    """
     if any(
         not cstr(line.get("original_sales_invoice_item")).strip() for line in lines
     ):

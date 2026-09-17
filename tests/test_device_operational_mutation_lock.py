@@ -239,7 +239,6 @@ class TestDeviceOperationalMutationLock(unittest.TestCase):
                 "submit_order": "submit_order_payload",
                 "retry_failed_projections": "retry_failed_projections",
             },
-            "api/fb_returns.py": {"process_return": "process_return_payload"},
         }
 
         for relative_path, routes in guarded_routes.items():
