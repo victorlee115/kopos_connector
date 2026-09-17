@@ -8,6 +8,11 @@ from typing import Any
 import frappe
 from frappe.utils import cint
 
+from kopos_connector.kopos.services.accounting._qr_journal_entry import (
+    JournalSide,
+    create_or_recover_journal,
+    prove_journal,
+)
 from kopos_connector.kopos.services.accounting._duplicate_qr_contract import (
     JOURNAL_ENTRY_DOCTYPE,
     MAYBANK_TRANSACTION_DOCTYPE,
@@ -122,250 +127,89 @@ def _find_existing_journal(
     return linked or by_key or None
 
 
-def _create_or_recover_journal(context: dict[str, Any]) -> str:
-    savepoint = "kopos_duplicate_qr_journal"
-    savepoint_fn = getattr(frappe.db, "savepoint", None)
-    savepoint_created = callable(savepoint_fn)
-    if savepoint_created:
-        savepoint_fn(savepoint)
-    try:
-        journal = frappe.new_doc(JOURNAL_ENTRY_DOCTYPE)
-        journal.voucher_type = "Journal Entry"
-        journal.company = context["company"]
-        journal.posting_date = context["posting_date"]
-        journal.user_remark = (
-            "KoPOS duplicate Automatic QR "
-            f"{context['stage']} for {context['source_name']}"
-        )
-        journal.custom_kopos_qr_duplicate_key = context["journal_key"]
-        journal.custom_kopos_qr_duplicate_stage = context["stage"]
-        journal.custom_kopos_qr_provider_transaction = context.get(
-            "provider_transaction", context["source_name"]
-        ) or None
-        journal.custom_kopos_qr_winning_transaction = context[
-            "winning_transaction"
-        ] or None
-        journal.custom_kopos_qr_winning_channel = context["winning_channel"]
-        journal.custom_kopos_qr_winning_static_reconciliation = context[
-            "winning_static_reconciliation"
-        ] or None
-        journal.custom_kopos_qr_provider_evidence_reference = context[
-            "evidence_reference"
-        ]
-        journal.custom_kopos_qr_provider_evidence_file = (
-            context["evidence_file"] or None
-        )
-        journal.custom_kopos_qr_provider_evidence_sha256 = context.get(
-            "evidence_sha256"
-        )
-        journal.custom_kopos_qr_source_doctype = context.get(
-            "source_doctype", MAYBANK_TRANSACTION_DOCTYPE
-        )
-        journal.custom_kopos_qr_source_name = context["source_name"]
-        journal.custom_kopos_qr_fb_order = context["order_name"]
-        journal.custom_kopos_qr_sales_invoice = context["invoice_name"]
-        journal.custom_kopos_qr_amount_sen = context["amount_sen"]
-        journal.custom_kopos_qr_currency = context["currency"]
-        journal.append(
-            "accounts",
-            {
-                "account": context["debit_account"],
-                "debit_in_account_currency": _sen_to_amount(
-                    context["amount_sen"]
-                ),
-                "credit_in_account_currency": Decimal("0"),
-                "exchange_rate": 1,
-            },
-        )
-        journal.append(
-            "accounts",
-            {
-                "account": context["credit_account"],
-                "debit_in_account_currency": Decimal("0"),
-                "credit_in_account_currency": _sen_to_amount(
-                    context["amount_sen"]
-                ),
-                "exchange_rate": 1,
-            },
-        )
-        journal.insert(ignore_permissions=True)
-        journal.submit()
-        if cint(_value(journal, "docstatus")) != 1:
-            frappe.throw(
-                f"Duplicate QR Journal Entry {journal.name} was not submitted",
-                frappe.ValidationError,
-            )
-        return _text(journal.name)
-    except Exception as error:
-        duplicate_error = getattr(frappe, "DuplicateEntryError", None)
-        if not duplicate_error or not isinstance(error, duplicate_error):
-            raise
-        if not savepoint_created:
-            raise
-        frappe.db.rollback(save_point=savepoint)
-        recovered = _text(
-            frappe.db.get_value(
-                JOURNAL_ENTRY_DOCTYPE,
-                {"custom_kopos_qr_duplicate_key": context["journal_key"]},
-                "name",
-            )
-        )
-        if not recovered:
-            raise
-        return recovered
-
-
-def _validate_journal(
-    context: dict[str, Any],
-    journal_name: str,
-) -> dict[str, Any]:
-    journal = frappe.get_doc(JOURNAL_ENTRY_DOCTYPE, journal_name)
-    if cint(_value(journal, "docstatus")) != 1:
-        frappe.throw(
-            f"Duplicate QR Journal Entry {journal_name} is not submitted",
-            frappe.ValidationError,
-        )
-    expected_fields = {
+def _journal_fields(context: dict[str, Any]) -> dict[str, Any]:
+    return {
         "custom_kopos_qr_duplicate_key": context["journal_key"],
         "custom_kopos_qr_duplicate_stage": context["stage"],
         "custom_kopos_qr_provider_transaction": context.get(
             "provider_transaction", context["source_name"]
-        ),
-        "custom_kopos_qr_winning_transaction": context[
-            "winning_transaction"
-        ],
-        "custom_kopos_qr_provider_evidence_reference": context[
-            "evidence_reference"
-        ],
-        "custom_kopos_qr_provider_evidence_file": context["evidence_file"],
-        "custom_kopos_qr_provider_evidence_sha256": context.get(
-            "evidence_sha256"
-        ),
+        )
+        or None,
+        "custom_kopos_qr_winning_transaction": context["winning_transaction"] or None,
+        "custom_kopos_qr_winning_channel": context["winning_channel"],
+        "custom_kopos_qr_winning_static_reconciliation": context[
+            "winning_static_reconciliation"
+        ]
+        or None,
+        "custom_kopos_qr_provider_evidence_reference": context["evidence_reference"],
+        "custom_kopos_qr_provider_evidence_file": context["evidence_file"] or None,
+        "custom_kopos_qr_provider_evidence_sha256": context.get("evidence_sha256"),
         "custom_kopos_qr_source_doctype": context.get(
             "source_doctype", MAYBANK_TRANSACTION_DOCTYPE
         ),
         "custom_kopos_qr_source_name": context["source_name"],
         "custom_kopos_qr_fb_order": context["order_name"],
         "custom_kopos_qr_sales_invoice": context["invoice_name"],
+        "custom_kopos_qr_amount_sen": context["amount_sen"],
         "custom_kopos_qr_currency": context["currency"],
-        "company": context["company"],
-        "posting_date": context["posting_date"],
     }
-    for fieldname, expected in expected_fields.items():
-        actual = _text(_value(journal, fieldname))
-        if fieldname == "custom_kopos_qr_currency":
-            actual = actual.upper()
-        if actual != _text(expected):
-            frappe.throw(
-                f"Journal Entry {journal_name} {fieldname} does not match duplicate QR accounting",
-                frappe.ValidationError,
+
+
+def _create_or_recover_journal(context: dict[str, Any]) -> str:
+    return create_or_recover_journal(
+        company=context["company"],
+        posting_date=context["posting_date"],
+        user_remark=(
+            "KoPOS duplicate Automatic QR "
+            f"{context['stage']} for {context['source_name']}"
+        ),
+        fields=_journal_fields(context),
+        debit=JournalSide(context["debit_account"]),
+        credit=JournalSide(context["credit_account"]),
+        amount_sen=context["amount_sen"],
+        savepoint="kopos_duplicate_qr_journal",
+        recover=lambda: _text(
+            frappe.db.get_value(
+                JOURNAL_ENTRY_DOCTYPE,
+                {"custom_kopos_qr_duplicate_key": context["journal_key"]},
+                "name",
             )
-    actual_winning_channel = _text(
-        _value(journal, "custom_kopos_qr_winning_channel")
+        ),
     )
-    expected_winning_channel = _text(context["winning_channel"])
-    if (
-        context.get("legacy_dynamic_winner_metadata")
-        and expected_winning_channel == "maybank_qr"
-    ):
-        allowed_winning_channels = {"", "maybank_qr"}
-    else:
-        allowed_winning_channels = {expected_winning_channel}
+
+
+def _validate_journal(
+    context: dict[str, Any],
+    journal_name: str,
+) -> dict[str, Any]:
+    fields = _journal_fields(context)
+    fields.pop("custom_kopos_qr_amount_sen")
+    # A legacy dynamic winner may predate the channel stamp, so it is proven apart.
+    expected_winning_channel = fields.pop("custom_kopos_qr_winning_channel")
+    prove_journal(
+        journal_name,
+        label="duplicate QR accounting",
+        expected_fields={**fields, "company": context["company"], "posting_date": context["posting_date"]},
+        debit=JournalSide(context["debit_account"]),
+        credit=JournalSide(context["credit_account"]),
+        amount_sen=context["amount_sen"],
+        exact_gl_rows=2,
+    )
+    journal = frappe.get_doc(JOURNAL_ENTRY_DOCTYPE, journal_name)
+    actual_winning_channel = _text(_value(journal, "custom_kopos_qr_winning_channel"))
+    allowed_winning_channels = (
+        {"", "maybank_qr"}
+        if context.get("legacy_dynamic_winner_metadata")
+        and _text(expected_winning_channel) == "maybank_qr"
+        else {_text(expected_winning_channel)}
+    )
     if actual_winning_channel not in allowed_winning_channels:
         frappe.throw(
             f"Journal Entry {journal_name} custom_kopos_qr_winning_channel does not match duplicate QR accounting",
             frappe.ValidationError,
         )
-    if _text(
-        _value(
-            journal,
-            "custom_kopos_qr_winning_static_reconciliation",
-        )
-    ) != _text(context["winning_static_reconciliation"]):
-        frappe.throw(
-            f"Journal Entry {journal_name} custom_kopos_qr_winning_static_reconciliation does not match duplicate QR accounting",
-            frappe.ValidationError,
-        )
-    if _strict_positive_sen(
-        _value(journal, "custom_kopos_qr_amount_sen"),
-        "Journal Entry duplicate QR amount_sen",
-    ) != context["amount_sen"]:
-        frappe.throw(
-            f"Journal Entry {journal_name} amount does not match duplicate QR accounting",
-            frappe.ValidationError,
-        )
-
-    gl_rows = frappe.get_all(
-        "GL Entry",
-        filters={
-            "voucher_type": JOURNAL_ENTRY_DOCTYPE,
-            "voucher_no": journal_name,
-            "is_cancelled": 0,
-        },
-        fields=[
-            "account",
-            "debit",
-            "credit",
-            "debit_in_account_currency",
-            "credit_in_account_currency",
-        ],
-        order_by="account asc, name asc",
-        limit_page_length=3,
-    )
-    if len(gl_rows) != 2:
-        frappe.throw(
-            f"Journal Entry {journal_name} must have exactly two active GL rows",
-            frappe.ValidationError,
-        )
-    observed = {
-        context["debit_account"]: {"debit_sen": 0, "credit_sen": 0},
-        context["credit_account"]: {"debit_sen": 0, "credit_sen": 0},
-    }
-    for row in gl_rows:
-        account = _text(_value(row, "account"))
-        debit_sen = _money_to_sen(_value(row, "debit"), "GL debit")
-        credit_sen = _money_to_sen(_value(row, "credit"), "GL credit")
-        account_currency_debit_sen = _money_to_sen(
-            _value(row, "debit_in_account_currency"),
-            "GL account-currency debit",
-        )
-        account_currency_credit_sen = _money_to_sen(
-            _value(row, "credit_in_account_currency"),
-            "GL account-currency credit",
-        )
-        if (
-            debit_sen != account_currency_debit_sen
-            or credit_sen != account_currency_credit_sen
-        ):
-            frappe.throw(
-                f"Journal Entry {journal_name} base and account-currency GL amounts differ",
-                frappe.ValidationError,
-            )
-        if account not in observed:
-            frappe.throw(
-                f"Journal Entry {journal_name} contains unexpected GL account {account}",
-                frappe.ValidationError,
-            )
-        observed[account]["debit_sen"] += debit_sen
-        observed[account]["credit_sen"] += credit_sen
-
     expected_sen = context["amount_sen"]
-    if observed[context["debit_account"]] != {
-        "debit_sen": expected_sen,
-        "credit_sen": 0,
-    }:
-        frappe.throw(
-            f"Journal Entry {journal_name} does not exactly debit the duplicate QR target account",
-            frappe.ValidationError,
-        )
-    if observed[context["credit_account"]] != {
-        "debit_sen": 0,
-        "credit_sen": expected_sen,
-    }:
-        frappe.throw(
-            f"Journal Entry {journal_name} does not exactly credit the duplicate QR source account",
-            frappe.ValidationError,
-        )
+
     return {
         "journal_entry": journal_name,
         "stage": context["stage"],

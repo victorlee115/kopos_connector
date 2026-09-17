@@ -927,12 +927,12 @@ def test_terminal_refund_assertion_is_read_only_and_reproves_exact_evidence(
         (
             "duplicate_liability_journal_entry",
             "missing",
-            "exactly two active GL rows",
+            "exactly 2 active GL rows",
         ),
         (
             "duplicate_refund_journal_entry",
             "extra_zero",
-            "exactly two active GL rows",
+            "exactly 2 active GL rows",
         ),
         (
             "duplicate_liability_journal_entry",

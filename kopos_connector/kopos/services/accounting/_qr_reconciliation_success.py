@@ -4,24 +4,23 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Any
 
 import frappe
 from frappe.utils import cstr
 
+from ._qr_journal_entry import (
+    JournalSide,
+    create_or_recover_journal,
+    prove_journal,
+)
 from ._qr_reconciliation_context import (
-    JOURNAL_ENTRY_DOCTYPE,
     RECONCILIATION_FAILED_STATUS,
     _build_context,
     _find_existing_journal,
-    _gl_amounts_sen,
     _lock_and_reload_source,
     _require_failure_source_fields,
     _require_journal_fields,
-    _row_value,
-    _sen_to_amount,
-    _strict_positive_sen,
     _validate_invoice_suspense_receipt,
     _value,
 )
@@ -126,251 +125,80 @@ def _apply_historical_failure_recovery(context: dict[str, Any]) -> None:
         )
 
 
-def _create_or_recover_journal(context: dict[str, Any]) -> str:
-    savepoint = "kopos_qr_reclassification"
-    savepoint_created = False
-    try:
-        frappe.db.savepoint(savepoint)
-        savepoint_created = True
-    except Exception:
-        savepoint_created = False
-
-    try:
-        journal = frappe.new_doc(JOURNAL_ENTRY_DOCTYPE)
-        journal.voucher_type = JOURNAL_ENTRY_DOCTYPE
-        journal.company = context["company"]
-        journal.posting_date = context["posting_date"]
-        journal.user_remark = (
-            f"KoPOS QR suspense {context['disposition']} for {context['source_doctype']} "
-            f"{context['source_name']}; Sales Invoice {context['invoice_name']}"
-        )
-        if context["disposition"] == RECONCILIATION_FAILED_STATUS:
-            journal.custom_kopos_qr_failure_key = context["reconciliation_key"]
-        else:
-            journal.custom_kopos_qr_reconciliation_key = context["reconciliation_key"]
-        journal.custom_kopos_qr_source_doctype = context["source_doctype"]
-        journal.custom_kopos_qr_source_name = context["source_name"]
-        journal.custom_kopos_qr_fb_order = context["order_name"]
-        journal.custom_kopos_qr_sales_invoice = context["invoice_name"]
-        journal.custom_kopos_qr_amount_sen = context["amount_sen"]
-        journal.custom_kopos_qr_currency = context["currency"]
-        if context["disposition"] == RECONCILIATION_FAILED_STATUS:
-            journal.custom_kopos_qr_disposition = context["disposition"]
-            journal.custom_kopos_qr_fb_order_payment = context["payment_row_name"]
-            journal.custom_kopos_qr_target_account = context["target_account"]
-            journal.custom_kopos_qr_cost_center = context["failure_cost_center"]
-            journal.custom_kopos_qr_failure_reason = context["failure_reason"]
-        elif context["prior_failure_journal_entry"]:
-            journal.custom_kopos_qr_source_account = context["credit_account"]
-            journal.custom_kopos_qr_prior_failure_journal = context[
-                "prior_failure_journal_entry"
-            ]
-            journal.custom_kopos_qr_cost_center = context["credit_cost_center"]
-        journal.append(
-            "accounts",
-            {
-                "account": context["target_account"],
-                "debit_in_account_currency": _sen_to_amount(context["amount_sen"]),
-                "credit_in_account_currency": Decimal("0"),
-                "exchange_rate": 1,
-                **(
-                    {"cost_center": context["failure_cost_center"]}
-                    if context["disposition"] == RECONCILIATION_FAILED_STATUS
-                    else {}
-                ),
-            },
-        )
-        journal.append(
-            "accounts",
-            {
-                "account": context["credit_account"],
-                "debit_in_account_currency": Decimal("0"),
-                "credit_in_account_currency": _sen_to_amount(context["amount_sen"]),
-                "exchange_rate": 1,
-                **(
-                    {"cost_center": context["credit_cost_center"]}
-                    if context["credit_cost_center"]
-                    else {}
-                ),
-            },
-        )
-        journal.insert(ignore_permissions=True)
-        journal.submit()
-        if int(_value(journal, "docstatus") or 0) != 1:
-            frappe.throw(
-                f"QR reclassification Journal Entry {journal.name} was not submitted",
-                frappe.ValidationError,
-            )
-        return cstr(journal.name).strip()
-    except Exception as error:
-        duplicate_error = getattr(frappe, "DuplicateEntryError", None)
-        if not duplicate_error or not isinstance(error, duplicate_error):
-            raise
-        if not savepoint_created:
-            raise
-        frappe.db.rollback(save_point=savepoint)
-        recovered = _find_existing_journal(
-            context["source"],
-            context["reconciliation_key"],
-            link_field=(
-                "failure_journal_entry"
-                if context["disposition"] == RECONCILIATION_FAILED_STATUS
-                else "reclassification_journal_entry"
-            ),
-            key_field=(
-                "custom_kopos_qr_failure_key"
-                if context["disposition"] == RECONCILIATION_FAILED_STATUS
-                else "custom_kopos_qr_reconciliation_key"
-            ),
-        )
-        if not recovered:
-            raise
-        return recovered
-
-
-def _validate_journal(context: dict[str, Any], journal_name: str) -> dict[str, Any]:
-    journal = frappe.get_doc(JOURNAL_ENTRY_DOCTYPE, journal_name)
-    if int(_value(journal, "docstatus") or 0) != 1:
-        frappe.throw(
-            f"QR reclassification Journal Entry {journal_name} is not submitted",
-            frappe.ValidationError,
-        )
-
-    journal_key_field = (
-        "custom_kopos_qr_failure_key"
-        if context["disposition"] == RECONCILIATION_FAILED_STATUS
-        else "custom_kopos_qr_reconciliation_key"
+def _journal_sides(context: dict[str, Any]) -> tuple[JournalSide, JournalSide]:
+    failed = context["disposition"] == RECONCILIATION_FAILED_STATUS
+    return (
+        JournalSide(context["target_account"], context["failure_cost_center"] if failed else ""),
+        JournalSide(context["credit_account"], context["credit_cost_center"]),
     )
-    expected_fields = {
-        journal_key_field: context["reconciliation_key"],
+
+
+def _journal_fields(context: dict[str, Any]) -> dict[str, Any]:
+    failed = context["disposition"] == RECONCILIATION_FAILED_STATUS
+    fields: dict[str, Any] = {
+        ("custom_kopos_qr_failure_key" if failed else "custom_kopos_qr_reconciliation_key"):
+            context["reconciliation_key"],
         "custom_kopos_qr_source_doctype": context["source_doctype"],
         "custom_kopos_qr_source_name": context["source_name"],
         "custom_kopos_qr_fb_order": context["order_name"],
         "custom_kopos_qr_sales_invoice": context["invoice_name"],
+        "custom_kopos_qr_amount_sen": context["amount_sen"],
         "custom_kopos_qr_currency": context["currency"],
-        "company": context["company"],
     }
-    for fieldname, expected in expected_fields.items():
-        actual = cstr(_value(journal, fieldname)).strip()
-        if fieldname == "custom_kopos_qr_currency":
-            actual = actual.upper()
-        if actual != cstr(expected).strip():
-            frappe.throw(
-                f"Journal Entry {journal_name} {fieldname} does not match QR reconciliation",
-                frappe.ValidationError,
-            )
-    if context["disposition"] == RECONCILIATION_FAILED_STATUS:
-        expected_failure_fields = {
-            "custom_kopos_qr_disposition": RECONCILIATION_FAILED_STATUS,
+    if failed:
+        fields.update({
+            "custom_kopos_qr_disposition": context["disposition"],
             "custom_kopos_qr_fb_order_payment": context["payment_row_name"],
             "custom_kopos_qr_target_account": context["target_account"],
             "custom_kopos_qr_cost_center": context["failure_cost_center"],
             "custom_kopos_qr_failure_reason": context["failure_reason"],
-        }
-        for fieldname, expected in expected_failure_fields.items():
-            if cstr(_value(journal, fieldname)).strip() != cstr(expected).strip():
-                frappe.throw(
-                    f"Journal Entry {journal_name} {fieldname} does not match "
-                    "QR failure disposition",
-                    frappe.ValidationError,
-                )
+        })
     elif context["prior_failure_journal_entry"]:
-        expected_recovery_fields = {
+        fields.update({
             "custom_kopos_qr_source_account": context["credit_account"],
-            "custom_kopos_qr_prior_failure_journal": context[
-                "prior_failure_journal_entry"
-            ],
+            "custom_kopos_qr_prior_failure_journal": context["prior_failure_journal_entry"],
             "custom_kopos_qr_cost_center": context["credit_cost_center"],
-        }
-        for fieldname, expected in expected_recovery_fields.items():
-            if cstr(_value(journal, fieldname)).strip() != cstr(expected).strip():
-                frappe.throw(
-                    f"Journal Entry {journal_name} {fieldname} does not match "
-                    "late QR settlement recovery",
-                    frappe.ValidationError,
-                )
-    if _strict_positive_sen(
-        _value(journal, "custom_kopos_qr_amount_sen"),
-        "Journal Entry QR amount_sen",
-    ) != context["amount_sen"]:
-        frappe.throw(
-            f"Journal Entry {journal_name} amount does not match QR reconciliation",
-            frappe.ValidationError,
-        )
+        })
+    return fields
 
-    rows = frappe.get_all(
-        "GL Entry",
-        filters={
-            "voucher_type": JOURNAL_ENTRY_DOCTYPE,
-            "voucher_no": journal_name,
-            "is_cancelled": 0,
-        },
-        fields=[
-            "account",
-            "debit",
-            "credit",
-            "debit_in_account_currency",
-            "credit_in_account_currency",
-            "cost_center",
-        ],
-        order_by="account asc, name asc",
+
+def _create_or_recover_journal(context: dict[str, Any]) -> str:
+    failed = context["disposition"] == RECONCILIATION_FAILED_STATUS
+    debit, credit = _journal_sides(context)
+    return create_or_recover_journal(
+        company=context["company"],
+        posting_date=context["posting_date"],
+        user_remark=(
+            f"KoPOS QR suspense {context['disposition']} for {context['source_doctype']} "
+            f"{context['source_name']}; Sales Invoice {context['invoice_name']}"
+        ),
+        fields=_journal_fields(context),
+        debit=debit,
+        credit=credit,
+        amount_sen=context["amount_sen"],
+        savepoint="kopos_qr_reclassification",
+        recover=lambda: _find_existing_journal(
+            context["source"],
+            context["reconciliation_key"],
+            link_field="failure_journal_entry" if failed else "reclassification_journal_entry",
+            key_field="custom_kopos_qr_failure_key" if failed else "custom_kopos_qr_reconciliation_key",
+        ),
     )
-    if not rows:
-        frappe.throw(
-            f"Journal Entry {journal_name} has no submitted GL evidence",
-            frappe.ValidationError,
-        )
 
-    observed = {
-        context["target_account"]: {"debit_sen": 0, "credit_sen": 0},
-        context["credit_account"]: {"debit_sen": 0, "credit_sen": 0},
-    }
-    for row in rows:
-        account = cstr(_row_value(row, "account")).strip()
-        debit_sen, credit_sen = _gl_amounts_sen(row, account)
-        if debit_sen == 0 and credit_sen == 0:
-            continue
-        if account not in observed:
-            frappe.throw(
-                f"Journal Entry {journal_name} contains an unexpected GL account {account}",
-                frappe.ValidationError,
-            )
-        if (
-            context["disposition"] == RECONCILIATION_FAILED_STATUS
-            and account == context["target_account"]
-            and cstr(_row_value(row, "cost_center")).strip()
-            != context["failure_cost_center"]
-        ):
-            frappe.throw(
-                f"Journal Entry {journal_name} QR failure Cost Center does not match",
-                frappe.ValidationError,
-            )
-        if (
-            context["prior_failure_journal_entry"]
-            and account == context["credit_account"]
-            and cstr(_row_value(row, "cost_center")).strip()
-            != context["credit_cost_center"]
-        ):
-            frappe.throw(
-                f"Journal Entry {journal_name} late-settlement Cost Center does not match",
-                frappe.ValidationError,
-            )
-        observed[account]["debit_sen"] += debit_sen
-        observed[account]["credit_sen"] += credit_sen
 
+def _validate_journal(context: dict[str, Any], journal_name: str) -> dict[str, Any]:
+    debit, credit = _journal_sides(context)
+    fields = _journal_fields(context)
+    fields.pop("custom_kopos_qr_amount_sen")
+    prove_journal(
+        journal_name,
+        label="QR reconciliation",
+        expected_fields={**fields, "company": context["company"]},
+        debit=debit,
+        credit=credit,
+        amount_sen=context["amount_sen"],
+    )
     expected_sen = int(context["amount_sen"])
-    target = observed[context["target_account"]]
-    credit = observed[context["credit_account"]]
-    if target != {"debit_sen": expected_sen, "credit_sen": 0}:
-        frappe.throw(
-            f"Journal Entry {journal_name} does not exactly debit the QR target account",
-            frappe.ValidationError,
-        )
-    if credit != {"debit_sen": 0, "credit_sen": expected_sen}:
-        frappe.throw(
-            f"Journal Entry {journal_name} does not exactly credit the QR source account",
-            frappe.ValidationError,
-        )
 
     result = {
         "journal_entry": journal_name,
