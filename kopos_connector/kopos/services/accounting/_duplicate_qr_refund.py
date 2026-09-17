@@ -17,12 +17,12 @@ from kopos_connector.kopos.services.accounting._duplicate_qr_contract import (
     _bounded_text,
     _build_accounting_context,
     _required_text,
-    _strict_positive_sen,
     _text,
     _validate_duplicate_identity,
     _validated_refund_date,
     _value,
 )
+from kopos_connector.utils.money import positive_sen
 from kopos_connector.kopos.services.accounting._duplicate_qr_incident import (
     ensure_duplicate_liability_accounting,
 )
@@ -228,7 +228,7 @@ def _validate_refund_evidence(
             "Provider refund currency does not match the duplicate payment",
             frappe.ValidationError,
         )
-    amount_sen = _strict_positive_sen(
+    amount_sen = positive_sen(
         payload.get("provider_refund_amount_sen"),
         "provider_refund_amount_sen",
     )

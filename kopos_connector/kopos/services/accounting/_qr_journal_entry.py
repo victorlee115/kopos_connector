@@ -17,6 +17,8 @@ from typing import Any
 import frappe
 from frappe.utils import cint, cstr
 
+from kopos_connector.utils.money import money_to_sen, positive_sen
+
 JOURNAL_ENTRY_DOCTYPE = "Journal Entry"
 SEN_PER_UNIT = Decimal("100")
 
@@ -113,7 +115,7 @@ def prove_journal(
                 f"Journal Entry {journal_name} {fieldname} does not match {label}",
                 frappe.ValidationError,
             )
-    if _strict_positive_sen(_value(journal, amount_field), f"Journal Entry {label} amount") != int(amount_sen):
+    if positive_sen(_value(journal, amount_field), f"Journal Entry {label} amount") != int(amount_sen):
         frappe.throw(
             f"Journal Entry {journal_name} amount does not match {label}",
             frappe.ValidationError,
@@ -216,13 +218,13 @@ def _gl_amounts_sen(row: Any, account: str, journal_name: str) -> tuple[int, int
         return 0, 0
     pair = base if has_base else in_account_currency
     amounts = (
-        _money_to_sen(pair[0] or 0, f"{account} GL debit"),
-        _money_to_sen(pair[1] or 0, f"{account} GL credit"),
+        money_to_sen(pair[0] or 0, f"{account} GL debit"),
+        money_to_sen(pair[1] or 0, f"{account} GL credit"),
     )
     if has_base and has_account_currency:
         other = (
-            _money_to_sen(in_account_currency[0] or 0, f"{account} GL account-currency debit"),
-            _money_to_sen(in_account_currency[1] or 0, f"{account} GL account-currency credit"),
+            money_to_sen(in_account_currency[0] or 0, f"{account} GL account-currency debit"),
+            money_to_sen(in_account_currency[1] or 0, f"{account} GL account-currency credit"),
         )
         if other != amounts:
             frappe.throw(
@@ -246,31 +248,6 @@ def _account_row(side: JournalSide, *, debit: Decimal, credit: Decimal) -> dict[
 
 def _sen_to_amount(amount_sen: Any) -> Decimal:
     return (Decimal(int(amount_sen)) / SEN_PER_UNIT).quantize(Decimal("0.01"))
-
-
-def _money_to_sen(value: Any, label: str) -> int:
-    try:
-        amount = Decimal(cstr(value).strip() or "0")
-    except Exception as error:
-        frappe.throw(f"{label} is not an exact amount", frappe.ValidationError)
-        raise AssertionError("frappe.throw must raise") from error
-    sen = amount * SEN_PER_UNIT
-    integral_sen = sen.to_integral_value()
-    if sen != integral_sen:
-        frappe.throw(f"{label} contains fractional sen", frappe.ValidationError)
-    return int(integral_sen)
-
-
-def _strict_positive_sen(value: Any, label: str) -> int:
-    if isinstance(value, bool):
-        frappe.throw(f"{label} must be a positive integer", frappe.ValidationError)
-    text = cstr(value).strip()
-    if not text.isdigit():
-        frappe.throw(f"{label} must be a positive integer", frappe.ValidationError)
-    result = int(text)
-    if result <= 0:
-        frappe.throw(f"{label} must be greater than 0", frappe.ValidationError)
-    return result
 
 
 def _value(doc: Any, fieldname: str) -> Any:

@@ -17,12 +17,12 @@ from kopos_connector.kopos.services.accounting._duplicate_qr_contract import (
     REFUND_STAGE,
     _build_accounting_context,
     _require_schema_fields,
-    _strict_positive_sen,
     _text,
     _validate_duplicate_identity,
     _validated_refund_date,
     _value,
 )
+from kopos_connector.utils.money import positive_sen
 from kopos_connector.kopos.services.accounting._duplicate_qr_journal import (
     _find_existing_journal,
     _validate_journal,
@@ -48,7 +48,7 @@ def _assert_recorded_refund_accounting(
         "provider_evidence_sha256": _text(
             _value(transaction, "duplicate_refund_evidence_sha256")
         ),
-        "amount_sen": _strict_positive_sen(
+        "amount_sen": positive_sen(
             _value(transaction, "duplicate_refund_amount_sen"),
             "Recorded duplicate QR refund amount_sen",
         ),

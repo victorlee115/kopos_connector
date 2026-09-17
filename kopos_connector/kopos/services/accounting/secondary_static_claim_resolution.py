@@ -28,7 +28,6 @@ from kopos_connector.kopos.services.accounting._duplicate_qr_contract import (
     MAYBANK_CURRENCY,
     MAYBANK_PROVIDER,
     _bounded_text,
-    _strict_positive_sen,
     _text,
     _validate_winning_provider_transaction,
     _validate_winning_sales_invoice,
@@ -57,6 +56,7 @@ from kopos_connector.kopos.services.accounting._secondary_static_claim_contract 
     validate_evidence_file as _validate_evidence_file,
     validated_date as _validated_date,
 )
+from kopos_connector.utils.money import positive_sen
 
 
 CONTRACT_VERSION = "kopos.secondary-static-qr-finance.v1"
@@ -361,7 +361,7 @@ def _parse_request(payload: Mapping[str, Any]) -> dict[str, Any]:
         )
     if request["currency"] != MAYBANK_CURRENCY:
         frappe.throw("Finance resolution currency must be MYR", frappe.ValidationError)
-    request["amount_sen"] = _strict_positive_sen(
+    request["amount_sen"] = positive_sen(
         payload.get("amount_sen"), "amount_sen"
     )
     request["evidence"] = _parse_evidence(payload)
@@ -584,7 +584,7 @@ def _validate_identity_from_records(
     except MoneyContractValidationError as error:
         frappe.throw(str(error), frappe.ValidationError)
         raise AssertionError("frappe.throw must raise") from error
-    claim_amount_sen = _strict_positive_sen(
+    claim_amount_sen = positive_sen(
         _value(claim, "amount_sen"), "Static claim amount_sen"
     )
     if payment_amount_sen != claim_amount_sen:

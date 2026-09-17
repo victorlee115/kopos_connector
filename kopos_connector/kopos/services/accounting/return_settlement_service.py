@@ -10,12 +10,9 @@ from typing import Any
 import frappe
 from frappe.utils import cstr
 
-from kopos_connector.kopos.api.money_contract import (
-    MoneyContractValidationError,
-    persisted_money_to_sen,
-)
 from ._qr_reconciliation_context import validate_ledger_account
 from .refund_allocation import parse_stored_allocation
+from kopos_connector.utils.money import money_to_sen
 
 
 SETTLEMENT_DOCTYPE = "Journal Entry"
@@ -57,7 +54,7 @@ def ensure_return_settlement(
 
     settlement_document = _find_existing_settlement(return_doc)
     if not settlement_document:
-        pre_settlement_outstanding_sen = _money_to_sen(
+        pre_settlement_outstanding_sen = money_to_sen(
             _value(return_invoice, "outstanding_amount") or 0,
             "return Sales Invoice pre-settlement outstanding_amount",
         )
@@ -176,10 +173,10 @@ def _refund_tenders(original_invoice: Any, refund_method: str, total_sen: int) -
 
 def _validate_full_return_invoice(original_invoice: Any, return_invoice: Any) -> int:
     _validate_return_invoice_identity(original_invoice, return_invoice)
-    original_grand_total_sen = _money_to_sen(
+    original_grand_total_sen = money_to_sen(
         _value(original_invoice, "grand_total"), "original Sales Invoice grand_total"
     )
-    return_grand_total_sen = _money_to_sen(
+    return_grand_total_sen = money_to_sen(
         _value(return_invoice, "grand_total"), "return Sales Invoice grand_total"
     )
     if (
@@ -238,7 +235,7 @@ def _validate_return_invoice_identity(original_invoice: Any, return_invoice: Any
                 frappe.ValidationError,
             )
 
-    original_outstanding_sen = _money_to_sen(
+    original_outstanding_sen = money_to_sen(
         _value(original_invoice, "outstanding_amount") or 0,
         "original Sales Invoice outstanding_amount",
     )
@@ -275,13 +272,13 @@ def _validate_return_invoice_identity(original_invoice: Any, return_invoice: Any
 def _invoice_payable_total_sen(invoice: Any, label: str) -> int:
     rounded_total = _value(invoice, "rounded_total")
     if rounded_total not in (None, ""):
-        rounded_total_sen = _money_to_sen(rounded_total, f"{label} rounded_total")
+        rounded_total_sen = money_to_sen(rounded_total, f"{label} rounded_total")
         if rounded_total_sen != 0:
             return rounded_total_sen
-    grand_total_sen = _money_to_sen(
+    grand_total_sen = money_to_sen(
         _value(invoice, "grand_total"), f"{label} grand_total"
     )
-    write_off_sen = _money_to_sen(
+    write_off_sen = money_to_sen(
         _value(invoice, "write_off_amount") or 0,
         f"{label} write_off_amount",
     )
@@ -369,9 +366,9 @@ def _resolve_original_tenders(
         if debit_value is None and credit_value is None:
             debit_value = _row_value(row, "debit")
             credit_value = _row_value(row, "credit")
-        net_by_account_sen[account] += _money_to_sen(
+        net_by_account_sen[account] += money_to_sen(
             debit_value or 0, f"{account} tender debit"
-        ) - _money_to_sen(credit_value or 0, f"{account} tender credit")
+        ) - money_to_sen(credit_value or 0, f"{account} tender credit")
 
     tenders = []
     for account, amount_sen in sorted(net_by_account_sen.items()):
@@ -599,7 +596,7 @@ def _validate_settlement(
         )
 
     return_invoice.reload()
-    outstanding_sen = _money_to_sen(
+    outstanding_sen = money_to_sen(
         _value(return_invoice, "outstanding_amount") or 0,
         "return Sales Invoice outstanding_amount",
     )
@@ -695,19 +692,9 @@ def _gl_amounts_sen(row: Any, account: str) -> tuple[int, int]:
         debit_value = _row_value(row, "debit")
         credit_value = _row_value(row, "credit")
     return (
-        _money_to_sen(debit_value or 0, f"{account} GL debit"),
-        _money_to_sen(credit_value or 0, f"{account} GL credit"),
+        money_to_sen(debit_value or 0, f"{account} GL debit"),
+        money_to_sen(credit_value or 0, f"{account} GL credit"),
     )
-
-
-def _money_to_sen(value: Any, label: str) -> int:
-    try:
-        return persisted_money_to_sen(
-            0 if value is None or value == "" else value, label
-        )
-    except MoneyContractValidationError as error:
-        frappe.throw(str(error), frappe.ValidationError)
-        raise AssertionError("frappe.throw must raise") from error
 
 
 def _sen_to_amount(value_sen: int) -> Decimal:

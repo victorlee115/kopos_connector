@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from decimal import Decimal, InvalidOperation
 from importlib import import_module
 from typing import Any
 
@@ -21,6 +20,7 @@ from kopos_connector.services.maybank.branch_config import (
     profile_for_order,
     suspense_account as profile_suspense_account,
 )
+from kopos_connector.utils.money import integer_sen, money_to_sen
 
 cstr = frappe_utils.cstr
 cint = frappe_utils.cint
@@ -446,25 +446,6 @@ def is_automatic_maybank_payment(payment: Any) -> bool:
     mode = _normalized(_value(payment, "payment_method"))
     channel = _normalized(_value(payment, "payment_channel_code"))
     return mode == MAYBANK_MODE_OF_PAYMENT and channel in MAYBANK_PAYMENT_CHANNELS
-
-
-def money_to_sen(value: Any, fieldname: str) -> int:
-    """Convert an exact decimal money value to integer sen without float rounding."""
-    try:
-        amount = Decimal(str(value).strip())
-    except (InvalidOperation, ValueError):
-        frappe.throw(f"{fieldname} must be a valid decimal amount", frappe.ValidationError)
-        return 0
-
-    if not amount.is_finite():
-        frappe.throw(f"{fieldname} must be finite", frappe.ValidationError)
-    sen = amount * Decimal("100")
-    if sen != sen.to_integral_value():
-        frappe.throw(
-            f"{fieldname} must not contain fractional sen",
-            frappe.ValidationError,
-        )
-    return int(sen)
 
 
 def _automatic_maybank_payment(order_doc: Any) -> Any | None:
@@ -956,7 +937,7 @@ def _validate_existing_manual_reconciliation(
             "Manual QR Reconciliation is not a winning static settlement",
             frappe.ValidationError,
         )
-    if _strict_integer_sen(
+    if integer_sen(
         _value(reconciliation, "amount_sen"),
         "Manual QR Reconciliation amount_sen",
     ) != amount_sen:
@@ -1063,7 +1044,7 @@ def _validate_transaction_for_order(
     payment_amount_sen = money_to_sen(
         _value(payment, "amount"), "Maybank QR payment amount"
     )
-    transaction_amount_sen = _strict_integer_sen(
+    transaction_amount_sen = integer_sen(
         _value(transaction, "sale_amount_sen"),
         "Maybank QR transaction sale_amount_sen",
     )
@@ -1186,17 +1167,6 @@ def _validate_transaction_for_order(
             "Maybank QR transaction invoice claim has already been consumed",
             frappe.ValidationError,
         )
-
-
-def _strict_integer_sen(value: Any, fieldname: str) -> int:
-    try:
-        amount = Decimal(str(value).strip())
-    except (InvalidOperation, ValueError):
-        frappe.throw(f"{fieldname} must be an integer", frappe.ValidationError)
-        return 0
-    if not amount.is_finite() or amount != amount.to_integral_value():
-        frappe.throw(f"{fieldname} must be an integer", frappe.ValidationError)
-    return int(amount)
 
 
 def _is_manual_confirmation(payment: Any) -> bool:

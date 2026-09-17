@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Any
 
 import frappe
-from frappe.utils import cint
 
 from kopos_connector.kopos.services.accounting._qr_journal_entry import (
     JournalSide,
@@ -16,9 +14,6 @@ from kopos_connector.kopos.services.accounting._qr_journal_entry import (
 from kopos_connector.kopos.services.accounting._duplicate_qr_contract import (
     JOURNAL_ENTRY_DOCTYPE,
     MAYBANK_TRANSACTION_DOCTYPE,
-    _money_to_sen,
-    _sen_to_amount,
-    _strict_positive_sen,
     _text,
     _value,
 )

@@ -9,10 +9,6 @@ from typing import Any
 
 import frappe
 
-from kopos_connector.kopos.api.money_contract import (
-    MoneyContractValidationError,
-    persisted_money_to_sen,
-)
 from kopos_connector.kopos.services.accounting.refund_allocation import (
     RefundAllocation,
     parse_stored_allocation,
@@ -23,6 +19,7 @@ from kopos_connector.utils.diagnostics import (
     make_savepoint,
     rollback_to_savepoint,
 )
+from kopos_connector.utils.money import money_to_sen
 
 
 PROMOTION_INVOICE_FIELDS = (
@@ -83,7 +80,7 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
         _clear_optional_return_links(return_doc, return_invoice)
         if hasattr(return_invoice, "set_missing_values"):
             return_invoice.set_missing_values()
-        write_off_sen = _money_to_sen(
+        write_off_sen = money_to_sen(
             _value(original_invoice, "write_off_amount"), "original Sales Invoice write_off_amount"
         )
         if allocation is not None:
@@ -95,7 +92,7 @@ def create_return_sales_invoice(fb_return_event: Any) -> str | None:
             # Leave all tender movement to the existing settlement Journal Entry.
             return_invoice.is_pos = 1
             return_invoice.write_off_amount = _sen_to_amount(-write_off_sen)
-            return_invoice.base_write_off_amount = _sen_to_amount(-_money_to_sen(
+            return_invoice.base_write_off_amount = _sen_to_amount(-money_to_sen(
                 _value(original_invoice, "base_write_off_amount"), "original Sales Invoice base_write_off_amount"
             ))
             return_invoice.write_off_account = _value(original_invoice, "write_off_account")
@@ -233,16 +230,16 @@ def assert_allocated_return_totals(return_invoice: Any, allocation: RefundAlloca
     net_by_account: dict[str, int] = {}
     for item in items:
         account = cstr(_value(item, "income_account")).strip()
-        net_by_account[account] = net_by_account.get(account, 0) - _money_to_sen(
+        net_by_account[account] = net_by_account.get(account, 0) - money_to_sen(
             _value(item, "net_amount"), "return item net_amount"
         )
     payable_sen = -(
-        _money_to_sen(_value(return_invoice, "grand_total"), "return grand_total")
-        - _money_to_sen(_value(return_invoice, "write_off_amount"), "return write_off_amount")
+        money_to_sen(_value(return_invoice, "grand_total"), "return grand_total")
+        - money_to_sen(_value(return_invoice, "write_off_amount"), "return write_off_amount")
     )
     allocated_net = {line.line_id: line.net_sen for line in allocation.lines}
     if len(net_by_account) != 1 and any(
-        -_money_to_sen(_value(item, "net_amount"), "return item net_amount")
+        -money_to_sen(_value(item, "net_amount"), "return item net_amount")
         != allocated_net.get(cstr(_value(item, "custom_fb_order_line_ref")).strip())
         for item in items
     ):
@@ -252,8 +249,8 @@ def assert_allocated_return_totals(return_invoice: Any, allocation: RefundAlloca
         )
     if (
         sum(net_by_account.values()) != allocation.net_sen
-        or -_money_to_sen(_value(return_invoice, "total_taxes_and_charges"), "return taxes") != allocation.tax_sen
-        or _money_to_sen(_value(return_invoice, "write_off_amount"), "return write_off_amount") != allocation.rounding_sen
+        or -money_to_sen(_value(return_invoice, "total_taxes_and_charges"), "return taxes") != allocation.tax_sen
+        or money_to_sen(_value(return_invoice, "write_off_amount"), "return write_off_amount") != allocation.rounding_sen
         or payable_sen != allocation.amount_sen
     ):
         frappe.throw(
@@ -632,7 +629,7 @@ def refresh_fb_shift_cash(shift_name: Any) -> None:
         "expected_cash": cash["expected_cash"]
     }
     if _value(shift_row, "counted_cash") is not None:
-        counted_cash_sen = _money_to_sen(
+        counted_cash_sen = money_to_sen(
             _value(shift_row, "counted_cash"), f"FB Shift {shift} counted_cash"
         )
         updates["cash_variance"] = _sen_to_amount(
@@ -668,7 +665,7 @@ def _calculate_locked_fb_shift_cash(
     shift_row = lock_fb_shift_cash_scope(shift)
     cash_sales_sen = _get_locked_shift_sales_cash_sen(shift)
     cash_return_adjustment_sen = _get_locked_shift_return_cash_adjustment_sen(shift)
-    opening_float_sen = _money_to_sen(
+    opening_float_sen = money_to_sen(
         _value(shift_row, "opening_float"), f"FB Shift {shift} opening_float"
     )
     net_cash_sen = cash_sales_sen + cash_return_adjustment_sen
@@ -720,14 +717,14 @@ def _get_locked_shift_sales_cash_sen(shift: str) -> int:
             invoice_name,
             {
                 "cash_tender_sen": 0,
-                "change_sen": _money_to_sen(
+                "change_sen": money_to_sen(
                     _value(row, "change_amount"),
                     f"Sales Invoice {invoice_name} change_amount",
                 ),
                 "payment_rows": set(),
             },
         )
-        observed_change_sen = _money_to_sen(
+        observed_change_sen = money_to_sen(
             _value(row, "change_amount"),
             f"Sales Invoice {invoice_name} change_amount",
         )
@@ -742,7 +739,7 @@ def _get_locked_shift_sales_cash_sen(shift: str) -> int:
             continue
         totals["payment_rows"].add(payment_row)
         if cstr(_value(row, "mode_of_payment")).strip().lower() == "cash":
-            totals["cash_tender_sen"] += _money_to_sen(
+            totals["cash_tender_sen"] += money_to_sen(
                 _value(row, "payment_amount"),
                 f"Sales Invoice {invoice_name} cash payment",
             )
@@ -842,7 +839,7 @@ def _validate_locked_cash_settlement_sen(row: Any, event_name: str) -> int:
             frappe.ValidationError,
         )
 
-    settlement_amount_sen = _money_to_sen(
+    settlement_amount_sen = money_to_sen(
         _value(row, "settlement_amount"),
         f"FB Return Event {event_name} settlement_amount",
     )
@@ -932,17 +929,6 @@ def _strict_evidence_sen(value: Any, event_name: str, fieldname: str) -> int:
             frappe.ValidationError,
         )
     return value
-
-
-def _money_to_sen(value: Any, label: str) -> int:
-    try:
-        return persisted_money_to_sen(
-            0 if value is None or value == "" else value,
-            label,
-        )
-    except MoneyContractValidationError as error:
-        frappe.throw(str(error), frappe.ValidationError)
-        raise AssertionError("frappe.throw must raise") from error
 
 
 def _sen_to_amount(value_sen: int) -> Decimal:

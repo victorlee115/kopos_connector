@@ -9,6 +9,8 @@ from typing import Any
 import frappe
 from frappe.utils import cint, cstr, now_datetime
 
+from kopos_connector.utils.money import positive_sen
+
 from kopos_connector.kopos.api.money_contract import (
     MoneyContractValidationError,
     persisted_money_to_sen,
@@ -385,7 +387,7 @@ def _validate_paid_attempt(
             "Automatic QR finalization requires MYR",
             frappe.ValidationError,
         )
-    transaction_amount_sen = _strict_integer_sen(
+    transaction_amount_sen = positive_sen(
         _value(transaction, "sale_amount_sen"),
         "Maybank QR transaction sale_amount_sen",
     )
@@ -811,18 +813,6 @@ def _result(
         "sales_invoice": cstr(_value(order_doc, "sales_invoice")).strip() or None,
         "invoice_status": cstr(_value(order_doc, "invoice_status")).strip() or None,
     }
-
-
-def _strict_integer_sen(value: Any, fieldname: str) -> int:
-    if isinstance(value, bool):
-        frappe.throw(f"{fieldname} must be integer sen", frappe.ValidationError)
-    text = cstr(value).strip()
-    if not text or not text.isdigit():
-        frappe.throw(f"{fieldname} must be integer sen", frappe.ValidationError)
-    resolved = int(text)
-    if resolved <= 0:
-        frappe.throw(f"{fieldname} must be positive", frappe.ValidationError)
-    return resolved
 
 
 def _normalized(value: Any) -> str:

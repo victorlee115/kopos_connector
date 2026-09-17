@@ -13,6 +13,8 @@ from typing import Any
 import frappe
 from frappe.utils import cstr
 
+from kopos_connector.utils.money import money_to_sen, positive_sen
+
 
 JOURNAL_ENTRY_DOCTYPE = "Journal Entry"
 MAYBANK_TRANSACTION_DOCTYPE = "Maybank QR Transaction"
@@ -38,7 +40,6 @@ RECONCILIATION_FAILED_REASONS = {
 }
 COMPANY_FAILURE_ACCOUNT_FIELD = "custom_kopos_qr_failure_variance_account"
 FAILURE_KEY_NAMESPACE = "kopos:qr-failure:v1:"
-SEN_PER_UNIT = Decimal("100")
 
 REQUIRED_JOURNAL_FIELDS = (
     "custom_kopos_qr_reconciliation_key",
@@ -168,7 +169,7 @@ def _build_context(
         if source_doctype == MAYBANK_TRANSACTION_DOCTYPE
         else "amount_sen"
     )
-    amount_sen = _strict_positive_sen(_value(source, amount_field), amount_field)
+    amount_sen = positive_sen(_value(source, amount_field), amount_field)
 
     order = frappe.get_doc("FB Order", order_name)
     invoice = frappe.get_doc("Sales Invoice", invoice_name)
@@ -204,7 +205,7 @@ def _build_context(
             frappe.ValidationError,
         )
 
-    if _money_to_sen(_value(order, "grand_total"), "FB Order grand_total") != amount_sen:
+    if money_to_sen(_value(order, "grand_total"), "FB Order grand_total") != amount_sen:
         frappe.throw(
             f"FB Order {order_name} total does not match QR reconciliation",
             frappe.ValidationError,
@@ -214,7 +215,7 @@ def _build_context(
             f"Sales Invoice {invoice_name} total does not match QR reconciliation",
             frappe.ValidationError,
         )
-    if _money_to_sen(
+    if money_to_sen(
         _value(invoice, "outstanding_amount") or 0,
         "Sales Invoice outstanding_amount",
     ) != 0:
@@ -241,7 +242,7 @@ def _build_context(
 
     payment = _find_order_payment(order, payment_row_name)
     _validate_payment_source(source, payment, source_doctype)
-    if _money_to_sen(_value(payment, "amount"), "FB Order Payment amount") != amount_sen:
+    if money_to_sen(_value(payment, "amount"), "FB Order Payment amount") != amount_sen:
         frappe.throw(
             f"FB Order Payment {payment_row_name} amount does not match QR reconciliation",
             frappe.ValidationError,
@@ -278,7 +279,7 @@ def _build_context(
         _value(invoice_payment, "account"),
         suspense_account,
     )
-    if _money_to_sen(
+    if money_to_sen(
         _value(invoice_payment, "amount"), "Sales Invoice Payment amount"
     ) != amount_sen:
         frappe.throw(
@@ -785,13 +786,13 @@ def _find_existing_journal(
 def _invoice_total_sen(invoice: Any) -> int:
     rounded_total = _value(invoice, "rounded_total")
     if rounded_total not in (None, ""):
-        rounded_sen = _money_to_sen(rounded_total, "Sales Invoice rounded_total")
+        rounded_sen = money_to_sen(rounded_total, "Sales Invoice rounded_total")
         if rounded_sen != 0:
             return rounded_sen
-    grand_total_sen = _money_to_sen(
+    grand_total_sen = money_to_sen(
         _value(invoice, "grand_total"), "Sales Invoice grand_total"
     )
-    write_off_sen = _money_to_sen(
+    write_off_sen = money_to_sen(
         _value(invoice, "write_off_amount") or 0,
         "Sales Invoice write_off_amount",
     )
@@ -805,30 +806,9 @@ def _gl_amounts_sen(row: Any, account: str) -> tuple[int, int]:
         debit = _row_value(row, "debit")
         credit = _row_value(row, "credit")
     return (
-        _money_to_sen(debit or 0, f"{account} GL debit"),
-        _money_to_sen(credit or 0, f"{account} GL credit"),
+        money_to_sen(debit or 0, f"{account} GL debit"),
+        money_to_sen(credit or 0, f"{account} GL credit"),
     )
-
-
-def _strict_positive_sen(value: Any, label: str) -> int:
-    if isinstance(value, bool):
-        frappe.throw(f"{label} must be a positive integer", frappe.ValidationError)
-    text = cstr(value).strip()
-    if not text.isdigit():
-        frappe.throw(f"{label} must be a positive integer", frappe.ValidationError)
-    result = int(text)
-    if result <= 0:
-        frappe.throw(f"{label} must be greater than 0", frappe.ValidationError)
-    return result
-
-
-def _money_to_sen(value: Any, label: str) -> int:
-    amount = _decimal_value(value, label)
-    sen = amount * SEN_PER_UNIT
-    integral_sen = sen.to_integral_value()
-    if sen != integral_sen:
-        frappe.throw(f"{label} contains fractional sen", frappe.ValidationError)
-    return int(integral_sen)
 
 
 def _decimal_value(value: Any, label: str) -> Decimal:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
 import frappe
@@ -14,6 +14,7 @@ from kopos_connector.kopos.api.money_contract import (
     MoneyContractValidationError,
     persisted_money_to_sen,
 )
+from kopos_connector.utils.money import positive_sen
 
 
 MAYBANK_TRANSACTION_DOCTYPE = "Maybank QR Transaction"
@@ -235,7 +236,7 @@ def _validate_duplicate_identity(
     except MoneyContractValidationError as error:
         frappe.throw(str(error), frappe.ValidationError)
         raise AssertionError("frappe.throw must raise") from error
-    amount_sen = _strict_positive_sen(
+    amount_sen = positive_sen(
         _value(transaction, "sale_amount_sen"),
         "Duplicate Automatic QR sale_amount_sen",
     )
@@ -609,7 +610,7 @@ def _validate_winning_provider_transaction(identity: Mapping[str, Any]) -> None:
             "Winning provider transaction reference is missing",
             frappe.ValidationError,
         )
-    if _strict_positive_sen(
+    if positive_sen(
         _value(winner, "sale_amount_sen"),
         "Winning provider transaction sale_amount_sen",
     ) != identity["amount_sen"]:
@@ -687,7 +688,7 @@ def _validate_winning_static_reconciliation(identity: Mapping[str, Any]) -> None
             "Winning static QR reconciliation evidence is incomplete",
             frappe.ValidationError,
         )
-    if _strict_positive_sen(
+    if positive_sen(
         _value(reconciliation, "amount_sen"),
         "Winning static QR reconciliation amount_sen",
     ) != identity["amount_sen"]:
@@ -846,41 +847,6 @@ def _require_schema_fields() -> None:
             frappe.ValidationError,
         )
 
-def _strict_positive_sen(value: Any, fieldname: str) -> int:
-    if isinstance(value, bool):
-        frappe.throw(f"{fieldname} must be integer sen", frappe.ValidationError)
-    text = cstr(value).strip()
-    if not text or not text.isdigit():
-        frappe.throw(f"{fieldname} must be integer sen", frappe.ValidationError)
-    resolved = int(text)
-    if resolved <= 0:
-        frappe.throw(f"{fieldname} must be positive", frappe.ValidationError)
-    return resolved
-
-
-def _money_to_sen(value: Any, fieldname: str) -> int:
-    try:
-        amount = Decimal(cstr(value or 0).strip())
-    except (InvalidOperation, ValueError) as error:
-        frappe.throw(f"{fieldname} is invalid", frappe.ValidationError)
-        raise AssertionError("frappe.throw must raise") from error
-    scaled = amount * SEN_PER_UNIT
-    if not scaled.is_finite() or scaled != scaled.to_integral_value():
-        frappe.throw(f"{fieldname} must have at most two decimals", frappe.ValidationError)
-    return int(scaled)
-
-
-def _sen_to_amount(value: int) -> Decimal:
-    return (Decimal(value) / SEN_PER_UNIT).quantize(Decimal("0.01"))
-
-
-def _required_text(payload: Mapping[str, Any], fieldname: str) -> str:
-    value = _text(payload.get(fieldname))
-    if not value:
-        frappe.throw(f"{fieldname} is required", frappe.ValidationError)
-    return value
-
-
 def _bounded_text(
     value: Any,
     fieldname: str,
@@ -895,6 +861,13 @@ def _bounded_text(
             frappe.ValidationError,
         )
     return text
+
+
+def _required_text(payload: Mapping[str, Any], fieldname: str) -> str:
+    value = _text(payload.get(fieldname))
+    if not value:
+        frappe.throw(f"{fieldname} is required", frappe.ValidationError)
+    return value
 
 
 def _text(value: Any) -> str:

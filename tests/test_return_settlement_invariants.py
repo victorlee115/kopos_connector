@@ -27,7 +27,7 @@ def test_refund_money_rejects_invalid_persisted_values_with_domain_error(value) 
         "kopos_connector.kopos.services.accounting.return_settlement_service"
     )
     with pytest.raises(service.frappe.ValidationError, match="refund amount"):
-        service._money_to_sen(value, "refund amount")
+        service.money_to_sen(value, "refund amount")
 
 
 @pytest.mark.parametrize(("value", "expected"), [
@@ -40,7 +40,7 @@ def test_refund_money_preserves_exact_persisted_values_and_blank_defaults(value,
     service = importlib.import_module(
         "kopos_connector.kopos.services.accounting.return_settlement_service"
     )
-    assert service._money_to_sen(value, "refund amount") == expected
+    assert service.money_to_sen(value, "refund amount") == expected
 
 
 class FakeDoc(SimpleNamespace):
@@ -527,7 +527,7 @@ def test_mixed_tender_and_fractional_sen_refunds_are_rejected(
     ):
         service._resolve_original_tenders(original, "cash", 1200)
     with pytest.raises(service.frappe.ValidationError, match="fractional sen"):
-        service._money_to_sen("0.001", "refund amount")
+        service.money_to_sen("0.001", "refund amount")
 
 
 def test_settlement_rejects_mismatched_credit_note_context_and_tender_account_type(

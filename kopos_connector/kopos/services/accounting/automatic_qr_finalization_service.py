@@ -28,7 +28,6 @@ from kopos_connector.kopos.services.accounting.automatic_qr_finalization_core im
     _register_late_paid_incidents_after_sale_commit,
     _reload_late_paid_incident_for_update,
     _result,
-    _strict_integer_sen,
     _submitted_payment_matches_attempt,
     _validate_paid_attempt,
     _value,
