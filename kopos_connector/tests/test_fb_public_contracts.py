@@ -53,6 +53,27 @@ class TestFBPublicContracts(unittest.TestCase):
                     self.assertIn("@frappe.whitelist()", content, f"{relative}:{method}")
                 self.assertIn(f"def {method}", content, f"{relative}:{method}")
 
+    def test_tablet_qr_receipt_endpoints_have_one_public_entry_point(self):
+        """The two receipt endpoints the tablet calls are exposed once, via `api.*`.
+
+        `api/manual_qr_receipt.py` keeps its own whitelisted back-office
+        reconciliation methods — those have no other door — but the upload and
+        status methods the tablet posts to must not be reachable twice.
+        """
+        receipts = (ERP_ROOT / "api/manual_qr_receipt.py").read_text()
+        public_api = (ERP_ROOT / "api/__init__.py").read_text()
+        for method in ("upload_manual_qr_receipt", "fetch_manual_qr_reconciliation_status"):
+            self.assertNotIn(
+                f'@frappe.whitelist(methods=["POST"])\ndef {method}(',
+                receipts,
+                method,
+            )
+            self.assertIn(
+                f'@frappe.whitelist(methods=["POST"])\ndef {method}(',
+                public_api,
+                method,
+            )
+
     def test_refunds_have_one_public_entry_point(self):
         """A refund enters over HTTP only through `kopos_connector.api.process_refund`.
 

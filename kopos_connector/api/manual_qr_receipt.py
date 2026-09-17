@@ -127,7 +127,6 @@ def list_pending_manual_qr_reconciliations() -> list[dict[str, Any]]:
     ]
 
 
-@frappe.whitelist(methods=["POST"])
 def fetch_manual_qr_reconciliation_status(**kwargs: Any) -> dict[str, list[dict[str, Any]]]:
     payload = _collect_status_payload(kwargs)
     _assert_status_request_batch_size(payload)
@@ -376,7 +375,6 @@ def _replay_failed_reconciliation(
     }
 
 
-@frappe.whitelist(methods=["POST"])
 def upload_manual_qr_receipt(**kwargs: Any) -> dict[str, str | None]:
     payload: dict[str, str] = {}
     transaction_name = ""
