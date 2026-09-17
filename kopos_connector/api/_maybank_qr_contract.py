@@ -118,8 +118,14 @@ PROVIDER_STATUS_TRANSITIONS = {
     # remain monotonic and admissible.
     "failed": frozenset({"paid"}),
     "timeout": frozenset({"paid"}),
-    # An audited ambiguous-generation abandonment can still be superseded by
-    # a late provider response from the original in-flight call.
+    # An audited ambiguous-generation abandonment can still be superseded by a
+    # late provider response from the original in-flight call — but only through
+    # the support resolution in `_maybank_qr_resolution`, where a System Manager
+    # supplies the provider reference and evidence. Polling never resolves
+    # ``unknown``: `_transition_txn_status_locked` fences a row that carries a
+    # real provider reference to observation only, and a row that still carries
+    # its ``REQUEST-`` reservation reference cannot match a provider response's
+    # identity. These transitions exist for the audited path, not the poller.
     "unknown": frozenset({"pending", "scanned", "paid", "failed", "timeout"}),
 }
 
