@@ -917,51 +917,6 @@ def get_item_modifier_groups_map(
     return group_ids_by_item
 
 
-def _validate_recipe_modifier_bounds_parity(
-    *,
-    recipe_name: str,
-    modifier_group: str,
-    group: Mapping[str, Any],
-    recipe_group: Mapping[str, Any],
-) -> None:
-    """Reject item-specific bounds that the current catalog wire cannot express."""
-    from kopos_connector.kopos.services.recipe.modifier_bounds import (
-        ModifierBoundsError,
-        resolve_effective_modifier_bounds,
-    )
-
-    try:
-        published_bounds = resolve_effective_modifier_bounds(
-            selection_type=group.get("selection_type"),
-            group_is_required=group.get("is_required"),
-            group_min_selection=group.get("min_selection"),
-            group_max_selection=group.get("max_selection"),
-        )
-        recipe_bounds = resolve_effective_modifier_bounds(
-            selection_type=group.get("selection_type"),
-            group_is_required=group.get("is_required"),
-            group_min_selection=group.get("min_selection"),
-            group_max_selection=group.get("max_selection"),
-            recipe_required=recipe_group.get("required"),
-            override_min_selection=recipe_group.get("override_min_selection"),
-            override_max_selection=recipe_group.get("override_max_selection"),
-        )
-    except ModifierBoundsError as error:
-        _throw_catalog_validation(
-            f"Recipe {recipe_name} modifier group {modifier_group}: {error}"
-        )
-        raise AssertionError("frappe.throw must raise") from error
-
-    if recipe_bounds != published_bounds:
-        _throw_catalog_validation(
-            "Recipe {0} changes the selection rules for modifier group {1}; "
-            "use a separate modifier group so every tablet enforces the same rules".format(
-                recipe_name,
-                modifier_group,
-            )
-        )
-
-
 def get_item_recipe_snapshots_map(
     item_rows: list[ERPRecord], company: str | None = None
 ) -> dict[str, ERPRecord]:

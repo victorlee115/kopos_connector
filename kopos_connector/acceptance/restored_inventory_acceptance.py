@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata as metadata
-import json
 import re
 from collections.abc import Mapping
 from datetime import datetime, timedelta
@@ -159,17 +158,6 @@ def _proof_decimal(value: Any, fieldname: str) -> Decimal:
 
 def _proof_decimal_text(value: Any, fieldname: str) -> str:
     return format(_proof_decimal(value, fieldname).normalize(), "f")
-
-
-def _sha256_json(value: Any) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-        default=str,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _acceptance_datetime(value: Any) -> datetime | None:

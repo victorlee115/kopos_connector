@@ -530,18 +530,14 @@ def _register_manual_qr_reconciliation(order_doc: Any, payment: Any) -> str:
     _reject_maybank_reference(provider_session_id)
     _reject_maybank_reference(payment_reference)
 
+    _validate_manual_evidence_identity(
+        evidence,
+        order_doc=order_doc,
+        payment=payment,
+        channel="static_qr",
+    )
     order_device = cstr(_value(order_doc, "device_id")).strip()
-    if cstr(evidence.get("evidence_captured_device_id")).strip() != order_device:
-        frappe.throw(
-            "static_qr evidence device does not match FB Order",
-            frappe.ValidationError,
-        )
     order_staff = cstr(_value(order_doc, "staff_id")).strip()
-    if cstr(evidence.get("local_confirmed_by")).strip() != order_staff:
-        frappe.throw(
-            "static_qr evidence confirmer does not match FB Order staff",
-            frappe.ValidationError,
-        )
 
     suspense_account = resolve_manual_qr_suspense_account(order_doc)
     amount_sen = money_to_sen(_value(payment, "amount"), "static_qr payment amount")

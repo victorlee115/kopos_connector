@@ -5503,26 +5503,6 @@ def _assert_catalog_hold_target(*, profile: Any, target_type: str, target_id: st
         )
 
 
-def _required_menu_text(value: Any, label: str) -> str:
-    text = cstr(value).strip()
-    if not text:
-        frappe.throw(_("{0} is required").format(label), frappe.ValidationError)
-    if len(text) > 140:
-        frappe.throw(_("{0} must be 140 characters or fewer").format(label), frappe.ValidationError)
-    return text
-
-
-def _positive_menu_decimal(value: Any, label: str) -> Decimal:
-    try:
-        parsed = Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError) as error:
-        frappe.throw(_("{0} must be a positive number").format(label), frappe.ValidationError)
-        raise AssertionError("frappe.throw must raise") from error
-    if not parsed.is_finite() or parsed <= 0:
-        frappe.throw(_("{0} must be a positive number").format(label), frappe.ValidationError)
-    return parsed
-
-
 def _require_director_pos_profile(pos_profile: str | None) -> None:
     profile_name = cstr(pos_profile).strip()
     if not profile_name:

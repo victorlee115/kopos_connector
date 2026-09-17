@@ -831,10 +831,6 @@ def _money_to_sen(value: Any, label: str) -> int:
     return int(integral_sen)
 
 
-def _sen_to_amount(value_sen: int) -> Decimal:
-    return Decimal(value_sen) / SEN_PER_UNIT
-
-
 def _decimal_value(value: Any, label: str) -> Decimal:
     try:
         return Decimal(cstr(value or 0).strip() or "0")

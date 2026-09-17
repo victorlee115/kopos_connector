@@ -265,66 +265,6 @@ def _lock_and_validate_provider_attempts(
     return list(attempts)
 
 
-def _referenced_resolved_sale_names(order_doc: Any) -> list[str]:
-    return sorted(
-        {
-            cstr(_value(line, "resolved_sale")).strip()
-            for line in list(_value(order_doc, "items") or [])
-            if cstr(_value(line, "resolved_sale")).strip()
-        }
-    )
-
-
-def _lock_resolved_sales(order_doc: Any) -> list[Any]:
-    referenced_names = _referenced_resolved_sale_names(order_doc)
-    if not referenced_names:
-        return []
-    placeholders = ", ".join(["%s"] * len(referenced_names))
-    return list(
-        frappe.db.sql(
-            f"""
-            SELECT name, status
-            FROM `tabFB Resolved Sale`
-            WHERE fb_order = %s AND name IN ({placeholders})
-            ORDER BY name
-            FOR UPDATE
-            """,
-            (cstr(_value(order_doc, "name")).strip(), *referenced_names),
-            as_dict=True,
-        )
-        or []
-    )
-
-
-def _resolution_fence_is_complete(
-    order_doc: Any,
-    resolved_sales: list[Any],
-    *,
-    allowed_statuses: set[str],
-) -> bool:
-    """Validate optional legacy resolved-sale rows without requiring them.
-
-    The accepted sale fingerprint and FB Order lines are the commercial sale
-    authority. Older prepared orders can also reference FB Resolved Sale rows;
-    when those references exist they must still be present and fenced. New
-    non-inventory sales contain only the immutable line snapshot, so an empty
-    resolved-sale set is valid and must not block cancellation or safe reset.
-    """
-
-    referenced_names = set(_referenced_resolved_sale_names(order_doc))
-    rows_by_name = {
-        cstr(_value(row, "name")).strip(): row
-        for row in resolved_sales
-        if cstr(_value(row, "name")).strip()
-    }
-    if referenced_names != set(rows_by_name):
-        return False
-    return all(
-        cstr(_value(row, "status")).strip() in allowed_statuses
-        for row in resolved_sales
-    )
-
-
 def _write_cancellation_audit(
     identity: dict[str, str], amount_sen: int, attempt_count: int
 ) -> None:

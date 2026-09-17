@@ -41,8 +41,6 @@ from kopos_connector.kopos.api.money_contract import (
 from kopos_connector.utils.diagnostics import log_sanitized_error, sanitized_error_message
 
 
-MANAGER_APPROVAL_FIELD = "custom_kopos_approved_by_manager"
-
 
 # -----------------------------------------------------------------------------
 # Phase 6 - Offline Event Timestamp Validation Constants
@@ -463,44 +461,6 @@ def _log_shift_audit(
         )
 
 
-def _get_cash_mode_of_payment(pos_profile: Any) -> str:
-    payments = pos_profile.get("payments") or []
-    for payment in payments:
-        mode = frappe.utils.cstr(getattr(payment, "mode_of_payment", ""))
-        if mode.strip().lower() == "cash":
-            return mode
-
-    default_mode = next(
-        (
-            frappe.utils.cstr(getattr(payment, "mode_of_payment", ""))
-            for payment in payments
-            if getattr(payment, "default", 0)
-        ),
-        "",
-    )
-    if default_mode:
-        return default_mode
-
-    first_mode = next(
-        (
-            frappe.utils.cstr(getattr(payment, "mode_of_payment", ""))
-            for payment in payments
-            if frappe.utils.cstr(getattr(payment, "mode_of_payment", ""))
-        ),
-        "",
-    )
-    if first_mode:
-        return first_mode
-
-    frappe.throw(
-        _("POS Profile {0} must define at least one payment mode").format(
-            pos_profile.name
-        ),
-        StoreSetupIncompleteError,
-    )
-    return ""
-
-
 def _doc_value(doc: Any, fieldname: str) -> Any:
     if hasattr(doc, fieldname):
         return getattr(doc, fieldname)
@@ -508,14 +468,6 @@ def _doc_value(doc: Any, fieldname: str) -> Any:
     if callable(getter):
         return getter(fieldname)
     return None
-
-
-def _set_custom_field_value(doc: Any, fieldname: str, value: Any) -> None:
-    setter = getattr(doc, "set", None)
-    if callable(setter):
-        setter(fieldname, value)
-        return
-    setattr(doc, fieldname, value)
 
 
 def _shift_request_fingerprint(
@@ -773,26 +725,6 @@ def _verify_manager_approval_token_optional(
         context_hash=context_hash,
         idempotency_key=idempotency_key,
     )
-
-
-def _record_manager_approval(doc: Any, manager_id: str) -> None:
-    """
-    Record the approving manager ID on the ERP document.
-
-    This sets the custom_kopos_approved_by_manager field and also appends
-    to the remarks for visibility.
-
-    Args:
-        doc: The ERP document to modify
-        manager_id: The manager user ID who approved
-    """
-    # Set custom field if available
-    _set_custom_field_value(doc, MANAGER_APPROVAL_FIELD, manager_id)
-
-    # Also add to remarks for visibility (in case custom field isn't visible)
-    existing_remarks = cstr(getattr(doc, "remarks", "") or "")
-    if "Approved by manager:" not in existing_remarks:
-        doc.remarks = f"{existing_remarks}\nApproved by manager: {manager_id}".strip()
 
 
 def _lock_open_shift_scope(device_doc: Any, staff_id: str) -> None:

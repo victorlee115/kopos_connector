@@ -1589,13 +1589,6 @@ def _resolve_rounding_gap_sen(invoice: Any, target_total_sen: int) -> int:
     return current_total_sen - target_total_sen
 
 
-def _resolve_rounding_gap(invoice: Any, target_total: Any) -> Decimal:
-    """Compatibility wrapper returning an exact signed decimal rounding gap."""
-
-    target_total_sen = _money_sen(target_total, "target_total")
-    return sen_to_decimal(_resolve_rounding_gap_sen(invoice, target_total_sen))
-
-
 def _resolve_write_off_defaults(company: Any) -> dict[str, str]:
     company_name = str(company or "").strip()
     if not company_name:

@@ -934,30 +934,6 @@ def _strict_evidence_sen(value: Any, event_name: str, fieldname: str) -> int:
     return value
 
 
-def _get_cash_payment_total_sen(invoice: Any) -> int:
-    cash_tender_sen = 0
-    for payment in _value(invoice, "payments") or []:
-        if cstr(_value(payment, "mode_of_payment")).strip().lower() == "cash":
-            cash_tender_sen += _money_to_sen(
-                _value(payment, "amount"), "Sales Invoice cash payment"
-            )
-
-    change_sen = _money_to_sen(
-        _value(invoice, "change_amount"), "Sales Invoice change_amount"
-    )
-    if change_sen < 0:
-        frappe.throw(
-            "Sales Invoice change_amount must be non-negative",
-            frappe.ValidationError,
-        )
-    if change_sen > cash_tender_sen:
-        frappe.throw(
-            "Sales Invoice change exceeds its cash tender",
-            frappe.ValidationError,
-        )
-    return cash_tender_sen - change_sen
-
-
 def _money_to_sen(value: Any, label: str) -> int:
     try:
         return persisted_money_to_sen(

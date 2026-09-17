@@ -211,10 +211,3 @@ def _value(doc: Any, fieldname: str) -> Any:
     return None
 
 
-def _is_enabled(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    try:
-        return int(value or 0) == 1
-    except (TypeError, ValueError):
-        return False

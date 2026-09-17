@@ -492,21 +492,6 @@ def _get_all_rows(
         start += len(page)
 
 
-def _is_noop_stock_projection(
-    projection_type,
-    projection_state,
-    projection_order,
-    stock_required_by_order,
-):
-    if projection_type not in {"Stock Issue", "Stock Entry"}:
-        return False
-    if projection_state != "Pending":
-        return False
-    if not projection_order:
-        return False
-    return not stock_required_by_order.get(projection_order, True)
-
-
 def _dedupe_close_blockers(blockers):
     deduped = []
     seen = set()
