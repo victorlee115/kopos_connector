@@ -6203,38 +6203,28 @@ def _create_manufacture_entry(value: dict[str, Any], command_id: str) -> str:
     if actual_yield <= 0:
         frappe.throw(_("Preparation completion requires a positive usable yield"), frappe.ValidationError)
     _require_item_batch_metadata(cstr(getattr(order, "production_item", "")).strip(), value)
+    # ERPNext owns BOM expansion, finished-good flags, conversion factors, and
+    # serial/batch defaults. Its builder is the only thing that may construct this
+    # document, so a guided POS completion is equivalent to the normal Work Order
+    # form. Only the import is guarded: an ImportError raised *inside* the builder
+    # means a broken install, and must surface rather than silently hand the work
+    # to a substitute that posts stock from tablet-supplied rows.
     try:
-        # ERPNext owns BOM expansion, finished-good flags, conversion factors,
-        # and serial/batch defaults.  Use its standard builder so a guided POS
-        # completion is equivalent to the normal Work Order form.
         from erpnext.manufacturing.doctype.work_order.work_order import make_stock_entry
-
-        stock_entry_values = make_stock_entry(
-            work_order,
-            "Manufacture",
-            qty=actual_yield,
-            target_warehouse=target_warehouse,
+    except (ImportError, ModuleNotFoundError) as error:
+        frappe.throw(
+            _("ERPNext manufacturing is required to record batch completion"),
+            frappe.ValidationError,
         )
-        document = frappe.get_doc(stock_entry_values)
-    except (ImportError, ModuleNotFoundError):
-        # Keep lightweight contract tests and installations without the
-        # manufacturing module importable; a real v16 site takes the branch
-        # above and never uses this compatibility path.
-        document = frappe.new_doc("Stock Entry")
-        document.stock_entry_type = "Manufacture"
-        document.purpose = "Manufacture"
-        _set_document_value(document, "company", value.get("company") or getattr(order, "company", None))
-        _set_document_value(document, "work_order", work_order)
-        _set_document_value(document, "fg_completed_qty", actual_yield)
-        _set_document_value(document, "to_warehouse", target_warehouse)
-        for row in value.get("items", []):
-            if not isinstance(row, dict) or not cstr(row.get("item_code")).strip():
-                frappe.throw(_("Batch completion contains an invalid component row"), frappe.ValidationError)
-            document.append("items", {
-                "item_code": row["item_code"],
-                "qty": row.get("qty"),
-                "s_warehouse": row.get("warehouse") or row.get("s_warehouse"),
-            })
+        raise AssertionError("frappe.throw must raise") from error
+
+    stock_entry_values = make_stock_entry(
+        work_order,
+        "Manufacture",
+        qty=actual_yield,
+        target_warehouse=target_warehouse,
+    )
+    document = frappe.get_doc(stock_entry_values)
     _set_document_value(document, "company", value.get("company") or getattr(order, "company", None))
     _set_document_value(document, "work_order", work_order)
     _set_document_value(document, "fg_completed_qty", actual_yield)
