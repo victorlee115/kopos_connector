@@ -5292,6 +5292,15 @@ def _parse_device_json_object(
             )
         try:
             value: Any = json.loads(payload)
+        except RecursionError as error:
+            # CPython's decoder gives up on deep nesting before any limit below
+            # is reached. That is the same condition the depth check names, so
+            # report it the same way instead of escaping as a RuntimeError.
+            frappe.throw(
+                _("{0} is nested deeper than the supported device command limit").format(label),
+                frappe.ValidationError,
+            )
+            raise AssertionError("frappe.throw must raise") from error
         except (json.JSONDecodeError, UnicodeDecodeError) as error:
             frappe.throw(_("{0} is not valid JSON").format(label), frappe.ValidationError)
             raise AssertionError("frappe.throw must raise") from error
@@ -5300,6 +5309,11 @@ def _parse_device_json_object(
 
     if not isinstance(value, dict):
         frappe.throw(_("{0} must be an object").format(label), frappe.ValidationError)
+    # Bound the shape before encoding it. The depth limit gives up after at most
+    # nine frames, where json.dumps on a deeply nested dictionary would raise
+    # RecursionError first and escape every limit here. Unsupported types report
+    # the same message from either place.
+    _validate_device_json_shape(value, label=label)
     try:
         canonical_size = len(
             json.dumps(
@@ -5320,7 +5334,6 @@ def _parse_device_json_object(
             ),
             frappe.ValidationError,
         )
-    _validate_device_json_shape(value, label=label)
     return value
 
 

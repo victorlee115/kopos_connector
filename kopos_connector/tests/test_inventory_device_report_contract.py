@@ -54,10 +54,23 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
             inventory._parse_report_payload(missing_offset)
 
     def test_device_payload_limits_apply_to_canonical_dicts_and_raw_json(self) -> None:
+        # Shape is bounded before the dictionary is encoded, so a single
+        # oversized field is refused by the string limit that actually describes
+        # it rather than by the payload byte limit.
         oversized = deepcopy(self._payload())
         oversized["catalog_version"] = "x" * (inventory._DEVICE_MAX_PAYLOAD_BYTES + 1)
-        with self.assertRaisesRegex(frappe.ValidationError, "too large"):
+        with self.assertRaisesRegex(frappe.ValidationError, "longer than"):
             inventory._parse_report_payload(oversized)
+
+        # The byte limit still applies to a dictionary whose fields are each
+        # individually legal but which is too large once encoded.
+        bulky = deepcopy(self._payload())
+        chunk = "x" * inventory._DEVICE_MAX_STRING_LENGTH
+        field_count = (inventory._DEVICE_MAX_PAYLOAD_BYTES // inventory._DEVICE_MAX_STRING_LENGTH) + 2
+        for index in range(min(field_count, inventory._DEVICE_MAX_COLLECTION_ITEMS - len(bulky))):
+            bulky[f"pad_{index}"] = chunk
+        with self.assertRaisesRegex(frappe.ValidationError, "too large"):
+            inventory._parse_report_payload(bulky)
 
         raw = json.dumps(self._payload(), separators=(",", ":"))
         with self.assertRaisesRegex(frappe.ValidationError, "too large"):
@@ -74,6 +87,43 @@ class InventoryDeviceReportContractTests(unittest.TestCase):
             inventory._parse_device_json_object(
                 {"number": inventory._DEVICE_MAX_SAFE_INTEGER + 1}, "Device payload"
             )
+
+    def test_excessive_nesting_gives_a_validation_error_not_a_recursion_error(self) -> None:
+        """D26: both entry shapes must reach the depth limit, not blow the stack.
+
+        A raw string is decoded by CPython's json decoder and an already-decoded
+        dictionary is canonically encoded, and each of those gives up on deep
+        nesting long before the depth limit is applied. Neither may escape as a
+        RecursionError to the caller.
+        """
+
+        def build_nested(levels: int) -> dict[str, object]:
+            root: dict[str, object] = {}
+            current = root
+            for _ in range(levels):
+                child: dict[str, object] = {}
+                current["child"] = child
+                current = child
+            return root
+
+        with self.assertRaisesRegex(frappe.ValidationError, "nested deeper"):
+            inventory._parse_device_json_object(build_nested(1200), "Device payload")
+
+        # Built as text: json.dumps would hit the same recursion limit here, in
+        # the test, before the product code ever saw the payload.
+        raw_deep = ('{"child":' * 1200) + "{}" + ("}" * 1200)
+        with self.assertRaisesRegex(frappe.ValidationError, "nested deeper"):
+            inventory._parse_device_json_object(raw_deep, "Device payload")
+
+        # The ordinary over-limit case still reports the same way.
+        with self.assertRaisesRegex(frappe.ValidationError, "nested deeper"):
+            inventory._parse_device_json_object(
+                build_nested(inventory._DEVICE_MAX_DEPTH + 1), "Device payload"
+            )
+        # And a payload just inside the limit is still accepted.
+        inventory._parse_device_json_object(
+            build_nested(inventory._DEVICE_MAX_DEPTH - 1), "Device payload"
+        )
 
     def test_count_observation_line_count_is_bounded_before_domain_validation(self) -> None:
         with self.assertRaisesRegex(frappe.ValidationError, "more than 100"):
