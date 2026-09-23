@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
+from hypothesis import given, settings, strategies as st
 
 from .fake_frappe import install_fake_frappe_modules
 
@@ -1021,6 +1022,123 @@ def test_success_and_duplicate_api_responses_expose_same_settlement_proof(
         require_approval_proof=True,
     )
     assert recovered | persisted_proof == recovered
+
+
+def _drawer_snapshot_row(**changes):
+    return {
+        "name": "RETURN-1", "return_id": "refund-1", "refund_method": "cash",
+        "event_fb_order": "ORDER-ERP-1", "original_fb_order": "ORDER-ERP-1",
+        "order_id": "order-local-1", "original_sales_invoice": "SINV-1",
+        "original_fb_shift": "SHIFT-OLD", "original_shift_id": "shift-local-old",
+        "original_device_id": "DEVICE-1", "refund_shift": "SHIFT-NOW",
+        "settlement_doctype": "Journal Entry", "settlement_document": "JV-1",
+        "settlement_name": "JV-1", "settlement_docstatus": 1,
+        "settlement_return_event": changes.get("name", "RETURN-1"),
+        "settlement_amount": "12.00",
+        "settlement_tenders_json": json.dumps({
+            "refund_method": "cash", "settlement_amount_sen": 1200,
+            "customer_debit_sen": 1200, "return_outstanding_sen": 0,
+            "tenders": [{"refund_method": "cash", "amount_sen": 1200}],
+        }),
+        **changes,
+    }
+
+
+def test_drawer_snapshot_is_one_bounded_unlocked_read_of_posted_evidence(monkeypatch):
+    service = importlib.import_module("kopos_connector.kopos.services.accounting.return_invoice_service")
+    calls = []
+
+    def sql(query, params, *, as_dict):
+        calls.append(query)
+        assert params == ("SHIFT-NOW", "SHIFT-NOW", 501)
+        assert as_dict is True
+        assert "FOR UPDATE" not in query.upper()
+        assert "return_event.refund_shift = %s" in query
+        assert "IFNULL(return_event.refund_shift, '') = ''" in query
+        assert "return_event.docstatus = 1" in query
+        assert "return_event.settlement_status = 'Posted'" in query
+        assert "LIMIT %s" in query
+        # Match accounting's Python strip/lower, not a different SQL filter.
+        assert "refund_method =" not in query
+        return [_drawer_snapshot_row(refund_method=" \tCaSh\n"),
+                _drawer_snapshot_row(name="RETURN-QR", return_id="refund-qr", refund_method="qr")]
+
+    monkeypatch.setattr(service.frappe.db, "sql", sql)
+    monkeypatch.setattr(service.frappe.db, "set_value", lambda *_args, **_kwargs: pytest.fail("read wrote accounting"))
+    result = service.get_shift_cash_refund_snapshot("SHIFT-NOW")
+    assert len(calls) == 1
+    assert result == {"status": "complete", "refunds": [{
+        "return_event": "RETURN-1", "return_id": "refund-1", "refund_method": "cash",
+        "original_fb_order": "ORDER-ERP-1", "order_id": "order-local-1",
+        "original_sales_invoice": "SINV-1", "original_fb_shift": "SHIFT-OLD",
+        "original_shift_id": "shift-local-old", "original_device_id": "DEVICE-1",
+        "refund_fb_shift": "SHIFT-NOW", "amount_sen": 1200,
+        "settlement_doctype": "Journal Entry", "settlement_document": "JV-1",
+    }]}
+
+
+@pytest.mark.parametrize("rows, expected_status", [([], "complete"),
+    ([_drawer_snapshot_row(refund_method="qr")] * 501, "limit_exceeded")])
+def test_drawer_snapshot_never_turns_overflow_into_partial_or_zero(monkeypatch, rows, expected_status):
+    service = importlib.import_module("kopos_connector.kopos.services.accounting.return_invoice_service")
+    monkeypatch.setattr(service.frappe.db, "sql", lambda *_args, **_kwargs: rows)
+    assert service.get_shift_cash_refund_snapshot("SHIFT-NOW") == {
+        "status": expected_status, "refunds": [] if expected_status == "complete" else None,
+    }
+
+
+@pytest.mark.parametrize("changes", [
+    {"refund_method": None}, {"refund_method": ""},
+    {"refund_method": "unsupported"}, {"refund_method": "cash voucher"},
+    {"settlement_docstatus": 2}, {"settlement_tenders_json": "{}"},
+    {"settlement_return_event": "RETURN-OTHER"}, {"settlement_return_event": None},
+    {"settlement_return_event": " "},
+    {"settlement_amount": "12.001"}, {"event_fb_order": "OTHER"},
+    {"order_id": ""}, {"original_fb_order": None}, {"original_fb_shift": ""},
+    {"original_device_id": ""}, {"return_id": " "}, {"refund_shift": "OTHER"},
+    {"refund_shift": None, "original_fb_shift": "SHIFT-OLD"},
+])
+def test_drawer_snapshot_rejects_incomplete_or_conflicting_cash_evidence(monkeypatch, changes):
+    service = importlib.import_module("kopos_connector.kopos.services.accounting.return_invoice_service")
+    monkeypatch.setattr(service.frappe.db, "sql", lambda *_args, **_kwargs: [_drawer_snapshot_row(**changes)])
+    with pytest.raises(service.frappe.ValidationError):
+        service.get_shift_cash_refund_snapshot("SHIFT-NOW")
+
+
+@pytest.mark.parametrize("duplicate", [{}, {"name": "RETURN-2"},
+    {"name": "RETURN-2", "return_id": "refund-2"}])
+def test_drawer_snapshot_rejects_ambiguous_events_return_ids_or_settlements(monkeypatch, duplicate):
+    service = importlib.import_module("kopos_connector.kopos.services.accounting.return_invoice_service")
+    monkeypatch.setattr(service.frappe.db, "sql", lambda *_args, **_kwargs: [
+        _drawer_snapshot_row(), _drawer_snapshot_row(**duplicate)])
+    with pytest.raises(service.frappe.ValidationError):
+        service.get_shift_cash_refund_snapshot("SHIFT-NOW")
+
+
+@given(method=st.one_of(st.none(), st.text(max_size=48),
+                       st.sampled_from([" cash ", "QR", "Card", "voucher", "\tCaSh\n"])))
+@settings(max_examples=100, derandomize=True)
+def test_drawer_snapshot_classifies_only_supported_refund_methods(method):
+    service = importlib.import_module("kopos_connector.kopos.services.accounting.return_invoice_service")
+    normalized = (method or "").strip().lower()
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(service.frappe.db, "sql", lambda *_args, **_kwargs: [_drawer_snapshot_row(refund_method=method)])
+        if normalized not in {"cash", "qr", "card", "voucher"}:
+            with pytest.raises(service.frappe.ValidationError, match="refund_method"):
+                service.get_shift_cash_refund_snapshot("SHIFT-NOW")
+        else:
+            snapshot = service.get_shift_cash_refund_snapshot("SHIFT-NOW")
+            assert snapshot["status"] == "complete"
+            assert len(snapshot["refunds"]) == (1 if normalized == "cash" else 0)
+
+
+def test_drawer_snapshot_retains_legacy_original_drawer_and_missing_local_shift_id(monkeypatch):
+    service = importlib.import_module("kopos_connector.kopos.services.accounting.return_invoice_service")
+    monkeypatch.setattr(service.frappe.db, "sql", lambda *_args, **_kwargs: [
+        _drawer_snapshot_row(refund_shift=None, original_fb_shift="SHIFT-NOW", original_shift_id=None, event_fb_order=None)])
+    result = service.get_shift_cash_refund_snapshot("SHIFT-NOW")
+    assert result["refunds"][0]["refund_fb_shift"] == "SHIFT-NOW"
+    assert result["refunds"][0]["original_shift_id"] is None
 
 
 def _refund_shift_fakes(monkeypatch, shifts, open_by_device, invoice_shift="SHIFT-SALE", device="DEVICE-A"):

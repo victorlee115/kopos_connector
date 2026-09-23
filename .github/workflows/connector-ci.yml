@@ -53,6 +53,7 @@ jobs:
           python -m pip install \
             "build==1.3.0" \
             "pytest==9.0.3" \
+            "hypothesis==6.135.0" \
             "pycryptodome==3.23.0" \
             "jsonschema==4.24.0" \
             "pip-audit==2.10.1"

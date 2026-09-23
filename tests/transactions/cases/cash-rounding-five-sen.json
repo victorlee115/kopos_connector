@@ -1,0 +1,53 @@
+{
+  "name": "cash-rounding-five-sen",
+  "description": "A 5-sen cash drawer cannot pay a 1-sen remainder, so a partial position is floored to a multiple of 5 and rounding absorbs it. The final refund must still settle at exactly the sale total.",
+  "sale": {
+    "lines": [
+      {
+        "line_id": "L0",
+        "quantity": 3,
+        "line_total_sen": 1001
+      }
+    ],
+    "tax_sen": 61,
+    "rounding_sen": -2,
+    "total_sen": 1060,
+    "cash_unit_sen": 5
+  },
+  "sequence": [
+    [
+      {
+        "line_id": "L0",
+        "quantity": 1
+      }
+    ],
+    [
+      {
+        "line_id": "L0",
+        "quantity": 2
+      }
+    ]
+  ],
+  "expected": [
+    {
+      "net_sen": 333,
+      "tax_sen": 20,
+      "rounding_sen": -3,
+      "amount_sen": 350,
+      "is_final": false,
+      "lines": {
+        "L0": 333
+      }
+    },
+    {
+      "net_sen": 668,
+      "tax_sen": 41,
+      "rounding_sen": 1,
+      "amount_sen": 710,
+      "is_final": true,
+      "lines": {
+        "L0": 668
+      }
+    }
+  ]
+}

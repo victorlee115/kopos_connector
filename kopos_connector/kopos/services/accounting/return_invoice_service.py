@@ -8,19 +8,16 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 import frappe
-
 from kopos_connector.kopos.services.accounting.refund_allocation import (
     RefundAllocation,
     parse_stored_allocation,
 )
-
 from kopos_connector.utils.diagnostics import (
     log_sanitized_error,
     make_savepoint,
     rollback_to_savepoint,
 )
 from kopos_connector.utils.money import money_to_sen
-
 
 PROMOTION_INVOICE_FIELDS = (
     "custom_kopos_pricing_mode",
@@ -610,7 +607,10 @@ def require_open_shift_for_void(shift_name: Any) -> None:
     """A void takes the sale out of its shift's cash, so it is refused once that shift has closed."""
     status = cstr(_value(lock_fb_shift_cash_scope(shift_name), "status")).strip()
     if status != "Open":
-        from kopos_connector.api.operational_errors import ShiftAlreadyClosedError, ShiftRequiredError
+        from kopos_connector.api.operational_errors import (
+            ShiftAlreadyClosedError,
+            ShiftRequiredError,
+        )
 
         frappe.throw(
             f"This sale's shift is {status or 'missing'}; refund the sale instead of voiding it.",
@@ -762,6 +762,95 @@ def _get_locked_shift_sales_cash_sen(shift: str) -> int:
     return total_cash_sen
 
 
+_EXPLICIT_RETURN_DRAWER_SCOPE = "return_event.refund_shift = %s"
+_LEGACY_RETURN_DRAWER_SCOPE = """fb_order.shift = %s
+            AND fb_order.status = 'Submitted'
+            AND IFNULL(return_event.refund_shift, '') = ''"""
+SHIFT_CASH_REFUND_SNAPSHOT_LIMIT = 500
+
+
+def get_shift_cash_refund_snapshot(shift: str) -> dict[str, Any]:
+    """Observe posted drawer payouts without acquiring reconciliation locks.
+
+    This is one bounded statement snapshot, not close authority. Overflow or
+    ambiguous source/settlement evidence must never look like a verified zero.
+    The authenticated shift read owns the selected drawer and failure reporting.
+    """
+    from .return_settlement_service import SUPPORTED_REFUND_METHODS
+
+    if not shift:
+        frappe.throw("FB Shift is required for refund observation", frappe.ValidationError)
+    rows = frappe.db.sql(
+        f"""
+        SELECT return_event.name, return_event.return_id, return_event.refund_method,
+            return_event.fb_order AS event_fb_order, return_event.refund_shift,
+            return_event.original_sales_invoice,
+            fb_order.name AS original_fb_order, fb_order.order_id,
+            fb_order.shift AS original_fb_shift, fb_order.device_id AS original_device_id,
+            original_shift.shift_code AS original_shift_id,
+            return_event.settlement_doctype, return_event.settlement_document,
+            return_event.settlement_amount, return_event.settlement_tenders_json,
+            settlement.name AS settlement_name, settlement.docstatus AS settlement_docstatus,
+            settlement.custom_fb_return_event AS settlement_return_event
+        FROM `tabFB Return Event` AS return_event
+        LEFT JOIN `tabFB Order` AS fb_order
+            ON fb_order.sales_invoice = return_event.original_sales_invoice
+        LEFT JOIN `tabFB Shift` AS original_shift ON original_shift.name = fb_order.shift
+        LEFT JOIN `tabJournal Entry` AS settlement
+            ON settlement.name = return_event.settlement_document
+        WHERE ({_EXPLICIT_RETURN_DRAWER_SCOPE} OR ({_LEGACY_RETURN_DRAWER_SCOPE}))
+            AND return_event.docstatus = 1
+            AND return_event.settlement_status = 'Posted'
+        ORDER BY return_event.name, fb_order.name
+        LIMIT %s
+        """,
+        (shift, shift, SHIFT_CASH_REFUND_SNAPSHOT_LIMIT + 1),
+        as_dict=True,
+    )
+    if len(rows) > SHIFT_CASH_REFUND_SNAPSHOT_LIMIT:
+        return {"status": "limit_exceeded", "refunds": None}
+
+    refunds = []
+    seen_events: set[str] = set()
+    seen_returns: set[str] = set()
+    seen_settlements: set[str] = set()
+    for row in rows:
+        refund_method = cstr(_value(row, "refund_method")).strip().lower()
+        if refund_method not in SUPPORTED_REFUND_METHODS:
+            frappe.throw("Cash refund observation has invalid refund_method", frappe.ValidationError)
+        if refund_method != "cash":
+            continue
+        fields = {key: cstr(_value(row, key)).strip() for key in (
+            "name", "return_id", "original_sales_invoice", "original_fb_order",
+            "order_id", "original_fb_shift", "original_device_id", "settlement_document",
+        )}
+        event_name = fields.pop("name")
+        event_order = cstr(_value(row, "event_fb_order")).strip()
+        payout_shift = cstr(_value(row, "refund_shift")).strip() or fields["original_fb_shift"]
+        if (not event_name or not all(fields.values()) or payout_shift != shift
+                or (event_order and event_order != fields["original_fb_order"])):
+            frappe.throw("Cash refund observation has incomplete or conflicting source identity", frappe.ValidationError)
+        if (event_name in seen_events or fields["return_id"] in seen_returns
+                or fields["settlement_document"] in seen_settlements):
+            frappe.throw("Cash refund observation has ambiguous event or settlement identity", frappe.ValidationError)
+        amount_sen = _validate_cash_settlement_sen(row, event_name)
+        if cstr(_value(row, "settlement_return_event")).strip() != event_name:
+            frappe.throw(
+                f"FB Return Event {event_name} settlement is not linked to this return event",
+                frappe.ValidationError,
+            )
+        seen_events.add(event_name)
+        seen_returns.add(fields["return_id"])
+        seen_settlements.add(fields["settlement_document"])
+        refunds.append({
+            **fields, "return_event": event_name, "refund_method": "cash",
+            "original_shift_id": cstr(_value(row, "original_shift_id")).strip() or None,
+            "refund_fb_shift": shift, "amount_sen": amount_sen,
+            "settlement_doctype": "Journal Entry",
+        })
+    return {"status": "complete", "refunds": refunds}
+
+
 def _get_locked_shift_return_cash_adjustment_sen(shift: str) -> int:
     columns = """
             return_event.name,
@@ -781,7 +870,7 @@ def _get_locked_shift_return_cash_adjustment_sen(shift: str) -> int:
         FROM `tabFB Return Event` AS return_event
         LEFT JOIN `tabJournal Entry` AS settlement
             ON settlement.name = return_event.settlement_document
-        WHERE return_event.refund_shift = %s
+        WHERE {_EXPLICIT_RETURN_DRAWER_SCOPE}
             AND return_event.docstatus = 1
             AND return_event.settlement_status = 'Posted'
         ORDER BY return_event.name
@@ -798,9 +887,7 @@ def _get_locked_shift_return_cash_adjustment_sen(shift: str) -> int:
             ON fb_order.sales_invoice = return_event.original_sales_invoice
         LEFT JOIN `tabJournal Entry` AS settlement
             ON settlement.name = return_event.settlement_document
-        WHERE fb_order.shift = %s
-            AND fb_order.status = 'Submitted'
-            AND IFNULL(return_event.refund_shift, '') = ''
+        WHERE {_LEGACY_RETURN_DRAWER_SCOPE}
             AND return_event.docstatus = 1
             AND return_event.settlement_status = 'Posted'
         ORDER BY return_event.name
@@ -818,11 +905,11 @@ def _get_locked_shift_return_cash_adjustment_sen(shift: str) -> int:
         seen_events.add(event_name)
         if cstr(_value(row, "refund_method")).strip().lower() != "cash":
             continue
-        total_adjustment_sen -= _validate_locked_cash_settlement_sen(row, event_name)
+        total_adjustment_sen -= _validate_cash_settlement_sen(row, event_name)
     return total_adjustment_sen
 
 
-def _validate_locked_cash_settlement_sen(row: Any, event_name: str) -> int:
+def _validate_cash_settlement_sen(row: Any, event_name: str) -> int:
     settlement_doctype = cstr(_value(row, "settlement_doctype")).strip()
     settlement_document = cstr(_value(row, "settlement_document")).strip()
     if settlement_doctype != "Journal Entry" or not settlement_document:

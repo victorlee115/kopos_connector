@@ -59,6 +59,49 @@
     "OpenShiftApiResponse": {
       "oneOf": [{ "$ref": "#/definitions/OpenShiftAcceptedApiResponse" }, { "$ref": "#/definitions/OpenShiftConflictApiResponse" }]
     },
+    "ShiftCashRefundRecord": {
+      "type": "object",
+      "required": ["return_event", "return_id", "refund_method", "original_fb_order", "order_id", "original_sales_invoice", "original_fb_shift", "original_shift_id", "original_device_id", "refund_fb_shift", "amount_sen", "settlement_doctype", "settlement_document"],
+      "properties": {
+        "return_event": { "type": "string", "minLength": 1 },
+        "return_id": { "type": "string", "minLength": 1 },
+        "refund_method": { "const": "cash" },
+        "original_fb_order": { "type": "string", "minLength": 1 },
+        "order_id": { "type": "string", "minLength": 1 },
+        "original_sales_invoice": { "type": "string", "minLength": 1 },
+        "original_fb_shift": { "type": "string", "minLength": 1 },
+        "original_shift_id": { "type": ["string", "null"] },
+        "original_device_id": { "type": "string", "minLength": 1 },
+        "refund_fb_shift": { "type": "string", "minLength": 1 },
+        "amount_sen": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "settlement_doctype": { "const": "Journal Entry" },
+        "settlement_document": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ShiftCashRefundSnapshot": {
+      "type": "object",
+      "required": ["fb_shift", "observed_at", "status", "refunds"],
+      "properties": {
+        "fb_shift": { "type": "string", "minLength": 1 },
+        "observed_at": { "type": "string", "minLength": 1 }
+      },
+      "oneOf": [
+        {
+          "required": ["status", "refunds"],
+          "properties": {
+            "status": { "const": "complete" },
+            "refunds": { "type": "array", "maxItems": 500, "items": { "$ref": "#/definitions/ShiftCashRefundRecord" } }
+          }
+        },
+        {
+          "required": ["status", "refunds"],
+          "properties": {
+            "status": { "enum": ["limit_exceeded", "unavailable"] },
+            "refunds": { "type": "null" }
+          }
+        }
+      ]
+    },
     "DeviceOpenShiftApiRecord": {
       "type": "object",
       "required": ["fb_shift", "shift_id", "device_id", "staff_id", "opening_float_sen", "opened_at"],
@@ -68,7 +111,8 @@
         "device_id": { "type": "string", "minLength": 1 },
         "staff_id": { "type": "string", "minLength": 1 },
         "opening_float_sen": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
-        "opened_at": { "type": "string", "minLength": 1 }
+        "opened_at": { "type": "string", "minLength": 1 },
+        "cash_refund_snapshot": { "$ref": "#/definitions/ShiftCashRefundSnapshot" }
       }
     },
     "DeviceOpenShiftStaffConflictApiRecord": {

@@ -1,0 +1,51 @@
+{
+  "name": "zero-value-line",
+  "description": "A complimentary line has nothing to return. Refunding it alone must be refused as nothing_to_refund, not paid out as zero.",
+  "sale": {
+    "lines": [
+      {
+        "line_id": "L0",
+        "quantity": 1,
+        "line_total_sen": 0
+      },
+      {
+        "line_id": "L1",
+        "quantity": 1,
+        "line_total_sen": 500
+      }
+    ],
+    "tax_sen": 30,
+    "rounding_sen": 0,
+    "total_sen": 530,
+    "cash_unit_sen": 1
+  },
+  "sequence": [
+    [
+      {
+        "line_id": "L0",
+        "quantity": 1
+      }
+    ],
+    [
+      {
+        "line_id": "L1",
+        "quantity": 1
+      }
+    ]
+  ],
+  "expected": [
+    {
+      "refused": "nothing_to_refund"
+    },
+    {
+      "net_sen": 500,
+      "tax_sen": 30,
+      "rounding_sen": 0,
+      "amount_sen": 530,
+      "is_final": true,
+      "lines": {
+        "L1": 500
+      }
+    }
+  ]
+}

@@ -347,6 +347,26 @@ def test_open_shift_lookup_refuses_fractional_persisted_sen(monkeypatch):
         shifts.get_device_open_shift_payload("DEVICE-1")
 
 
+@pytest.mark.parametrize("flag, expected", [(None, {}), ("0", {}), (0, {}), ("1", {"include_cash_refunds": True}), (1, {"include_cash_refunds": True})])
+def test_optional_drawer_lookup_flag_is_forwarded_only_after_device_auth(monkeypatch, flag, expected):
+    calls = []
+    monkeypatch.setattr(public_api, "require_device_context", lambda device_id: calls.append(("auth", device_id)) or _device_doc())
+    monkeypatch.setattr(shifts, "get_device_open_shift_payload", lambda **kwargs: calls.append(("read", kwargs)))
+    public_api.frappe.local.response = {}
+    public_api.get_device_open_shift("DEVICE-1", include_cash_refunds=flag)
+    assert calls == [("auth", "DEVICE-1"), ("read", {"device_id": "DEVICE-1", "staff_id": None, **expected})]
+
+
+@pytest.mark.parametrize("flag", ["false", "true", "2", 2, "", "1.0"])
+def test_optional_drawer_lookup_rejects_ambiguous_flags(monkeypatch, flag):
+    monkeypatch.setattr(public_api, "require_device_context", lambda device_id: _device_doc())
+    monkeypatch.setattr(shifts, "get_device_open_shift_payload", lambda **kwargs: pytest.fail("invalid flag reached read"))
+    public_api.frappe.local.response = {}
+    public_api.get_device_open_shift("DEVICE-1", include_cash_refunds=flag)
+    assert public_api.frappe.local.response["http_status_code"] == 400
+    assert "include_cash_refunds" in public_api.frappe.local.response["message"]
+
+
 def test_get_device_open_shift_validates_staff_without_mutating_heartbeat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

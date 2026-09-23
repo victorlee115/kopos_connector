@@ -1,0 +1,55 @@
+{
+  "name": "over-refund-is-refused",
+  "description": "Asking for more units than were sold, and asking again after the line is fully refunded. Both must be refused, never paid.",
+  "sale": {
+    "lines": [
+      {
+        "line_id": "L0",
+        "quantity": 2,
+        "line_total_sen": 1000
+      }
+    ],
+    "tax_sen": 0,
+    "rounding_sen": 0,
+    "total_sen": 1000,
+    "cash_unit_sen": 1
+  },
+  "sequence": [
+    [
+      {
+        "line_id": "L0",
+        "quantity": 3
+      }
+    ],
+    [
+      {
+        "line_id": "L0",
+        "quantity": 2
+      }
+    ],
+    [
+      {
+        "line_id": "L0",
+        "quantity": 1
+      }
+    ]
+  ],
+  "expected": [
+    {
+      "refused": "exceeds_remaining"
+    },
+    {
+      "net_sen": 1000,
+      "tax_sen": 0,
+      "rounding_sen": 0,
+      "amount_sen": 1000,
+      "is_final": true,
+      "lines": {
+        "L0": 1000
+      }
+    },
+    {
+      "refused": "exceeds_remaining"
+    }
+  ]
+}

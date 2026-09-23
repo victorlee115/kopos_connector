@@ -1,0 +1,69 @@
+{
+  "name": "indivisible-line-total",
+  "description": "1000 sen over 3 units does not divide. Exercises the floor share and proves the remainder is not lost when the last unit is returned.",
+  "sale": {
+    "lines": [
+      {
+        "line_id": "L0",
+        "quantity": 3,
+        "line_total_sen": 1000
+      }
+    ],
+    "tax_sen": 60,
+    "rounding_sen": 0,
+    "total_sen": 1060,
+    "cash_unit_sen": 1
+  },
+  "sequence": [
+    [
+      {
+        "line_id": "L0",
+        "quantity": 1
+      }
+    ],
+    [
+      {
+        "line_id": "L0",
+        "quantity": 1
+      }
+    ],
+    [
+      {
+        "line_id": "L0",
+        "quantity": 1
+      }
+    ]
+  ],
+  "expected": [
+    {
+      "net_sen": 333,
+      "tax_sen": 19,
+      "rounding_sen": 0,
+      "amount_sen": 352,
+      "is_final": false,
+      "lines": {
+        "L0": 333
+      }
+    },
+    {
+      "net_sen": 333,
+      "tax_sen": 20,
+      "rounding_sen": 0,
+      "amount_sen": 353,
+      "is_final": false,
+      "lines": {
+        "L0": 333
+      }
+    },
+    {
+      "net_sen": 334,
+      "tax_sen": 21,
+      "rounding_sen": 0,
+      "amount_sen": 355,
+      "is_final": true,
+      "lines": {
+        "L0": 334
+      }
+    }
+  ]
+}

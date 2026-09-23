@@ -80,3 +80,18 @@ transaction or treat it as sale-registration authority.
    identity, account type, GL entries, and outstanding balance.
 6. Record failures and blockers explicitly; never convert an unrun gate to a
    pass.
+
+## Frappe-safe and workstation AI extensions
+
+When this tree is used inside JiJiPOS-Everything, also follow the workspace
+`AGENTS.md` workstation correctness section.
+
+- Never modify Frappe or ERPNext core. Keep custom behaviour in `kopos_connector`.
+- Never directly manipulate GL Entry or Stock Ledger Entry.
+- Avoid `frappe.db.set_value`, `db_set`, `db_update`, `db_insert`, and raw SQL
+  for transactional documents unless specifically justified.
+- Prefer Document `insert` / `submit` / `cancel` / `amend`.
+- ERPNext is authoritative for financial and stock state.
+- Never git push from an agent.
+- Hypothesis property tests live in `tests/test_hypothesis_invariants.py` and
+  `tests/test_pos_state_machine.py`. They are mocked_unit evidence only.

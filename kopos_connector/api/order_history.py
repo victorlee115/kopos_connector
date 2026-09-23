@@ -7,7 +7,7 @@ import hashlib
 import hmac
 import json
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -31,7 +31,7 @@ from kopos_connector.api.devices import (
 from kopos_connector.kopos.services.accounting.refund_allocation import (
     parse_stored_allocation,
 )
-
+from kopos_connector.utils.money import money_to_sen
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 100
@@ -250,7 +250,7 @@ def _db_datetime(value: Any, fieldname: str) -> str:
             _("Order history {0} is invalid").format(fieldname),
             frappe.ValidationError,
         )
-        raise AssertionError("frappe.throw did not reject an invalid cursor datetime")
+        raise AssertionError("frappe.throw did not reject an invalid cursor datetime") from None
     if not isinstance(parsed, datetime):
         frappe.throw(
             _("Order history {0} is invalid").format(fieldname),
@@ -266,7 +266,7 @@ def _db_datetime(value: Any, fieldname: str) -> str:
                 _("ERP system timezone {0} is invalid").format(timezone_name),
                 frappe.ValidationError,
             )
-            raise AssertionError("frappe.throw did not reject an invalid timezone")
+            raise AssertionError("frappe.throw did not reject an invalid timezone") from None
     return parsed.strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
@@ -287,7 +287,7 @@ def _db_time(value: Any, fieldname: str) -> str:
             _("Order history {0} is invalid").format(fieldname),
             frappe.ValidationError,
         )
-        raise AssertionError("frappe.throw did not reject an invalid cursor time")
+        raise AssertionError("frappe.throw did not reject an invalid cursor time") from None
     if not isinstance(parsed, time) or parsed.tzinfo is not None:
         frappe.throw(
             _("Order history {0} is invalid").format(fieldname),
@@ -915,7 +915,7 @@ def with_applied_payment_amounts(
     if not order_payments or len(order_payments) != len(invoice_payments):
         return invoice_payments
     reported = []
-    for invoice_payment, order_payment in zip(invoice_payments, order_payments):
+    for invoice_payment, order_payment in zip(invoice_payments, order_payments, strict=True):
         tendered = Decimal(decimal_string(invoice_payment.get("amount")))
         applied = Decimal(decimal_string(order_payment.get("amount")))
         if (
@@ -1109,7 +1109,11 @@ def query_return_events_by_return_invoice(
     rows = frappe.get_all(
         "FB Return Event",
         filters={"docstatus": 1, "return_sales_invoice": ["in", return_invoice_names]},
-        fields=["return_sales_invoice", "return_id", "refund_allocation"],
+        fields=[
+            "return_sales_invoice", "return_id", "refund_allocation",
+            "refund_method", "settlement_status", "settlement_amount",
+            "reason_text", "approved_by_manager", "return_to_stock",
+        ],
     )
     return {cstr(row.get("return_sales_invoice")).strip(): dict(row) for row in rows}
 
@@ -1131,6 +1135,13 @@ def serialize_refund_row(
         "refund_reason": empty_to_none(row.get("custom_kopos_refund_reason")),
         "return_id": empty_to_none((return_event or {}).get("return_id")),
         "refund_allocation": allocation.to_wire() if allocation is not None else None,
+        "refund_method": empty_to_none((return_event or {}).get("refund_method")),
+        "settlement_status": empty_to_none((return_event or {}).get("settlement_status")),
+        "settlement_amount_sen": money_to_sen(return_event["settlement_amount"], "refund settlement_amount")
+        if return_event and return_event.get("settlement_amount") is not None else None,
+        "refund_reason_text": empty_to_none((return_event or {}).get("reason_text")),
+        "refund_manager_id": empty_to_none((return_event or {}).get("approved_by_manager")),
+        "return_to_stock": bool(cint(return_event.get("return_to_stock"))) if return_event else None,
     }
 
 
@@ -1347,7 +1358,7 @@ def format_datetime(value: Any) -> str | None:
         parsed = value if isinstance(value, datetime) else get_datetime(value)
     except Exception:
         frappe.throw(_("Order history timestamp is invalid"), frappe.ValidationError)
-        raise AssertionError("frappe.throw did not reject an invalid timestamp")
+        raise AssertionError("frappe.throw did not reject an invalid timestamp") from None
     if not isinstance(parsed, datetime):
         frappe.throw(_("Order history timestamp is invalid"), frappe.ValidationError)
         raise AssertionError("frappe.throw did not reject an invalid timestamp")
@@ -1367,7 +1378,7 @@ def format_datetime(value: Any) -> str | None:
                 _("ERP system timezone {0} is invalid").format(timezone_name),
                 frappe.ValidationError,
             )
-            raise AssertionError("frappe.throw did not reject an invalid timezone")
+            raise AssertionError("frappe.throw did not reject an invalid timezone") from None
 
     return (
         parsed.astimezone(timezone.utc)

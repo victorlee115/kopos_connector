@@ -4,10 +4,12 @@ from unittest.mock import patch
 
 import frappe
 from frappe.tests.utils import FrappeTestCase
-
 from kopos_connector.api.fb_returns import process_return_payload
 from kopos_connector.kopos.api.fb_orders import submit_order_payload
 from kopos_connector.kopos.api.money_contract import persisted_money_to_sen
+from kopos_connector.kopos.services.accounting.return_invoice_service import (
+    get_shift_cash_refund_snapshot,
+)
 from kopos_connector.kopos.tests.frappe_test_fixtures import (
     build_sen_v1_sale_payload,
     create_open_test_shift,
@@ -121,6 +123,34 @@ class TestEndToEndCommercialRefundFlow(FrappeTestCase):
         )
         self.assertEqual(settlement.docstatus, 1)
         self.assertEqual(settlement.custom_fb_return_event, return_event.name)
+        snapshot = get_shift_cash_refund_snapshot(self.shift.name)
+        self.assertEqual(snapshot, {"status": "complete", "refunds": [{
+            "return_event": return_event.name, "return_id": self.return_id,
+            "refund_method": "cash", "original_fb_order": self.order.name,
+            "order_id": self.order.order_id, "original_sales_invoice": original_invoice.name,
+            "original_fb_shift": self.shift.name, "original_shift_id": self.shift.shift_code,
+            "original_device_id": self.order.device_id, "refund_fb_shift": self.shift.name,
+            "amount_sen": persisted_money_to_sen(settlement.total_debit, "refund settlement debit"),
+            "settlement_doctype": "Journal Entry", "settlement_document": settlement.name,
+        }]})
+
+    def test_drawer_observation_rejects_invalid_retained_refund_method(self) -> None:
+        result = process_return_payload(self._payload(return_to_stock=False), require_manager_approval=False)
+        journal = frappe.get_doc("Journal Entry", result["settlement_document"])
+        self.assertEqual(journal.docstatus, 1)
+        self.assertEqual(len(get_shift_cash_refund_snapshot(self.shift.name)["refunds"]), 1)
+        for invalid in (None, "", "unsupported", "cash voucher"):
+            with self.subTest(refund_method=invalid):
+                # Only synthetic retained metadata is corrupted; the real credit
+                # note, submitted settlement and GL are untouched. Rollback in
+                # tearDown preserves the restored baseline. Document validation
+                # normally prevents this, but old/corrupt data must not mean zero.
+                frappe.db.set_value("FB Return Event", result["return_event"],
+                                    "refund_method", invalid, update_modified=False)
+                with self.assertRaisesRegex(frappe.ValidationError, "refund_method"):
+                    get_shift_cash_refund_snapshot(self.shift.name)
+        frappe.db.set_value("FB Return Event", result["return_event"], "refund_method", "cash", update_modified=False)
+        self.assertEqual(len(get_shift_cash_refund_snapshot(self.shift.name)["refunds"]), 1)
 
     def test_idempotent_replay_reuses_one_credit_note_and_settlement(self) -> None:
         payload = self._payload(return_to_stock=False)
@@ -241,6 +271,7 @@ class TestEndToEndCommercialRefundFlow(FrappeTestCase):
         self.assertEqual(duplicate["status"], "duplicate")
         self.assertEqual(first["settlement_document"], duplicate["settlement_document"])
         self.assertEqual(first["return_sales_invoice"], duplicate["return_sales_invoice"])
+        self.assertEqual(get_shift_cash_refund_snapshot(self.shift.name), {"status": "complete", "refunds": []})
         credit = frappe.get_doc("Sales Invoice", first["return_sales_invoice"])
         self.assertEqual(credit.docstatus, 1)
         self.assertEqual(persisted_money_to_sen(credit.outstanding_amount, "credit outstanding"), 0)

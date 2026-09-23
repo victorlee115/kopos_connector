@@ -23,7 +23,7 @@ cash_service = importlib.import_module(
 
 def make_doc(**kwargs):
     doc = SimpleNamespace(**kwargs)
-    setattr(doc, "get", lambda key, default=None: getattr(doc, key, default))
+    doc.get = lambda key, default=None: getattr(doc, key, default)
     return doc
 
 
@@ -72,6 +72,36 @@ class MutableDoc(SimpleNamespace):
 
 
 class ShiftSyncTests(unittest.TestCase):
+    def test_optional_drawer_observation_does_not_change_default_lookup(self):
+        entry = {"name": "ERP-SHIFT", "shift_code": "LOCAL-SHIFT", "device_id": "DEVICE-1",
+                 "staff_id": "staff", "opening_float": "1.00", "opened_at": datetime(2026, 9, 21)}
+        with (patch.object(shifts, "get_device_doc", return_value=make_doc(name="DEVICE-1")),
+              patch.object(shifts.frappe, "get_all", return_value=[entry]),
+              patch.object(cash_service, "get_shift_cash_refund_snapshot", return_value={"status": "complete", "refunds": []}) as observe):
+            normal = shifts.get_device_open_shift_payload("DEVICE-1")
+            observe.assert_not_called()
+            observed = shifts.get_device_open_shift_payload("DEVICE-1", include_cash_refunds=True)
+            observe.assert_called_once_with("ERP-SHIFT")
+            snapshot = observed.pop("cash_refund_snapshot")
+            self.assertEqual(observed, normal)
+            self.assertEqual(snapshot["fb_shift"], "ERP-SHIFT")
+            self.assertEqual(snapshot["status"], "complete")
+            self.assertEqual(snapshot["refunds"], [])
+            self.assertTrue(snapshot["observed_at"].endswith("Z"))
+
+    def test_optional_drawer_failure_remains_unknown_without_breaking_lookup(self):
+        entry = {"name": "ERP-SHIFT", "shift_code": "LOCAL-SHIFT", "device_id": "DEVICE-1",
+                 "staff_id": "staff", "opening_float": "1.00", "opened_at": datetime(2026, 9, 21)}
+        with (patch.object(shifts, "get_device_doc", return_value=make_doc(name="DEVICE-1")),
+              patch.object(shifts.frappe, "get_all", return_value=[entry]),
+              patch.object(cash_service, "get_shift_cash_refund_snapshot", side_effect=RuntimeError("database unavailable")),
+              patch.object(shifts, "log_sanitized_error") as diagnose):
+            observed = shifts.get_device_open_shift_payload("DEVICE-1", include_cash_refunds=True)
+            self.assertEqual(observed["fb_shift"], "ERP-SHIFT")
+            self.assertEqual(observed["cash_refund_snapshot"]["status"], "unavailable")
+            self.assertIsNone(observed["cash_refund_snapshot"]["refunds"])
+            diagnose.assert_called_once()
+
     def test_offline_event_time_converts_equivalent_utc_to_site_local(self):
         server_now = datetime(2026, 3, 13, 18, 0, 0)
 
@@ -428,12 +458,6 @@ class ShiftSyncTests(unittest.TestCase):
                 )
 
     def test_close_shift_does_not_fallback_to_later_open_shift_for_same_device(self):
-        pos_profile = make_doc(
-            name="Counter 1",
-            company="JiJi",
-            warehouse="Main Warehouse",
-            payments=[make_doc(mode_of_payment="Cash", default=1)],
-        )
         device_doc = make_doc(
             name="DEVICE-1",
             device_id="DEVICE-1",
@@ -854,12 +878,6 @@ class ShiftSyncTests(unittest.TestCase):
 
     def test_close_shift_fails_for_wrong_shift_id(self):
         """Close shift should fail if shift_id doesn't match the opening entry."""
-        pos_profile = make_doc(
-            name="Counter 1",
-            company="JiJi",
-            warehouse="Main Warehouse",
-            payments=[make_doc(mode_of_payment="Cash", default=1)],
-        )
         device_doc = make_doc(
             name="DEVICE-1",
             device_id="DEVICE-1",

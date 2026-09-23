@@ -1,0 +1,13 @@
+target-version = "py311"
+src = ["kopos_connector", "tests"]
+exclude = [".venv-test", ".workstation-venv"]
+
+[lint]
+select = ["E", "F", "W", "B", "I"]
+ignore = [
+  "E501",
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["B011", "I001", "E402"]
+"kopos_connector/tests/**" = ["B011", "I001", "E402"]

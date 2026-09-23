@@ -1,0 +1,33 @@
+# Fast local gate for the ERPNext connector. Staged files only, seconds not
+# minutes. The 2,400-test connector suite runs in tools/pos-verify and CI.
+#
+# Skip once with:  LEFTHOOK=0 git commit ...
+pre-commit:
+  parallel: true
+  jobs:
+    - name: secrets
+      # Staged files only; the full-tree scan lives in pos-static-check.sh.
+      glob: "*"
+      run: >-
+        gitleaks dir --no-banner --redact
+        --config ../tools/static/gitleaks.toml
+        {staged_files}
+      skip:
+        - merge
+        - rebase
+
+    - name: ruff
+      glob: "*.py"
+      run: ruff check {staged_files}
+
+    - name: semgrep-critical
+      glob: "*.py"
+      # Direct GL Entry / Stock Ledger Entry writes are never committable.
+      run: >-
+        semgrep --config ../tools/static/semgrep/pos-correctness.yml
+        --error --quiet --severity ERROR {staged_files}
+
+    - name: compile
+      glob: "*.py"
+      # Catches a syntax error before it reaches anyone else. Fast.
+      run: ../.workstation-venv/bin/python -m compileall -q {staged_files}

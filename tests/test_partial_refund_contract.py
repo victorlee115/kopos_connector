@@ -90,11 +90,18 @@ def _validated(**overrides: Any) -> dict[str, Any]:
 def _install_sale(monkeypatch: pytest.MonkeyPatch, *, invoice: FakeDoc | None = None, order: FakeDoc | None = None, posted_amounts: list[str] | None = None) -> None:
     docs = {"Sales Invoice": invoice or _invoice(), "FB Order": order or _order()}
     monkeypatch.setattr(api.frappe, "get_doc", lambda doctype, _name=None: docs[doctype])
-    monkeypatch.setattr(
-        api.frappe,
-        "get_all",
-        lambda doctype, **_kwargs: [{"settlement_amount": amount} for amount in (posted_amounts or [])],
-    )
+    posted_rows = [
+        {"name": f"FB-RET-{index}", "return_id": f"RETURN-OLD-{index}", "settlement_amount": amount}
+        for index, amount in enumerate(posted_amounts or [])
+    ]
+
+    def sql(query: str, values: tuple[Any, ...] = (), **_kwargs: Any) -> list[dict[str, Any]]:
+        # Earlier refunds' amounts must be a locking read, like the guard's
+        # quantities: a plain read misses a refund committed during the lock wait.
+        assert "tabFB Return Event" in query and "FOR UPDATE" in query
+        return posted_rows
+
+    monkeypatch.setattr(api.frappe.db, "sql", sql)
 
 
 @pytest.mark.parametrize(
@@ -161,6 +168,17 @@ def test_part_refund_refuses_when_earlier_refund_money_does_not_match_the_units(
     _install_sale(monkeypatch, posted_amounts=["6.75"])
     with pytest.raises(api.frappe.ValidationError, match="Earlier refunds of this sale do not match"):
         api._allocate_partial_refund(_validated(), {"SINV-ITEM-1": Decimal("2")})
+
+
+def test_earlier_refund_money_counts_each_refund_once_and_never_this_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The read joins refund lines, so a refund of two items comes back twice.
+    rows = [
+        {"name": "FB-RET-1", "return_id": "RETURN-1", "settlement_amount": Decimal("15.05")},
+        {"name": "FB-RET-1", "return_id": "RETURN-1", "settlement_amount": Decimal("15.05")},
+        {"name": "FB-RET-9", "return_id": "RETURN-2", "settlement_amount": Decimal("3.35")},
+    ]
+    monkeypatch.setattr(api.frappe.db, "sql", lambda *_args, **_kwargs: rows)
+    assert api._posted_refund_amount_sen(_validated(), ["SINV-ITEM-1", "SINV-ITEM-2"]) == 1505
 
 
 def test_allocation_errors_become_plain_cashier_messages(monkeypatch: pytest.MonkeyPatch) -> None:

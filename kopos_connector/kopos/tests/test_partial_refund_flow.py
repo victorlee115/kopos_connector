@@ -5,26 +5,31 @@ from typing import Any
 from unittest.mock import patch
 
 import frappe
+import kopos_connector.api.fb_returns as fb_returns_api
 from frappe.tests.utils import FrappeTestCase
 from frappe.utils import add_to_date
-
-import kopos_connector.api.fb_returns as fb_returns_api
 from kopos_connector.api.fb_returns import list_order_refunds, process_return_payload
-from kopos_connector.api.order_history import query_return_events_by_return_invoice, serialize_refund_row
+from kopos_connector.api.order_history import (
+    query_return_events_by_return_invoice,
+    serialize_refund_row,
+)
 from kopos_connector.kopos.api.fb_orders import submit_order_payload
 from kopos_connector.kopos.api.money_contract import persisted_money_to_sen
-from kopos_connector.kopos.services.accounting.return_invoice_service import refresh_fb_shift_cash
 from kopos_connector.kopos.services.accounting.refund_allocation import (
     REFUND_ALLOCATION_VERSION,
     RefundableSale,
     RefundableSaleLine,
     allocate_refund,
 )
+from kopos_connector.kopos.services.accounting.return_invoice_service import (
+    SHIFT_CASH_REFUND_SNAPSHOT_LIMIT,
+    get_shift_cash_refund_snapshot,
+    refresh_fb_shift_cash,
+)
 from kopos_connector.kopos.tests.frappe_test_fixtures import (
     build_sen_v1_sale_payload,
     create_open_test_shift,
 )
-
 
 PREFIX = "KOPOS-PART-REFUND"
 
@@ -73,7 +78,7 @@ class TestPartialRefundFlow(FrappeTestCase):
         payload["order"]["payments"][0].update({"amount_sen": total, "tendered_amount_sen": total, "change_amount_sen": 0, **(qr or {})})
         order = frappe.get_doc("FB Order", submit_order_payload(payload)["fb_order"])
         sale = RefundableSale(
-            tuple(RefundableSaleLine(line_id, line[0], line[1]) for line_id, line in zip(line_ids, lines)),
+            tuple(RefundableSaleLine(line_id, line[0], line[1]) for line_id, line in zip(line_ids, lines, strict=True)),
             tax_sen, rounding, total, 1 if qr else 5,
         )
         return order, line_ids, sale
@@ -218,12 +223,70 @@ class TestPartialRefundFlow(FrappeTestCase):
         )
         closed = frappe.db.get_value("FB Shift", self.shift.name, ["status", "expected_cash", "cash_variance"], as_dict=True)
         self.assertEqual((closed.status, _sen(closed.expected_cash), _sen(closed.cash_variance)), ("Closed", counted_sen, 0))
+        self.assertEqual(get_shift_cash_refund_snapshot(self.shift.name), {"status": "complete", "refunds": []})
+        for drawer, response, amount in ((other, chosen, first.amount_sen), (paying, later, second.amount_sen)):
+            observation = get_shift_cash_refund_snapshot(drawer.name)
+            self.assertEqual(observation["status"], "complete")
+            self.assertEqual(len(observation["refunds"]), 1)
+            event = observation["refunds"][0]
+            self.assertEqual(event["return_event"], response["return_event"])
+            self.assertEqual(event["refund_fb_shift"], drawer.name)
+            self.assertEqual(event["original_fb_shift"], self.shift.name)
+            self.assertEqual(event["original_fb_order"], order.name)
+            self.assertEqual(event["amount_sen"], amount)
         for shift in (self.shift, other, paying):
             refresh_fb_shift_cash(shift.name)
         self.assertEqual(
             [_sen(frappe.db.get_value("FB Shift", shift.name, "expected_cash")) for shift in (self.shift, other, paying)],
             [counted_sen, _sen(other.opening_float) - first.amount_sen, _sen(paying.opening_float) - second.amount_sen],
         )
+
+    def test_drawer_observation_preserves_legacy_null_and_blank_refund_shift(self) -> None:
+        order, (line,), _sale = self._sale([(3, 3600)], tax_sen=0)
+        modern = self._refund(order, f"{PREFIX}-MODERN-{frappe.generate_hash(length=8)}", [(line, 1)], 1200)
+        legacy = self._refund(order, f"{PREFIX}-LEGACY-{frappe.generate_hash(length=8)}", [(line, 1)], 1200)
+        expected = get_shift_cash_refund_snapshot(self.shift.name)
+        self.assertEqual(expected["status"], "complete")
+        self.assertEqual({row["return_event"] for row in expected["refunds"]},
+                         {modern["return_event"], legacy["return_event"]})
+        self.assertEqual(sum(row["amount_sen"] for row in expected["refunds"]), 2400)
+        for historical_blank in (None, ""):
+            with self.subTest(refund_shift=historical_blank):
+                # Only this synthetic event is changed, inside the rollback-only
+                # native test. Current Document hooks always populate the drawer,
+                # so a direct metadata write is required to model pre-field rows.
+                # Its actual submitted credit note, journal and GL stay untouched.
+                frappe.db.set_value("FB Return Event", legacy["return_event"],
+                                    {"refund_shift": historical_blank, "fb_order": None},
+                                    update_modified=False)
+                self.assertEqual(get_shift_cash_refund_snapshot(self.shift.name), expected)
+                refresh_fb_shift_cash(self.shift.name)
+                self.assertEqual(_sen(frappe.db.get_value("FB Shift", self.shift.name, "expected_cash")),
+                                 _sen(self.shift.opening_float) + 3600 - 2400)
+
+    def test_drawer_observation_limit_uses_real_submitted_refunds_without_partial_totals(self) -> None:
+        self.assertEqual(SHIFT_CASH_REFUND_SNAPSHOT_LIMIT, 500)
+        quantity = SHIFT_CASH_REFUND_SNAPSHOT_LIMIT + 1
+        order, (line,), _sale = self._sale([(quantity, quantity * 5)], tax_sen=0)
+        return_events = set()
+        settlements = set()
+        credits = set()
+        for index in range(quantity):
+            response = self._refund(order, f"{PREFIX}-LIMIT-{index}-{frappe.generate_hash(length=8)}", [(line, 1)], 5)
+            self.assertEqual((response["status"], response["settlement_status"]), ("ok", "Posted"))
+            return_events.add(response["return_event"])
+            settlements.add(response["settlement_document"])
+            credits.add(response["return_sales_invoice"])
+            if index + 1 == SHIFT_CASH_REFUND_SNAPSHOT_LIMIT:
+                snapshot = get_shift_cash_refund_snapshot(self.shift.name)
+                self.assertEqual(snapshot["status"], "complete")
+                self.assertEqual(len(snapshot["refunds"]), 500)
+                self.assertEqual({row["return_event"] for row in snapshot["refunds"]}, return_events)
+                self.assertEqual(sum(row["amount_sen"] for row in snapshot["refunds"]), 2500)
+        self.assertEqual((len(return_events), len(settlements), len(credits)), (501, 501, 501))
+        self.assertEqual(get_shift_cash_refund_snapshot(self.shift.name), {"status": "limit_exceeded", "refunds": None})
+        self.assertEqual(frappe.db.count("Sales Invoice", {"return_against": order.sales_invoice, "docstatus": 1}), 501)
+        self.assertEqual(_sen(frappe.db.get_value("FB Shift", self.shift.name, "expected_cash")), _sen(self.shift.opening_float))
 
     def test_stale_conflicting_and_full_after_part_requests_are_refused(self) -> None:
         order, (line,), sale = self._sale([(2, 2400)], tax_sen=0)

@@ -1,0 +1,37 @@
+{
+  "name": "normal-sale-full-refund",
+  "description": "One line, clean amounts, refunded in a single request. The baseline.",
+  "sale": {
+    "lines": [
+      {
+        "line_id": "L0",
+        "quantity": 2,
+        "line_total_sen": 1000
+      }
+    ],
+    "tax_sen": 60,
+    "rounding_sen": 0,
+    "total_sen": 1060,
+    "cash_unit_sen": 1
+  },
+  "sequence": [
+    [
+      {
+        "line_id": "L0",
+        "quantity": 2
+      }
+    ]
+  ],
+  "expected": [
+    {
+      "net_sen": 1000,
+      "tax_sen": 60,
+      "rounding_sen": 0,
+      "amount_sen": 1060,
+      "is_final": true,
+      "lines": {
+        "L0": 1000
+      }
+    }
+  ]
+}

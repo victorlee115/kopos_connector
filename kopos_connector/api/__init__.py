@@ -16,6 +16,33 @@ from .catalog import (
     get_item_modifiers_payload,
     get_tax_rate_value,
 )
+from .device_safe_reset import (
+    abandon_unregistered_device_safe_reset_request as abandon_unregistered_device_safe_reset_request_payload,
+)
+from .device_safe_reset import (
+    authorize_device_safe_reset as authorize_device_safe_reset_payload,
+)
+from .device_safe_reset import (
+    cancel_device_safe_reset as cancel_device_safe_reset_payload,
+)
+from .device_safe_reset import (
+    cancel_device_safe_reset_as_system_manager as cancel_safe_reset_as_manager_payload,
+)
+from .device_safe_reset import (
+    classify_device_safe_reset_request_registration as classify_safe_reset_request_registration_payload,
+)
+from .device_safe_reset import (
+    complete_device_safe_reset as complete_device_safe_reset_payload,
+)
+from .device_safe_reset import (
+    register_device_credential_recovery as register_device_credential_recovery_payload,
+)
+from .device_safe_reset import (
+    request_device_safe_reset as request_device_safe_reset_payload,
+)
+from .device_safe_reset import (
+    resolve_device_safe_reset_request as resolve_device_safe_reset_request_payload,
+)
 from .devices import (
     KOPOS_DEVICE_API_ROLE,
     elevate_device_api_user,
@@ -28,36 +55,14 @@ from .devices import (
     require_kopos_api_access,
     require_system_manager,
 )
-from .device_safe_reset import (
-    abandon_unregistered_device_safe_reset_request as abandon_unregistered_device_safe_reset_request_payload,
-    authorize_device_safe_reset as authorize_device_safe_reset_payload,
-    cancel_device_safe_reset as cancel_device_safe_reset_payload,
-    cancel_device_safe_reset_as_system_manager as cancel_safe_reset_as_manager_payload,
-    classify_device_safe_reset_request_registration as classify_safe_reset_request_registration_payload,
-    complete_device_safe_reset as complete_device_safe_reset_payload,
-    register_device_credential_recovery as register_device_credential_recovery_payload,
-    request_device_safe_reset as request_device_safe_reset_payload,
-    resolve_device_safe_reset_request as resolve_device_safe_reset_request_payload,
-)
-from .order_history import get_order_history_payload
-from .promotions import (
-    get_promotion_snapshot_payload,
-    require_company_director_for_promotion_publication,
-)
-from .provisioning import (
-    create_device_provisioning_qr as create_device_provisioning_qr_payload,
-    create_pos_provisioning as create_pos_provisioning_payload,
-    get_device_config as get_device_config_payload,
-    redeem_pos_provisioning as redeem_pos_provisioning_payload,
-)
 from .inventory import (
     accept_preparation_task,
-    approve_promotion_economics_override,
-    create_availability_hold,
-    complete_preparation_task,
     activate_inventory_cutover,
+    approve_promotion_economics_override,
     claim_count_task,
+    complete_preparation_task,
     confirm_count_reconciliation,
+    create_availability_hold,
     create_count_reconciliation_after_director_review,
     get_autopilot_health,
     get_autopilot_workflow,
@@ -68,12 +73,28 @@ from .inventory import (
     release_availability_hold,
     report_device_inventory_state,
     start_preparation_task,
-    submit_purchase_receipt,
     submit_count_observation,
+    submit_purchase_receipt,
     submit_transfer_dispatch,
     submit_transfer_receipt,
 )
-
+from .order_history import get_order_history_payload
+from .promotions import (
+    get_promotion_snapshot_payload,
+    require_company_director_for_promotion_publication,
+)
+from .provisioning import (
+    create_device_provisioning_qr as create_device_provisioning_qr_payload,
+)
+from .provisioning import (
+    create_pos_provisioning as create_pos_provisioning_payload,
+)
+from .provisioning import (
+    get_device_config as get_device_config_payload,
+)
+from .provisioning import (
+    redeem_pos_provisioning as redeem_pos_provisioning_payload,
+)
 
 _REFUND_REASON_OPTIONS = {
     "customer_changed_mind": "Customer changed mind",
@@ -1250,6 +1271,7 @@ def close_shift(**kwargs: Any) -> None:
 def get_device_open_shift(
     device_id: str | None = None,
     staff_id: str | None = None,
+    include_cash_refunds: str | int | None = None,
 ) -> None:
     """Public KoPOS endpoint to get the current open shift for a device.
 
@@ -1280,9 +1302,13 @@ def get_device_open_shift(
                 )
             resolve_and_validate_device_user(device_doc, resolved_staff_id)
 
+        if include_cash_refunds not in (None, "0", "1", 0, 1):
+            frappe.throw("include_cash_refunds must be 0 or 1", frappe.ValidationError)
+        snapshot_options = {"include_cash_refunds": True} if include_cash_refunds in ("1", 1) else {}
         result = get_device_open_shift_payload(
             device_id=resolved_device_id,
             staff_id=resolved_staff_id or None,
+            **snapshot_options,
         )
         if result and isinstance(result.get("staff_conflict"), dict):
             _write_response(

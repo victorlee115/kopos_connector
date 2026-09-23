@@ -6,24 +6,14 @@ import hashlib
 import importlib
 import json
 import logging
-import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from jsonschema import Draft7Validator
-
-frappe = importlib.import_module("frappe")
-frappe_utils = importlib.import_module("frappe.utils")
-
-_ = getattr(frappe, "_")
-cint = frappe_utils.cint
-cstr = frappe_utils.cstr
-flt = frappe_utils.flt
-now_datetime = frappe_utils.now_datetime
 
 from kopos_connector.api.devices import elevate_device_api_user, get_device_doc
 from kopos_connector.api.operational_errors import (
@@ -38,9 +28,19 @@ from kopos_connector.kopos.api.money_contract import (
     persisted_money_to_sen,
     sen_to_decimal,
 )
-from kopos_connector.utils.diagnostics import log_sanitized_error, sanitized_error_message
+from kopos_connector.utils.diagnostics import (
+    log_sanitized_error,
+    sanitized_error_message,
+)
 
+frappe = importlib.import_module("frappe")
+frappe_utils = importlib.import_module("frappe.utils")
 
+_ = frappe._
+cint = frappe_utils.cint
+cstr = frappe_utils.cstr
+flt = frappe_utils.flt
+now_datetime = frappe_utils.now_datetime
 
 # -----------------------------------------------------------------------------
 # Phase 6 - Offline Event Timestamp Validation Constants
@@ -279,7 +279,7 @@ def _normalize_offline_event_datetime(
             _("Invalid {0} timestamp format").format(field_name),
             frappe.ValidationError,
         )
-        raise AssertionError(f"frappe.throw did not reject invalid {field_name}")
+        raise AssertionError(f"frappe.throw did not reject invalid {field_name}") from None
 
     if not isinstance(parsed, datetime):
         frappe.throw(
@@ -330,7 +330,7 @@ def _get_site_timezone() -> ZoneInfo:
             ),
             frappe.ValidationError,
         )
-        raise AssertionError("frappe.throw did not reject an invalid site timezone")
+        raise AssertionError("frappe.throw did not reject an invalid site timezone") from None
 
     return site_timezone
 
@@ -356,7 +356,7 @@ def _validate_closed_at_not_before_opened_at(
         )
         raise AssertionError(
             f"frappe.throw did not reject invalid FB Shift {shift_name} opened_at"
-        )
+        ) from None
 
     if not isinstance(opened_at, datetime):
         frappe.throw(
@@ -1332,6 +1332,8 @@ def close_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def get_device_open_shift_payload(
     device_id: str,
     staff_id: str | None = None,
+    *,
+    include_cash_refunds: bool = False,
 ) -> dict[str, Any] | None:
     """Get the current open FB Shift or an optional staff conflict.
 
@@ -1378,7 +1380,7 @@ def get_device_open_shift_payload(
         custom_device_id = cstr(entry.get("device_id"))
         if custom_device_id != device_id:
             continue
-        return {
+        result = {
             "fb_shift": entry["name"],
             "shift_id": cstr(entry.get("shift_code")) or None,
             "device_id": device_id,
@@ -1386,6 +1388,22 @@ def get_device_open_shift_payload(
             "opening_float_sen": _persisted_money_sen(entry.get("opening_float"), "opening_float"),
             "opened_at": _format_datetime_iso(entry.get("opened_at")),
         }
+        if include_cash_refunds:
+            from kopos_connector.kopos.services.accounting.return_invoice_service import (
+                get_shift_cash_refund_snapshot,
+            )
+
+            observed_at = _format_datetime_iso(now_datetime())
+            try:
+                snapshot = get_shift_cash_refund_snapshot(entry["name"])
+            except Exception as error:
+                # Optional observation must not prevent shift discovery/adoption.
+                log_sanitized_error("KoPOS drawer refund observation unavailable", error)
+                snapshot = {"status": "unavailable", "refunds": None}
+            result["cash_refund_snapshot"] = {
+                "fb_shift": entry["name"], "observed_at": observed_at, **snapshot,
+            }
+        return result
 
     resolved_staff_id = cstr(staff_id).strip()
     if not resolved_staff_id:
@@ -1433,7 +1451,7 @@ def _format_datetime_iso(value: Any) -> str | None:
         parsed = value if isinstance(value, datetime) else frappe.utils.get_datetime(value)
     except (TypeError, ValueError, OverflowError):
         frappe.throw(_("FB Shift opened_at timestamp is invalid"), frappe.ValidationError)
-        raise AssertionError("frappe.throw did not reject an invalid FB Shift timestamp")
+        raise AssertionError("frappe.throw did not reject an invalid FB Shift timestamp") from None
     if not isinstance(parsed, datetime):
         frappe.throw(_("FB Shift opened_at timestamp is invalid"), frappe.ValidationError)
         raise AssertionError("frappe.throw did not reject an invalid FB Shift timestamp")

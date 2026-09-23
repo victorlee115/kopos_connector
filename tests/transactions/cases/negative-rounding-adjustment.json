@@ -1,0 +1,53 @@
+{
+  "name": "negative-rounding-adjustment",
+  "description": "A sale rounded down at tender. The refund must give back the same adjustment, not a recomputed one.",
+  "sale": {
+    "lines": [
+      {
+        "line_id": "L0",
+        "quantity": 2,
+        "line_total_sen": 999
+      }
+    ],
+    "tax_sen": 60,
+    "rounding_sen": -4,
+    "total_sen": 1055,
+    "cash_unit_sen": 5
+  },
+  "sequence": [
+    [
+      {
+        "line_id": "L0",
+        "quantity": 1
+      }
+    ],
+    [
+      {
+        "line_id": "L0",
+        "quantity": 1
+      }
+    ]
+  ],
+  "expected": [
+    {
+      "net_sen": 499,
+      "tax_sen": 29,
+      "rounding_sen": -3,
+      "amount_sen": 525,
+      "is_final": false,
+      "lines": {
+        "L0": 499
+      }
+    },
+    {
+      "net_sen": 500,
+      "tax_sen": 31,
+      "rounding_sen": -1,
+      "amount_sen": 530,
+      "is_final": true,
+      "lines": {
+        "L0": 500
+      }
+    }
+  ]
+}

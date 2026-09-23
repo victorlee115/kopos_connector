@@ -1,0 +1,10 @@
+{
+  "include": ["kopos_connector", "tests"],
+  "exclude": ["**/__pycache__", ".venv-test"],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": "none",
+  "venvPath": "..",
+  "venv": ".workstation-venv"
+}

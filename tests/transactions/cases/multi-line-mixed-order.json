@@ -1,0 +1,84 @@
+{
+  "name": "multi-line-mixed-order",
+  "description": "Three lines refunded out of order, one of them partially. Tax and rounding follow the net share, not the line count.",
+  "sale": {
+    "lines": [
+      {
+        "line_id": "L0",
+        "quantity": 2,
+        "line_total_sen": 700
+      },
+      {
+        "line_id": "L1",
+        "quantity": 1,
+        "line_total_sen": 1250
+      },
+      {
+        "line_id": "L2",
+        "quantity": 5,
+        "line_total_sen": 333
+      }
+    ],
+    "tax_sen": 137,
+    "rounding_sen": 3,
+    "total_sen": 2423,
+    "cash_unit_sen": 1
+  },
+  "sequence": [
+    [
+      {
+        "line_id": "L1",
+        "quantity": 1
+      }
+    ],
+    [
+      {
+        "line_id": "L2",
+        "quantity": 2
+      }
+    ],
+    [
+      {
+        "line_id": "L0",
+        "quantity": 2
+      },
+      {
+        "line_id": "L2",
+        "quantity": 3
+      }
+    ]
+  ],
+  "expected": [
+    {
+      "net_sen": 1250,
+      "tax_sen": 75,
+      "rounding_sen": 1,
+      "amount_sen": 1326,
+      "is_final": false,
+      "lines": {
+        "L1": 1250
+      }
+    },
+    {
+      "net_sen": 133,
+      "tax_sen": 7,
+      "rounding_sen": 0,
+      "amount_sen": 140,
+      "is_final": false,
+      "lines": {
+        "L2": 133
+      }
+    },
+    {
+      "net_sen": 900,
+      "tax_sen": 55,
+      "rounding_sen": 2,
+      "amount_sen": 957,
+      "is_final": true,
+      "lines": {
+        "L0": 700,
+        "L2": 200
+      }
+    }
+  ]
+}

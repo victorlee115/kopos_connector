@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from decimal import Decimal
 from typing import Any
 
@@ -12,10 +12,10 @@ from frappe.utils import cint, cstr, flt
 from kopos_connector.api.operational_errors import RefundChangedError
 from kopos_connector.kopos.services.accounting.refund_allocation import (
     REFUND_ALLOCATION_VERSION,
-    RefundAllocation,
-    RefundAllocationError,
     RefundableSale,
     RefundableSaleLine,
+    RefundAllocation,
+    RefundAllocationError,
     allocate_refund,
     parse_stored_allocation,
     refund_position,
@@ -36,7 +36,6 @@ from kopos_connector.utils.manager_approval import (
     parse_integer_sen,
     verify_manager_approval_token,
 )
-
 
 REFUND_METHODS = {"cash", "qr", "card", "voucher"}
 INVENTORY_EVALUATION_INCLUDED = "included_evaluated"
@@ -79,6 +78,12 @@ def process_return_payload(
     )
     existing_return = _get_existing_return_name_current(validated["return_id"])
     if existing_return:
+        if not frappe.db.exists("FB Return Event", existing_return):
+            # Another request committed this refund while this one waited for the
+            # sale's locks, after this transaction's snapshot was taken, so no plain
+            # read here can see it. Read the replay in a fresh transaction, as the
+            # DuplicateEntryError branch below does.
+            frappe.db.rollback()
         return_doc = frappe.get_doc("FB Return Event", existing_return)
         _validate_existing_return_matches(validated, return_doc)
         from kopos_connector.kopos.services.operations.return_service import (
@@ -546,7 +551,7 @@ def _allocate_partial_refund(
     except RefundAllocationError as error:
         frappe.throw(REFUND_ALLOCATION_MESSAGES.get(error.code, str(error)), frappe.ValidationError)
         raise AssertionError("unreachable") from error
-    if _posted_refund_amount_sen(validated) != position["amount_sen"]:
+    if _posted_refund_amount_sen(validated, line_by_item) != position["amount_sen"]:
         frappe.throw(
             "Earlier refunds of this sale do not match its saved amounts. Ask support.",
             frappe.ValidationError,
@@ -554,17 +559,43 @@ def _allocate_partial_refund(
     return allocation
 
 
-def _posted_refund_amount_sen(validated: dict[str, Any]) -> int:
-    rows = frappe.get_all(
-        "FB Return Event",
-        filters={
-            "original_sales_invoice": validated["original_sales_invoice"],
-            "docstatus": 1,
-            "return_id": ["!=", validated["return_id"]],
-        },
-        fields=["settlement_amount"],
+def _posted_refund_amount_sen(validated: dict[str, Any], invoice_items: Iterable[str]) -> int:
+    """What the sale's other submitted refunds paid back, read as current as their quantities.
+
+    The quantities come from the return guard's locking read. A plain read here
+    would use this transaction's snapshot, taken before the guard waited for
+    another refund of the sale to commit, and miss that refund's amount. So this
+    is a locking read too, through the same indexed invoice-item rows the guard
+    has already locked.
+    """
+    names = sorted(invoice_items)
+    if not names:
+        return 0
+    placeholders = ", ".join(["%s"] * len(names))
+    rows = frappe.db.sql(
+        f"""
+        SELECT return_event.name, return_event.return_id, return_event.settlement_amount
+        FROM `tabFB Return Event Line` AS return_line
+        INNER JOIN `tabFB Return Event` AS return_event
+            ON return_event.name = return_line.parent
+        WHERE return_line.parenttype = 'FB Return Event'
+            AND return_event.docstatus = 1
+            AND return_event.original_sales_invoice = %s
+            AND return_line.original_sales_invoice_item IN ({placeholders})
+        ORDER BY return_event.name
+        FOR UPDATE
+        """,
+        (validated["original_sales_invoice"], *names),
+        as_dict=True,
     )
-    return sum(money_to_sen(_row_value(row, "settlement_amount") or 0, "FB Return Event settlement_amount") for row in rows or [])
+    amounts: dict[str, int] = {}
+    for row in rows or []:
+        if cstr(_row_value(row, "return_id")).strip() == validated["return_id"]:
+            continue
+        amounts[cstr(_row_value(row, "name")).strip()] = money_to_sen(
+            _row_value(row, "settlement_amount") or 0, "FB Return Event settlement_amount"
+        )
+    return sum(amounts.values())
 
 
 def _lock_sales_invoice_cash_shift(sales_invoice: str) -> str:
