@@ -1,5 +1,5 @@
 # Local/workstation extras. Production runtime remains requirements.txt.
 # CI connector-contract job pins pytest 9.0.3 independently.
-pytest==9.0.3
+pytest==9.1.1
 hypothesis==6.135.0
 ruff==0.16.8
