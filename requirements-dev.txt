@@ -2,4 +2,4 @@
 # CI connector-contract job pins pytest 9.0.3 independently.
 pytest==9.0.3
 hypothesis==6.135.0
-ruff==0.16.8
+ruff==0.16.9
